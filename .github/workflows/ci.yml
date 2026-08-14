@@ -76,21 +76,38 @@ jobs:
       # positioned to catch that, so it must test what users actually get.
       - run: python -m pip install --upgrade pip build
       - run: python -m build --wheel
-      - run: python -m pip install dist/*.whl
       # The definition of done says a stranger with no keys gets a report in
-      # under two minutes. That claim is only true if something checks it.
+      # under two minutes. That claim is only true if something checks it -- and
+      # nothing did, including this job, which said this sentence in a comment
+      # while measuring the wrong interval.
       #
-      # The demo exits 1, and that is the job passing. Exit 1 is NO-GO: the demo
-      # exists to show the tool refusing an unsafe migration, so a demo that
-      # exited 0 would mean the verdict logic had stopped working. The exit code
-      # is asserted exactly, not merely tolerated -- `|| true` here would hide
-      # both a crash (3) and an accidental GO (0).
-      - name: migkit demo
+      # A stranger's two minutes start at `python -m venv`, not after pip has
+      # already dragged in numpy and scipy. `timeout 120 migkit demo` bounded the
+      # last ~16 seconds of what measures 70-240 seconds end to end, so it would
+      # have stayed green with pip taking four minutes. Both earlier stages are
+      # inside the clock now.
+      #
+      # The demo also runs before anything else imports the package. A `pip show`,
+      # an import probe, or a warm-up run pays the cold-import cost and leaves the
+      # timed demo measuring a warm process -- 16.3s against 2.1s, measured on
+      # Windows on 2026-08-14. scripts/clean_venv_check.ps1 had exactly that bug
+      # and it flattered the total by ~14 seconds.
+      - name: Cold start under two minutes, ending in NO-GO
         run: |
+          start=$(date +%s)
+          python -m venv /tmp/mk-cold
+          /tmp/mk-cold/bin/python -m pip install --quiet dist/*.whl
           set +e
-          timeout 120 migkit demo --out demo-report.html
+          /tmp/mk-cold/bin/migkit demo --out demo-report.html
           code=$?
           set -e
+          elapsed=$(( $(date +%s) - start ))
+          echo "cold start: venv + pip install + migkit demo = ${elapsed}s"
+          # The demo exits 1, and that is the job passing. Exit 1 is NO-GO: the
+          # demo exists to show the tool refusing an unsafe migration, so a demo
+          # that exited 0 would mean the verdict logic had stopped working. The
+          # exit code is asserted exactly, not merely tolerated -- `|| true` here
+          # would hide both a crash (3) and an accidental GO (0).
           if [ "$code" -ne 1 ]; then
             echo "::error::migkit demo exited $code; expected 1 (NO-GO)."
             echo "::error::0=GO 1=NO-GO 2=REVIEW 3=error. A GO or a REVIEW here means"
@@ -98,6 +115,13 @@ jobs:
             exit 1
           fi
           test -f demo-report.html
+          # Checked after the verdict, so a slow runner reports the timing failure
+          # rather than masking a broken demo with it.
+          if [ "$elapsed" -gt 120 ]; then
+            echo "::error::cold start took ${elapsed}s, over the 120s definition of done."
+            echo "::error::Do not fix this by timing a smaller interval."
+            exit 1
+          fi
           # The report must open in an airgapped compliance review, so nothing in
           # it may be fetched at view time.
           if grep -qiE 'src="https?:|href="https?:|@import|//(cdn|fonts)\.' demo-report.html; then

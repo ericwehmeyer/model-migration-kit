@@ -27,6 +27,31 @@
     What it does NOT do is pass silently. If `migkit demo` does not exist yet
     (Session 3 has not landed cli.py), it reports SKIPPED and exits 2.
 
+    WHAT THE CLOCK COVERS, and why it changed.
+    ------------------------------------------
+    The definition of done is "a stranger with no keys gets a report in under two
+    minutes", and the stranger's two minutes start when they have a Python and a
+    wheel, not when they already have an environment with numpy and scipy in it.
+    Every check in this repository used to start its stopwatch after `pip install`
+    returned -- this script, the release contract's section 5 item 5, and ci.yml's
+    `timeout 120 migkit demo` -- so all three measured the last ~9 seconds of a
+    ~130 second interval and none of them measured the claim. ci.yml's own comment
+    said the claim "is only true if something checks it", and nothing did.
+
+    So there are now two timings and two separate verdicts:
+
+      * `migkit demo`   -- the demo's own wall clock, which is what the README's
+                           timing table is about and what a second run costs.
+      * cold start      -- venv creation + `pip install <wheel>` + `migkit demo`,
+                           summed, which is the interval the definition of done
+                           actually describes. Reported against $ColdStartBudget.
+
+    The install half is dominated by pip resolving and unpacking numpy and scipy,
+    and it therefore depends heavily on whether pip's HTTP cache is warm. That is
+    not a nuisance to be averaged away: it is the difference between the first
+    person in an organisation to install this and the hundredth, so the check
+    reports which case it measured rather than quoting one number for both.
+
 .PARAMETER Wheel
     Wheel to install. Defaults to the newest dist/*.whl in the repository.
 
@@ -39,6 +64,18 @@
 
 .PARAMETER Keep
     Keep the throwaway venv for inspection instead of deleting it.
+
+.PARAMETER ColdStartBudget
+    Seconds the whole cold start -- venv + install + demo -- is allowed to take.
+    Defaults to 120, the number in the definition of done. Raise it only by
+    changing the definition of done in the same commit, and say where the new
+    number was measured.
+
+.PARAMETER NoPipCache
+    Pass `--no-cache-dir` to pip, so the install is measured the way the very
+    first person on a machine experiences it. Without it the measurement is the
+    warm-cache case, which is what most people actually get and is reported as
+    such.
 
 .OUTPUTS
     Exit 0 = the report was produced. Exit 1 = it was not. Exit 2 = the check
@@ -53,7 +90,9 @@ param(
     [string]$Wheel,
     [string]$Python,
     [string]$RepoRoot,
-    [switch]$Keep
+    [switch]$Keep,
+    [double]$ColdStartBudget = 120,
+    [switch]$NoPipCache
 )
 
 Set-StrictMode -Version 3.0
@@ -124,19 +163,67 @@ function Invoke-DemoCheck {
         [string]$BinDir,
         [string]$Exe,
         [string]$Repo,
-        [string]$WheelPath
+        [string]$WheelPath,
+        [double]$VenvSeconds
     )
 
-    & $VenvPython -m pip install --disable-pip-version-check --quiet $WheelPath
+    $pipArgs = @('-m', 'pip', 'install', '--disable-pip-version-check', '--quiet')
+    if ($NoPipCache) { $pipArgs += '--no-cache-dir' }
+    $pipArgs += $WheelPath
+
+    $installSw = [Diagnostics.Stopwatch]::StartNew()
+    & $VenvPython @pipArgs
+    $installSw.Stop()
+    $installSeconds = $installSw.Elapsed.TotalSeconds
     if ($LASTEXITCODE -ne 0) {
         Write-Check 'FAIL' 'install' "pip install of the local wheel exited $LASTEXITCODE"
         Write-Evidence 'dependencies still come from PyPI; a network failure looks like this too'
         return
     }
     Write-Check 'PASS' 'install' ("installed {0} from the local file" -f (Split-Path -Leaf $WheelPath))
+    $cacheState = if ($NoPipCache) { 'pip cache disabled (--NoPipCache): the first-ever install on a machine' }
+                  else { "pip cache as found on this machine" }
+    Write-Evidence ("pip install took {0:n1}s -- {1}" -f $installSeconds, $cacheState)
     foreach ($line in (& $VenvPython -m pip show model-migration-kit)) {
         if ($line -match '^(Name|Version|Location):') { Write-Evidence $line }
     }
+    foreach ($line in (& $VenvPython -m pip show opik-rigor)) {
+        if ($line -match '^(Name|Version):') { Write-Evidence ("dependency " + $line) }
+    }
+
+    # ----------------------------------------------------------------------
+    # The definition of done, run BEFORE anything else touches the package
+    # ----------------------------------------------------------------------
+    # Ordering, and it is not cosmetic. The isolation probe below imports
+    # model_migration_kit and opik_rigor, and the first import of that tree costs
+    # 15 seconds on a cold OS file cache -- site-packages is ~206MB, nearly all of
+    # it numpy and scipy. Run first, the probe pays that cost and the demo's
+    # stopwatch then measures a warm process: measured here at 2.1s where the same
+    # demo run first takes 18.4s. That is not a small error at the end of an
+    # interval being compared against a 120-second promise, and it is precisely the
+    # shape of mistake this whole file exists to stop making -- timing the part
+    # that is already fast. A stranger's first command after `pip install` is
+    # `migkit demo`, so `migkit demo` goes first here too.
+    $migkit = Join-Path $Tmp (Join-Path $BinDir "migkit$Exe")
+    $report = Join-Path $Tmp 'demo.html'
+    $migkitPresent = Test-Path -LiteralPath $migkit
+    $demoSeconds = 0.0
+    $code = $null
+    $errText = ''
+    if ($migkitPresent) {
+        $stdout = Join-Path $Tmp 'demo.stdout.txt'
+        $stderr = Join-Path $Tmp 'demo.stderr.txt'
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        $proc = Start-Process -FilePath $migkit -ArgumentList @('demo', '--out', $report) `
+            -NoNewWindow -Wait -PassThru -WorkingDirectory $Tmp `
+            -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+        $sw.Stop()
+        $demoSeconds = $sw.Elapsed.TotalSeconds
+        $code = $proc.ExitCode
+        $errText = if (Test-Path -LiteralPath $stderr) { Get-Content -Raw -LiteralPath $stderr } else { '' }
+        if (-not $errText) { $errText = '' }
+    }
+    $coldStartSeconds = $VenvSeconds + $installSeconds + $demoSeconds
 
     # Where the packages actually live. This is the empirical form of the import
     # name check: nothing may resolve under the repository.
@@ -184,27 +271,14 @@ print(json.dumps(out))
     }
 
     # ----------------------------------------------------------------------
-    # The definition of done
+    # The definition of done, judged from what the timed run above produced
     # ----------------------------------------------------------------------
-    $migkit = Join-Path $Tmp (Join-Path $BinDir "migkit$Exe")
-    $report = Join-Path $Tmp 'demo.html'
-    if (-not (Test-Path -LiteralPath $migkit)) {
+    if (-not $migkitPresent) {
         Write-Check 'SKIPPED' 'migkit demo' 'the installed wheel provides no migkit console script'
         Write-Evidence ("looked for: {0}" -f $migkit)
         Write-Evidence 'the definition of done is therefore UNVERIFIED, not met'
         return
     }
-
-    $stdout = Join-Path $Tmp 'demo.stdout.txt'
-    $stderr = Join-Path $Tmp 'demo.stderr.txt'
-    $sw = [Diagnostics.Stopwatch]::StartNew()
-    $proc = Start-Process -FilePath $migkit -ArgumentList @('demo', '--out', $report) `
-        -NoNewWindow -Wait -PassThru -WorkingDirectory $Tmp `
-        -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-    $sw.Stop()
-    $code = $proc.ExitCode
-    $errText = if (Test-Path -LiteralPath $stderr) { Get-Content -Raw -LiteralPath $stderr } else { '' }
-    if (-not $errText) { $errText = '' }
     $reportExists = Test-Path -LiteralPath $report
 
     # argparse rejects an unknown subcommand with exit 2 and a usage message,
@@ -212,15 +286,18 @@ print(json.dumps(out))
     # the two are told apart by the usage text and the absent report.
     if (-not $reportExists -and $errText -match 'invalid choice|unrecognized arguments|usage:') {
         Write-Check 'SKIPPED' 'migkit demo' 'the CLI has no demo subcommand yet (Session 3 has not landed it)'
-        Write-Evidence ("exit {0} in {1:n1}s" -f $code, $sw.Elapsed.TotalSeconds)
+        Write-Evidence ("exit {0} in {1:n1}s" -f $code, $demoSeconds)
         foreach ($line in (($errText -split "`n") | Select-Object -First 4)) { Write-Evidence $line.Trim() }
         Write-Evidence 'the definition of done is UNVERIFIED, not met'
         return
     }
 
     Write-Evidence ("command: migkit demo --out {0}" -f $report)
-    Write-Evidence ("exit {0}, elapsed {1:n1}s, cwd {2}" -f $code, $sw.Elapsed.TotalSeconds, $Tmp)
+    Write-Evidence ("exit {0}, elapsed {1:n1}s, cwd {2}" -f $code, $demoSeconds, $Tmp)
     Write-Evidence 'exit codes: 0=GO 1=NO-GO 2=REVIEW 3=error (contracts.Verdict.EXIT_CODES)'
+    Write-Evidence ("cold start = venv {0:n1}s + install {1:n1}s + demo {2:n1}s = {3:n1}s" -f `
+        $VenvSeconds, $installSeconds, $demoSeconds, $coldStartSeconds)
+    Write-Evidence 'this demo is a first run in a fresh venv, so it carries the cold-import cost'
 
     # A console script whose target module is not in the wheel is a broken wheel,
     # and verify_release.py's `console-script` row is the check that owns that
@@ -253,11 +330,22 @@ print(json.dumps(out))
         return
     }
     Write-Check 'PASS' 'migkit demo' 'a keyless stranger got an HTML report'
-    if ($sw.Elapsed.TotalSeconds -gt 120) {
-        Write-Check 'FAIL' 'two-minute claim' ("took {0:n1}s, over the 120s definition of done" -f $sw.Elapsed.TotalSeconds)
+
+    # The claim is about the stranger's whole interval, not about the last stage of
+    # it. Timing only `migkit demo` here is what let "under two minutes" read as
+    # green while the measured end-to-end figure was 127-142s -- see the block
+    # comment at the top of this file. The demo's own time is still reported,
+    # because it is a different and also-useful number, but it is not the verdict.
+    if ($coldStartSeconds -gt $ColdStartBudget) {
+        Write-Check 'FAIL' 'two-minute claim' `
+            ("cold start {0:n1}s, over the {1:n0}s definition of done" -f $coldStartSeconds, $ColdStartBudget)
+        Write-Evidence ("the demo itself was {0:n1}s of it; the other {1:n1}s is venv creation and pip" -f `
+            $demoSeconds, ($coldStartSeconds - $demoSeconds))
+        Write-Evidence 'do not fix this by timing a smaller interval'
     }
     else {
-        Write-Check 'PASS' 'two-minute claim' ("{0:n1}s, inside the 120s budget" -f $sw.Elapsed.TotalSeconds)
+        Write-Check 'PASS' 'two-minute claim' `
+            ("cold start {0:n1}s, inside the {1:n0}s budget" -f $coldStartSeconds, $ColdStartBudget)
     }
 }
 
@@ -344,7 +432,11 @@ try {
     $env:PYTHONPATH = $null
     $env:PYTHONHOME = $null
 
+    # The clock starts here, at the first command a stranger types. See the
+    # WHAT THE CLOCK COVERS block at the top of this file.
+    $venvSw = [Diagnostics.Stopwatch]::StartNew()
     & $interpExe @interpArgs -m venv $tmp
+    $venvSw.Stop()
     $venvPython = Join-Path $tmp (Join-Path $binDir "python$exeSuffix")
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $venvPython)) {
         Write-Check 'FAIL' 'venv' "could not create a virtualenv at $tmp"
@@ -352,10 +444,12 @@ try {
     else {
         Write-Check 'PASS' 'venv' 'throwaway virtualenv created, empty of everything'
         Write-Evidence ("python: {0}" -f (& $venvPython -c 'import sys; print(sys.version.split()[0])'))
+        Write-Evidence ("venv creation took {0:n1}s" -f $venvSw.Elapsed.TotalSeconds)
         Push-Location $tmp   # NOT the repo: a repo-root cwd can mask a missing package resource
         try {
             Invoke-DemoCheck -Tmp $tmp -VenvPython $venvPython -BinDir $binDir `
-                -Exe $exeSuffix -Repo $RepoRoot -WheelPath $Wheel
+                -Exe $exeSuffix -Repo $RepoRoot -WheelPath $Wheel `
+                -VenvSeconds $venvSw.Elapsed.TotalSeconds
         }
         finally {
             Pop-Location
