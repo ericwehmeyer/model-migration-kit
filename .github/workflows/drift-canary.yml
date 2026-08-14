@@ -40,6 +40,11 @@ jobs:
   canary:
     name: latest opik-rigor / py${{ matrix.python-version }}
     runs-on: ubuntu-latest
+    # A weekly job with no ceiling can hang on a stalled index and hold a runner for
+    # the six-hour default. On a weekly cadence that is indistinguishable from a
+    # canary that stopped firing, which is the failure the schedule comment above
+    # already calls out.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -47,10 +52,13 @@ jobs:
         # raising its requires-python bites first; 3.13 is where a new C extension
         # fails to build first. The middle versions add runtime, not coverage.
         python-version: ["3.10", "3.13"]
-    outputs:
-      status: ${{ steps.classify.outputs.status }}
-      detail: ${{ steps.classify.outputs.detail }}
-      versions: ${{ steps.resolve.outputs.versions }}
+    # No `outputs:` here, deliberately. A matrix job has ONE set of outputs and every
+    # cell writes to it, so the surviving value is whichever cell happened to finish
+    # last. That is not a cosmetic race: a clean 3.13 landing after a drifting 3.10
+    # would hand `report` the string "clean", and `clean` is the one status that
+    # CLOSES the drift issue -- so the canary would find a real incompatibility and
+    # then delete its own report of it. Each cell writes a verdict file instead and
+    # `report` reads all of them, where drift outranks clean regardless of order.
     env:
       # Same invariant as ci.yml: the suite is green with no provider credentials.
       # It is also what makes a stage-4 failure unambiguous -- there is no network in
@@ -72,17 +80,23 @@ jobs:
         id: resolve
         run: |
           python - <<'PY' >> "$GITHUB_OUTPUT"
-          import json, sys, urllib.request
+          import json, sys, time, urllib.request
 
           def fetch(pkg):
               url = f"https://pypi.org/pypi/{pkg}/json"
               err = None
-              for _ in range(3):
+              for attempt in range(3):
                   try:
                       with urllib.request.urlopen(url, timeout=30) as r:
                           return json.load(r)
                   except Exception as exc:  # noqa: BLE001 - any failure is "index unreachable"
                       err = exc
+                      # Back off between attempts. Three retries fired back-to-back all
+                      # complete inside a second and all lose to the same blip, which
+                      # makes the retry decorative -- and a five-second outage then
+                      # reddens the canary and reads as if the job needed fixing.
+                      if attempt < 2:
+                          time.sleep(5 * (attempt + 1))
               print(f"::error::Could not reach PyPI for {pkg}: {err}", file=sys.stderr)
               raise SystemExit(1)
 
@@ -110,16 +124,28 @@ jobs:
       - name: Install at latest
         id: install
         continue-on-error: true
+        env:
+          RIGOR: ${{ steps.resolve.outputs.rigor }}
         run: |
           set +e
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+
+          # The pinned baseline, installed first so the upgrade below has something to
+          # upgrade. Its failure is a BROKEN canary, never drift: we never reached the
+          # question this job asks, and what it would have failed on is the bound
+          # ci.yml already tests. Left unchecked, this fell through to a suite that
+          # then failed on a missing pytest and got filed as a rigor incompatibility.
+          python -m pip install -e ".[dev]" 2>&1 | tee baseline.log
+          if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+            echo "outcome=broken" >> "$GITHUB_OUTPUT"
+            echo "detail=the pinned baseline install failed, so the latest was never tested" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           log=install.log
           for attempt in 1 2 3; do
             echo "--- upgrade attempt $attempt ---"
-            python -m pip install --upgrade \
-              "opik-rigor==${{ steps.resolve.outputs.rigor }}" 2>&1 | tee "$log"
+            python -m pip install --upgrade "opik-rigor==$RIGOR" 2>&1 | tee "$log"
             rc=${PIPESTATUS[0]}
             [ "$rc" -eq 0 ] && break
             grep -qiE "resolutionimpossible|no matching distribution|requires a different python" "$log" && break
@@ -146,11 +172,16 @@ jobs:
         id: preflight
         if: steps.install.outputs.outcome == 'ok'
         continue-on-error: true
+        env:
+          # Read from the environment rather than interpolated into the source: the
+          # value is a string PyPI chose, and a quote or a backslash in it would be a
+          # SyntaxError in this heredoc rather than a version mismatch.
+          RIGOR: ${{ steps.resolve.outputs.rigor }}
         run: |
           python - <<'PY'
-          import sys
+          import os, sys
           import opik_rigor
-          want = "${{ steps.resolve.outputs.rigor }}"
+          want = os.environ["RIGOR"]
           got = opik_rigor.__version__
           print(f"opik_rigor {got} (wanted {want})")
           if got != want:
@@ -172,40 +203,92 @@ jobs:
 
       - name: Classify
         id: classify
+        if: always()
+        # Every untrusted value arrives as an environment variable and is read as
+        # `$VAR`, never expanded into the script by `${{ }}`. DETAIL is a line lifted
+        # out of pip's stderr -- text this repository does not author -- and pasting
+        # that between the quotes of an `echo` makes an index's error message
+        # executable in a job that holds a token.
+        env:
+          OUTCOME: ${{ steps.install.outputs.outcome }}
+          DETAIL: ${{ steps.install.outputs.detail }}
+          RIGOR: ${{ steps.resolve.outputs.rigor }}
+          PYVER: ${{ matrix.python-version }}
+          PREFLIGHT: ${{ steps.preflight.outcome }}
+          SUITE: ${{ steps.suite.outcome }}
         run: |
           {
-            echo "### Drift canary — py${{ matrix.python-version }}"
+            echo "### Drift canary — py$PYVER"
             echo
-            echo "- opik-rigor: \`${{ steps.resolve.outputs.rigor }}\`"
+            echo "- opik-rigor: \`${RIGOR:-unresolved}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          case "${{ steps.install.outputs.outcome }}" in
-            broken)
-              echo "status=broken" >> "$GITHUB_OUTPUT"
-              echo "detail=${{ steps.install.outputs.detail }}" >> "$GITHUB_OUTPUT" ;;
-            drift)
-              echo "status=drift" >> "$GITHUB_OUTPUT"
-              echo "detail=${{ steps.install.outputs.detail }}" >> "$GITHUB_OUTPUT" ;;
+          emit() { printf 'status=%s\n' "$1" >> "$GITHUB_OUTPUT"
+                   printf 'detail=%s\n' "$2" >> "$GITHUB_OUTPUT"; }
+
+          case "$OUTCOME" in
+            broken) emit broken "$DETAIL" ;;
+            drift)  emit drift  "$DETAIL" ;;
             ok)
-              if [ "${{ steps.preflight.outcome }}" != "success" ]; then
-                echo "status=drift" >> "$GITHUB_OUTPUT"
-                echo "detail=installed, but the upgrade did not take or the package is unimportable" >> "$GITHUB_OUTPUT"
-              elif [ "${{ steps.suite.outcome }}" != "success" ]; then
+              if [ "$PREFLIGHT" != "success" ]; then
+                emit drift "installed, but the upgrade did not take or the package is unimportable"
+              elif [ "$SUITE" != "success" ]; then
                 # No retry and no heuristics: the suite is offline and key-free by
                 # invariant 3, so a failure here cannot be a flake.
-                echo "status=drift" >> "$GITHUB_OUTPUT"
-                echo "detail=the offline suite failed on py${{ matrix.python-version }}" >> "$GITHUB_OUTPUT"
+                emit drift "the offline suite failed on py$PYVER"
               else
-                echo "status=clean" >> "$GITHUB_OUTPUT"
-                echo "detail=" >> "$GITHUB_OUTPUT"
+                emit clean ""
               fi ;;
+            *)
+              # Reached when the install step produced no outcome at all -- it was
+              # killed by a timeout or the runner, and `continue-on-error` swallowed
+              # that. Without this branch `status` stayed empty, the fail step below
+              # never fired, and `report` read the empty string as "not drift" and
+              # closed the open issue. A silent green is the one result this workflow
+              # exists to make impossible.
+              emit broken "the install step ended without classifying itself (outcome='$OUTCOME')" ;;
           esac
+
+      # Filed before the fail step below, so a broken cell still reports itself.
+      - name: File this cell's verdict
+        if: always()
+        env:
+          PYVER: ${{ matrix.python-version }}
+          STATUS: ${{ steps.classify.outputs.status }}
+          DETAIL: ${{ steps.classify.outputs.detail }}
+          VERSIONS: ${{ steps.resolve.outputs.versions }}
+        run: |
+          mkdir -p verdicts
+          python3 - <<'PY'
+          import json, os, pathlib
+          status = os.environ.get("STATUS") or "broken"
+          verdict = {
+              "python": os.environ["PYVER"],
+              # An absent status means Classify never ran -- the job died before it.
+              # Unknown is not clean, and must never be able to close a drift issue.
+              "status": status,
+              "detail": os.environ.get("DETAIL") or "",
+              "versions": os.environ.get("VERSIONS") or "",
+          }
+          path = pathlib.Path("verdicts") / f"py{verdict['python']}.json"
+          path.write_text(json.dumps(verdict), encoding="utf-8")
+          print(path.read_text(encoding="utf-8"))
+          PY
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: canary-verdict-py${{ matrix.python-version }}
+          path: verdicts/
+          retention-days: 14
 
       # The ONLY path that reddens this workflow. Drift cannot reach it.
       - name: Fail the run only if the canary itself is broken
-        if: steps.classify.outputs.status == 'broken'
+        if: always() && steps.classify.outputs.status == 'broken'
+        env:
+          DETAIL: ${{ steps.classify.outputs.detail }}
         run: |
-          echo "::error::Canary broken: ${{ steps.classify.outputs.detail }}"
+          echo "::error::Canary broken: $DETAIL"
           echo "::error::This says nothing about compatibility. Fix the job, then re-run."
           exit 1
 
@@ -213,31 +296,102 @@ jobs:
     name: report drift
     runs-on: ubuntu-latest
     needs: canary
+    timeout-minutes: 10
     # Runs even when a matrix cell failed, so a broken 3.10 cell cannot suppress a
     # drift report from the 3.13 cell.
     if: always() && needs.canary.result != 'cancelled'
     permissions:
+      # `issues: write` is what `gh issue list/create/comment/edit/close` needs and
+      # is the whole reason this job is separate; `contents: read` is the floor.
+      # Nothing here checks out or writes code. Downloading this run's own artifacts
+      # goes through the Actions runtime token, not GITHUB_TOKEN, so it needs no
+      # `actions:` scope -- do not add one.
       contents: read
-      # Widened here and nowhere else.
       issues: write
     env:
       GH_TOKEN: ${{ github.token }}
       LABEL: drift-canary
       MARKER: "<!-- canary-key: latest-opik-rigor -->"
-      STATUS: ${{ needs.canary.outputs.status }}
-      DETAIL: ${{ needs.canary.outputs.detail }}
-      VERSIONS: ${{ needs.canary.outputs.versions }}
+      # STATUS/DETAIL/VERSIONS are set on the reconcile step, not here: job-level
+      # `env` is evaluated before any step runs and cannot see the `steps` context.
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
+      - name: Collect every cell's verdict
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          pattern: canary-verdict-*
+          merge-multiple: true
+          path: verdicts
+
+      - name: Reduce the cells to one verdict
+        id: verdicts
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import glob, json
+
+          cells = [json.load(open(f, encoding="utf-8"))
+                   for f in sorted(glob.glob("verdicts/*.json"))]
+
+          if not cells:
+              # No cell got far enough to file anything. The canary job is already red
+              # and says so; `unknown` is deliberately neither `drift` (do not open an
+              # issue on no evidence) nor `clean` (do not close one, either).
+              print("status=unknown")
+              print("detail=no cell filed a verdict")
+              print("versions=")
+              raise SystemExit(0)
+
+          drift = [c for c in cells if c["status"] == "drift"]
+          broken = [c for c in cells if c["status"] not in ("drift", "clean")]
+          versions = next((c["versions"] for c in cells if c["versions"]), "")
+
+          def name(cells):
+              return "; ".join(
+                  f"py{c['python']}: {c['detail'] or 'no detail recorded'}" for c in cells)
+
+          if drift:
+              # Drift outranks clean and outranks broken. `clean` -- the only status
+              # that closes the issue -- requires every cell to have said so.
+              status, detail = "drift", name(drift)
+              if broken:
+                  detail += f" (and {', '.join('py' + c['python'] for c in broken)} could not be tested)"
+          elif broken:
+              status, detail = "broken", name(broken)
+          else:
+              status, detail = "clean", ""
+
+          # One line, bounded. A step output is newline-delimited, so a detail string
+          # carrying a newline out of pip's stderr would forge the outputs after it.
+          print(f"status={status}")
+          print("detail=" + " ".join(detail.split())[:400])
+          print(f"versions={versions}")
+          PY
+
       # Reconcile a single issue rather than filing one per run. Identity comes from
       # the label plus the marker in the body, never from the title, so retitling by
       # hand does not orphan the issue and cause a duplicate.
       - name: Reconcile the drift issue
+        env:
+          STATUS: ${{ steps.verdicts.outputs.status }}
+          DETAIL: ${{ steps.verdicts.outputs.detail }}
+          VERSIONS: ${{ steps.verdicts.outputs.versions }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           today=$(date -u +%Y-%m-%d)
 
-          existing=$(gh issue list --repo "${{ github.repository }}" \
+          # `gh issue create --label` fails outright on a label the repo does not have
+          # ("could not add label: 'drift-canary' not found"), and nothing has ever
+          # created this one -- the canary has never run. So the first genuine drift
+          # report would have died here, on the single run where it mattered, and the
+          # red would have read as a broken canary rather than as the drift it was.
+          # Idempotent, and cheap enough to just do every run.
+          gh label create "$LABEL" --repo "$REPO" --force \
+            --color FBCA04 \
+            --description "Filed by .github/workflows/drift-canary.yml" >/dev/null 2>&1 || true
+
+          existing=$(gh issue list --repo "$REPO" \
             --label "$LABEL" --state open --json number,body --jq '.[0] // empty')
           number=$(printf '%s' "$existing" | jq -r '.number // empty')
           oldbody=$(printf '%s' "$existing" | jq -r '.body // empty')
@@ -246,9 +400,9 @@ jobs:
             # Clean (or the canary was broken, which is reported by the red run, not
             # here). Close any open drift issue -- self-healing beats a stale yellow light.
             if [ -n "$number" ] && [ "$STATUS" = "clean" ]; then
-              gh issue comment "$number" --repo "${{ github.repository }}" \
+              gh issue comment "$number" --repo "$REPO" \
                 --body "Resolved. The suite is green against $VERSIONS as of $today. [Run]($RUN_URL)"
-              gh issue close "$number" --repo "${{ github.repository }}"
+              gh issue close "$number" --repo "$REPO"
             fi
             exit 0
           fi
@@ -282,7 +436,7 @@ jobs:
           )
 
           if [ -z "$number" ]; then
-            gh issue create --repo "${{ github.repository }}" \
+            gh issue create --repo "$REPO" \
               --title "Drift: latest opik-rigor fails the suite" \
               --label "$LABEL" --body "$body"
             exit 0
@@ -293,7 +447,7 @@ jobs:
           # for the 40th week is not, and 52 "still broken" comments bury the one
           # comment that mattered.
           if ! printf '%s' "$oldbody" | grep -qF "$VERSIONS"; then
-            gh issue comment "$number" --repo "${{ github.repository }}" \
+            gh issue comment "$number" --repo "$REPO" \
               --body "Still failing, against new versions: \`$VERSIONS\` — $DETAIL. [Run]($RUN_URL)"
           fi
-          gh issue edit "$number" --repo "${{ github.repository }}" --body "$body"
+          gh issue edit "$number" --repo "$REPO" --body "$body"
