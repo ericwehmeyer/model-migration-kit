@@ -63,8 +63,7 @@ import random
 from collections.abc import Mapping, Sequence
 
 import pytest
-from opik_rigor import PassRateError, RegressionError, assert_no_regression
-from opik_rigor.judge import SCORE_MAX, SCORE_MIN
+from opik_rigor import SCORE_MAX, SCORE_MIN, PassRateError, RegressionError, assert_no_regression
 
 from model_migration_kit import comparison as C
 from model_migration_kit.contracts import Verdict

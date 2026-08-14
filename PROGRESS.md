@@ -360,51 +360,31 @@ Recorded entering Session 2 unless noted, and re-checked against the tree on
   collide with the ones already recorded, and weighting belongs to
   `comparison.py`. Decide it there, with the statistics in view, rather than in
   the writer.
-- **Invariant 1 is violated at three declared sites, and it was self-inflicted.**
-  The record here was itself wrong until 2026-08-13: it said `judging.py` imported
-  three names from `opik_rigor.judge`. The tree says otherwise, and a gap recorded
-  inaccurately is worse than one not recorded at all, because it reads as handled.
-  What is actually there:
+- ~~**Invariant 1 is violated at declared sites.**~~ **Closed 2026-08-14.** rigor
+  0.1.1 shipped on 2026-08-13 with `SCORE_MIN`, `SCORE_MAX`, `hash_rubric_file`
+  and `hash_rubric_text` re-exported from `opik_rigor/__init__.py` and present in
+  `__all__` — verified by reading `__init__.py` out of the published 0.1.1 wheel,
+  not by trusting the branch. The floor in `pyproject.toml` is now
+  `>=0.1.1,<0.2`, every site imports from the package root, and
+  `grep -rn "from opik_rigor\." src tests` returns nothing.
 
-  | Site | Imported from `opik_rigor.judge` |
-  |---|---|
-  | `src/model_migration_kit/judging.py:47` | `SCORE_MIN`, `hash_rubric_file` |
-  | `tests/test_judging.py:47` | `SCORE_MIN`, `hash_rubric_file` |
-  | `tests/test_comparison.py:52` | `SCORE_MIN`, `SCORE_MAX` |
+  **The site count was wrong twice, in the same direction, and that is the part
+  worth keeping.** This record originally said three names at one site; a
+  mechanical audit corrected it to two names across three sites and said so
+  loudly, because "a gap recorded inaccurately is worse than one not recorded at
+  all — it reads as handled". When the fix was finally applied there were **six**
+  sites: `comparison.py:96` had been reaching into `opik_rigor.judge` in *shipped
+  code* the whole time and was never listed, and two more arrived the same night
+  in new test files, because the pattern the tree already contained is the pattern
+  a new file copies. A hand-maintained list of violation sites decays toward
+  understatement every time somebody writes code. The grep is the record; the
+  table was the mistake.
 
-  So: **two names in shipped code** — `SCORE_MIN` and `hash_rubric_file`, the only
-  two the wheel's own modules reach for — across **three import sites**, the third
-  of which this record never mentioned. `SCORE_MAX` is a test-only import, which
-  matters because a rigor rename of it would break this repository's CI without
-  touching a single user. None of the three is in rigor 0.1.0's `__all__`;
-  `hash_rubric_file` is undocumented, and `SCORE_MIN` appears only in a CHANGELOG
-  bullet saying the range will change. A mechanical audit found this — nobody
-  reading the code did, including the author of the invariant.
-
-  It is kept rather than worked around because both alternatives are worse:
-  re-deriving the score range means a hard-coded `1.0` that goes silently wrong
-  the day the scale moves, and hashing a rubric differently from rigor means the
-  two disagree about whether the instrument changed. Recorded as rigor roadmap
-  item 10 (commit `4bb7935`).
-
-  **Rigor has closed it, additively, and has not released it.** All four names —
-  `SCORE_MIN`, `SCORE_MAX`, `hash_rubric_file`, `hash_rubric_text` — are
-  re-exported from `opik_rigor/__init__.py` and are in `__all__` on rigor's `main`,
-  with a test asserting each is both in `__all__` and the same object as
-  `opik_rigor.judge.<name>` so the two spellings cannot drift apart. That ships in
-  **0.1.1, which is prepared on rigor's `release/0.1.1` branch and not released**:
-  rigor's `__version__` is still `0.1.0`, its tag list has one entry, and
-  `https://pypi.org/simple/opik-rigor/` served only `opik_rigor-0.1.0` files when
-  probed on 2026-08-13. The submodule path still works, so nothing here is broken
-  and nothing here should move yet. When 0.1.1 ships: raise the floor in
-  `pyproject.toml` to `>=0.1.1,<0.2`, fold all three sites into the package-root
-  import, and delete this bullet together with the matching limitation in
-  `CHANGELOG.md`.
-
-  Until then this is a *declared* dependency on unpromised names, not a hidden
-  one — and the reason it matters is that if rigor renames any of them, this
-  project's pinned CI stays green while its users hit the break on upgrade.
-  Nothing in either repo would catch that except the drift canary.
+  The dependency was kept rather than worked around because both alternatives were
+  worse: re-deriving the score range means a hard-coded `1.0` that goes silently
+  wrong the day the scale moves, and hashing a rubric differently from rigor means
+  the two disagree about whether the instrument changed. Recorded as rigor roadmap
+  item 10 (commit `4bb7935`) and closed there.
 - **`tokens_in`/`tokens_out` are always `None`.** rigor's `Adapter` protocol is
   `model_id` plus `complete(str) -> str` and exposes no usage data, so a cost gate
   cannot be built without reaching past the seam. Recorded as roadmap item 9 in

@@ -55,8 +55,7 @@ import json
 import random
 
 import pytest
-from opik_rigor import FakeAdapter
-from opik_rigor.judge import SCORE_MAX, SCORE_MIN
+from opik_rigor import SCORE_MAX, SCORE_MIN, FakeAdapter
 
 from model_migration_kit.comparison import (
     FAIL_MARGIN,

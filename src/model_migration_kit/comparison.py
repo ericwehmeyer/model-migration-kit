@@ -86,6 +86,8 @@ from statistics import median as _median
 from typing import Any
 
 from opik_rigor import (
+    SCORE_MAX,
+    SCORE_MIN,
     EvidenceLog,
     PassRateError,
     RegressionError,
@@ -93,7 +95,6 @@ from opik_rigor import (
     assert_pass_rate,
     wilson_interval,
 )
-from opik_rigor.judge import SCORE_MAX, SCORE_MIN
 
 from .contracts import EVENT_COMPARISON, EVENT_VERDICT, Verdict, utc_now
 from .errors import ArtifactError, DependencyContractError, JudgeConfigError

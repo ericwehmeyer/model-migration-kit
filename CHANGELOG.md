@@ -230,19 +230,14 @@ by a user is a bug report.
   typed objects in its 0.2. Promising that surface now would mean the first thing
   the promise did was prevent taking the improvement. The modules stay importable
   at your own risk; only the CLI and its exit codes are a compatibility promise.
-- **`judging.py` reaches into `opik_rigor.judge` for `SCORE_MIN`, `SCORE_MAX` and
-  `hash_rubric_file`, none of which is in rigor 0.1.0's public surface.** This
-  violates the project's own first invariant, it was found by a mechanical audit
-  rather than by anybody reading the code — including the author of the invariant
-  — and it is kept because both alternatives are worse: re-deriving the score
-  range means a hard-coded floor that goes silently wrong the day the scale
-  moves, and hashing a rubric differently from rigor means the two disagree about
-  whether the instrument changed. It is therefore a *declared* dependency on
-  unpromised names rather than a hidden one, and the reason that matters is
-  narrow and real: if rigor renames any of the three, this project's pinned CI
-  stays green while its users hit the break on upgrade. Recorded upstream as a
-  rigor roadmap item, to be closed by exporting all three from rigor's package
-  root.
+- ~~`judging.py` reaches into `opik_rigor.judge` for names outside rigor's public
+  surface.~~ **Resolved before release.** rigor 0.1.1 exports `SCORE_MIN`,
+  `SCORE_MAX`, `hash_rubric_file` and `hash_rubric_text` from its package root;
+  the dependency floor here is now `>=0.1.1,<0.2` and every site imports from the
+  root. This was a *declared* dependency on unpromised names rather than a hidden
+  one, and the reason it mattered is narrow and real: if rigor had renamed any of
+  them, this project's pinned CI would have stayed green while its users hit the
+  break on upgrade.
 - **`Completion.tokens_in` and `tokens_out` are `None` for every adapter.**
   rigor's `Adapter` protocol is a model id plus `complete(str) -> str` and
   exposes no usage data, so a cost gate cannot be built without reaching past the

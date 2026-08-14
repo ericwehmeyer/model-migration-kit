@@ -37,14 +37,15 @@ from pathlib import Path
 from typing import Any
 
 from opik_rigor import (
+    SCORE_MIN,
     Adapter,
     EvidenceLog,
     JudgeOutputError,
     ModelPinError,
     PinnedJudge,
+    hash_rubric_file,
     require_pinned,
 )
-from opik_rigor.judge import SCORE_MIN, hash_rubric_file
 
 from .contracts import (
     ARTIFACT_SCHEMA_VERSION,

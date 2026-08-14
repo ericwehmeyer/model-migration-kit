@@ -44,6 +44,18 @@ jobs:
       - name: Lint
         run: python -m ruff check src tests
 
+      # Invariant 1 -- this project uses opik-rigor's public surface and nothing
+      # else -- is auditable only through COMPATIBILITY.md's table of what each
+      # module imports. While that table was maintained by hand it was wrong three
+      # times, always in the same direction: it was missing four modules outright
+      # and understated `comparison.py`, which had been reaching into
+      # `opik_rigor.judge` in shipped code and appeared on no list. An inventory
+      # kept by hand decays toward understatement every time somebody adds a file,
+      # because a new file copies the pattern the tree already contains. The tree
+      # is the record now.
+      - name: Dependency surface matches the tree
+        run: python scripts/dependency_surface.py --check
+
       # The step name has always claimed "offline". Nothing checked it: the
       # release contract's `-m "not requires_network"` deselects zero tests
       # (`--strict-markers` does not validate a name used in a `-m` expression),

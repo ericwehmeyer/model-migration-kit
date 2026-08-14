@@ -49,7 +49,7 @@ from statistics import NormalDist
 from typing import Any
 
 import pytest
-from opik_rigor.judge import SCORE_MAX, SCORE_MIN
+from opik_rigor import SCORE_MAX, SCORE_MIN
 
 from model_migration_kit.contracts import Completion, RunHeader, Verdict, utc_now
 from model_migration_kit.errors import ArtifactError, JudgeConfigError

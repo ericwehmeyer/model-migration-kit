@@ -43,8 +43,15 @@ import json
 from pathlib import Path
 
 import pytest
-from opik_rigor import EvidenceLog, FakeAdapter, ModelPinError, PinnedJudge, is_pinned
-from opik_rigor.judge import SCORE_MIN, hash_rubric_file
+from opik_rigor import (
+    SCORE_MIN,
+    EvidenceLog,
+    FakeAdapter,
+    ModelPinError,
+    PinnedJudge,
+    hash_rubric_file,
+    is_pinned,
+)
 
 from model_migration_kit.contracts import (
     ARTIFACT_SCHEMA_VERSION,

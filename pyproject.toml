@@ -30,7 +30,7 @@ classifiers = [
 ]
 dependencies = [
   # The whole point: every statistical primitive is imported, none reimplemented.
-  "opik-rigor>=0.1.0,<0.2",
+  "opik-rigor>=0.1.1,<0.2",
   "jinja2>=3.0",
   "rich>=13.0",
   # tomllib arrived in the stdlib in 3.11, and this floor is 3.10 -- which CI

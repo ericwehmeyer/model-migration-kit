@@ -71,16 +71,20 @@ table — so the completeness claim is checkable rather than asserted.
 
 | Module | Imported from `opik_rigor` |
 |---|---|
-| `src/model_migration_kit/cli.py` | `Adapter`, `AdapterError`, `AnthropicAdapter`, `EvidenceLog`, `FakeAdapter`, `OpenAICompatAdapter`, `RigorError`, `SampleTimeout` — **plus** `__version__`, imported as `RIGOR_VERSION` |
-| `src/model_migration_kit/comparison.py` | `EvidenceLog`, `PassRateError`, `RegressionError`, `assert_no_regression`, `assert_pass_rate`, `wilson_interval` |
+| `src/model_migration_kit/cli.py` | `Adapter`, `AdapterError`, `AnthropicAdapter`, `EvidenceLog`, `FakeAdapter`, `OpenAICompatAdapter`, `RigorError`, `SampleTimeout`, `__version__` |
+| `src/model_migration_kit/comparison.py` | `EvidenceLog`, `PassRateError`, `RegressionError`, `SCORE_MAX`, `SCORE_MIN`, `assert_no_regression`, `assert_pass_rate`, `wilson_interval` |
 | `src/model_migration_kit/demo.py` | `AdapterError`, `EvidenceLog`, `FakeAdapter` |
-| `src/model_migration_kit/judging.py` | `Adapter`, `EvidenceLog`, `JudgeOutputError`, `ModelPinError`, `PinnedJudge`, `require_pinned` — **plus** `SCORE_MIN` and `hash_rubric_file` from `opik_rigor.judge` |
-| `src/model_migration_kit/report.py` | `EvidenceLog` — **plus** the module itself (`import opik_rigor`), read for `__version__` |
+| `src/model_migration_kit/judging.py` | `Adapter`, `EvidenceLog`, `JudgeOutputError`, `ModelPinError`, `PinnedJudge`, `SCORE_MIN`, `hash_rubric_file`, `require_pinned` |
+| `src/model_migration_kit/report.py` | `EvidenceLog` -- **plus** the module itself (`import opik_rigor`), read for `__version__` |
 | `src/model_migration_kit/runner.py` | `Adapter`, `EvidenceLog`, `sample` |
+| `tests/fixtures/make_fixtures.py` | `EvidenceLog`, `FakeAdapter` |
 | `tests/test_cli.py` | `AdapterError`, `EvidenceError`, `EvidenceLog`, `FakeAdapter`, `JudgeOutputError`, `ModelPinError`, `PassRateError`, `RegressionError`, `RigorError`, `RubricDriftError`, `SampleTimeout` |
-| `tests/test_comparison.py` | `SCORE_MAX`, `SCORE_MIN` from `opik_rigor.judge` |
-| `tests/test_judging.py` | `EvidenceLog`, `FakeAdapter`, `ModelPinError`, `PinnedJudge`, `is_pinned`, and `JudgeOutputError` — plus `SCORE_MIN`, `hash_rubric_file` from `opik_rigor.judge` |
-| `tests/test_report.py` | `EvidenceLog`, `wilson_interval` — **plus** the module itself (`import opik_rigor`), read for `__version__` |
+| `tests/test_comparison.py` | `SCORE_MAX`, `SCORE_MIN` |
+| `tests/test_comparison_regressions.py` | `PassRateError`, `RegressionError`, `SCORE_MAX`, `SCORE_MIN`, `assert_no_regression` |
+| `tests/test_judging.py` | `EvidenceLog`, `FakeAdapter`, `JudgeOutputError`, `ModelPinError`, `PinnedJudge`, `SCORE_MIN`, `hash_rubric_file`, `is_pinned` |
+| `tests/test_property_based.py` | `FakeAdapter`, `SCORE_MAX`, `SCORE_MIN` |
+| `tests/test_report.py` | `EvidenceLog`, `wilson_interval` -- **plus** the module itself (`import opik_rigor`), read for `__version__` |
+| `tests/test_report_scale.py` | `EvidenceLog`, `FakeAdapter` |
 | `tests/test_runner.py` | `EvidenceLog`, `FakeAdapter`, `PassRateError`, `assert_pass_rate`, `sample_of` |
 
 Enumerated by parsing every `.py` file rather than by grepping line starts,
