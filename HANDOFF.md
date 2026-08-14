@@ -25,26 +25,81 @@ imported from it, none reimplemented. Apache-2.0, personal repo.
 3. **`src/model_migration_kit/contracts.py`** and **`errors.py`** — the frozen seams.
    Read them before writing anything that touches a golden set or an artifact.
 
-## Where the build stands
+## Where the build stands (2026-08-13, ~23:00)
 
-Sessions 0 and 1 are done and committed. Session 0 is the scaffold, Apache-2.0
-license, CI, and frozen contracts (`45b6567`). Session 1 is the offline data
-path: `goldenset.py` and `runner.py`, with tests written by agents who did not
-write the modules.
+**Sessions 0 through 3 are complete, committed and pushed. 675 tests green, ruff
+clean.** Session 4 (release) is partly done and is the remaining work.
 
-**Next up is Session 2: judgment and verdict** — `judging.py` and
-`comparison.py`. Its exit criteria are in the build plan, section 2, and its
-module contract was derived and adversarially stress-tested before any code; see
-PROGRESS.md for what was frozen and why.
+Everything builds and runs. The headline check, which you should run first
+because it proves the whole pipeline in two seconds:
 
-Sessions 3 and 4 also have frozen contracts now. Session 4 is not in the build
-plan — it is the release phase the plan defers into, specified because the
-sibling project improvised it and paid for that. Two things it established that
-are worth knowing early: `model-migration-kit`, `model_migration_kit` and `migkit` were all
-unclaimed on PyPI and TestPyPI when checked on 2026-08-13 (**re-check before
-tagging** — the sibling checked after tagging and ate a 34-file rename), and the
-demo's golden set must live inside the package rather than at the repo root, or
-it ships in nobody's wheel while every test still passes.
+```
+cd C:\Users\ewehm\repos\migration-kit
+.\.venv\Scripts\python.exe -m model_migration_kit.cli demo --out demo.html
+```
+
+Expect **exit 1** (NO-GO — that is the demo working; it exists to show the tool
+refusing an unsafe migration), about 2 seconds, and a self-contained HTML report
+carrying a red FAKE MODELS band. Exit 0 or 2 there means something regressed.
+
+| Module | State |
+|---|---|
+| `goldenset.py`, `runner.py` | Session 1, complete |
+| `judging.py`, `comparison.py` | Session 2, complete |
+| `report.py`, `cli.py`, `demo.py` | Session 3, complete |
+| `__init__.py` | written, `__all__` empty by decision |
+| `scripts/verify_release.py` | 15 release checks, executable |
+| `.github/workflows/{ci,drift-canary}.yml` | CI plus a weekly drift canary |
+
+**The package was renamed** to `model-migration-kit` / `model_migration_kit`
+(console script still `migkit`). The GitHub repo is renamed too and is **private**
+at <https://github.com/ericwehmeyer/model-migration-kit>. The local checkout
+directory is still called `migration-kit` and that is deliberate — renaming it
+would invalidate every path in these docs for no packaging benefit.
+
+## What is left, in order
+
+1. **`readme-pip-install` and `readme-commands` in `scripts/verify_release.py`
+   fail on prose, not on a defect.** They split the README on whitespace and read
+   `install from a checkout: # Windows: pip install` as package names. The README
+   is correct. Fix the parser to read fenced code blocks. This is the only known
+   *wrong* thing in the tree.
+2. **Version bump** `0.1.0.dev0` → `0.1.0` in `pyproject.toml` and
+   `__init__.py`. `verify_release.py` blocks on this deliberately, and it is a
+   release act — do it when actually releasing, not before.
+3. **Session 4 phases 0 and 5 onward** in `docs/session-4-release-contract.md`:
+   re-check the name on PyPI (it was free on 2026-08-13, but check again — the
+   sibling checked after tagging and ate a 34-file rename), make the repo public,
+   register trusted publishers on **both** TestPyPI and PyPI (separate sites,
+   separate registrations, different environment names — the sibling lost three
+   attempts to this), TestPyPI dry run, then tag and release.
+4. **Retire the last invariant-1 violation.** `judging.py` imports `SCORE_MIN`,
+   `SCORE_MAX` and `hash_rubric_file` from `opik_rigor.judge` because they were
+   not public. **rigor has since exported them** (merged, unreleased). When rigor
+   cuts that release and this project's bound moves, change the imports to the
+   package root and delete the note in PROGRESS.md's known gaps.
+5. **Roadmap Phase 5** — a PR-proposing test agent — has a full build plan at
+   `C:\Users\ewehm\repos\campaign\plans\phase-5-pr-agent-build-plan.md`. Not
+   started, and estimated at six weeks of nights rather than the roadmap's three.
+
+## Things that will bite you, all learned the hard way tonight
+
+- **The wheel is not your source tree.** Three separate variants of one bug
+  appeared: `.gitignore` swallowing the demo data, a CI job using `pip install -e .`
+  so it could never notice, and — subtlest — `importlib.resources` *multiplexing*
+  a namespace package so the developer's own `src/` filled in what the wheel had
+  omitted. `scripts/verify_release.py` now probes a bare subprocess with `-S`.
+  Never verify packaging from an environment that has the source on its path.
+- **Agent worktrees are cut from the session's working directory**, which was
+  `opik-rigor`. Agents told to work on this project were handed worktrees of the
+  wrong repo. Tell them the repo path explicitly and to make their own worktree.
+- **The venv's editable install points at the main tree**, so a worktree agent's
+  tests import the main tree's package, not their own copy. Do not rename the
+  package directory while an agent is running tests.
+- **A mechanical rename sweep will rewrite test data that merely looks like the
+  thing being renamed.** It changed the expected values in a PEP 503 test whose
+  inputs are deliberately odd spellings. The suite caught it; a sweep run without
+  the suite behind it would have shipped it.
 
 ## Environment
 
@@ -119,9 +174,24 @@ record, including a retraction of a claim that project got wrong.
 
 ## Not yet done, deliberately
 
-- No GitHub remote. The repo is local only; nothing is pushed.
-- The package name has not been checked on PyPI. Per the plan, that happens in
-  Phase 0 of publishing, not now. **Check it before the first release** — the
-  previous project discovered its intended import name was already taken, after
-  tagging.
-- `src/model_migration_kit/__init__.py` does not exist. Write it last.
+- **Nothing is published.** No PyPI release, no TestPyPI upload, no public repo,
+  no announcement anywhere. The GitHub repo exists and is private.
+- The version is still `0.1.0.dev0`, on purpose. It moves at release time.
+- No public Python API. `__all__` is empty and the reasoning is in `__init__.py`.
+
+## The evidence that this method works, since you will be asked to pay for it
+
+Session 1 measured all three roles on the same code. Writing the modules and
+smoke-testing them found 2 defects. An independent conformance reviewer found 10
+more, two of which would have produced *wrong verdicts* rather than visible
+errors. The test authors, who never saw the code run, found a third class: an
+unreachable validation branch, and an over-broad guard added while fixing a
+review finding.
+
+Session 2 went further and stress-tested the *plan* by simulation before any code
+existed. It found that the draft verdict logic would have given **GO to a model
+that crashes and NO-GO to one that merely answered badly** — identical pass
+counts, opposite verdicts, favouring the model that failed — and that the power
+rule certified a run as adequate at n=25 where real power against a ten-point
+drop is 33.9%. Both were corrected in `docs/build-plan.md` §6 before a line was
+written against them. Nothing found them by reading.
