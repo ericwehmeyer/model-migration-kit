@@ -26,7 +26,11 @@ htmlcov/
 !src/model_migration_kit/data/*.jsonl
 .migkit/
 reports/
+# Both spellings. The demo writes `migkit-demo-report.html` (cli.py:85), which
+# `*.report.html` misses by a hyphen -- and a generated report was committed and
+# shipped in an sdist because of exactly that gap.
 *.report.html
+*-report.html
 
 .DS_Store
 
