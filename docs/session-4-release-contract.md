@@ -471,10 +471,40 @@ change the `CHANGELOG` "Known limitations" line that says the package is
 unpublished, and record the publication date in `PROGRESS.md`.
 
 **Exit criterion:** clean-venv install from the real index succeeds; `migkit demo`
-exits 0; **elapsed time is recorded and is under 120 seconds**, because that number
-is the plan's §5 definition of done and the README will be asserting it; `pip show`
-reports `0.1.0` and `Apache-2.0`; the docs-match-reality commit is pushed and CI is
-green on it.
+exits **1**; **elapsed time is recorded and is under 120 seconds**, because that
+number is the plan's §5 definition of done and the README will be asserting it;
+`pip show` reports `0.1.0` and `Apache-2.0`; the docs-match-reality commit is
+pushed and CI is green on it.
+
+> **Amendment, 2026-08-13.** This criterion said `migkit demo` exits **0**. It
+> does not and must not: the bundled demo exists to show the tool *refusing* an
+> unsafe migration, so a correct run is a NO-GO and exits 1. Every other artifact
+> in the project already says so — `ci.yml`'s demo job asserts the code is exactly
+> 1, the README's transcript shows 1, and `HANDOFF.md` warns that 0 or 2 means
+> something regressed. This document was the only place that disagreed, and it is
+> the document a release is run from. Read literally, it would have had somebody
+> treat the correct outcome as a failed release, or worse, "fix" the demo until it
+> returned 0.
+
+> **Amendment, 2026-08-13 — the README is frozen at upload, so half of this phase
+> is in the wrong place.** PyPI renders a project page's long description from the
+> *uploaded metadata*, and metadata cannot be edited after upload without cutting a
+> new version. So "uncomment the PyPI badge" and "change any 'not yet published'
+> wording", done here in Phase 9, will show on GitHub and **never** on
+> `https://pypi.org/project/model-migration-kit/0.1.0/`. Left as written, the
+> project page for the first release would permanently tell visitors the package is
+> not published, and cite a 404 as proof.
+>
+> Therefore: **everything the README must say correctly, it must say before the
+> upload in Phase 8**, not after it. The same applies with more force to `NOTICE`
+> and `LICENSE`, which travel *inside* the wheel. What genuinely belongs in Phase 9
+> is only what lives outside the artifact: the GitHub-side badge state, the
+> `PROGRESS.md` publication date, and the `CHANGELOG` limitation line — none of
+> which PyPI renders for a version already uploaded.
+>
+> The general rule this is an instance of, worth carrying to the next release: ask
+> of every Phase 9 edit whether it is inside the artifact or outside it. Inside is
+> Phase 8's problem and is permanent.
 
 ---
 
@@ -976,3 +1006,23 @@ objects land underneath them. The cost is that anyone embedding the verdict logi
 in their own harness is doing something unsupported. Given that the plan's
 definition of done is entirely about the CLI, this is a genuine fork and not an
 obvious one.
+
+> **Resolved, 2026-08-13: CLI-only.** `src/model_migration_kit/__init__.py` was
+> written in Phase 2 with `__all__ = []` and the reasoning recorded in the file
+> itself. The re-export surface specified in §2 was therefore never built, and
+> §2's list of names is a description of the road not taken.
+>
+> This amendment exists because the decision was taken in code and left unrecorded
+> here for a day, during which this document said one thing and the tree did
+> another. That is the failure mode this project spends its evenings on — a gap you
+> have recorded is not a gap you have closed, and a decision you have taken is not
+> a decision you have recorded. An audit found it by diffing the contract against
+> the tree, which is exactly how it should have been found and later than it should
+> have been.
+>
+> Consequences that follow and are now binding: §2's three "the re-export surface
+> is importable" tests are vacuous against an empty `__all__` and are not worth
+> writing; §2 rule 4's **import-purity** test is not vacuous, is the only part of
+> §2 still load-bearing, and must exist — importing the package must not drag in
+> `jinja2` or `rich`, nor the `.cli` or `.report` submodules. The only compatibility
+> promise v0.1 makes is the CLI and its exit codes.
