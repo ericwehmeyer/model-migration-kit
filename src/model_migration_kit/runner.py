@@ -49,7 +49,7 @@ from .contracts import (
     artifact_stem,
     utc_now,
 )
-from .errors import ArtifactError
+from .errors import ArtifactError, HeaderlessArtifactError
 from .goldenset import GoldenSet
 
 #: Five draws per item by default. A migration decision needs a distribution per
@@ -166,7 +166,7 @@ class RunArtifact:
                 ) from None
 
         if not headers:
-            raise ArtifactError(
+            raise HeaderlessArtifactError(
                 f"{target} has no header record, so there is nothing to say which "
                 f"model or golden set produced it"
             )
@@ -340,30 +340,47 @@ def run_goldenset(
     )
 
     done: dict[str, int] = {}
+    headerless = False
     if target.exists() and target.stat().st_size > 0:
-        existing = RunArtifact.load(target)
-        # Checked even when overwriting. `fresh=True` is the remedy this module's
-        # own error messages recommend, and two model ids that differ only in
-        # characters the filename slug flattens (`gpt/4o` and `gpt-4o`) resolve to
-        # one path -- so the recommended remedy would silently delete a baseline
-        # that cost real money, and the operator would find out at compare time.
-        _require_resumable(existing.header, header, target)
-        if fresh:
-            target.unlink()
+        try:
+            existing = RunArtifact.load(target)
+        except HeaderlessArtifactError:
+            # A file with bytes in it but no header record at all. The writer
+            # appends the header before anything else, so this is a process
+            # killed before its first record landed -- the zero-byte case with a
+            # few bytes on it, holding nothing attributable to any model. It used
+            # to be a dead end in both directions: resuming refused it for want
+            # of a header, and `fresh=True` refused it too, because the load
+            # happens before `fresh` is consulted. The remedy every error message
+            # in this module recommends could not be applied to it, and the
+            # operator had to delete the file by hand.
+            headerless = True
         else:
-            # Every recorded draw counts against the budget, including the ones
-            # that errored. A failed draw is a draw: if model B times out on one
-            # item in five, that is a fact about model B, and re-drawing until the
-            # timeouts disappeared would launder an unreliable model into a
-            # reliable one. The cost of that choice is real and is recorded in
-            # PROGRESS.md: a provider outage that fails every draw bakes into the
-            # artifact, and the only remedy in v0.1 is fresh=True.
-            done = existing.counts()
-    elif target.exists():
-        # Zero bytes: a run killed between creating the file and finishing its
-        # first header write, or a heal that truncated a lone fragment. There is
-        # nothing to resume and nothing to lose, so start it rather than making
-        # the crash-recovery path produce a state recovery cannot handle.
+            # Checked even when overwriting. `fresh=True` is the remedy this
+            # module's own error messages recommend, and two model ids that differ
+            # only in characters the filename slug flattens (`gpt/4o` and
+            # `gpt-4o`) resolve to one path -- so the recommended remedy would
+            # silently delete a baseline that cost real money, and the operator
+            # would find out at compare time.
+            _require_resumable(existing.header, header, target)
+            if fresh:
+                target.unlink()
+            else:
+                # Every recorded draw counts against the budget, including the
+                # ones that errored. A failed draw is a draw: if model B times out
+                # on one item in five, that is a fact about model B, and
+                # re-drawing until the timeouts disappeared would launder an
+                # unreliable model into a reliable one. The cost of that choice is
+                # real and is recorded in PROGRESS.md: a provider outage that
+                # fails every draw bakes into the artifact, and the only remedy in
+                # v0.1 is fresh=True.
+                done = existing.counts()
+    if headerless or (target.exists() and target.stat().st_size == 0):
+        # Zero bytes, or bytes that never became a header: a run killed between
+        # creating the file and finishing its first header write, or a heal that
+        # truncated a lone fragment. There is nothing to resume and nothing to
+        # lose, so start it rather than making the crash-recovery path produce a
+        # state recovery cannot handle.
         target.unlink()
 
     writer = _ArtifactWriter(target)
@@ -573,6 +590,24 @@ def _require_resumable(existing: RunHeader, wanted: RunHeader, target: Path) -> 
         )
 
 
+def _parses_as_record(tail: bytes) -> bool:
+    """Whether a newline-less final line is a whole record, by the reader's own test.
+
+    Deliberately the *same* question `RunArtifact.load` asks of that line and no
+    stricter: it decodes, parses, and requires a JSON object. It does not check
+    the `record` field, because `load` refuses an unknown record type outright
+    rather than treating it as torn -- a tail that parses but names no known kind
+    is corruption to be preserved and reported, not a fragment to be swallowed.
+
+    Any exception is a "no". A tail can be invalid UTF-8 as easily as invalid
+    JSON when a write is cut at a byte boundary inside a multi-byte character.
+    """
+    try:
+        return isinstance(json.loads(tail.decode("utf-8")), dict)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        return False
+
+
 class _ArtifactWriter:
     """Append-only JSONL writer, one whole line per write, fsynced.
 
@@ -586,18 +621,35 @@ class _ArtifactWriter:
         self._heal_torn_tail()
 
     def _heal_torn_tail(self) -> None:
-        """Drop a trailing partial line before appending anything after it.
+        """Make a newline-less tail safe to append after -- by finishing it or dropping it.
 
-        A run killed mid-write leaves a fragment with no newline at the end of the
-        file. Reading tolerates that -- the fragment is dropped. Appending after it
-        does not: the next record would be concatenated onto the fragment, and the
-        result is one malformed line *in the middle* of the file, which is
-        corruption the reader is right to refuse. So the fragment is truncated
-        here, at the one moment it is provably worthless.
+        A run killed mid-write leaves a final line with no newline. Appending after
+        it as-is is not an option either way: the next record would be
+        concatenated onto it, and the result is one malformed line *in the middle*
+        of the file, which is corruption the reader is right to refuse.
+
+        Which of the two repairs applies is decided by the same question the
+        reader asks -- does the tail parse? -- and it has to be, because the two
+        used to disagree and the disagreement lost data. `RunArtifact.load` parses
+        a newline-less final line and, if it succeeds, *returns the record*: only
+        on a parse failure does it treat the line as torn. This function then
+        truncated it unconditionally. So an artifact missing only its final
+        newline was read as complete, counted as done, and then had its last
+        completion silently deleted before the resume appended anything -- the
+        resume returned with one fewer completion than it started with, no
+        warning, no second header, and nothing re-drawn to replace it. Reachable
+        from a partial `os.write`, and from any tool that trims trailing
+        whitespace.
+
+        Truncation is not the conservative choice it looks like. A JSON object cut
+        short essentially never parses -- the closing brace is required -- so a
+        tail that parses is the complete content of a record whose newline did not
+        make it to disk, and the honest repair is to supply the newline. A tail
+        that does not parse never was a record, and is truncated as before.
 
         This is the only write in this module that is not an append, and it is
         confined to bytes that were never a complete record. Nothing that was ever
-        readable is removed.
+        readable is removed -- which is what the sentence always claimed.
         """
         if not self._path.exists():
             return
@@ -611,7 +663,11 @@ class _ArtifactWriter:
                 return
             data = self._path.read_bytes()
             cut = data.rfind(b"\n") + 1  # 0 when the whole file is one fragment
-            handle.truncate(cut)
+            if _parses_as_record(data[cut:]):
+                handle.seek(size)
+                handle.write(b"\n")
+            else:
+                handle.truncate(cut)
             handle.flush()
             os.fsync(handle.fileno())
 

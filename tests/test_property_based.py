@@ -287,35 +287,50 @@ def test_reordering_the_keys_within_a_record_never_changes_the_content_hash():
         )
 
 
-def test_reordering_the_tags_within_a_record_does_not_change_the_content_hash():
-    """Tags are a *set* everywhere they are consumed, so their order is formatting.
+def test_reordering_the_tags_within_a_record_is_a_content_change():
+    """Tag order is content, and this pins the decision that made it so.
 
-    ``_parse_tags`` strips them, rejects duplicates and rejects empties;
-    ``GoldenSet.stats`` counts them order-independently; the report prints a
-    ``sorted`` tag histogram. Nothing *gates* on the order in which two tags were
-    typed. The content hash exists precisely so that a change with no downstream
-    meaning does not force an operator to re-run a baseline that cost real money,
-    which is the same argument the module docstring makes for ignoring key order.
+    This test was written the other way round, as a known failure: tags are
+    consumed as a *set* everywhere that gates -- ``_parse_tags`` strips them,
+    rejects duplicates and rejects empties, ``GoldenSet.stats`` counts them
+    order-independently, the report prints a ``sorted`` histogram -- so reordering
+    them looked like formatting, and the content hash exists precisely so that a
+    change with no downstream meaning cannot force an operator to re-run a
+    baseline that cost real money.
 
-    KNOWN FAILURE, and the mildest of the three in this file. ``GoldenItem.to_dict``
-    emits ``tags`` as a list in file order, so ``["math", "code"]`` and
-    ``["code", "math"]`` are two different golden sets and two different baselines.
-    The honest counter-argument is that a JSON array *is* ordered, and that
-    ``report.py`` line 426 renders the tags of an item with ``" ".join`` in that
-    order -- so tag order is visible in the document, unlike key order, which is
-    visible nowhere. Whichever way it is settled, it should be settled explicitly:
-    either sort tags in ``to_dict`` and say so, or say in the ``GoldenSet``
-    docstring that tag order is content. Right now the module documents itself as
-    blind to formatting and is not blind to this.
+    It was settled the other way, on the one place the two differ.
+    ``report.py:491`` renders an item's own tags with ``" ".join`` **in file
+    order**, so ``["math", "code"]`` and ``["code", "math"]`` produce two
+    different documents. Key order, which the hash is deliberately blind to, is
+    visible nowhere. A hash blind to a difference a reader can see would let two
+    distinguishable golden sets claim to be the same evidence, and that is a worse
+    failure than an unnecessary re-run: the re-run costs money, the collision
+    costs the audit trail.
+
+    So this asserts the *current* behaviour deliberately, rather than as a
+    rationalisation of it. Reversing it later is a breaking change to every
+    recorded hash, including the demo set's, which is pasted in the README -- the
+    other reason to write the decision down rather than leave a failing test for
+    somebody to eventually delete. The same decision is recorded in ``GoldenSet``'s
+    docstring, for readers who never open this file.
     """
     label = "tag-order"
     for seed, rng in _cases(label, CASES_PARSE):
         tags = rng.sample(["math", "code", "tone", "safety"], 3)
+        rotated = tags[1:] + tags[:1]
         item = {"id": "a", "input": "x", "tags": tags}
-        rotated = {"id": "a", "input": "x", "tags": tags[1:] + tags[:1]}
         assert (
-            GoldenSet.parse(_blob([item])).hash == GoldenSet.parse(_blob([rotated])).hash
-        ), _repro(label, seed, f"{tags} and {tags[1:] + tags[:1]} are different sets")
+            GoldenSet.parse(_blob([item])).hash
+            != GoldenSet.parse(_blob([{"id": "a", "input": "x", "tags": rotated}])).hash
+        ), _repro(label, seed, f"{tags} and {rotated} hashed the same")
+        # The other half of the decision, and the half that would actually break:
+        # the hash must still be blind to everything it does claim to be blind to.
+        # Same tags in the same order, reached through a different *key* order, is
+        # the case this must not have started catching by accident.
+        assert (
+            GoldenSet.parse(_blob([item])).hash
+            == GoldenSet.parse(_blob([{"tags": tags, "input": "x", "id": "a"}])).hash
+        ), _repro(label, seed, "key order changed the hash")
 
 
 def test_a_duplicate_id_is_rejected_wherever_in_the_file_it_appears():

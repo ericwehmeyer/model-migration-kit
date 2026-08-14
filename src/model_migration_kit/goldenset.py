@@ -54,6 +54,21 @@ class GoldenSet:
     contradicted the convention ``contracts.py`` states for exactly this purpose:
     the hash is of content, not of a formatting decision.
 
+    **Tag order is content, not formatting.** ``["math", "code"]`` and
+    ``["code", "math"]`` are two different golden sets with two different hashes.
+    This is the one place the paragraph above stops applying, and it reads as an
+    oversight unless it is written down, so: tags are consumed as a set everywhere
+    that *gates* -- stripped and de-duplicated here, counted order-independently by
+    :meth:`stats`, rendered as a ``sorted`` histogram in the report -- but
+    ``report.py`` renders an individual item's own tags with ``" ".join`` in file
+    order, so the order is visible in the document a reviewer signs off. A hash
+    blind to a difference a reader can see would let two distinguishable sets
+    claim to be the same evidence, and that costs the audit trail where an
+    unnecessary re-run only costs money. Alphabetising a tag list therefore does
+    invalidate a baseline, deliberately. Reversing this would change every hash
+    ever recorded, including this project's own demo set, whose value is pasted in
+    the README.
+
     ``file_hash`` is the **provenance** identity: sha256 of the file's bytes with
     CRLF normalised to LF. It answers the different question "is this the same
     file I read last time?", which is what a change-control reviewer asks. Both

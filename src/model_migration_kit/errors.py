@@ -31,6 +31,24 @@ class ArtifactError(MigrationKitError):
     """
 
 
+class HeaderlessArtifactError(ArtifactError):
+    """Raised when an artifact file exists but records no header at all.
+
+    A subclass rather than just a message, because this is the one artifact
+    failure a caller can act on without an operator. The writer appends the
+    header before anything else, so a file with no header is a process killed
+    before its first record landed: it holds nothing that was ever attributable
+    to a model or a golden set, and nothing anybody paid for.
+    :func:`~model_migration_kit.runner.run_goldenset` therefore restarts over it,
+    exactly as it already did over a zero-byte file.
+
+    Everything else ``ArtifactError`` covers is the opposite -- evidence that
+    something is wrong with content that may have cost real money -- which is why
+    this stays narrow rather than becoming a general "unreadable" case. Anyone
+    catching ``ArtifactError`` still catches this.
+    """
+
+
 class JudgeConfigError(MigrationKitError):
     """Raised when the judge configuration is invalid or has changed.
 
