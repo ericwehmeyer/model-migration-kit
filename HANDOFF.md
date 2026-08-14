@@ -166,7 +166,11 @@ would invalidate every path in these docs for no packaging benefit.
    attempts to. Re-check the name on the PEP 503 `/simple/` index, not the JSON
    endpoint: JSON 404s both for an unregistered name and for one registered and
    never uploaded to, and only `/simple/` tells those apart. All four probes were
-   404 on 2026-08-13; re-run on the day you tag. Then make the repo public,
+   404 on 2026-08-13 and **all eight were 404 again on 2026-08-14** — four
+   spellings (`model-migration-kit`, `model_migration_kit`, `migkit`,
+   `modelmigrationkit`) × both indexes, so the name is still free on PyPI *and*
+   TestPyPI. Re-run on the day you tag anyway; it costs seconds and the failure it
+   prevents is unrecoverable. Then make the repo public,
    register pending publishers on **both** TestPyPI and PyPI (separate sites,
    separate logins, different environment names), TestPyPI dry run, tag, release.
    Note the dry run is one-shot per version: TestPyPI burns a filename exactly
