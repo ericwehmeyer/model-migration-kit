@@ -25,13 +25,28 @@ judge does not produce a cautious verdict; it produces a meaningless one.
 the name -- the judges hash, the resume key, and rigor's own rubric-drift lookup,
 which filters ``judge.init`` records by name alone. Two judges sharing a name make
 all three wrong simultaneously.
+
+**Judging is parallel, and the file it writes does not know that.** Grading was
+strictly serial while sampling had a thread pool, which is not a small asymmetry
+at the scale this tool recommends: the README asks for roughly 200 completions per
+side, and two sides under one judge is about 460 provider calls, so at a second per
+call that is 460 seconds of unparallelisable judging on top of 92 seconds of
+sampling. ``judge_artifact`` now takes a ``concurrency``, and the one property that
+may not move is that the artifact is byte-identical whatever it is set to.
+:func:`_graded_in_order` is what buys that: work is submitted in the order
+``pending`` lists it and consumed in the same order, through a window rather than
+all at once, so the writer sees exactly the sequence the serial loop saw. The
+records land in one order, the calls happen in another, and only the second one
+depends on how many threads there are.
 """
 
 from __future__ import annotations
 
 import json
 import os
-from collections.abc import Callable, Iterable, Mapping
+from collections import deque
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -518,18 +533,35 @@ def judge_artifact(
     out_dir: str | Path = ".",
     judged: str | Path | None = None,
     fresh: bool = False,
+    concurrency: int = 1,
 ) -> JudgedArtifact:
     """Grade every completion in ``artifact`` with every judge in ``panel``.
 
     Resumable on ``(judge, item_id, sample_index)``: a judging pass killed halfway
     picks up where it stopped rather than paying for the graded half twice.
 
+    Args:
+        concurrency: How many judge calls may be in flight. ``1`` grades in this
+            thread and submits nothing. Above that, calls overlap but the records
+            are written in the order a serial pass would have written them, so the
+            judged artifact is byte-identical at every setting -- see
+            :func:`_graded_in_order` and the module docstring. This is a width on
+            the *provider*, not on the writer: every record is still appended and
+            fsynced one at a time from this thread, which is why a run against a
+            zero-latency adapter sees no speedup at all and a run against a real
+            provider sees most of one.
+
     Raises:
         ArtifactError: if the golden set is not the one the run used.
         JudgeReliabilityError: if a judge failed to parse over its tolerance. The
             pass completes first, so the count in the message is the true one and
             not the count at the moment the threshold was crossed.
+        ValueError: if ``concurrency`` is not an integer >= 1. Refused rather than
+            clamped, as ``run_goldenset`` refuses the same thing: a clamped setting
+            is a silently different setting.
     """
+    if not isinstance(concurrency, int) or isinstance(concurrency, bool) or concurrency < 1:
+        raise ValueError(f"concurrency must be an integer >= 1, got {concurrency!r}")
     if goldenset.hash != artifact.header.goldenset_hash:
         raise ArtifactError(
             f"golden set {goldenset.hash[:16]} is not the one this run used "
@@ -584,14 +616,13 @@ def judge_artifact(
     graded: dict[str, int] = {}
     parse_failures: dict[str, int] = {}
     imputed: dict[str, int] = {}
-    for judge, completion in pending:
-        record = _grade(judge, completion, inputs.get(completion.item_id, ""))
+    for record in _graded_in_order(pending, inputs, concurrency):
         writer.append({"record": _RECORD_VERDICT, **record.to_dict()})
-        graded[judge.name] = graded.get(judge.name, 0) + 1
+        graded[record.judge] = graded.get(record.judge, 0) + 1
         if record.parse_failure:
-            parse_failures[judge.name] = parse_failures.get(judge.name, 0) + 1
+            parse_failures[record.judge] = parse_failures.get(record.judge, 0) + 1
         if record.imputed:
-            imputed[judge.name] = imputed.get(judge.name, 0) + 1
+            imputed[record.judge] = imputed.get(record.judge, 0) + 1
 
     result = JudgedArtifact.load(target)
     evidence.append(
@@ -613,6 +644,54 @@ def judge_artifact(
         if records and failures / len(records) > tolerance:
             raise JudgeReliabilityError(name, failures, len(records), tolerance)
     return result
+
+
+#: How far ahead of the writer :func:`_graded_in_order` may run, as a multiple of
+#: the pool width. Two is enough to keep every worker fed while one result is being
+#: fsynced, and small enough that a panel grading 450,000 completions holds a
+#: handful of verdicts rather than all of them -- the whole point of not calling
+#: ``executor.map``, which submits the entire iterable up front.
+_WINDOW_FACTOR = 2
+
+
+def _graded_in_order(
+    pending: Sequence[tuple[PinnedJudge, Any]],
+    inputs: Mapping[str, str],
+    concurrency: int,
+) -> Iterator[JudgeRecord]:
+    """Grade ``pending`` with ``concurrency`` calls in flight, yielding in order.
+
+    The yielded order is ``pending``'s order, always, which is what makes the
+    judged artifact byte-identical at every concurrency: the writer downstream sees
+    the same sequence a serial pass produced, and the only thing that changed is
+    when each provider call happened. Verified rather than asserted -- the test
+    hashes the artifact at 1, 2, 4, 8, 16, 32 and 64 and demands one digest.
+
+    A sliding window rather than ``executor.map``: at the scale this exists for
+    (450,000 completions is 2.2 GB of evidence) submitting everything up front
+    would allocate a future and a queued call per completion, which trades one
+    memory problem for another.
+
+    An exception from a grade propagates out of ``.result()`` here, exactly as it
+    propagated out of the serial loop. Leaving the ``with`` block then waits for
+    the calls already in flight; at most ``concurrency * _WINDOW_FACTOR`` of them
+    exist, and none of their results is written, because the writer is downstream
+    of this generator.
+    """
+    if concurrency == 1:
+        for judge, completion in pending:
+            yield _grade(judge, completion, inputs.get(completion.item_id, ""))
+        return
+    with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="migkit-judge") as pool:
+        window: deque[Future[JudgeRecord]] = deque()
+        for index, (judge, completion) in enumerate(pending):
+            window.append(
+                pool.submit(_grade, judge, completion, inputs.get(completion.item_id, ""))
+            )
+            if index >= concurrency * _WINDOW_FACTOR:
+                yield window.popleft().result()
+        while window:
+            yield window.popleft().result()
 
 
 def _grade(judge: PinnedJudge, completion: Any, item_input: str) -> JudgeRecord:

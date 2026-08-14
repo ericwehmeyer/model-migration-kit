@@ -57,7 +57,12 @@ from .contracts import Verdict, hash_file
 from .errors import ArtifactError, ConfigError, JudgeConfigError, MigrationKitError
 from .goldenset import GoldenSet
 from .judging import JudgeConfig, JudgeSpec, judge_artifact
-from .report import ReportModel, render_html, render_terminal
+from .report import (
+    DEFAULT_MAX_REPORT_CHARS,
+    ReportModel,
+    render_html,
+    render_terminal,
+)
 from .runner import DEFAULT_N, RunArtifact, run_goldenset
 
 try:  # tomllib is 3.11+; the floor is 3.10 and CI actually runs it.
@@ -126,6 +131,9 @@ class Settings:
     concurrency: int = 4
     timeout: float = 60.0
     max_output_chars: int = 4000
+    #: Quoted model text the whole document may embed. Bounds the report the way
+    #: ``max_output_chars`` bounds one block; both are disclosed in the document.
+    max_report_chars: int = DEFAULT_MAX_REPORT_CHARS
     path: str = ""
     sources: Mapping[str, str] = field(default_factory=dict)
 
@@ -135,7 +143,7 @@ class Settings:
 
 
 _RUN_KEYS = frozenset({"n", "concurrency", "timeout"})
-_REPORT_KEYS = frozenset({"max_output_chars"})
+_REPORT_KEYS = frozenset({"max_output_chars", "max_report_chars"})
 
 
 def load_settings(path: str | Path | None) -> Settings:
@@ -206,6 +214,12 @@ def _validate(settings: Settings, where: Path) -> None:
         (
             "max_output_chars",
             settings.max_output_chars,
+            lambda v: _is_int(v) and v >= 1,
+            "an integer >= 1",
+        ),
+        (
+            "max_report_chars",
+            settings.max_report_chars,
             lambda v: _is_int(v) and v >= 1,
             "an integer >= 1",
         ),
@@ -333,6 +347,7 @@ def _render(
     goldenset: str | Path | None = None,
     artifact_dir: str | Path | None = None,
     max_output_chars: int = 4000,
+    max_report_chars: int = DEFAULT_MAX_REPORT_CHARS,
 ) -> int:
     """Build the report from the evidence log on disk and return its exit code.
 
@@ -347,6 +362,7 @@ def _render(
         goldenset=goldenset,
         artifact_dir=artifact_dir,
         max_output_chars=max_output_chars,
+        max_report_chars=max_report_chars,
     )
     quiet = bool(getattr(args, "quiet", False))
     if not getattr(args, "no_terminal", False) and not quiet:
@@ -394,6 +410,15 @@ def cmd_run(args: argparse.Namespace) -> int:
         f"{len(goldenset)} items x n={n} ({n_source}) against {args.model} "
         f"via {type(adapter).__name__}"
     )
+    if concurrency > n:
+        # The sampling pool spans one item's draws, so this is not a suggestion
+        # that got rounded -- it is the number of threads that will ever have work.
+        # Said here rather than left to the docstring, because the operator reading
+        # a CI log is the one who set it.
+        say(
+            f"concurrency {concurrency} exceeds n={n}; the sampling pool spans one "
+            f"item's draws, so the effective width is {n}"
+        )
     done = 0
 
     def on_item(item: Any, completions: tuple[Any, ...]) -> None:
@@ -435,7 +460,11 @@ def cmd_compare(args: argparse.Namespace) -> int:
     evidence = EvidenceLog(Path(args.evidence) if args.evidence else DEFAULT_EVIDENCE)
 
     panel = config.build(evidence, _judge_adapter)
-    say(f"judging with {', '.join(panel.named())}")
+    # `[run] concurrency` is a width on provider calls, and judging spends the same
+    # resource sampling does -- roughly 460 calls at the sample size the README
+    # asks for, against two sides under one judge. Reusing the one setting rather
+    # than adding a second keeps "how many calls may be in flight" a single answer.
+    say(f"judging with {', '.join(panel.named())} at concurrency {settings.concurrency}")
     judged = []
     for run in (baseline_run, candidate_run):
         say(f"grading {run.header.model_id}")
@@ -446,6 +475,7 @@ def cmd_compare(args: argparse.Namespace) -> int:
                 panel,
                 evidence=evidence,
                 out_dir=Path(run.path).parent if run.path else DEFAULT_DIR,
+                concurrency=settings.concurrency,
             )
         )
     say("comparing")
@@ -466,6 +496,7 @@ def cmd_compare(args: argparse.Namespace) -> int:
         html=args.html,
         goldenset=goldenset.path,
         max_output_chars=settings.max_output_chars,
+        max_report_chars=settings.max_report_chars,
     )
 
 
@@ -479,6 +510,7 @@ def cmd_report(args: argparse.Namespace) -> int:
         goldenset=args.goldenset,
         artifact_dir=args.artifact_dir,
         max_output_chars=settings.max_output_chars,
+        max_report_chars=settings.max_report_chars,
     )
 
 

@@ -66,6 +66,27 @@ point: you cannot obtain a clean-looking report from scripted models by avoiding
 ``migkit demo``. A flag-driven banner is exactly the banner that goes missing from
 the screenshot someone pastes into a deck.
 
+**The document is bounded, and says by how much.** The report used to grow as
+``changed_items x 2n x max_output_chars`` with nothing looking at the total: 200
+items at n=20 rendered 32.4 MB, 1000 items at n=20 rendered 161.8 MB holding
+41,000 ``<pre>`` blocks, and every guard in this module passed on both --
+self-contained, well-formed, every per-block truncation notice present. A
+generated, valid, attested, unopenable artifact is the shape of failure this
+project says it cares most about, so :data:`DEFAULT_MAX_REPORT_CHARS` now bounds
+the quoted model text and :class:`DetailBudget` reports what that cost.
+
+What is bounded is deliberately the *quoted text* and never the *row*. Every item
+that changed state still gets its row, its id, its tags, its judges and its
+margins; rows past the budget carry no input, no draws and no judge reasons, and
+say so where the outputs would have been. Dropping rows to fit a byte budget would
+remove findings, which is worse than a large file; dropping some of a row's draws
+would misrepresent the distribution the whole tool exists to show. So a row's
+detail is embedded whole or not at all, rows are visited round-robin across flips,
+gains and unstable so that no section can crowd out another, and the first row that
+does not fit stops embedding for the rest of the document -- rather than skipping
+it and embedding whichever later rows happen to be short, which would make the
+sample of quoted evidence a function of output length.
+
 **There is no item-level rate.** build-plan §6, as amended on 2026-08-13: a
 three-state classification (passing / failing / unstable) does not reduce to one
 fraction without smuggling the ambiguous items into one bucket or the other. The
@@ -75,9 +96,10 @@ fourth number derived from them.
 
 from __future__ import annotations
 
+import json
 import os
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
@@ -85,7 +107,7 @@ from typing import Any
 
 import opik_rigor
 from jinja2 import DictLoader, Environment, StrictUndefined, select_autoescape
-from opik_rigor import EvidenceLog
+from opik_rigor import EvidenceError, EvidenceRecord
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -98,7 +120,9 @@ from .judging import JudgedArtifact
 from .runner import RunArtifact
 
 __all__ = [
+    "DEFAULT_MAX_REPORT_CHARS",
     "Completeness",
+    "DetailBudget",
     "FlipRow",
     "JudgeRow",
     "MethodologySection",
@@ -135,6 +159,28 @@ _FAKE_PREFIX = "Fake"
 
 _NO_VERDICT = "NO VERDICT"
 _NO_VERDICT_REASON = "the run ended before a verdict was recorded"
+
+#: Characters of quoted model text one report may embed, across every change
+#: section. Not a byte cap on the file: it is counted against the text actually
+#: embedded, so a golden set whose outputs are short is never truncated for a size
+#: it would not have reached. Markup, the statistics tables and the methodology
+#: appendix sit outside it and are a fixed cost of roughly 30 KB.
+#:
+#: Ten million is set from measurement rather than picked round. Rendered on this
+#: build with every item changed and 4000-character outputs: 40 items at n=5 is
+#: 1.65 MB, 200 at n=5 is 8.18 MB, 200 at n=20 is 32.4 MB produced in 40 s, and
+#: 1000 at n=20 is 161.8 MB holding 41,000 ``<pre>`` blocks. The first two open and
+#: scroll; the third is painful; the fourth is not a document. So the line is drawn
+#: where the file stops being one a reviewer can open, and everything at or below
+#: 200 items at n=5 -- five times the completions per side the methodology asks for
+#: -- still renders whole. What the budget catches is n, which is the factor
+#: nothing downstream accounted for: 200 items at n=20 needs 32.8 M characters and
+#: is told so.
+DEFAULT_MAX_REPORT_CHARS = 10_000_000
+
+#: The three change sections, in the order the document prints them and the order
+#: the budget visits them within one round.
+_CHANGE_SECTIONS = ("flips", "gains", "unstable")
 
 
 # --------------------------------------------------------------------------- #
@@ -485,6 +531,28 @@ class FlipRow:
     #: judge name -> ``4/5 -> 1/5``. The margin is the finding: a 5/5 -> 0/5 flip
     #: and a 4/5 -> 1/5 flip are different, and printing only "flipped" hides which.
     labels: Mapping[str, str] = field(default_factory=dict)
+    #: False when the document's :class:`DetailBudget` was spent before this row.
+    #: The row is still here, and so are its id, tags, judges and margins: what is
+    #: missing is the quoted text, and the document says so in place of it rather
+    #: than reusing the "golden set unavailable" wording, which would be a
+    #: different fact. Defaults True so that every other construction site --
+    #: tests, and any caller building a row directly -- keeps the old meaning.
+    detail_embedded: bool = True
+
+    @property
+    def quoted_chars(self) -> int:
+        """Characters of model text this row embeds. What the budget counts.
+
+        The input, both sides' draws and the judge reasons -- each already cut to
+        ``max_output_chars``, so this is the post-truncation size and not the size
+        of what the models actually said.
+        """
+        return (
+            len(self.input or "")
+            + sum(len(one) for one in self.baseline_outputs)
+            + sum(len(one) for one in self.candidate_outputs)
+            + sum(len(one) for one in self.reasons.values())
+        )
 
     @property
     def summary(self) -> str:
@@ -545,6 +613,73 @@ class Completeness:
 
 
 @dataclass(frozen=True)
+class DetailBudget:
+    """How much quoted model text the document embedded, against what it was allowed.
+
+    Present on every report, capped or not, because "this document is complete" is
+    a fact a reviewer signing a migration decision needs stated rather than
+    inferred from the absence of a warning.
+    """
+
+    #: ``max_report_chars`` in force. ``0`` when the caller asked for no bound.
+    limit: int
+    #: Characters of quoted text actually embedded, summed over every row.
+    embedded: int
+    #: Changed items in the document, over all three sections.
+    rows: int
+    #: Of those, how many carry their input, draws and judge reasons.
+    rows_embedded: int
+    #: section name -> ``{"rows": int, "embedded": int, "chars": int}``.
+    sections: Mapping[str, Mapping[str, int]] = field(default_factory=dict)
+
+    @property
+    def capped(self) -> bool:
+        return self.rows_embedded < self.rows
+
+    @property
+    def rows_summarised(self) -> int:
+        return self.rows - self.rows_embedded
+
+    @property
+    def sentence(self) -> str:
+        """One sentence naming exactly what was left out, or why nothing was.
+
+        Written here rather than in the template so that the terminal renderer,
+        the HTML band and ``warnings`` all say the same words: three copies of a
+        disclosure are three chances for one of them to go stale.
+        """
+        if not self.capped:
+            return (
+                f"Every one of the {self.rows} changed item(s) carries its full "
+                f"outputs: {self.embedded:,} characters of quoted model text "
+                f"against a budget of {self.limit:,}."
+            )
+        listed = ", ".join(
+            f"{name} {self.sections[name]['embedded']} of {self.sections[name]['rows']}"
+            for name in _CHANGE_SECTIONS
+            if self.sections.get(name, {}).get("rows")
+        )
+        return (
+            f"The budget for quoted model text ({self.limit:,} characters, "
+            f"[report] max_report_chars) was reached: {self.rows_embedded} of "
+            f"{self.rows} changed item(s) carry their outputs ({listed}). The other "
+            f"{self.rows_summarised} are listed in full with their ids, tags, judges "
+            f"and margins, and their model text is not embedded -- it is in the run "
+            f"artifacts named in the provenance block. No row was dropped."
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "limit": self.limit,
+            "embedded": self.embedded,
+            "rows": self.rows,
+            "rows_embedded": self.rows_embedded,
+            "capped": self.capped,
+            "sections": {name: dict(one) for name, one in self.sections.items()},
+        }
+
+
+@dataclass(frozen=True)
 class MethodologySection:
     heading: str
     body: tuple[str, ...]  # paragraphs, already substituted with real numbers
@@ -586,6 +721,14 @@ class ReportModel:
     item_counts: Mapping[str, Any] = field(default_factory=dict)
     n_per_item: int = 0
     max_output_chars: int = 4000
+    #: What the document embedded against what it was allowed to. Never ``None``:
+    #: a report that was not bounded says so, in the same place as one that was.
+    detail: DetailBudget = field(
+        default_factory=lambda: DetailBudget(
+            limit=DEFAULT_MAX_REPORT_CHARS, embedded=0, rows=0, rows_embedded=0
+        )
+    )
+    max_report_chars: int = DEFAULT_MAX_REPORT_CHARS
     config_path: str = ""
     command: str = ""
     #: Non-empty when ``--artifact-dir`` redirected the recorded artifact paths.
@@ -603,6 +746,7 @@ class ReportModel:
         goldenset: str | Path | None = None,
         artifact_dir: str | Path | None = None,
         max_output_chars: int = 4000,
+        max_report_chars: int = DEFAULT_MAX_REPORT_CHARS,
         now: str | None = None,
     ) -> ReportModel:
         """Rebuild the report from an evidence log and the files it names.
@@ -621,6 +765,12 @@ class ReportModel:
             artifact_dir: Same, for the run and judged artifacts. Resolved by
                 basename inside this directory.
             max_output_chars: Per output block. Truncation is always marked.
+            max_report_chars: Characters of quoted model text the whole document
+                may embed, across every change section. ``0`` or less means no
+                bound, matching :func:`_truncate`'s convention for
+                ``max_output_chars``. What it costs when it binds is disclosed in
+                :attr:`detail`, in ``warnings``, in the terminal render and in a
+                band above the change sections -- see :data:`DEFAULT_MAX_REPORT_CHARS`.
             now: Injected generation timestamp, so two renders can be compared
                 byte for byte.
 
@@ -647,8 +797,19 @@ class ReportModel:
                 f"otherwise render as a valid report of a run that never happened."
             )
 
-        records = EvidenceLog(path).read()
-        comparison = _last(records, EVENT_COMPARISON)
+        # One streaming pass, keeping three records and never the log. See
+        # :func:`_stream_records`: the list-returning read this replaced cost 5.0
+        # to 5.8 times the log's own bytes, and the evidence log is the largest
+        # artifact the pipeline writes.
+        comparison = None
+        verdict_record = None
+        last = None
+        for record in _stream_records(path):
+            last = record
+            if record.event_type == EVENT_COMPARISON:
+                comparison = record
+            elif record.event_type == EVENT_VERDICT:
+                verdict_record = record
         if comparison is None:
             raise ArtifactError(
                 f"{path} contains no {EVENT_COMPARISON} record, so there is nothing "
@@ -656,7 +817,6 @@ class ReportModel:
                 f"of an attempt, not of a comparison."
             )
         payload: Mapping[str, Any] = comparison.payload
-        verdict_record = _last(records, EVENT_VERDICT)
         verdict_payload: Mapping[str, Any] = (
             {} if verdict_record is None else verdict_record.payload
         )
@@ -706,9 +866,16 @@ class ReportModel:
             limit=max_output_chars,
             order=gs_view["order"] if gs_view["available"] else {},
         )
-        flips = _change_rows(payload.get("flips", ()), rows)
-        gains = _change_rows(payload.get("gains", ()), rows)
-        unstable = _change_rows(payload.get("unstable", ()), rows)
+        sections, detail = _change_sections(payload, rows, budget=max_report_chars)
+        flips = sections["flips"]
+        gains = sections["gains"]
+        unstable = sections["unstable"]
+        if detail.capped:
+            # Disclosed three times over, in the same words: here, so a library
+            # caller reading `warnings` sees it; in the terminal render; and in a
+            # band above the change sections. A truncated report that does not say
+            # it was truncated is worse than a large one.
+            warnings.append(detail.sentence)
 
         if verdict_record is None:
             missing.append(
@@ -716,7 +883,6 @@ class ReportModel:
                 "the verdict, so this report is evidence and not a decision"
             )
 
-        last = records[-1] if records else None
         observed = baseline.completions + candidate.completions
         expected = baseline.expected + candidate.expected
         completeness = Completeness(
@@ -766,6 +932,8 @@ class ReportModel:
             item_counts=dict(payload.get("item_counts", {}) or {}),
             n_per_item=int(payload.get("n_per_item", 0) or 0),
             max_output_chars=max_output_chars,
+            detail=detail,
+            max_report_chars=max_report_chars,
             config_path=config_path,
             command=str(payload.get("command", "") or ""),
             artifact_dir="" if artifact_dir is None else str(artifact_dir),
@@ -800,13 +968,48 @@ class ReportModel:
 # --------------------------------------------------------------------------- #
 
 
-def _last(records: Sequence[Any], event_type: str) -> Any | None:
-    """The last record of a type. One ``read()``, folded here; rigor has no query."""
-    found = None
-    for record in records:
-        if record.event_type == event_type:
-            found = record
-    return found
+def _stream_records(path: Path) -> Iterator[EvidenceRecord]:
+    """Every record in the evidence log, one at a time, holding none of them.
+
+    This exists because of a measured amplification, not a style preference.
+    ``EvidenceLog.read()`` reads the whole file as text and returns a list of
+    parsed records; reconstruction needs exactly three of them -- the last
+    ``migkit.comparison``, the last ``migkit.verdict``, and the final record for
+    the completeness strip's "last event" -- and paid for all of them. Measured at
+    5.0 to 5.8 times the log's own bytes resident: an 86 MB log cost an extra
+    502 MB, and the evidence log is the *largest* artifact this pipeline produces,
+    because rigor's ``judge.verdict`` record embeds the input, the output and the
+    judge's raw reply for every completion. That is what runs out of memory first.
+    Streaming holds one line.
+
+    The parsing rules are rigor's, deliberately: ``EvidenceRecord.from_json`` does
+    the decoding, and a torn final line -- the signature of a process killed
+    mid-write -- is dropped while anything malformed earlier is an error, which is
+    exactly what ``read()`` does. Re-deriving those rules rather than reusing them
+    is how a reader and a writer of the same file drift apart.
+
+    ``newline="\\n"`` is not decoration. ``read()`` splits on ``"\\n"`` and nothing
+    else, while Python's default text iteration also breaks lines on a lone
+    ``\\r``; without it a model output containing a bare carriage return would be
+    two lines here and one line there, and this reader would call a valid log
+    malformed.
+    """
+    with open(path, encoding="utf-8", newline="\n") as handle:
+        for index, line in enumerate(handle):
+            complete = line.endswith("\n")
+            text = line[:-1] if complete else line
+            if not text.strip():
+                if not complete:
+                    continue  # torn write at the end of the file
+                raise EvidenceError(f"blank line at position {index} in {path}")
+            try:
+                yield EvidenceRecord.from_json(text)
+            except (json.JSONDecodeError, EvidenceError):
+                if not complete:
+                    continue  # torn write at the end of the file
+                raise EvidenceError(
+                    f"malformed evidence at line {index + 1} of {path}: {text[:120]!r}"
+                ) from None
 
 
 def _tool_version() -> str:
@@ -1220,51 +1423,137 @@ class _ChangeContext:
     order: Mapping[str, int]
 
 
-def _change_rows(
-    entries: Iterable[Mapping[str, Any]], context: _ChangeContext
-) -> tuple[FlipRow, ...]:
-    """Build one expandable row per changed item, in golden-set order.
+def _change_sections(
+    payload: Mapping[str, Any], context: _ChangeContext, *, budget: int
+) -> tuple[dict[str, tuple[FlipRow, ...]], DetailBudget]:
+    """The three change sections, and what embedding them cost against ``budget``.
 
-    Ordering by golden-set position is stable across runs; ordering by "severity"
-    would require a magnitude the comparison does not produce, and inventing one
-    here would be a statistic this module is not allowed to compute. When the
-    golden set is unavailable the payload's own order is kept rather than
-    substituting a different one.
+    Built together rather than one call per section, because the budget is a
+    property of the *document*: three independent builders would each have to be
+    told what the other two had already spent, which is how one of them ends up
+    spending it twice.
+
+    The allocation rule, stated so a reader can predict the document from it:
+
+    * Entries are put in golden-set order within each section first. Ordering by
+      golden-set position is stable across runs; ordering by "severity" would need
+      a magnitude the comparison does not produce, and inventing one here would be
+      a statistic this module is not allowed to compute. Where the golden set is
+      unavailable the payload's own order is kept.
+    * Rows are then visited **round-robin** -- flips[0], gains[0], unstable[0],
+      flips[1], ... -- so that no section can crowd out another. Flips are the
+      items that stopped working and gains are the ones that started, and a rule
+      that spent the whole budget on flips would make the document an argument
+      rather than a measurement, which is the same reason gains are never netted
+      against flips.
+    * A row's quoted text is embedded **whole or not at all**. Half a row's draws
+      would misrepresent the distribution the tool exists to show.
+    * The **first row that does not fit stops embedding for the rest of the
+      document**. Skipping it and embedding whichever later rows happen to be
+      short would make the sample of quoted evidence a function of output length,
+      and a reader could not say what the document contains without knowing how
+      long every model's answers were.
+    * ``budget <= 0`` means no bound, matching :func:`_truncate`'s convention.
+
+    No row is dropped in either case: a row past the budget keeps its id, tags,
+    judges and margins and loses only the quotations.
+    """
+    order = context.order
+    ordered: dict[str, list[Mapping[str, Any]]] = {}
+    for name in _CHANGE_SECTIONS:
+        entries = [dict(one) for one in payload.get(name, ()) or ()]
+        if order:
+            entries.sort(key=lambda one: order.get(str(one.get("item_id", "") or ""), len(order)))
+        ordered[name] = entries
+
+    bounded = budget > 0
+    spent = 0
+    stopped = False
+    built: dict[str, list[FlipRow]] = {name: [] for name in _CHANGE_SECTIONS}
+    counts = {name: {"rows": len(ordered[name]), "embedded": 0, "chars": 0} for name in ordered}
+    for index in range(max((len(one) for one in ordered.values()), default=0)):
+        for name in _CHANGE_SECTIONS:
+            entries = ordered[name]
+            if index >= len(entries):
+                continue
+            if stopped:
+                built[name].append(_change_row(entries[index], context, detail=False))
+                continue
+            row = _change_row(entries[index], context, detail=True)
+            cost = row.quoted_chars
+            if bounded and spent + cost > budget:
+                # This row, and every row after it in every section. The row is
+                # rebuilt without its quotations rather than kept and hidden: a
+                # FlipRow carrying text the document does not show is a field two
+                # renderers can disagree about.
+                stopped = True
+                built[name].append(_change_row(entries[index], context, detail=False))
+                continue
+            spent += cost
+            counts[name]["embedded"] += 1
+            counts[name]["chars"] += cost
+            built[name].append(row)
+
+    sections = {name: tuple(rows) for name, rows in built.items()}
+    detail = DetailBudget(
+        limit=max(budget, 0),
+        embedded=spent,
+        rows=sum(one["rows"] for one in counts.values()),
+        rows_embedded=sum(one["embedded"] for one in counts.values()),
+        sections={name: dict(one) for name, one in counts.items()},
+    )
+    return sections, detail
+
+
+def _change_row(
+    entry: Mapping[str, Any], context: _ChangeContext, *, detail: bool
+) -> FlipRow:
+    """One expandable row. ``detail=False`` builds it without opening an artifact.
+
+    The cheap branch matters as much as the expensive one: past the budget there
+    are potentially thousands of rows left, and building each one's outputs only to
+    discard them would keep the memory cost this cap exists to remove.
     """
     items = context.goldenset["by_id"] if context.goldenset["available"] else {}
     limit = context.limit
-    rows: list[FlipRow] = []
-    for entry in entries:
-        item_id = str(entry.get("item_id", "") or "")
-        judges = tuple(str(one) for one in entry.get("judges", ()) or ())
-        changes = entry.get("changes", ()) or ()
-        labels = {
-            str(one.get("judge", "")): str(one.get("label", ""))
-            for one in changes
-            if one.get("label")
-        }
-        item = items.get(item_id)
-        text, text_cut = _truncate(item.input, limit) if item is not None else (None, False)
-        base_outputs, base_cut = _outputs(context.base_run, item_id, limit)
-        cand_outputs, cand_cut = _outputs(context.cand_run, item_id, limit)
-        reasons = _reasons(context.cand_judged, item_id, judges, limit)
-        rows.append(
-            FlipRow(
-                item_id=item_id,
-                tags=tuple(item.tags) if item is not None else (),
-                input=text,
-                baseline_outputs=base_outputs,
-                candidate_outputs=cand_outputs,
-                judges=judges,
-                reasons=reasons,
-                truncated=bool(text_cut or base_cut or cand_cut),
-                labels=labels,
-            )
+    item_id = str(entry.get("item_id", "") or "")
+    judges = tuple(str(one) for one in entry.get("judges", ()) or ())
+    changes = entry.get("changes", ()) or ()
+    labels = {
+        str(one.get("judge", "")): str(one.get("label", ""))
+        for one in changes
+        if one.get("label")
+    }
+    item = items.get(item_id)
+    tags = tuple(item.tags) if item is not None else ()
+    if not detail:
+        return FlipRow(
+            item_id=item_id,
+            tags=tags,
+            input=None,
+            baseline_outputs=(),
+            candidate_outputs=(),
+            judges=judges,
+            reasons={},
+            truncated=False,
+            labels=labels,
+            detail_embedded=False,
         )
-    order = context.order
-    if order:
-        rows.sort(key=lambda row: order.get(row.item_id, len(order)))
-    return tuple(rows)
+    text, text_cut = _truncate(item.input, limit) if item is not None else (None, False)
+    base_outputs, base_cut = _outputs(context.base_run, item_id, limit)
+    cand_outputs, cand_cut = _outputs(context.cand_run, item_id, limit)
+    reasons = _reasons(context.cand_judged, item_id, judges, limit)
+    return FlipRow(
+        item_id=item_id,
+        tags=tags,
+        input=text,
+        baseline_outputs=base_outputs,
+        candidate_outputs=cand_outputs,
+        judges=judges,
+        reasons=reasons,
+        truncated=bool(text_cut or base_cut or cand_cut),
+        labels=labels,
+    )
 
 
 def _outputs(
@@ -1760,6 +2049,10 @@ def render_terminal(model: ReportModel, *, console: Console | None = None) -> No
     _print_changes(out, "Flips (passing -> failing)", model.flips)
     _print_changes(out, "Gains (failing -> passing; never netted against flips)", model.gains)
     _print_changes(out, "Unstable items (a coin toss on one or both sides)", model.unstable)
+    # Beside the tables it describes, because that is where it is actionable. It
+    # prints in both states: "this document is complete" is a fact a reviewer
+    # signing a migration decision should read rather than infer from silence.
+    out.print(_cell(model.detail.sentence))
 
     if model.completeness.missing:
         strip = Table(title="Completeness", show_header=False, box=None)
@@ -1774,6 +2067,12 @@ def render_terminal(model: ReportModel, *, console: Console | None = None) -> No
         )
         out.print(strip)
     for warning in model.warnings:
+        if warning == model.detail.sentence:
+            # Already printed beside the change tables above. It is in `warnings`
+            # so that a library caller and the HTML warnings list both see it; a
+            # terminal that says the same sentence twice teaches the reader to
+            # skim the second one.
+            continue
         out.print(_cell(f"warning: {warning}"))
 
     out.print(
@@ -2197,6 +2496,23 @@ quality regression.</p>
 </div>
 {% endif %}
 
+{% if model.detail.capped %}
+<div class="note" id="detail-budget">
+  <strong>The quoted model text in this report is bounded.</strong>
+  {{ model.detail.sentence }}
+  <ul>
+    <li>rows are visited round-robin across flips, gains and unstable, in
+        golden-set order within each, so no section crowds out another</li>
+    <li>a row's quotations are embedded whole or not at all, and the first row that
+        did not fit stopped embedding for the rest of the document</li>
+    <li>every changed item is still listed, with its id, tags, judges and margins;
+        no row was dropped and no count is affected</li>
+  </ul>
+</div>
+{% else %}
+<p class="secondary" id="detail-budget">{{ model.detail.sentence }}</p>
+{% endif %}
+
 <h2 id="flips">Flips {{ dash }} items that stopped working ({{ model.flips | length }})</h2>
 {{ changes(model.flips) }}
 
@@ -2275,6 +2591,22 @@ _CHANGES_MACRO = """
 <details>
   <summary>{{ row.summary }}</summary>
   <div>
+    {% if not row.detail_embedded %}
+    <p class="truncated">Outputs not embedded: this document's budget for quoted
+    model text ({{ max_report_chars }} characters) was reached before this row.</p>
+    <p class="secondary">The row itself is not abridged {{ dash }} the item, its tags,
+    the judges it changed under and the margin each of them recorded are above, and
+    nothing was dropped from any count. What is missing is the quotations, and they
+    are in the run artifacts named in the provenance block. Raise
+    <code>[report] max_report_chars</code> to embed more.</p>
+    <h4>Candidate-side judge reasons</h4>
+    <dl class="facts">
+    {% for name in row.judges %}
+      <dt>{{ name }} {{ row.labels.get(name, '') }}</dt>
+      <dd>not embedded</dd>
+    {% endfor %}
+    </dl>
+    {% else %}
     {% if row.input is not none %}
     <h4>Input</h4>
     <pre class="output">{{ row.input }}</pre>
@@ -2304,6 +2636,7 @@ _CHANGES_MACRO = """
     </dl>
     {% if row.truncated %}
     <p class="truncated">{{ ellipsis }} truncated at {{ max_output_chars }} characters</p>
+    {% endif %}
     {% endif %}
   </div>
 </details>
@@ -2368,6 +2701,7 @@ def render_html_string(
         baseline_parts=_parts_phrase(model.baseline, "baseline"),
         candidate_parts=_parts_phrase(model.candidate, "candidate"),
         max_output_chars=model.max_output_chars,
+        max_report_chars=model.max_report_chars,
     )
 
 
