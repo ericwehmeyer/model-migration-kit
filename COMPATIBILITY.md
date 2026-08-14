@@ -64,21 +64,67 @@ or its *intentions*, it cites `opik-rigor/PROGRESS.md` and says so.
 
 ## 1. The API model-migration-kit actually calls
 
-Name by name. This is the whole dependency surface; anything not on this list is
-not relied on and a rigor release may move it freely.
+Name by name. Every `.py` file in this repository that names `opik_rigor` is on
+this list; anything not on it is not relied on and a rigor release may move it
+freely. The enumeration is mechanical and re-runnable — see the command below the
+table — so the completeness claim is checkable rather than asserted.
 
 | Module | Imported from `opik_rigor` |
 |---|---|
-| `src/model_migration_kit/runner.py` | `Adapter`, `EvidenceLog`, `sample` |
-| `src/model_migration_kit/judging.py` | `Adapter`, `EvidenceLog`, `JudgeOutputError`, `ModelPinError`, `PinnedJudge`, `require_pinned` — **plus** `SCORE_MIN` and `hash_rubric_file` from `opik_rigor.judge` |
+| `src/model_migration_kit/cli.py` | `Adapter`, `AdapterError`, `AnthropicAdapter`, `EvidenceLog`, `FakeAdapter`, `OpenAICompatAdapter`, `RigorError`, `SampleTimeout` — **plus** `__version__`, imported as `RIGOR_VERSION` |
 | `src/model_migration_kit/comparison.py` | `EvidenceLog`, `PassRateError`, `RegressionError`, `assert_no_regression`, `assert_pass_rate`, `wilson_interval` |
-| `tests/test_runner.py` | `EvidenceLog`, `FakeAdapter`, `PassRateError`, `assert_pass_rate`, `sample_of` |
-| `tests/test_judging.py` | `EvidenceLog`, `FakeAdapter`, `JudgeOutputError`, `ModelPinError`, `PinnedJudge`, `is_pinned` — plus `SCORE_MIN`, `hash_rubric_file` from `opik_rigor.judge` |
+| `src/model_migration_kit/demo.py` | `AdapterError`, `EvidenceLog`, `FakeAdapter` |
+| `src/model_migration_kit/judging.py` | `Adapter`, `EvidenceLog`, `JudgeOutputError`, `ModelPinError`, `PinnedJudge`, `require_pinned` — **plus** `SCORE_MIN` and `hash_rubric_file` from `opik_rigor.judge` |
+| `src/model_migration_kit/report.py` | `EvidenceLog` — **plus** the module itself (`import opik_rigor`), read for `__version__` |
+| `src/model_migration_kit/runner.py` | `Adapter`, `EvidenceLog`, `sample` |
+| `tests/test_cli.py` | `AdapterError`, `EvidenceError`, `EvidenceLog`, `FakeAdapter`, `JudgeOutputError`, `ModelPinError`, `PassRateError`, `RegressionError`, `RigorError`, `RubricDriftError`, `SampleTimeout` |
 | `tests/test_comparison.py` | `SCORE_MAX`, `SCORE_MIN` from `opik_rigor.judge` |
+| `tests/test_judging.py` | `EvidenceLog`, `FakeAdapter`, `ModelPinError`, `PinnedJudge`, `is_pinned`, and `JudgeOutputError` — plus `SCORE_MIN`, `hash_rubric_file` from `opik_rigor.judge` |
+| `tests/test_report.py` | `EvidenceLog`, `wilson_interval` — **plus** the module itself (`import opik_rigor`), read for `__version__` |
+| `tests/test_runner.py` | `EvidenceLog`, `FakeAdapter`, `PassRateError`, `assert_pass_rate`, `sample_of` |
 
-(Enumerated with `grep -rn "^from opik_rigor\|^import opik_rigor" --include=*.py .`
-at the time of writing; the test files are under active development, so re-run it
-rather than trusting this table after a session boundary.)
+Enumerated by parsing every `.py` file rather than by grepping line starts,
+because a `grep "^from opik_rigor"` misses an import indented inside a function —
+`tests/test_judging.py:429` is exactly that, and an earlier revision of this table
+happened to list its name anyway, which is luck rather than method. The test files
+are under active development, so re-run this rather than trusting the table after
+a session boundary:
+
+```
+$ .\.venv\Scripts\python.exe -c "import ast, pathlib; [print(f'{p.as_posix()}:{n.lineno} from {n.module} import ' + ', '.join(sorted(a.name for a in n.names))) if isinstance(n, ast.ImportFrom) and (n.module or '').split('.')[0]=='opik_rigor' else [print(f'{p.as_posix()}:{n.lineno} import {a.name}') for a in getattr(n,'names',[]) if isinstance(n, ast.Import) and a.name.split('.')[0]=='opik_rigor'] for p in sorted(pathlib.Path('.').rglob('*.py')) if '.venv' not in p.parts for n in ast.walk(ast.parse(p.read_text(encoding='utf-8')))]"
+src/model_migration_kit/cli.py:42 from opik_rigor import Adapter, AdapterError, AnthropicAdapter, EvidenceLog, FakeAdapter, OpenAICompatAdapter, RigorError, SampleTimeout
+src/model_migration_kit/cli.py:52 from opik_rigor import __version__
+src/model_migration_kit/comparison.py:72 from opik_rigor import EvidenceLog, PassRateError, RegressionError, assert_no_regression, assert_pass_rate, wilson_interval
+src/model_migration_kit/demo.py:50 from opik_rigor import AdapterError, EvidenceLog, FakeAdapter
+src/model_migration_kit/judging.py:39 from opik_rigor import Adapter, EvidenceLog, JudgeOutputError, ModelPinError, PinnedJudge, require_pinned
+src/model_migration_kit/judging.py:47 from opik_rigor.judge import SCORE_MIN, hash_rubric_file
+src/model_migration_kit/report.py:71 import opik_rigor
+src/model_migration_kit/report.py:73 from opik_rigor import EvidenceLog
+src/model_migration_kit/runner.py:38 from opik_rigor import Adapter, EvidenceLog, sample
+tests/test_cli.py:55 from opik_rigor import AdapterError, EvidenceError, EvidenceLog, FakeAdapter, JudgeOutputError, ModelPinError, PassRateError, RegressionError, RigorError, RubricDriftError, SampleTimeout
+tests/test_comparison.py:52 from opik_rigor.judge import SCORE_MAX, SCORE_MIN
+tests/test_judging.py:46 from opik_rigor import EvidenceLog, FakeAdapter, ModelPinError, PinnedJudge, is_pinned
+tests/test_judging.py:47 from opik_rigor.judge import SCORE_MIN, hash_rubric_file
+tests/test_judging.py:429 from opik_rigor import JudgeOutputError
+tests/test_report.py:65 from opik_rigor import EvidenceLog, wilson_interval
+tests/test_report.py:2248 import opik_rigor
+tests/test_runner.py:29 from opik_rigor import EvidenceLog, FakeAdapter, PassRateError, assert_pass_rate, sample_of
+```
+
+`__version__` is load-bearing rather than decorative: `migkit --version` prints
+it, so removing it from the package root would break the CLI's most trivial
+invocation at import time (`cli.py:52` is a `from … import`, not a `getattr`).
+
+```
+$ .\.venv\Scripts\python.exe -c "import sys; sys.path.insert(0,'src'); from model_migration_kit import cli; cli.main(['--version'])"
+migkit 0.1.0.dev0 (opik-rigor 0.1.0)
+```
+
+`report.py:667` reads the same attribute off the module to stamp it into the
+report, but defensively — `getattr(opik_rigor, "__version__", "unknown")` — so
+that path degrades rather than raising. `tests/test_report.py:2251-2252` asserts
+the stamped value equals `opik_rigor.__version__` and that it appears in the
+rendered HTML, so the two are pinned together.
 
 `require_pinned(model_id, *, context='judge')` is called by `judging.py` at config
 load so an unpinned judge model is a `ConfigError` before any judge is
@@ -146,12 +192,24 @@ $ .\.venv\Scripts\python.exe -c "..."
   opik_rigor.judge.OUTPUT_FORMAT_INSTRUCTION  in opik_rigor.__all__: False   top-level attr: False
 ```
 
-Every other name on the list above **is** in `__all__` (checked individually;
-`Adapter`, `EvidenceLog`, `FakeAdapter`, `PinnedJudge`, `Verdict`, `Run`,
-`SampleResult`, `sample`, `sample_of`, `assert_pass_rate`,
-`assert_no_regression`, `wilson_interval`, `wilson_lower_bound`,
-`JudgeOutputError`, `PassRateError`, `RegressionError`, `RubricDriftError`,
-`ModelPinError`, `SampleTimeout`, `is_pinned`, `require_pinned` — all `True`).
+Every other name on the list above **is** in `__all__`, checked individually
+against the installed 0.1.0 — `Adapter`, `AdapterError`, `AnthropicAdapter`,
+`EvidenceError`, `EvidenceLog`, `FakeAdapter`, `JudgeOutputError`, `ModelPinError`,
+`OpenAICompatAdapter`, `PassRateError`, `PinnedJudge`, `RegressionError`,
+`RigorError`, `RubricDriftError`, `SampleTimeout`, `__version__`,
+`assert_no_regression`, `assert_pass_rate`, `is_pinned`, `require_pinned`,
+`sample`, `sample_of`, `wilson_interval`, and (used by attribute rather than
+imported) `Verdict`, `Run`, `SampleResult`, `wilson_lower_bound` — all `True`:
+
+```
+$ .\.venv\Scripts\python.exe -c "import opik_rigor; [print(f'{n:22} in __all__: {n in opik_rigor.__all__!s:5} top-level attr: {hasattr(opik_rigor, n)}') for n in ('Adapter','AdapterError','AnthropicAdapter','EvidenceError','EvidenceLog','FakeAdapter','JudgeOutputError','ModelPinError','OpenAICompatAdapter','PassRateError','PinnedJudge','RegressionError','RigorError','RubricDriftError','SampleTimeout','__version__','assert_no_regression','assert_pass_rate','is_pinned','require_pinned','sample','sample_of','wilson_interval')]"
+Adapter                in __all__: True  top-level attr: True
+AdapterError           in __all__: True  top-level attr: True
+AnthropicAdapter       in __all__: True  top-level attr: True
+EvidenceError          in __all__: True  top-level attr: True
+...                                                             (23 names, all True)
+__version__            in __all__: True  top-level attr: True
+```
 
 These are not private — no leading underscore, and `SCORE_MIN` / `SCORE_MAX` are
 documented in `docs/session-2-contract.md` §0 — but they are the thinnest part of
@@ -160,7 +218,9 @@ only"). A rigor release could move them without touching `__all__` and be within
 its rights. The exposure is small and bounded: two floats used for imputation and
 range checks, and one sha256 wrapper; any of them could be inlined in an
 afternoon. The honest thing to do is ask rigor to re-export them; the honest thing
-to record is that it has not.
+to record is that **in the released 0.1.0 it has not** — the command above is the
+installed wheel talking, not the sibling checkout. rigor's unreleased tree does
+export them; see §5.F for what that does and does not mean here.
 
 ### rigor's pytest plugin autoloads into this suite
 
@@ -245,10 +305,77 @@ A rigor release breaks model-migration-kit if it changes any of:
     judge config into a `ConfigError`; loosening it lets an alias through. The
     rule is stated in §4.4 so a change is visible as a diff against it.
 
+12. **`AnthropicAdapter` and `OpenAICompatAdapter` taking `model_id` positionally
+    as their first argument, and remaining importable from the package root.**
+    `cli.py:281` and `cli.py:283` construct them — `AnthropicAdapter(model_id)`,
+    `OpenAICompatAdapter(model_id)` — as the `--adapter anthropic` and
+    `--adapter openai-compat` arms of `_model_adapter` (`cli.py:279`). What is
+    relied on is exactly three things and no more: the import, the one positional
+    parameter, and that the result satisfies the `Adapter` protocol, because
+    `_model_adapter` is annotated `-> Adapter` and everything downstream reaches
+    the object only through `.complete(prompt)` and `.model_id`. No keyword is
+    passed, so `max_tokens`, `temperature`, `timeout` and `base_url` may all move;
+    the defaults are accepted sight unseen. Verified against the installed 0.1.0:
+
+    ```
+    $ .\.venv\Scripts\python.exe -c "import inspect; from opik_rigor import AnthropicAdapter, OpenAICompatAdapter; [print(c.__name__, inspect.signature(c.__init__)) for c in (AnthropicAdapter, OpenAICompatAdapter)]"
+    AnthropicAdapter (self, model_id: 'str', *, max_tokens: 'int' = 1024, temperature: 'float' = 0.0, timeout: 'float' = 60.0, **forbidden: 'object') -> 'None'
+    OpenAICompatAdapter (self, model_id: 'str', *, base_url: 'str | None' = None, max_tokens: 'int' = 1024, temperature: 'float' = 0.0, timeout: 'float' = 60.0, **forbidden: 'object') -> 'None'
+
+    $ ANTHROPIC_API_KEY=x OPENAI_API_KEY=x .\.venv\Scripts\python.exe -c "from opik_rigor import AnthropicAdapter, OpenAICompatAdapter, Adapter; [print(c.__name__, 'model_id=', repr(c('some-model-v1').model_id), 'isinstance(Adapter)=', isinstance(c('some-model-v1'), Adapter)) for c in (AnthropicAdapter, OpenAICompatAdapter)]"
+    AnthropicAdapter model_id= 'some-model-v1' isinstance(Adapter)= True
+    OpenAICompatAdapter model_id= 'some-model-v1' isinstance(Adapter)= True
+    ```
+
+13. **Both adapters raising `AdapterError` — not `KeyError`, not `RigorError` —
+    when the credential environment variable is absent.** This is the *only*
+    behaviour of either adapter this project has observed, and it is on the
+    common path: `migkit run --adapter anthropic` with no key set must exit with
+    one stderr line rather than a traceback, which works because `AdapterError`
+    is in `cli.py`'s `EXPECTED_ERRORS` tuple (`cli.py:99-106`). Credentials are
+    read from the environment inside the constructor, never passed in:
+
+    ```
+    $ .\.venv\Scripts\python.exe -c "import os; os.environ.pop('ANTHROPIC_API_KEY', None); from opik_rigor import AnthropicAdapter; AnthropicAdapter('some-model-v1')"
+      File ".../opik_rigor/adapters/anthropic.py", line 71, in __init__
+        self._api_key = require_env_key(ENV_ANTHROPIC_API_KEY, type(self).__name__)
+      File ".../opik_rigor/adapters/base.py", line 80, in require_env_key
+        raise AdapterError(
+    opik_rigor.adapters.base.AdapterError: AnthropicAdapter needs the ANTHROPIC_API_KEY
+    environment variable. Credentials are read from the environment only -- they are
+    never accepted as constructor arguments -- so export ANTHROPIC_API_KEY before
+    constructing the adapter.
+    ```
+
+    Note the direction: `AdapterError` subclasses `Exception` directly, not
+    `RigorError`, which is why `cli.py:92-95` names it separately from
+    `RigorError` in that tuple — catching only `RigorError` would let a missing
+    credential escape as an unhandled traceback:
+
+    ```
+    $ .\.venv\Scripts\python.exe -c "from opik_rigor import RigorError, AdapterError, SampleTimeout, EvidenceError, JudgeOutputError, ModelPinError, PassRateError, RegressionError, RubricDriftError; [print(f'{e.__name__:18} issubclass(RigorError)={issubclass(e, RigorError)}  mro={[c.__name__ for c in e.__mro__[:4]]}') for e in (AdapterError, SampleTimeout, EvidenceError, JudgeOutputError, ModelPinError, PassRateError, RegressionError, RubricDriftError)]"
+    AdapterError       issubclass(RigorError)=False  mro=['AdapterError', 'Exception', 'BaseException', 'object']
+    SampleTimeout      issubclass(RigorError)=False  mro=['SampleTimeout', 'Exception', 'BaseException', 'object']
+    EvidenceError      issubclass(RigorError)=True   mro=['EvidenceError', 'RigorError', 'Exception', 'BaseException']
+    JudgeOutputError   issubclass(RigorError)=True   mro=['JudgeOutputError', 'RigorError', 'Exception', 'BaseException']
+    ModelPinError      issubclass(RigorError)=True   mro=['ModelPinError', 'RigorError', 'Exception', 'BaseException']
+    PassRateError      issubclass(RigorError)=True   mro=['PassRateError', 'StatisticalAssertionError', 'AssertionError', 'RigorError']
+    RegressionError    issubclass(RigorError)=True   mro=['RegressionError', 'StatisticalAssertionError', 'AssertionError', 'RigorError']
+    RubricDriftError   issubclass(RigorError)=True   mro=['RubricDriftError', 'RigorError', 'Exception', 'BaseException']
+    ```
+
+    A rigor release that *added* `RigorError` to `AdapterError`'s or
+    `SampleTimeout`'s bases would not break anything here; it would only make
+    those two tuple entries redundant. Removing `RigorError` from one of the other
+    six would.
+
 A rigor release does **not** break model-migration-kit by adding names, adding optional
-keywords, changing the Opik integration, or changing anything about `Baseline`,
-`assert_score_distribution`, or the `anthropic` and `openai` adapters — none of
-which is imported here.
+keywords, changing the Opik integration, or changing anything about `Baseline` or
+`assert_score_distribution` — neither of which is imported here. Nor by changing
+what either provider adapter does *on the wire*: `complete()` is never called on
+one in this project's tests, its CI, or `migkit demo`, all of which run keyless
+(§7.7). The adapters' *import, construction and no-credential failure* are relied
+on; their request bodies, retries, and provider SDK usage are not.
 
 ---
 
@@ -684,11 +811,32 @@ change with the flag.
 
 ---
 
-## 5. Friction found here that is **not** on rigor's roadmap
+## 5. Friction found here that rigor's roadmap did **not** already have
 
 Recorded rather than worked around, per invariant 1. None of these blocks
 Session 2; all are cheap for rigor to fix and expensive for a consumer to
 discover.
+
+**Status of A–F, as of the verification date at the top of this file.** Each was
+filed against rigor after this section recorded it and now appears on rigor's
+roadmap as items 10–15 (`opik-rigor/PROGRESS.md`), and rigor's working tree
+records all six as closed under its `CHANGELOG.md` `[Unreleased]` heading and its
+"Phase 3 — closing the recorded gaps" section. **That work is unreleased**: rigor's
+tree is at commit `c5e43e9` with `version = "0.1.0"` still in its
+`pyproject.toml`, and nothing in it has reached PyPI. So every item below still
+describes the wheel model-migration-kit installs and runs against, and none of
+it may be relied on here yet. Re-verify this section against the installed
+package — not against the sibling checkout — on the first rigor release that
+lands them.
+
+```
+$ git -C ..\opik-rigor log --oneline -1 --decorate
+c5e43e9 (HEAD -> main, origin/main, origin/HEAD) Merge Phase 3: close six recorded gaps, additively
+$ git -C ..\opik-rigor tag
+v0.1.0
+$ .\.venv\Scripts\python.exe -c "import opik_rigor; print(opik_rigor.__version__)"
+0.1.0
+```
 
 **A. `opik-rigor` ships no `py.typed` marker.**
 
@@ -757,35 +905,92 @@ confusion as §3.1 — a structural problem reported as an empty result. Disting
 "n runs, none of which carried a score" from "no runs" in the message would name
 the actual mistake.
 
-**E. The published wheel contains no example rubric.**
+**E. The published wheel contains no example rubric.** True of the installed
+0.1.0, which is what this project runs against. Verified by walking the installed
+package rather than by reading rigor's repository — it ships no `.md` file at all:
 
 ```
-files shipped in opik_rigor package:
-   __init__.py  adapters/…  baseline.py  distribution.py  errors.py  evidence.py
-   integrations/…  judge.py  pinning.py  sampling.py
+$ .\.venv\Scripts\python.exe -c "from pathlib import Path; import opik_rigor; r=Path(opik_rigor.__file__).parent; print(sorted(p.relative_to(r).as_posix() for p in r.rglob('*') if '__pycache__' not in p.parts)); print('markdown files:', [p.name for p in r.rglob('*.md')])"
+['__init__.py', 'adapters', 'adapters/__init__.py', 'adapters/anthropic.py',
+ 'adapters/base.py', 'adapters/fake.py', 'adapters/openai_compat.py',
+ 'baseline.py', 'distribution.py', 'errors.py', 'evidence.py', 'integrations',
+ 'integrations/__init__.py', 'integrations/opik.py',
+ 'integrations/pytest_plugin.py', 'judge.py', 'pinning.py', 'sampling.py']
+markdown files: []
 ```
 
-`rubrics/example-rubric.md` exists in rigor's repository and its README points at
-it (`README.md:117`, "Save a rubric as `rubric.md` (the one in
-`rubrics/example-rubric.md` ...")  — but it is not packaged, so
-`pip install opik-rigor` gives a consumer a
-`PinnedJudge` and nothing to point it at. model-migration-kit wrote its own
-(`src/model_migration_kit/data/demo_rubric.md`), which is arguably correct anyway — but
-the first thing a new user of the judge needs is a rubric that parses, and the
-install does not include one. Related and worth stating because it is *not* a
-problem: because `PROMPT_TEMPLATE` already appends `OUTPUT_FORMAT_INSTRUCTION`, a
-rubric copied from rigor's repository example would carry the format block twice
-in the rendered prompt — that example ends with the instruction, verified against
-the file in the sibling checkout:
+So `pip install opik-rigor==0.1.0` gives a consumer a `PinnedJudge` and nothing to
+point it at. At the `v0.1.0` tag the example lived at `rubrics/example-rubric.md`,
+outside the package directory, and the README linked it as a repository path
+(`README.md:119` at that tag) — which is why it was not in the wheel:
 
 ```
-example rubric ends with OUTPUT_FORMAT_INSTRUCTION: True
+$ git -C ..\opik-rigor ls-tree -r v0.1.0 --name-only | grep rubric
+rubrics/example-rubric.md
+$ git -C ..\opik-rigor show v0.1.0:README.md | grep -n "rubrics/example-rubric"
+119:Save a rubric as `rubric.md` (the one in [`rubrics/example-rubric.md`](rubrics/example-rubric.md)
 ```
+
+model-migration-kit wrote its own (`src/model_migration_kit/data/demo_rubric.md`),
+which is arguably correct anyway — but the first thing a new user of the judge
+needs is a rubric that parses, and the install does not include one.
+
+**Where this stands in rigor's tree — unreleased, and it also invalidates the
+caveat this entry used to carry.** rigor has moved the example into the package at
+`src/opik_rigor/rubrics/example-rubric.md`, reachable as
+`opik_rigor.example_rubric_path()`, and its README now says the rubric "ships
+**inside the package**" (`README.md:117-121` at commit `c5e43e9`) instead of
+linking a repository path. The old `rubrics/` directory is gone. None of this is
+in 0.1.0 — `example_rubric_path` is neither an attribute of the installed package
+nor in its `__all__` — so the paragraph above still describes what a consumer
+gets today.
+
+This file previously warned that a rubric copied from rigor's example would carry
+`OUTPUT_FORMAT_INSTRUCTION` twice in the rendered prompt, because
+`PROMPT_TEMPLATE` already appends it. **That was true of the `v0.1.0` file and is
+no longer true of the one in rigor's tree**, which no longer contains the
+instruction at all:
+
+```
+$ .\.venv\Scripts\python.exe -c "from pathlib import Path; import opik_rigor; from opik_rigor.judge import OUTPUT_FORMAT_INSTRUCTION as OFI; print('example_rubric_path in installed 0.1.0:', hasattr(opik_rigor,'example_rubric_path'), '| in __all__:', 'example_rubric_path' in opik_rigor.__all__); t=Path(r'..\opik-rigor\src\opik_rigor\rubrics\example-rubric.md').read_text(encoding='utf-8'); print('sibling-tree rubric contains OUTPUT_FORMAT_INSTRUCTION:', OFI.strip() in t)"
+example_rubric_path in installed 0.1.0: False | in __all__: False
+sibling-tree rubric contains OUTPUT_FORMAT_INSTRUCTION: False
+
+$ git -C ..\opik-rigor show v0.1.0:rubrics/example-rubric.md > %TEMP%\v010-rubric.md
+$ .\.venv\Scripts\python.exe -c "import os; from pathlib import Path; from opik_rigor.judge import OUTPUT_FORMAT_INSTRUCTION as OFI; t=Path(os.environ['TEMP'], 'v010-rubric.md').read_text(encoding='utf-8'); print('v0.1.0-tagged rubric ends with OUTPUT_FORMAT_INSTRUCTION:', t.rstrip().endswith(OFI.strip()))"
+v0.1.0-tagged rubric ends with OUTPUT_FORMAT_INSTRUCTION: True
+```
+
+The double-instruction hazard therefore belongs to the `v0.1.0` example only. It
+never affected model-migration-kit, whose own `data/demo_rubric.md` carries no
+format block (§4.7).
 
 **F. Three names model-migration-kit needs are not in `__all__`** — `SCORE_MIN`,
 `SCORE_MAX` and `hash_rubric_file`. Detailed in §1; repeated here because it is
 the one item on this list that model-migration-kit is *relying* on rather than merely
 tripping over.
+
+rigor's unreleased tree exports all three from the package root, plus
+`hash_rubric_text`. **Not in 0.1.0**, verified against the installed package, so
+the three `from opik_rigor.judge import ...` lines in §1's enumeration
+(`judging.py:47`, `tests/test_comparison.py:52`, `tests/test_judging.py:47`) must
+stay as they are until a release that carries the re-exports is the one pinned
+here:
+
+```
+$ .\.venv\Scripts\python.exe -c "import opik_rigor; [print(f'  {n:18} top-level attr in installed 0.1.0: {hasattr(opik_rigor, n)}') for n in ('SCORE_MIN','SCORE_MAX','hash_rubric_file','hash_rubric_text')]"
+  SCORE_MIN          top-level attr in installed 0.1.0: False
+  SCORE_MAX          top-level attr in installed 0.1.0: False
+  hash_rubric_file   top-level attr in installed 0.1.0: False
+  hash_rubric_text   top-level attr in installed 0.1.0: False
+```
+
+When it lands, moving those three import lines is the whole migration, and §2
+item 7 relaxes from "importable from `opik_rigor.judge`" to "importable at all".
+Because the change is additive, the `opik_rigor.judge` path is expected to keep
+working — but that is rigor's stated intent, not something verifiable from here,
+so nothing in this file should be rewritten on the strength of it before the
+release exists.
 
 ---
 
@@ -855,8 +1060,13 @@ their credibility.
 6. **`assert_score_distribution` and `Baseline` were not verified**, because
    model-migration-kit does not import them.
 7. **No live provider adapter was called.** `AnthropicAdapter` and
-   `OpenAICompatAdapter` were introspected, never invoked; there are no
-   credentials in this environment and CI blanks them.
+   `OpenAICompatAdapter` were introspected and *constructed* — with and without a
+   credential in the environment, which is what §2 items 12 and 13 rest on — but
+   `complete()` was never invoked on either, so nothing here describes a request
+   this project sends or a response it parses. There are no credentials in this
+   environment and CI blanks them; the only value ever put in `ANTHROPIC_API_KEY`
+   or `OPENAI_API_KEY` while writing this file was the literal `x`, to get past
+   the constructor's env check.
 8. **Judge behaviour was verified against `FakeAdapter`,** so §4.7 describes
    rigor's *parser*, not how any real model actually answers. The parse-failure
    tolerance in `judging.py` exists precisely because that number is unknown.
