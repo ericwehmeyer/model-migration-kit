@@ -17,6 +17,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 import tarfile
+import types
 import zipfile
 from pathlib import Path
 
@@ -149,10 +150,19 @@ def test_unknown_licence_text_yields_none_rather_than_a_guess():
 # ----------------------------------------------------------------------------------
 
 
-def test_pip_install_targets_are_extracted_from_prose_and_fences():
-    # Still true, but no longer for the reason the name gives: under
-    # `docs/readme-scan-contract.md` rule 1 the trailing prose sentence is not
-    # scanned at all, so the single target comes from the fence alone.
+def test_a_mixed_document_takes_its_targets_from_the_fence_alone():
+    """Rule 1 on a whole document rather than a single line: one fenced install and
+    one loose one, and only the fence is a claim.
+
+    Renamed and rewritten from test_pip_install_targets_are_extracted_from_prose_and_fences,
+    whose name promised targets came from *both*. It passed under the contract, but not
+    for any reason it could detect: its prose was `python -m pip install -e ".[dev]"`,
+    which yields nothing whether it is scanned or not, so the assertion could not tell
+    rule 1 from a flat-text scan. The unfenced line here names `migkit` -- the console
+    script, not the distribution -- and sits at the head of its line, where rule 2
+    cannot save it either. Scanning this document flat yields
+    `['model-migration-kit', 'migkit']`, so rule 1 is the only thing keeping this
+    green: mutating `readme_pip_install_targets` to read the whole text turns it red."""
     readme = """
 # model-migration-kit
 
@@ -160,59 +170,13 @@ def test_pip_install_targets_are_extracted_from_prose_and_fences():
 $ pip install model-migration-kit
 ```
 
-Or from a checkout: `python -m pip install -e ".[dev]"`.
+An older draft of this README told people to run
+
+pip install migkit
+
+which names the console script rather than the distribution, and never worked.
 """
     assert vr.readme_pip_install_targets(readme) == ["model-migration-kit"]
-
-
-@pytest.mark.xfail(
-    reason="asserts pre-contract behaviour: `docs/readme-scan-contract.md` rule 1 scans "
-    "only fenced blocks, and its last clause explicitly refuses four-space indented code "
-    "(table row F9), so this unfenced indented line now yields []. The behaviour it means "
-    "to protect is kept in test_a_fenced_pip_install_names_the_console_script.",
-)
-def test_pip_install_of_the_console_script_name_is_caught():
-    """The sibling published `pip install opik-opik_rigor`. The shape of that
-    defect is a README naming something that is not the distribution."""
-    targets = vr.readme_pip_install_targets("    pip install migkit\n")
-    assert targets == ["migkit"]
-    assert vr.normalize_project_name(targets[0]) != vr.normalize_project_name(vr.DIST_NAME)
-
-
-@pytest.mark.xfail(
-    reason="asserts pre-contract behaviour: none of these lines are fenced, and "
-    "`docs/readme-scan-contract.md` rule 1 makes unfenced text prose, so this now yields []. "
-    "The argument filter it exercises is unchanged and is re-covered, fenced, by "
-    "test_the_argument_filter_still_drops_paths_wheels_and_flag_values.",
-)
-def test_pip_install_ignores_paths_wheels_and_flag_values():
-    readme = "\n".join(
-        [
-            "pip install dist/model_migration_kit-0.1.0-py3-none-any.whl",
-            "pip install -r requirements.txt",
-            "pip install --index-url https://test.pypi.org/simple/ model-migration-kit==0.1.0",
-            "pip install .",
-            r"pip install C:\wheels\thing.whl",
-        ]
-    )
-    assert vr.readme_pip_install_targets(readme) == ["model-migration-kit"]
-
-
-@pytest.mark.xfail(
-    reason="asserts pre-contract behaviour: `migkit demo` here is an inline code span in "
-    "prose, which `docs/readme-scan-contract.md` rule 1 (and table row C7) calls a mention "
-    "rather than an instruction, so the expected list is now ['compare', 'report'].",
-)
-def test_readme_commands_finds_every_invocation_shape():
-    readme = """
-Run `migkit demo` to see it work.
-
-```powershell
-migkit compare --baseline a.jsonl --candidate b.jsonl
-& "$tmp\\Scripts\\migkit.exe" report --out r.html
-```
-"""
-    assert vr.readme_cli_commands(readme) == ["compare", "demo", "report"]
 
 
 def test_bare_prog_name_in_prose_is_not_a_command():
@@ -617,14 +581,21 @@ def test_readme_naming_the_real_distribution_passes(tmp_path):
     assert vr.check_readme_pip_install(tmp_path).status == vr.PASS
 
 
-def test_readme_may_install_a_declared_dependency(tmp_path):
-    # Passes under the contract too, but note the line is unfenced: after the
-    # rule 1 rewrite this asserts "an unfenced line is not a claim", not "a
-    # dependency is an allowed target". The fenced form is asserted in
-    # test_a_fenced_install_of_a_declared_dependency_is_allowed.
+def test_an_unfenced_install_line_is_not_a_claim_the_check_makes(tmp_path):
+    """Rule 1 at the level of the whole check, not just the extractor.
+
+    Renamed from test_readme_may_install_a_declared_dependency, which said it was
+    about the dependency allowlist and after the rule 1 rewrite never reached that
+    branch: an unfenced line yields no targets at all, so the PASS came from the
+    "nothing to get wrong" path. The summary is asserted for that reason -- it is the
+    only thing that distinguishes the two ways this check can say PASS, and without
+    it the test would keep passing whichever branch ran. The allowlist branch is
+    covered fenced, by test_a_fenced_install_of_a_declared_dependency_is_allowed."""
     _write_pyproject(tmp_path)
     (tmp_path / "README.md").write_text("pip install opik-rigor\n", encoding="utf-8")
-    assert vr.check_readme_pip_install(tmp_path).status == vr.PASS
+    result = vr.check_readme_pip_install(tmp_path)
+    assert result.status == vr.PASS
+    assert "no `pip install" in result.summary
 
 
 def test_readme_with_no_install_line_passes_and_says_so(tmp_path):
@@ -633,21 +604,6 @@ def test_readme_with_no_install_line_passes_and_says_so(tmp_path):
     result = vr.check_readme_pip_install(tmp_path)
     assert result.status == vr.PASS
     assert "no `pip install" in result.summary
-
-
-@pytest.mark.xfail(
-    reason="asserts pre-contract behaviour: the only invocation here is an inline code span "
-    "in prose (`docs/readme-scan-contract.md` rule 1, table row C7), so the README now shows "
-    "no commands and the check has nothing to verify -- PASS, not SKIP. The SKIP path itself "
-    "is re-covered by test_a_fenced_command_still_skips_when_the_cli_is_not_this_tree.",
-)
-def test_readme_commands_skip_when_the_cli_is_not_this_tree(tmp_path):
-    """Verifying README commands against an importable CLI from a *different*
-    checkout would be a claim about someone else's code."""
-    (tmp_path / "README.md").write_text("Run `migkit demo` now.\n", encoding="utf-8")
-    result = vr.check_readme_commands(tmp_path)
-    assert result.status == vr.SKIP
-    assert "demo" in " ".join(result.evidence)
 
 
 def test_readme_without_commands_needs_no_cli(tmp_path):
@@ -750,6 +706,21 @@ def test_four_space_indented_code_is_not_recognised_as_a_block():
     the contract deliberately does not, because an indented *prose* block read as
     shell is the mistake being fixed."""
     assert vr.fenced_code_blocks("    indented code\n") == []
+
+
+def test_an_indented_install_line_is_invisible_and_that_is_the_accepted_cost():
+    """F9 carried through to the check that consumes it, using the exact input of the
+    retired test_pip_install_of_the_console_script_name_is_caught.
+
+    The retired test asserted this line yields `['migkit']`; rule 1's last clause says
+    it yields nothing. The contract wins -- an indented *prose* block read as shell is
+    defect (1) -- but the cost is a blind spot in the direction that fails quiet: a
+    README that switched to indented code blocks would take both README checks to a
+    silent PASS. Asserted here so the loss is a decision on the record rather than an
+    accident, and so that anyone who later changes rule 1 changes this line with it.
+    The defect shape itself -- a README naming the console script instead of the
+    distribution -- survives fenced, in test_a_fenced_pip_install_names_the_console_script."""
+    assert vr.readme_pip_install_targets("    pip install migkit\n") == []
 
 
 # ----------------------------------------------------------------------------------
@@ -868,7 +839,7 @@ def test_a_powershell_prompt_and_the_py_launcher_are_both_recognised():
 def test_the_argument_filter_still_drops_paths_wheels_and_flag_values():
     """The contract says the existing argument filter is "unchanged and still
     correct", so its coverage has to survive rule 1 -- this is the fenced version of
-    the now-xfailed test_pip_install_ignores_paths_wheels_and_flag_values."""
+    the retired test_pip_install_ignores_paths_wheels_and_flag_values, line for line."""
     readme = _fenced(
         "pip install dist/model_migration_kit-0.1.0-py3-none-any.whl",
         "pip install -r requirements.txt",
@@ -879,10 +850,48 @@ def test_the_argument_filter_still_drops_paths_wheels_and_flag_values():
     assert vr.readme_pip_install_targets(readme) == ["model-migration-kit"]
 
 
+# The three below were written after mutation-testing the block above: every line in
+# it is dropped by *two* filters at once, so deleting any single filter from
+# `_pip_argument_names` leaves it green. Each of these isolates one filter on an
+# argument no other filter would catch, which is what makes the name of the test
+# above true rather than merely lucky. The gap predates the contract rewrite -- the
+# unfenced original it replaces had exactly the same five lines.
+
+
+def test_a_path_that_is_not_a_wheel_is_still_not_a_distribution_name():
+    """Isolates the `/` and `\\` filter, one assertion per separator. Every path
+    elsewhere in this file also ends in `.whl` or starts with `.`, so the path rule is
+    never the only thing standing between it and a bogus package name; a source
+    checkout installed by path has neither."""
+    posix = "pip install src/model_migration_kit"
+    windows = r"pip install C:\checkouts\model_migration_kit"
+    assert vr.readme_pip_install_targets(_fenced(posix)) == []
+    assert vr.readme_pip_install_targets(_fenced(windows)) == []
+
+
+def test_a_wheel_in_the_current_directory_is_still_not_a_distribution_name():
+    """Isolates the `.whl`/`.tar.gz` suffix filter. Every wheel elsewhere in this file
+    is written with a path in front of it, so the path rule catches it first and the
+    suffix rule is never the reason -- but `python -m build` leaves artifacts in
+    `dist/` and the README's own transcripts `cd` into it."""
+    wheel = "pip install model_migration_kit-0.1.0-py3-none-any.whl"
+    sdist = "pip install model-migration-kit-0.1.0.tar.gz"
+    assert vr.readme_pip_install_targets(_fenced(wheel)) == []
+    assert vr.readme_pip_install_targets(_fenced(sdist)) == []
+
+
+def test_the_value_of_a_flag_is_not_a_distribution_name():
+    """Isolates `_PIP_FLAGS_WITH_VALUE`. The flag values elsewhere in this file are a
+    URL and a `.txt`, both of which other filters would drop anyway; `--target vendor`
+    is a bare word, and reading it as a package name would fail the release on an
+    argument that names a directory."""
+    assert vr.readme_pip_install_targets(_fenced("pip install --target vendor rich")) == ["rich"]
+
+
 def test_a_fenced_pip_install_names_the_console_script():
-    """The sibling published `pip install opik-opik_rigor`; the fenced version of
-    the now-xfailed test_pip_install_of_the_console_script_name_is_caught keeps that
-    defect shape covered."""
+    """The sibling published `pip install opik-opik_rigor`; the fenced version of the
+    retired test_pip_install_of_the_console_script_name_is_caught keeps that defect
+    shape -- a README naming something that is not the distribution -- covered."""
     targets = vr.readme_pip_install_targets(_fenced("pip install migkit"))
     assert targets == ["migkit"]
     assert vr.normalize_project_name(targets[0]) != vr.normalize_project_name(vr.DIST_NAME)
@@ -937,11 +946,41 @@ def test_an_inline_code_span_in_prose_is_a_mention_not_an_invocation():
     assert vr.readme_cli_commands("`migkit demo` runs the whole flow\n") == []
 
 
+def test_a_forgotten_fence_leaves_an_invocation_unread():
+    """Rule 1 for `readme_cli_commands`, isolated -- and it needs isolating, because
+    every other prose case in this file is *also* stopped by rule 2 and so cannot tell
+    the two rules apart. C7's inline span begins with a backtick and the README's own
+    "`migkit` answers ..." begins with one too, which is not command position however
+    the text is scanned. A line that lost its fence is the case where rule 1 is the
+    only thing standing between an example and the scanner, and it is the likeliest
+    one to occur: an edit that drops three backticks looks like nothing in review."""
+    assert vr.readme_cli_commands("Run this:\n\nmigkit demo\n\nand read the report.\n") == []
+
+
 def test_subcommands_are_deduplicated_and_sorted():
     """Contract table C8."""
     assert vr.readme_cli_commands(
         _fenced("migkit run --n 20 && migkit compare --baseline x")
     ) == ["compare", "run"]
+
+
+def test_every_line_of_a_block_is_read_not_just_the_first():
+    """The one thing the retired test_readme_commands_finds_every_invocation_shape
+    covered that no contract row does: its block held *two* invocations, on two lines,
+    in two different shapes. C1, C3 and C4 each show a single line, so a scanner that
+    stopped at the first match in a block would satisfy all three and still miss half
+    of the README's quickstart. Without this, the only test that would notice is the
+    characterisation one against the real README, and that is hostage to how the
+    README happens to be laid out on the day -- move one command into a block of its
+    own and the coverage evaporates silently.
+
+    The block is the retired test's, minus the inline code span C7 now excludes."""
+    block = _fenced(
+        "migkit compare --baseline a.jsonl --candidate b.jsonl",
+        r'& "$tmp\Scripts\migkit.exe" report --out r.html',
+        info="powershell",
+    )
+    assert vr.readme_cli_commands(block) == ["compare", "report"]
 
 
 def test_a_filename_containing_the_program_name_is_not_an_invocation():
@@ -955,22 +994,58 @@ def test_a_bare_program_name_alone_on_a_fenced_line_is_not_an_invocation():
 
 
 def test_a_fenced_command_still_skips_when_the_cli_is_not_this_tree(tmp_path):
-    """Fenced version of the now-xfailed
-    test_readme_commands_skip_when_the_cli_is_not_this_tree: verifying commands
-    against an importable CLI from a *different* checkout would be a claim about
-    someone else's code, so the SKIP path must still exist."""
+    """Fenced version of the retired test_readme_commands_skip_when_the_cli_is_not_this_tree:
+    a README that shows a command, against a tree that is not where the CLI lives,
+    must not be reported as verified.
+
+    Which of the two SKIP branches this lands in depends on the machine -- "not
+    importable" when the distribution is not installed, "different tree" when it is
+    installed from another checkout, which is the normal state in a worktree. Both are
+    the same verdict for the same reason and either is correct here; the branch itself
+    is pinned, machine-independently, by the test below."""
     (tmp_path / "README.md").write_text("```bash\nmigkit demo\n```\n", encoding="utf-8")
     result = vr.check_readme_commands(tmp_path)
     assert result.status == vr.SKIP
     assert "demo" in " ".join(result.evidence)
 
 
+def test_a_cli_importable_from_another_checkout_is_a_skip_not_a_pass(tmp_path, monkeypatch):
+    """The guard the retired test existed for, isolated so it cannot pass by accident.
+
+    Verifying README commands against an importable CLI from a *different* checkout
+    would be a claim about someone else's code, and PASS is the one answer that would
+    be a lie -- the README under verification could show a command that only the other
+    tree has. The probe is stubbed because the branch is otherwise reachable only when
+    the distribution happens to be installed from elsewhere."""
+    (tmp_path / "README.md").write_text("```bash\nmigkit demo\n```\n", encoding="utf-8")
+    elsewhere = tmp_path.parent / "some-other-checkout" / "model_migration_kit" / "cli.py"
+    elsewhere.parent.mkdir(parents=True, exist_ok=True)
+    elsewhere.write_text("def main(argv=None):\n    return 0\n", encoding="utf-8")
+
+    def fake_run(cmd, cwd=None):
+        # Success for *every* subprocess, including the per-command `--help` probes:
+        # if the guard stops firing, the check walks on and reports PASS, and this
+        # test goes red rather than agreeing with it.
+        return types.SimpleNamespace(returncode=0, stdout=f"{elsewhere}\n", stderr="")
+
+    monkeypatch.setattr(vr, "run", fake_run)
+    result = vr.check_readme_commands(tmp_path)
+    assert result.status == vr.SKIP
+    assert "different tree" in result.summary
+    assert "demo" in " ".join(result.evidence)
+
+
 def test_a_fenced_install_of_a_declared_dependency_is_allowed(tmp_path):
-    """Fenced version of test_readme_may_install_a_declared_dependency, which after
-    rule 1 no longer reaches the dependency-allowlist branch at all."""
+    """The dependency-allowlist branch, which an unfenced install line no longer
+    reaches -- see test_an_unfenced_install_line_is_not_a_claim_the_check_makes, the
+    renamed test that used to stand for this one. A declared dependency is a name the
+    README is allowed to tell a user to install; the evidence is asserted because it
+    is what separates "judged and allowed" from "never looked at"."""
     _write_pyproject(tmp_path)
     (tmp_path / "README.md").write_text("```\npip install opik-rigor\n```\n", encoding="utf-8")
-    assert vr.check_readme_pip_install(tmp_path).status == vr.PASS
+    result = vr.check_readme_pip_install(tmp_path)
+    assert result.status == vr.PASS
+    assert "pip install opik-rigor" in " ".join(result.evidence)
 
 
 # ----------------------------------------------------------------------------------
