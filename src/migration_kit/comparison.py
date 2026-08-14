@@ -79,7 +79,7 @@ from opik_rigor import (
 )
 
 from .contracts import EVENT_COMPARISON, EVENT_VERDICT, Verdict, utc_now
-from .errors import ArtifactError, JudgeConfigError
+from .errors import ArtifactError, DependencyContractError, JudgeConfigError
 from .judging import JudgedArtifact, JudgeRecord, Thresholds
 from .runner import RunArtifact
 
@@ -965,8 +965,7 @@ def _compare_one_judge(
     cand_gate, floor_cleared, floor_stats = _pass_rate(
         cand_counted, thresholds, evidence, f"{name}:candidate"
     )
-    underpowered = bool(floor_stats.get("underpowered", False))
-    runs_needed = floor_stats.get("runs_needed")
+    underpowered, runs_needed = _floor_power(floor_stats, floor_cleared, name)
 
     base_scores, cand_scores, test_ran, note, missing = _scores(base_counted, cand_counted)
     regression: Mapping[str, Any] | None = None
@@ -1275,6 +1274,41 @@ def _item_states(records: Sequence[JudgeRecord]) -> dict[str, tuple[int, int, st
         item_id: (passes, n, item_state(passes, n))
         for item_id, (passes, n) in counts.items()
     }
+
+
+def _floor_power(
+    floor_stats: Mapping[str, Any], floor_cleared: bool, judge: str
+) -> tuple[bool, int | None]:
+    """rigor's own power verdict on the floor gate, or a refusal to guess.
+
+    This reads two keys off a *failed* ``assert_pass_rate``: ``underpowered`` and
+    ``runs_needed``. Both are rigor's, not ours, and that is the point -- the
+    alternative was a derived version that called 38/40 against a 0.90 floor a
+    demonstrated failure where rigor calls it an underpowered sample needing about
+    113 runs.
+
+    The refusal matters more than the read. A plain ``.get("underpowered", False)``
+    is a silent wrong answer if a future rigor release stops setting the key: the
+    absent flag reads as "powered", the row takes clause 2 instead of clause 3, and
+    a REVIEW becomes a NO-GO with nothing raised anywhere. A migration blocked by a
+    verdict nobody can trace is worse than a tool that stops and says why, so a
+    missing key is an error rather than a default. The weekly drift canary exists
+    to find this on a Monday rather than in someone's pipeline.
+
+    Nothing is read when the gate passed: rigor only reports these on failure, and
+    a cleared floor is not an underpowered one.
+    """
+    if floor_cleared:
+        return False, None
+    if "underpowered" not in floor_stats:
+        raise DependencyContractError(
+            f"opik-rigor's failed pass-rate report for judge {judge!r} carries no "
+            f"'underpowered' flag. This build reads that flag to tell a demonstrated "
+            f"failure (NO-GO) from a sample too small to judge (REVIEW), and guessing "
+            f"either way would produce a verdict that cannot be traced to evidence. "
+            f"Keys present: {sorted(floor_stats)}."
+        )
+    return bool(floor_stats["underpowered"]), floor_stats.get("runs_needed")
 
 
 def _item_counts(states: Mapping[str, tuple[int, int, str]]) -> dict[str, int]:

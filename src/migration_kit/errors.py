@@ -68,6 +68,23 @@ class ConfigError(MigrationKitError):
     """Raised when the TOML configuration is invalid or a threshold is nonsense."""
 
 
+class DependencyContractError(MigrationKitError):
+    """Raised when opik-rigor's output no longer has the shape this build reads.
+
+    Not a defensive flourish. migration-kit consumes rigor's report dictionaries
+    by string key, and one of those keys -- ``underpowered`` on a failed pass-rate
+    gate -- is what separates "this model demonstrably missed the bar" (NO-GO)
+    from "this sample is too small to say" (REVIEW). If the key ever disappears,
+    a `.get(..., False)` would read as *powered*, and a REVIEW would silently
+    become a NO-GO: a blocked migration, a wrong verdict, and nothing raised
+    anywhere to say so.
+
+    So the rule is that a missing key stops the comparison and names what is
+    missing. A tool whose entire claim is that its verdicts are traceable cannot
+    issue one by guessing at its instrument's output.
+    """
+
+
 class ReportError(MigrationKitError):
     """Raised when a report cannot be rendered from the evidence it was given.
 
