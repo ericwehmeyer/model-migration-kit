@@ -385,6 +385,20 @@ Recorded entering Session 2 unless noted, and re-checked against the tree on
   wrong the day the scale moves, and hashing a rubric differently from rigor means
   the two disagree about whether the instrument changed. Recorded as rigor roadmap
   item 10 (commit `4bb7935`) and closed there.
+
+  **One deliberate exception, added the same day and worth naming rather than
+  hiding:** `tests/test_stranger_path.py:702-703` imports
+  `opik_rigor.adapters.anthropic` and `.openai_compat` to read their `PACKAGE`
+  constants, which are not in rigor's `__all__`. It is test-only, it touches no
+  shipped code, and its whole purpose is drift detection — it asserts that the SDK
+  names this CLI tells a user to `pip install` are the ones rigor is actually about
+  to import, so an upstream rename fails a test here instead of sending a reader to
+  install the wrong package. That is the opposite of a hidden dependency, but it
+  does mean `grep -rn "from opik_rigor\." src tests` is no longer empty, and a
+  claim that it is would be wrong. `src/` is still clean. If rigor ever exports
+  `PACKAGE`, fold this in; until then it is a recorded, argued exception rather
+  than an unnoticed one — which is the whole distinction this section exists to
+  draw.
 - **`tokens_in`/`tokens_out` are always `None`.** rigor's `Adapter` protocol is
   `model_id` plus `complete(str) -> str` and exposes no usage data, so a cost gate
   cannot be built without reaching past the seam. Recorded as roadmap item 9 in

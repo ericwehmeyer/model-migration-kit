@@ -87,6 +87,7 @@ table — so the completeness claim is checkable rather than asserted.
 | `tests/test_report.py` | `EvidenceLog`, `wilson_interval` -- **plus** the module itself (`import opik_rigor`), read for `__version__` |
 | `tests/test_report_scale.py` | `EvidenceLog`, `FakeAdapter` |
 | `tests/test_runner.py` | `EvidenceLog`, `FakeAdapter`, `PassRateError`, `assert_pass_rate`, `sample_of` |
+| `tests/test_stranger_path.py` | `EvidenceLog`, `anthropic`, `openai_compat` |
 
 Enumerated by parsing every `.py` file rather than by grepping line starts,
 because a `grep "^from opik_rigor"` misses an import indented inside a function —
