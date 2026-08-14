@@ -1,5 +1,16 @@
 # model-migration-kit
 
+[![CI](https://github.com/ericwehmeyer/model-migration-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/ericwehmeyer/model-migration-kit/actions/workflows/ci.yml)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)](pyproject.toml)
+[![License Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
+
+<!-- Uncommented at release and not before. shields.io answers 200 for a name nobody
+     has uploaded and renders it as an error badge, so this line published early would
+     be a claim that the package exists. The CI badge above 404s until the repository
+     is created and made public, which is Phase 5 of docs/session-4-release-contract.md.
+[![PyPI](https://img.shields.io/pypi/v/model-migration-kit)](https://pypi.org/project/model-migration-kit/)
+-->
+
 Is it safe to move from model A to model B? `migkit` answers with **GO**,
 **NO-GO** or **REVIEW** — decided by Wilson intervals and a Mann-Whitney test over
 a golden set, not by eyeballing a handful of outputs — and returns an exit code a
@@ -233,16 +244,103 @@ esac
 Note that `2` exits non-zero there. REVIEW is not a pass, and a pipeline that
 treats it as one has re-introduced the guess this tool exists to remove.
 
-**What was verified, and how.** Exit `1` and exit `3` were produced by the real
-console script and are pasted here. Exits `0` and `2` were verified through the
-same entry point by the test suite rather than by a live run, because producing a
-GO or a REVIEW end to end needs a real judge and there are no credentials in this
-environment:
+### The four codes, against four fixtures
+
+`tests/fixtures/` holds a pair of run artifacts per code — `go-a.jsonl` and
+`go-b.jsonl`, then `nogo-`, `review-` and `error-` — plus the `goldenset.jsonl`
+they were sampled against, the `rubric.md` the judge applies, and the
+`judges.toml` that names the judge and every threshold. Each pair genuinely
+produces the verdict its name claims, and none of it was hand-written:
+`tests/fixtures/make_fixtures.py` scripts two `FakeAdapter`s per case and lets
+`comparison.compare` decide, which is how `migkit demo` works and is the only way
+to get a fixture whose verdict is a result rather than an assertion.
+
+The four verdicts, re-derived from the committed artifacts, together with the
+check that a rebuild reproduces those artifacts byte for byte:
+
+```
+$ python tests/fixtures/make_fixtures.py --check
+11 committed fixture files are byte-identical to a rebuild
+go     -> GO      exit 0  ok  (rule 5: No judge regressed, every judge cleared the pass-rate floor, and every judge had enough completions to have seen the configured minimum effect.)
+nogo   -> NO-GO   exit 1  ok  (rule 1: Judge 'accuracy' shows a statistically significant regression after Holm-Bonferroni correction across judges.)
+review -> REVIEW  exit 2  ok  (rule 4: Judge 'accuracy' has too few completions to detect the configured minimum effect at the configured power, so 'no regression detected' would be a question never asked.)
+migkit: ArtifactError: the golden set at tests/fixtures/goldenset.jsonl has changed since fixture-error-baseline-v1 was run (84d623332ed60ad5 now, b3c2853a494d3472 then). Judging these completions against it would grade answers to questions nobody asked.
+error  -> ERROR   exit 3  ok  (migkit compare refused the pair)
+```
+
+Each case is a situation rather than a value someone typed. `go` is two models of
+equal quality that phrase two answers differently, at 12 items × n=5 — sixty
+completions a side, which clears the fifty-six the power approximation asks for,
+so "no regression detected" is a question that was actually asked. `review` is the
+same two models at n=3: thirty-six completions a side, under the bar, so the tool
+refuses to read "we saw nothing" as "there is nothing". `nogo` is a candidate that
+reads a subtotal as a total, complies with a request to announce a breach that did
+not happen, and invents a refund figure. `error` is a golden set that changed after
+the run — the drift guard, which fires before a judge is ever constructed.
+
+### `migkit compare` will not reach GO, NO-GO or REVIEW without a credential
+
+The table above is re-derived through the shipped `JudgeConfig.build`,
+`judge_artifact` and `compare`, with only the judge's *adapter* scripted. It has to
+be, and the reason is worth pasting rather than describing. Here is the same matrix
+run through the console script exactly as the release checklist writes it:
+
+```bash
+$ for f in go nogo review error; do
+    migkit compare --baseline tests/fixtures/$f-a.jsonl \
+                   --candidate tests/fixtures/$f-b.jsonl \
+                   --judges tests/fixtures/judges.toml
+    echo "$f -> $?"
+  done
+migkit: JudgeConfigError: judge 'accuracy' declares adapter = "fake". A scripted judge grading real completions produces numbers nothing in the report marks as invented. Use `migkit demo` for the keyless path.
+go -> 3
+migkit: JudgeConfigError: judge 'accuracy' declares adapter = "fake". A scripted judge grading real completions produces numbers nothing in the report marks as invented. Use `migkit demo` for the keyless path.
+nogo -> 3
+migkit: JudgeConfigError: judge 'accuracy' declares adapter = "fake". A scripted judge grading real completions produces numbers nothing in the report marks as invented. Use `migkit demo` for the keyless path.
+review -> 3
+migkit: ArtifactError: the golden set at tests/fixtures/goldenset.jsonl has changed since fixture-error-baseline-v1 was run (84d623332ed60ad5 now, b3c2853a494d3472 then). Judging these completions against it would grade answers to questions nobody asked.
+error -> 3
+```
+
+**That is the tool working, not a broken fixture**, and the first three lines say
+why: a scripted judge is refused outright, because a fake *model* is disclosed by
+the report's red band and a fake *judge* is not. Declaring a real judge instead
+does not help. The next two blocks use `$TMP/judges-anthropic.toml`, which is
+`tests/fixtures/judges.toml` with one word changed — `adapter = "anthropic"` — and
+is kept out of the repository so that nothing here can be mistaken for a config
+the fixtures were graded with. Both provider adapters read their credential at
+construction:
+
+```
+$ ANTHROPIC_API_KEY= migkit compare --baseline tests/fixtures/go-a.jsonl \
+      --candidate tests/fixtures/go-b.jsonl --judges $TMP/judges-anthropic.toml
+migkit: AdapterError: AnthropicAdapter needs the ANTHROPIC_API_KEY environment variable. Credentials are read from the environment only -- they are never accepted as constructor arguments -- so export ANTHROPIC_API_KEY before constructing the adapter.
+
+exit: 3
+```
+
+And supplying one does not help either, because the judge then does what a judge
+does — it starts spending the credential on the fixtures:
+
+```
+$ ANTHROPIC_API_KEY=not-a-real-key migkit compare --baseline tests/fixtures/go-a.jsonl \
+      --candidate tests/fixtures/go-b.jsonl --judges $TMP/judges-anthropic.toml
+migkit: judging with accuracy
+migkit: grading fixture-go-baseline-v1
+migkit: AdapterError: AnthropicAdapter needs the 'anthropic' package, which is not installed. Install it with: pip install anthropic
+
+exit: 3
+```
+
+So `migkit compare` is a credentialed verb by design, and the keyless half of the
+exit-code contract is checked two other ways. The fixture matrix above is one. The
+suite is the other — it drives `cli.main` through every code and pins the table to
+`contracts.Verdict.EXIT_CODES`:
 
 ```
 $ python -m pytest tests/test_cli.py -k "TestExitCodeContract"
 ..............                                                           [100%]
-14 passed, 63 deselected in 0.87s
+14 passed, 64 deselected in 0.84s
 ```
 
 Exit `3`, produced live:

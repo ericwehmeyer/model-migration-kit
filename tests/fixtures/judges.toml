@@ -1,0 +1,24 @@
+# Judges and thresholds for the exit-code fixtures.
+#
+# `adapter = "fake"` is the truth about how the fixtures were graded, and
+# `migkit compare` refuses it: a scripted judge grading real completions produces
+# numbers nothing in the report marks as invented. That refusal is why the four
+# verdicts below are re-derived by tests/fixtures/make_fixtures.py --check rather
+# than by `migkit compare`, which needs a provider credential to reach any verdict
+# at all. The `error` case does not, and is checked through the CLI.
+
+[[judge]]
+name    = "accuracy"
+model   = "fixture-judge-v1"
+adapter = "fake"
+rubric  = "rubric.md"
+
+[thresholds]
+# Identical to the bundled demo's, deliberately: a fixture that quietly loosened a
+# gate would prove that the gate can be loosened, not that the verdict logic works.
+pass_rate_floor         = 0.90
+alpha                   = 0.05
+confidence              = 0.95
+judge_failure_tolerance = 0.05
+min_detectable_effect   = 0.10
+power_target            = 0.80
