@@ -25,17 +25,14 @@ imported from it, none reimplemented. Apache-2.0, personal repo.
 3. **`src/model_migration_kit/contracts.py`** and **`errors.py`** — the frozen seams.
    Read them before writing anything that touches a golden set or an artifact.
 
-## Where the build stands (2026-08-13, ~23:00)
+## Where the build stands (2026-08-14, ~05:00)
 
-**Sessions 0 through 3 are complete, committed and pushed. 730 tests pass with 4
-xfailed, ruff clean.** Session 4 (release) is partly done and is the remaining
-work.
+**Sessions 0 through 3 are complete, committed and pushed. 847 tests pass, 0
+xfailed, ruff clean, and CI is green on Ubuntu and Windows across 3.10–3.13.**
+Session 4 (release) is partly done and is the remaining work.
 
-The 4 xfails are all in `tests/test_release_checks.py` and are deliberate: they
-assert the README scanner's pre-contract behaviour, each has a named fenced
-replacement beside it, and they are marked rather than deleted so that a human
-decides whether the replacement really covers the original's intent. Retiring
-them is a small, real task, not a formality.
+The 4 xfails this file used to describe are **gone** — retired, not deleted, with
+their fenced replacements in place. Do not go looking for them.
 
 Everything builds and runs. The headline check, which you should run first
 because it proves the whole pipeline in two seconds:
@@ -46,8 +43,16 @@ cd C:\Users\ewehm\repos\migration-kit
 ```
 
 Expect **exit 1** (NO-GO — that is the demo working; it exists to show the tool
-refusing an unsafe migration), about 2 seconds, and a self-contained HTML report
-carrying a red FAKE MODELS band. Exit 0 or 2 there means something regressed.
+refusing an unsafe migration), about 2.1 seconds measured over three runs, and a
+self-contained HTML report carrying a red FAKE MODELS band. Exit 0 or 2 there
+means something regressed.
+
+**The suite is now proved offline rather than described as offline.** CI runs it
+under `scripts/audit/netguard.py`, which makes every outbound connect and every
+DNS resolution raise. The release contract's old `-m "not requires_network"`
+deselected zero tests and guaranteed nothing. `scripts/audit/shuffle_order.py`
+is beside it for order-independence audits — not wired into CI; run it
+deliberately with `AUDIT_SHUFFLE_SEED` set.
 
 | Module | State |
 |---|---|
@@ -68,18 +73,14 @@ would invalidate every path in these docs for no packaging benefit.
 
 ## What is left, in order
 
-1. **Get CI green, and confirm it with your own eyes.** This was not on the list
-   before and should have been at the top of it: **CI had never once been green
-   on this repository.** All four Windows cells failed on a single test that
-   looked for the console script beside `sys.executable` — true in a venv and on
-   Ubuntu, false on GitHub's Windows toolcache, where the interpreter is in
-   `x64\` and scripts land in `x64\Scripts\`. Because `demo` and `build` declare
-   `needs: test`, neither had ever executed. The test now resolves the directory
-   through `sysconfig.get_path("scripts", …)`, which is where the installation
-   *declares* scripts go rather than where one layout happens to put them.
-   The fix is pushed and unverified on the real matrix. **Watch a run.** The
-   release contract's Phase 5 stops the release on a red matrix, so until you
-   have seen 8/8 green plus `demo` and `build`, nothing below this line counts.
+1. ~~**Get CI green.**~~ **Done, and watched.** CI had never once been green on
+   this repository: all four Windows cells failed on a test that looked for the
+   console script beside `sys.executable` — true in a venv and on Ubuntu, false
+   on GitHub's Windows toolcache, where the interpreter is in `x64\` and scripts
+   land in `x64\Scripts\`. Because `demo` and `build` declare `needs: test`,
+   neither had ever executed. The test now resolves the directory through
+   `sysconfig.get_path("scripts", …)`. **8/8 green plus `demo` and `build`,
+   confirmed on the real matrix and green on every push since.**
 2. **Version bump** `0.1.0.dev0` → `0.1.0`. This is now **one** edit, in
    `src/model_migration_kit/__init__.py`: the version is single-sourced through
    `dynamic = ["version"]` and `[tool.hatch.version]`. `verify_release.py` blocks
@@ -97,14 +98,40 @@ would invalidate every path in these docs for no packaging benefit.
    separate logins, different environment names), TestPyPI dry run, tag, release.
    Note the dry run is one-shot per version: TestPyPI burns a filename exactly
    as PyPI does, so do it only once the tree is what you intend to publish.
-4. **Retire the last invariant-1 violation.** `judging.py:47` imports `SCORE_MIN`
+4. **Retire the last invariant-1 violation. rigor 0.1.1 shipped on 2026-08-13,
+   so this is unblocked and ready to do.** `judging.py:47` imports `SCORE_MIN`
    and `hash_rubric_file` from `opik_rigor.judge`; `tests/test_comparison.py:52`
    and `tests/test_judging.py:47` do the same — **three** sites, not the one this
-   file used to claim, and not the names it used to list. rigor has exported them
-   from its package root (merged, unreleased) and a `0.1.1` is prepared. When it
-   ships, move the floor of the bound in `pyproject.toml` to `>=0.1.1,<0.2`, fold
-   the imports into the root import at all three sites, and delete the note in
-   PROGRESS.md's known gaps and the corresponding CHANGELOG limitation.
+   file used to claim, and not the names it used to list. rigor exports them from
+   its package root as of 0.1.1. Move the floor of the bound in `pyproject.toml`
+   to `>=0.1.1,<0.2`, fold the imports into the root import at all three sites,
+   and delete the note in PROGRESS.md's known gaps and the corresponding CHANGELOG
+   limitation.
+
+   Note a clean install already resolves 0.1.1 — the bound `>=0.1.0,<0.2` permits
+   it — so strangers have been getting 0.1.1 while this repo's long-lived `.venv`
+   still has 0.1.0. That is why `COMPATIBILITY.md`'s verified-against table says
+   0.1.0 and needs re-checking against what users actually get.
+
+5. **Known scale limits, measured but not fixed.** An audit ran the pipeline from
+   12 items to 1000 and found three silent degradations. Wall time stays linear
+   throughout (8.9–14.1 ms per completion-pair over an 830× range) — these are
+   not slowness, they are things that fail without saying so.
+
+   - **The HTML report is unbounded.** 200 items × n=20, which is inside the
+     README's own recommended range, produces a 32 MB report in 40 seconds; 1000
+     × 20 produces **161.8 MB** with 41,000 `<pre>` blocks and 1.7 GB peak RSS.
+     Every guard the project owns passes on it: self-contained, no external URLs,
+     every truncation notice present, no warnings. Cap-free by omission.
+   - **`ReportModel.from_evidence` materialises the whole evidence log** to
+     extract three records — 5–6× memory amplification on the pipeline's largest
+     file. This OOMs first, at roughly 2.2 GB of evidence.
+   - **`concurrency` does nothing for judging** (`judging.py` has no pool) and
+     silently caps at `n` for sampling. Against a real provider the README's
+     recommended ~200 completions/side is ~460 strictly serial judge calls.
+
+   `tests/test_report_scale.py` pins the first of these, and its final assertion
+   is deliberately written to fail on the commit that fixes it.
 ## Things that will bite you, all learned the hard way tonight
 
 - **The wheel is not your source tree.** Three separate variants of one bug
@@ -118,7 +145,22 @@ would invalidate every path in these docs for no packaging benefit.
   wrong repo. Tell them the repo path explicitly and to make their own worktree.
 - **The venv's editable install points at the main tree**, so a worktree agent's
   tests import the main tree's package, not their own copy. Do not rename the
-  package directory while an agent is running tests.
+  package directory while an agent is running tests. This is worse than it
+  sounds: an agent reported "730 passed" as a green run that had **never loaded
+  its own code**. Every worktree brief must carry `PYTHONPATH=<worktree>/src` and
+  a `print(module.__file__)` confirmation. The silver lining is that running a
+  new test file *without* PYTHONPATH gives a free red baseline against unfixed
+  `main`, which is how two agents produced red/green proofs with no stashing.
+- **A test can encode the platform of whoever wrote it, and the matrix is the
+  only thing that finds out.** This bit both projects on the same night in
+  opposite directions: here, a Windows-only CI failure; in the sibling, four
+  Ubuntu cells failing on a hardcoded `C:\...` path that `pathlib` reads as a
+  single relative filename on POSIX. Both passed everywhere they were written.
+- **A check that parses another tool's output is parsing a human-facing string
+  nobody promised to keep stable.** The sibling's release gate counted lines
+  ending in `PASSED` from `twine check`; under GitHub Actions twine colourises,
+  so the line ends in an ANSI reset and the count came out zero on a build that
+  was fine. It had passed on every developer machine.
 - **A mechanical rename sweep will rewrite test data that merely looks like the
   thing being renamed.** It changed the expected values in a PEP 503 test whose
   inputs are deliberately odd spellings. The suite caught it; a sweep run without
@@ -133,9 +175,21 @@ cd C:\Users\ewehm\repos\migration-kit
 .\.venv\Scripts\python.exe -m ruff check src tests
 ```
 
-Already created and verified: `opik-rigor 0.1.0` **from PyPI** (not a path
-dependency — that is deliberate), `jinja2 3.1.6`, `rich 15.0.0`. Local Python is
-3.14; CI covers 3.10–3.13 on Ubuntu and Windows.
+Already created and verified: `opik-rigor` **from PyPI** (not a path dependency —
+that is deliberate), `jinja2 3.1.6`, `rich 15.0.0`. Local Python is 3.14; CI
+covers 3.10–3.13 on Ubuntu and Windows.
+
+The long-lived `.venv` still holds `opik-rigor 0.1.0`; a fresh install resolves
+**0.1.1**, because the bound is `>=0.1.0,<0.2`. Anything you conclude about
+rigor's behaviour from this venv is a claim about a version strangers no longer
+get — re-check in a clean environment before writing it down.
+
+To run the suite the way CI does, with the network physically blocked:
+
+```
+set PYTHONPATH=scripts\audit
+.\.venv\Scripts\python.exe -m pytest -p netguard
+```
 
 ## The working method — this is the part that matters
 
