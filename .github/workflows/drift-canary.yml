@@ -168,7 +168,7 @@ jobs:
         # Deliberately NOT running `migkit demo`: PROGRESS.md records that the demo job
         # is knowingly broken until Session 3, so including it would report drift every
         # week from day one. Add it once the demo exists and its exit code is settled.
-        run: python -m pytest -m "not requires_network" -q
+        run: python -m pytest -q
 
       - name: Classify
         id: classify
