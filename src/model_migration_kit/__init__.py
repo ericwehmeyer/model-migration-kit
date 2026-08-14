@@ -30,8 +30,18 @@ from __future__ import annotations
 
 __all__: list[str] = []
 
-#: Single source of truth for the version at runtime. The packaging metadata is
-#: the *other* source, and ``scripts/verify_release.py`` asserts the two agree
-#: before a release goes anywhere -- two version numbers that can disagree is a
-#: bug waiting for the worst possible moment to surface.
+#: The single source of truth for the version, at runtime *and* at build time.
+#: ``pyproject.toml`` declares ``dynamic = ["version"]`` and points
+#: ``[tool.hatch.version]`` at this file, so the packaging metadata is derived
+#: from this line rather than being a second copy of it. Two version numbers that
+#: can disagree is a bug waiting for the worst possible moment to surface: the
+#: number a user quotes when filing a bug is this one, and the number the index
+#: serves is the metadata, so a drift between them is invisible to everyone in a
+#: position to notice. ``scripts/verify_release.py`` still compares every place
+#: the number appears -- this line, the wheel metadata, both filenames -- because
+#: single-sourcing removes the failure mode and the check proves it stayed removed.
+#:
+#: Bumping is one edit to this line, in its own commit, with the ``CHANGELOG.md``
+#: section for that version in the same commit -- never in the release commit,
+#: never after the tag.
 __version__ = "0.1.0.dev0"

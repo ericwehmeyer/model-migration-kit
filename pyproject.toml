@@ -4,7 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "model-migration-kit"
-version = "0.1.0.dev0"
+# The version is NOT written here. See [tool.hatch.version] at the bottom of this
+# file: hatchling reads `__version__` out of src/model_migration_kit/__init__.py,
+# which makes that assignment the only place the number exists. Two copies of a
+# version number is a bug waiting for the worst possible moment -- the copy a user
+# quotes when filing a bug is `__version__`, and the copy the index serves is this
+# one, so a disagreement is invisible to everybody who could fix it.
+dynamic = ["version"]
 description = "Statistically defensible go/no-go verdicts for LLM model migrations."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -47,6 +53,17 @@ Issues = "https://github.com/ericwehmeyer/model-migration-kit/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/model_migration_kit"]
+
+# The single source of the version. `[project] dynamic = ["version"]` above tells
+# the build backend the number is not in this file; this tells it where it is.
+# hatchling parses the `__version__ = "..."` assignment out of the file as text --
+# it does not import the package, so nothing here depends on the runtime
+# dependencies being installed at build time.
+#
+# The bump is therefore one edit to one line in __init__.py, in its own commit
+# alongside the CHANGELOG section for that version.
+[tool.hatch.version]
+path = "src/model_migration_kit/__init__.py"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
