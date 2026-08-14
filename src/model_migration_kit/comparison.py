@@ -8,7 +8,7 @@ backwards, so each rule below is written out with the measurement that forced it
 The authority is ``docs/build-plan.md`` §6 (Amendment 1); the numbers behind it
 are in ``docs/session-2-verdict-review.md``.
 
-Six rules are load-bearing.
+Seven rules are load-bearing.
 
 **Failed completions are already imputed at the judge's minimum score by
 ``judging.py``, and this module must not undo that.** Scores are read as they
@@ -19,6 +19,22 @@ same two items badly both post 190/200 passed, but the crasher's ten missing
 scores leave the Mann-Whitney array with p=1.0 (GO) while the bad answerer scores
 p=0.00069 (NO-GO). A tool that prefers the model which crashes to the one which
 answers poorly is worse than no tool.
+
+**No record may count in one population and vanish from the other.** The rule
+above was written about ``judging.py``'s imputation and was read as if that were
+the only way a score could go missing. It is not: rigor's judge prompt tells the
+judge to answer ``"score": null`` when the rubric gives it no basis to score,
+while still requiring the ``pass`` boolean, so a *successful* completion can
+arrive with a real verdict and no number. Such a record was kept by ``_counted``
+-- it is in the pass rate -- and dropped by ``_scores``, which is the §6 failure
+returning through a second door. Measured on the same 40 x 5 fixture: ten bad
+answers scored 1.0 give 190/200, p=0.00069, **NO-GO**; the same ten scored
+``null`` give the same 190/200 and the same 0.91811 lower bound but p=1.0 and
+**GO**, with no warning, because a 10/200 share sat exactly on a strictly-greater
+tolerance test. So an unscored record is now *imputed at the rubric bound its own
+pass/fail verdict implies* -- floor if the judge failed it, ceiling if the judge
+passed it -- and enters the score array like any other. The two candidates above
+now both read NO-GO. What this costs is stated at :func:`_impute_unscored`.
 
 **Parse failures are not model failures.** A record with ``parse_failure`` set is
 the *judge* having been unintelligible, so it leaves both the numerator and the
@@ -77,6 +93,7 @@ from opik_rigor import (
     assert_pass_rate,
     wilson_interval,
 )
+from opik_rigor.judge import SCORE_MAX, SCORE_MIN
 
 from .contracts import EVENT_COMPARISON, EVENT_VERDICT, Verdict, utc_now
 from .errors import ArtifactError, DependencyContractError, JudgeConfigError
@@ -197,6 +214,12 @@ def required_sample_size(
     return math.ceil((z_alpha + z_beta) ** 2 * variance / (delta * delta))
 
 
+def _finite_p(value: float) -> float:
+    """A p-value fit to sort: non-finite becomes 1.0. See :func:`holm_bonferroni`."""
+    number = float(value)
+    return number if math.isfinite(number) else 1.0
+
+
 def holm_bonferroni(
     p_values: Sequence[float], *, alpha: float
 ) -> tuple[tuple[bool, float], ...]:
@@ -213,6 +236,21 @@ def holm_bonferroni(
     entire purpose: at four judges the uncorrected rule flags a regression between
     two identical models in 9.07% of runs, against a nominal 5%.
 
+    **A non-finite p-value is read as 1.0 before anything else happens.** NaN is
+    not ordered against anything, so it is not a valid sort key: ``sorted`` on a
+    list containing one produces an arrangement that depends on where the NaN
+    sat in the *input*, and the step-down then propagates that arbitrariness
+    through the whole family. Measured on this very function before the guard:
+    ``[nan, .001, .001, .001]`` rejects nothing at all, while ``[.001, .001,
+    .001, nan]`` rejects three -- the same four p-values, one reordering, and the
+    difference between NO-GO and GO. rigor's distribution layer documents that it
+    can return NaN, and ``compare`` passes ``float(regression["p_value"])``
+    straight through, so this is reachable the moment a scipy release starts
+    producing one. 1.0 rather than dropping it: a test that produced no answer
+    must not be rejected, and it must not quietly shrink the family and loosen
+    every other judge's threshold either. ``_compare_one_judge`` warns separately
+    so "read as no regression" never passes for "no regression".
+
     Returns:
         One ``(rejected, threshold)`` pair per input position. An empty family
         returns an empty tuple: no judges, no comparisons, and no verdict evidence
@@ -220,13 +258,14 @@ def holm_bonferroni(
     """
     if not 0.0 < alpha < 1.0:
         raise ValueError(f"alpha must be in (0, 1), got {alpha!r}")
-    order = sorted(range(len(p_values)), key=lambda i: p_values[i])
-    k = len(p_values)
+    values = [_finite_p(p) for p in p_values]
+    order = sorted(range(len(values)), key=lambda i: values[i])
+    k = len(values)
     out: list[tuple[bool, float]] = [(False, alpha)] * k
     still_rejecting = True
     for rank, index in enumerate(order):
         threshold = alpha / (k - rank)
-        rejected = still_rejecting and float(p_values[index]) < threshold
+        rejected = still_rejecting and values[index] < threshold
         if not rejected:
             still_rejecting = False
         out[index] = (rejected, threshold)
@@ -460,7 +499,13 @@ class LatencyStat:
 
 @dataclass(frozen=True)
 class PowerEstimate:
-    """What sample this judge would need to notice the effect being asked about."""
+    """What sample this judge would need to notice the effect being asked about.
+
+    ``alpha`` is the *corrected* level the sizing actually used -- the Holm step
+    the regression will be judged at, ``alpha_uncorrected / judges`` -- because a
+    power figure quoted against a threshold nobody tests at is the defect this
+    field was fixed for. Both numbers travel so the row can show its working.
+    """
 
     n_observed: int
     n_required: int | None
@@ -469,6 +514,8 @@ class PowerEstimate:
     min_detectable_effect: float
     power_target: float
     alpha: float
+    alpha_uncorrected: float | None = None
+    judges: int = 1
     method: str = "two-proportion-normal-approximation"
 
     def to_dict(self) -> dict[str, Any]:
@@ -480,6 +527,10 @@ class PowerEstimate:
             "min_detectable_effect": self.min_detectable_effect,
             "power_target": self.power_target,
             "alpha": self.alpha,
+            "alpha_uncorrected": (
+                self.alpha if self.alpha_uncorrected is None else self.alpha_uncorrected
+            ),
+            "judges": self.judges,
             "method": self.method,
             "approximates": (
                 "a two-proportion z-test, not the Mann-Whitney U that produces "
@@ -551,6 +602,11 @@ class JudgeComparison:
     imputed_candidate: int = 0
     parse_failures_baseline: int = 0
     parse_failures_candidate: int = 0
+    #: Counted records whose judge returned no number. They are *in* the score
+    #: array, filled from their own pass/fail verdict by :func:`_impute_unscored`;
+    #: this is how much of the regression test rests on that fill, not how much
+    #: was thrown away. It read as "thrown away" until the second-door defect, and
+    #: throwing them away while keeping them in the pass rate is what caused it.
     missing_scores_baseline: int = 0
     missing_scores_candidate: int = 0
     item_counts_baseline: Mapping[str, int] = field(default_factory=dict)
@@ -786,7 +842,9 @@ def compare(
     # until every p-value in the family is known, because Holm's threshold for one
     # judge depends on how many other judges were tested.
     drafts = [
-        _compare_one_judge(name, baseline, candidate, thresholds, evidence, warnings)
+        _compare_one_judge(
+            name, baseline, candidate, thresholds, evidence, warnings, len(names)
+        )
         for name in names
     ]
     tested = [index for index, draft in enumerate(drafts) if draft.p_value is not None]
@@ -954,8 +1012,16 @@ def _compare_one_judge(
     thresholds: Thresholds,
     evidence: EvidenceLog | None,
     warnings: list[str],
+    n_judges: int,
 ) -> JudgeComparison:
-    """Every statistic for one judge, with ``regressed`` left for Holm to decide."""
+    """Every statistic for one judge, with ``regressed`` left for Holm to decide.
+
+    ``n_judges`` is the size of the whole judge family, and it is needed here for
+    the same reason ``regressed`` is not decided here: the threshold this judge
+    will be judged at depends on how many others were tested. The power estimate
+    has to be computed against that threshold -- see the comment on
+    ``family_alpha`` below.
+    """
     base_records = baseline.for_judge(name)
     cand_records = candidate.for_judge(name)
     base_counted = _counted(base_records)
@@ -973,6 +1039,17 @@ def _compare_one_judge(
     if base_scores and cand_scores:
         regression = _regression(cand_scores, base_scores, thresholds, evidence, name)
         p_value = float(regression["p_value"])
+        if not math.isfinite(p_value):
+            # rigor's distribution layer documents that scipy can hand back a NaN
+            # p-value, and a NaN silently means "no regression" everywhere
+            # downstream: Holm reads it as 1.0 (see :func:`holm_bonferroni`), the
+            # row is not rejected, and nothing else in the pipeline would ever
+            # mention that the question went unanswered.
+            warnings.append(
+                f"judge {name!r}: the regression test returned a non-finite "
+                f"p-value ({p_value!r}), which is read as 'no regression found' "
+                f"and is not the same thing as no regression."
+            )
         if regression.get("degenerate"):
             warnings.append(
                 f"judge {name!r}: the two score samples are fully tied, so the "
@@ -985,14 +1062,34 @@ def _compare_one_judge(
         # passing is the exact move the plan forbids. It is surfaced as a warning
         # instead, so the assumption is visible to the reader and to whoever
         # decides whether to amend the plan.
+        #
+        # The comparison is ``>=``, not ``>``, and the change was forced by the
+        # measurement: the GO-instead-of-NO-GO run above carried exactly 10 of 200
+        # unscored records -- a share of exactly 0.05 against a tolerance of
+        # exactly 0.05 -- and said nothing at all. Two reasons it reads as ``>=``
+        # here while ``judging.py``'s parse-failure gate stays ``>``. First, the
+        # two thresholds do different jobs: judging's is a *permission* (how much
+        # unreliability is tolerated before refusing to run at all), and tolerating
+        # up to and including the tolerated amount is what the word means, while
+        # this one is a *disclosure* (how much of the verdict rests on imputation),
+        # and a disclosure that is silent at its own documented number tells the
+        # reader something false about when it speaks. Second, strict ``>`` makes
+        # the effective trigger un-documentable: whether a run "at 5%" warns then
+        # depends on whether n makes the fraction exactly representable -- 10/200
+        # and 1/20 are silent, 3/61 is not -- which is a property of the sample
+        # size and not of the evidence. The cost is one extra warning on runs
+        # sitting precisely on the line, which is the cheapest possible direction
+        # to be wrong in. ``any(missing)`` is what keeps ``>=`` honest at the one
+        # place it would otherwise misfire: ``Thresholds`` admits a tolerance of
+        # 0.0, and a run with nothing imputed has nothing to disclose.
         share = max(
             _share(missing[0], len(base_counted)), _share(missing[1], len(cand_counted))
         )
-        if share > thresholds.judge_failure_tolerance:
+        if share >= thresholds.judge_failure_tolerance and any(missing):
             warnings.append(
                 f"judge {name!r}: {share:.1%} of completions on one side carried no "
-                f"numeric score and were excluded from the regression test. The "
-                f"verdict rests on the remainder."
+                f"numeric score and were imputed at the rubric bound their pass/fail "
+                f"verdict implies. The verdict rests on that assumption."
             )
     else:
         test_ran = TEST_NOT_RUN
@@ -1005,6 +1102,22 @@ def _compare_one_judge(
         )
 
     baseline_rate = base_gate.get("pass_rate")
+    # The power question has to be asked at the threshold the regression will
+    # actually be judged against, and that is Holm's, not the raw alpha. For the
+    # one judge in a family of k that is regressing, Holm's most stringent step is
+    # alpha/k, so sizing the sample at alpha over-states power by exactly the
+    # correction. Measured at the n=109 this rule used to certify as adequate,
+    # baseline 0.95, 20 000 seeded trials: 0.815 empirical power at one judge but
+    # 0.719 / 0.653 / 0.597 at two, three and four -- a four-judge panel reported
+    # ``mw_powered=True`` against a 0.80 target while it was really 59.7%. That is
+    # the same class as the retracted "adequate from n=25, actually 33.9%" rule,
+    # one order of magnitude smaller and therefore harder to notice.
+    #
+    # alpha/k is the stringent end of the Holm ladder rather than the average, and
+    # deliberately: the judge whose p-value is smallest is tested there, and it is
+    # that judge which decides the verdict under clause 1. Sizing to the looser
+    # steps would certify a sample that cannot reject the only test that matters.
+    family_alpha = thresholds.alpha / max(1, n_judges)
     n_required = (
         None
         if baseline_rate is None
@@ -1012,7 +1125,7 @@ def _compare_one_judge(
             float(baseline_rate),
             min_detectable_effect=thresholds.min_detectable_effect,
             power_target=thresholds.power_target,
-            alpha=thresholds.alpha,
+            alpha=family_alpha,
         )
     )
     n_observed = min(len(base_counted), len(cand_counted))
@@ -1024,7 +1137,9 @@ def _compare_one_judge(
         baseline_rate=None if baseline_rate is None else float(baseline_rate),
         min_detectable_effect=thresholds.min_detectable_effect,
         power_target=thresholds.power_target,
-        alpha=thresholds.alpha,
+        alpha=family_alpha,
+        alpha_uncorrected=thresholds.alpha,
+        judges=max(1, n_judges),
     )
     if not powered and n_required is not None:
         warnings.append(
@@ -1129,10 +1244,25 @@ def _pass_rate(
             label=label,
         )
     except PassRateError as exc:
-        stats = dict(exc.stats)
+        # Two dicts, and the split is the whole point. The first is what the
+        # *report* renders, so it is filled out to the shape every other row has.
+        # The third is what ``_floor_power`` inspects, and it is rigor's report
+        # exactly as rigor wrote it, with nothing invented.
+        #
+        # They used to be one object, defaulted in place, and that made
+        # ``_floor_power``'s ``DependencyContractError`` unreachable through
+        # ``compare()``: ``setdefault`` had already supplied the key the guard
+        # tests for, so the guard could only ever fire when ``_floor_power`` was
+        # called directly, which nothing but a test does. The failure it guards
+        # against was therefore live the whole time -- with the flag absent and
+        # defaulted to False, 38/40 against a 0.90 floor takes clause 2 instead of
+        # clause 3 and a REVIEW is reported as NO-GO with nothing raised anywhere.
+        # A guard that cannot fire on the path it protects is not a guard.
+        raw = dict(exc.stats)
+        stats = dict(raw)
         stats.setdefault("underpowered", False)
         stats.setdefault("runs_needed", None)
-        return stats, False, stats
+        return stats, False, raw
     # The gate passed, so rigor never populated its power keys. They are filled in
     # here with the only values they can have on this branch, so that every row of
     # the report has the same shape whichever way the gate went.
@@ -1149,13 +1279,18 @@ def _scores(
 ) -> tuple[list[float], list[float], str, str, tuple[int, int]]:
     """The two arrays handed to the regression test, and what they are made of.
 
-    Two rules, and both are there because rigor rejects the obvious shortcut.
+    Three rules, and all three are there because rigor rejects the obvious
+    shortcut.
 
     ``None`` is never passed through: ``_coerce_scores`` raises on it, so a single
-    unscored record would abort the entire comparison. A record whose judge
-    declined to score -- rigor's own prompt tells a judge to emit ``"score": null``
-    when the rubric gives it no basis -- is missing data and is excluded from this
-    test only, counted and reported.
+    unscored record would abort the entire comparison. The obvious way out is to
+    filter those records, and that is exactly the defect this function used to
+    carry: ``_counted`` keeps an unscored record, so it is in the pass rate, and
+    filtering here removed it from the score array -- one record, two populations,
+    two different memberships. Ten such records turned a NO-GO into a GO on an
+    otherwise identical fixture (module docstring, rule 2). Every record
+    ``_counted`` kept therefore arrives in the array; the unscored ones are filled
+    in by :func:`_impute_unscored`, and the count is still reported.
 
     When a judge produced no numeric score anywhere on either side, the test falls
     back to the pass/fail outcomes as ``float(record.passed)``. The cast is
@@ -1177,17 +1312,17 @@ def _scores(
     base_numeric = [float(one.score) for one in base if _is_number(one.score)]
     cand_numeric = [float(one.score) for one in cand if _is_number(one.score)]
     if base_numeric and cand_numeric:
-        missing = (
-            len(base) - len(base_numeric),
-            len(cand) - len(cand_numeric),
-        )
+        base_filled, base_missing = _impute_unscored(base)
+        cand_filled, cand_missing = _impute_unscored(cand)
+        missing = (base_missing, cand_missing)
         note = ""
         if any(missing):
             note = (
                 f"{missing[0]} baseline and {missing[1]} candidate record(s) carried "
-                f"no numeric score and are excluded from the regression test only"
+                f"no numeric score and were imputed at the rubric bound their own "
+                f"pass/fail verdict implies"
             )
-        return base_numeric, cand_numeric, TEST_SCORES, note, missing
+        return base_filled, cand_filled, TEST_SCORES, note, missing
     return (
         [float(one.passed) for one in base],
         [float(one.passed) for one in cand],
@@ -1195,6 +1330,54 @@ def _scores(
         "scores absent; tested on pass/fail outcomes",
         (0, 0),
     )
+
+
+def _impute_unscored(records: Sequence[JudgeRecord]) -> tuple[list[float], int]:
+    """Every counted record as a number, filling unscored ones from their verdict.
+
+    A record with no numeric score still carries a judgement: rigor's prompt makes
+    ``pass`` required and ``score`` optional, so "the rubric gave me no basis to
+    score this" is missing *magnitude*, never a missing verdict. The fill is the
+    rubric bound on the side the judge already committed to -- ``SCORE_MIN`` for a
+    record it failed, ``SCORE_MAX`` for one it passed.
+
+    Why this rather than the two alternatives the review weighed:
+
+    * *Drop the record from the pass rate as well*, so it leaves both populations.
+      Symmetric, and catastrophic: on the headline fixture the candidate's ten
+      unscored failures would leave the numerator **and** the denominator, posting
+      190/190 = 1.00 and turning the very NO-GO this rule exists to protect into a
+      GO. A judge's silence would erase a model's failures.
+    * *Refuse the comparison once the unscored share is material.* It does not fix
+      the asymmetry, it only caps how large it can get -- one unscored record still
+      counts in one population and vanishes from the other -- and build-plan §6
+      does not contain that refusal, so adding it here would be the passing
+      amendment to a frozen table the plan forbids (see ``_compare_one_judge``).
+
+    Imputing at the floor *unconditionally* is a third alternative and is wrong for
+    the same reason parse failures are excluded rather than counted: a record the
+    judge **passed** and declined to score would enter the array at the bottom of
+    the scale, manufacturing a regression out of the judge's silence. Direction
+    follows the verdict, so the fill can never move a record across the pass/fail
+    line the judge itself drew.
+
+    What it costs, plainly: the fill exaggerates magnitude. A passing answer the
+    judge would have scored 3 enters as 5, a failing one that would have been 2
+    enters as 1, so the separation between the two classes is overstated wherever
+    unscored records land -- in whichever direction they happen to land. That is
+    the same class of assumption §6 already accepts for failed completions, and it
+    is disclosed the same way: the counts travel in ``missing_scores_*`` on the row
+    and a warning fires from the tolerance onwards.
+    """
+    scores: list[float] = []
+    missing = 0
+    for one in records:
+        if _is_number(one.score):
+            scores.append(float(one.score))
+            continue
+        missing += 1
+        scores.append(SCORE_MAX if one.passed else SCORE_MIN)
+    return scores, missing
 
 
 def _share(part: int, whole: int) -> float:
