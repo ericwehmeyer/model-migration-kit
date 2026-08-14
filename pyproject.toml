@@ -67,9 +67,24 @@ path = "src/model_migration_kit/__init__.py"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q --strict-markers"
+# `-q` is deliberately NOT here. pytest's verbosity is a signed counter: addopts
+# `-q` sets it to -1, a `-q` on the command line adds another, and at -2 pytest
+# stops printing the "N passed" summary line altogether. So `pytest -q` -- the
+# thing everybody types -- printed progress dots and then nothing, and two people
+# independently worked around it with `-o addopts=...` before anyone noticed why.
+# Leaving the flag to the caller means `pytest` and `pytest -q` both end in a count,
+# which is the number every checklist in docs/ asks to be pasted as evidence.
+addopts = "--strict-markers"
 markers = [
-  "requires_network: test needs a live provider endpoint (deselected by default in CI)",
+  # Every marker here must be applied by at least one test --
+  # tests/test_import_purity.py asserts it. `--strict-markers` above bans applying a
+  # marker that is not declared; that test bans declaring one that is not applied.
+  # A `requires_network` marker used to sit here, deselected by `-m "not
+  # requires_network"` in ci.yml and drift-canary.yml, and carried by no test in the
+  # suite -- a flag that deselected nothing while reading as the promise that CI
+  # never touches a provider. The promise is kept elsewhere and for real: both
+  # workflows blank ANTHROPIC_API_KEY and OPENAI_API_KEY and then run everything.
+  # Re-adding it is one line, in the commit that adds the first test to carry it.
   "slow: test takes more than a couple of seconds",
 ]
 
