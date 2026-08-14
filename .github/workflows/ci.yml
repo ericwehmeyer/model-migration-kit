@@ -24,7 +24,8 @@ jobs:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
     env:
       # The suite must be green with no provider credentials present. The demo
-      # path uses FakeAdapters; anything needing a key is marked requires_network.
+      # path uses FakeAdapters, and the provider keys below are blanked, so a test that
+      # tried to reach a vendor would fail rather than quietly succeed.
       ANTHROPIC_API_KEY: ""
       OPENAI_API_KEY: ""
     steps:
