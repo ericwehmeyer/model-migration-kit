@@ -44,8 +44,18 @@ jobs:
       - name: Lint
         run: python -m ruff check src tests
 
-      - name: Test (offline, key-free)
-        run: python -m pytest --cov --cov-report=xml
+      # The step name has always claimed "offline". Nothing checked it: the
+      # release contract's `-m "not requires_network"` deselects zero tests
+      # (`--strict-markers` does not validate a name used in a `-m` expression),
+      # so the claim rested on nobody having written a test that dials out. The
+      # netguard plugin makes every outbound connect and every DNS resolution
+      # raise, so the claim is now proved at the syscall seam rather than
+      # asserted. Loopback is deliberately left alone -- blocking it would break
+      # unrelated local machinery instead of testing anything.
+      - name: Test (offline, key-free -- network physically blocked)
+        env:
+          PYTHONPATH: scripts/audit
+        run: python -m pytest --cov --cov-report=xml -p netguard
 
   demo:
     name: migkit demo runs keyless
