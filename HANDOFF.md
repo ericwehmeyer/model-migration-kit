@@ -194,26 +194,41 @@ would invalidate every path in these docs for no packaging benefit.
    detection — it asserts the SDK names this CLI tells you to install are the ones
    rigor is about to import. Argued in PROGRESS.md rather than hidden.
 
-5. ~~**Known scale limits.**~~ **Fixed, and re-measure before you trust it.** The
-   report is bounded with disclosure, `judge_artifact` takes `concurrency` with
-   byte-identical output at any setting, and the evidence log is no longer folded
-   whole. The audit numbers that justified this (32 MB inside the recommended
-   range, 161.8 MB at 1000 × 20, every guard passing on a document nobody can
-   open) are in `docs/release-evidence.md`. **The after-numbers were not
-   independently re-measured at the scales in that table** — the agent that made
-   the change was cut off by an API failure before it reported, and its work was
-   salvaged from an uncommitted worktree. The suite passes and the demo is
-   unchanged, but if you are about to publish performance claims, measure first.
+5. ~~**Known scale limits.**~~ **Fixed, and re-measured 2026-08-14** at the audit's
+   worst in-range case — 200 items × n=20, 4 KB outputs, every item changed:
 
-6. **`COMPATIBILITY.md` still records verification against rigor 0.1.0.** Users
-   get 0.1.1, because the bound permits it. This was dispatched and the agent died
-   before it started; **nothing was salvaged and none of it is done.** It matters
-   because 0.1.1's `is_pinned` *refuses every current Anthropic model id* while
-   accepting one retired in February, and `migkit` calls `require_pinned` before
-   spending a call — so with the version users actually install, the documented
-   real-model path refuses the models they would reach for. Both defects are fixed
-   on rigor's `main` and **neither is in 0.1.1**. Re-verify against the published
-   0.1.1, not against rigor's working tree, and record what a user can do today.
+   | | before | after |
+   |---|---|---|
+   | HTML report | 32.4 MB | **10.14 MB** |
+   | `<pre>` blocks | ~8,000 | 2,542 |
+   | report model + render | — | 0.5 s |
+   | judging, concurrency 1 → 8 | no pool at all | **1.46×** |
+
+   The cap is `DEFAULT_MAX_REPORT_CHARS = 10,000,000` and **no row is dropped**:
+   rows past the budget still render, without their input, draws or judge reasons,
+   and say so where the outputs would have been. That was the right call — dropping
+   rows to fit a byte budget would silently remove the most interesting evidence.
+
+   **Read the 1.46× correctly.** It was measured with a `FakeAdapter` at zero
+   latency, where the audit showed the pool can do almost nothing because the
+   per-record `fsync` is serial and outside it. Against a real provider at ~1 s per
+   call the gain is the one that matters and is much larger — and it is also the
+   one this project cannot measure without spending money. Do not quote 1.46× as
+   the benefit of judging concurrency; quote it as the floor.
+
+6. ~~**`COMPATIBILITY.md` records verification against rigor 0.1.0.**~~ **Done
+   2026-08-14.** Re-verified against the installed 0.1.1, and the good news is the
+   strong kind: seven signatures re-checked mechanically, **zero changed**; every
+   attribute-level dependency present; `SCORE_MIN`/`SCORE_MAX`, the `Adapter`
+   protocol members and the `pytest11` entry point unchanged; `__all__` 33 → 38
+   with nothing removed. rigor promised 0.1.1 was additive and that is now checked
+   rather than trusted.
+
+   The two defects in 0.1.1 that make the documented real-model path unusable now
+   lead that file, with the workaround that does exist recorded beside them: a
+   *dated* model id such as `claude-haiku-4-5-20251001` is both accepted by
+   0.1.1's pin rule and current. There is no route to `claude-opus-5`, which
+   carries no date. Both defects are fixed on rigor's `main` and unreleased.
 ## The sibling has moved a long way, and none of it is released
 
 `opik-rigor`'s `main` is far ahead of the published **0.1.1** that this project

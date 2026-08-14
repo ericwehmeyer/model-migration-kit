@@ -375,23 +375,35 @@ Recorded entering Session 2 unless noted, and re-checked against the tree on
 
 ### Added 2026-08-14, and the two that block a release
 
-- **`COMPATIBILITY.md` records verification against rigor 0.1.0. Users get
-  0.1.1.** The bound `>=0.1.0,<0.2` permits it, so every fresh install has been
-  resolving 0.1.1 while this document — and, until it was upgraded, this repo's
-  own `.venv` — described 0.1.0. This was dispatched to an agent that died before
-  starting; **none of it is done.** It is a release blocker rather than a tidy-up,
-  because 0.1.1's `is_pinned` refuses every current Anthropic model id while
-  accepting one retired in February, and `migkit` calls `require_pinned` before
-  spending a call — so on the version users actually install, the documented
-  real-model path refuses the models they would reach for. Fixed on rigor's
-  `main`, not in 0.1.1. Re-verify against the *published* wheel.
+- ~~`COMPATIBILITY.md` records verification against rigor 0.1.0.~~ **Re-verified
+  against 0.1.1 on 2026-08-14.** Zero signature drift, nothing removed from
+  `__all__`, five names added — the ones that let invariant 1 be retired. The two
+  0.1.1 defects that make the documented real-model path unusable now lead that
+  file. **They remain a release consideration even though this item is closed:**
+  on the version users install, `require_pinned` refuses every current frontier
+  Anthropic model id, and `AnthropicAdapter` 400s on `temperature` with no
+  caller-side escape. Both fixed on rigor's `main`, both unreleased. A user's
+  workaround today is a dated model id (`claude-haiku-4-5-20251001`).
 
-- **The scale fixes were not independently re-measured.** The report cap, judging
-  concurrency and evidence-log streaming all landed and the suite passes, but the
-  agent that made the change was cut off by an API failure before reporting, and
-  its work was recovered from an uncommitted worktree. The before-numbers in
-  `docs/release-evidence.md` are sound; there are no verified after-numbers at
-  those scales. Do not publish a performance claim without measuring.
+  The way this went stale is the reusable part: the bound `>=0.1.0,<0.2` let every
+  *fresh* install resolve 0.1.1 while this repo's long-lived `.venv` kept 0.1.0,
+  so the document and the venv agreed with each other and both disagreed with
+  reality. **A long-lived venv stops being evidence about what users get the
+  moment a floor is permissive.**
+
+- ~~The scale fixes were not independently re-measured.~~ **Measured 2026-08-14**
+  at the audit's worst in-range case (200 items × n=20, 4 KB outputs, every item
+  changed): HTML **32.4 MB → 10.14 MB**, 2,542 `<pre>` blocks, report model plus
+  render 0.5 s, judging 1.46× from concurrency 1 → 8.
+
+  Two honest qualifications. The 1.46× was measured against a `FakeAdapter` at
+  zero latency, where the audit already showed the pool can do little because the
+  per-record `fsync` is serial and outside it — the gain that matters is against a
+  real provider at ~1 s per call, and this project cannot measure that without
+  spending money, so **1.46× is the floor and not the claim**. And no row is
+  dropped by the cap: rows past the budget render without input, draws or judge
+  reasons and say so in place of the outputs, because dropping rows to fit a byte
+  budget would silently remove the most interesting evidence.
 
 - **`judge_artifact`'s `concurrency` is new and its determinism guarantee is the
   load-bearing part.** The artifact must be byte-identical at any setting;
