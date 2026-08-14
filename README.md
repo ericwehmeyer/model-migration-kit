@@ -492,7 +492,7 @@ was written on (Python 3.14.4, Windows):
 
 ```
 $ python -m pytest
-729 passed, 4 xfailed in 49.40s
+730 passed, 4 xfailed in 30.90s
 ```
 
 The CI workflow additionally runs 3.10 through 3.13 on Ubuntu and Windows, builds a
