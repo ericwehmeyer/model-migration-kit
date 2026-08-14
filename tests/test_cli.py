@@ -46,7 +46,7 @@ import json
 import os
 import shutil
 import subprocess
-import sys
+import sysconfig
 import time
 from importlib import resources
 from pathlib import Path
@@ -647,6 +647,53 @@ class TestStreams:
         assert "ConfigError" in capsys.readouterr().err
 
 
+#: The name pyproject's ``[project.scripts]`` declares: ``migkit =
+#: "model_migration_kit.cli:main"``. Written here rather than read from the
+#: metadata for the same reason as the exit codes -- a rename should break this
+#: test, not be silently agreed with.
+CONSOLE_SCRIPT = "migkit"
+
+
+def _declared_scripts_directories(
+    schemes: tuple[str, ...] | None = None,
+    scheme_vars: dict[str, str] | None = None,
+) -> list[str]:
+    """Where an installer is *declared* to put this environment's console scripts.
+
+    ``sysconfig`` answers for the environment the interpreter is *running in* --
+    the venv root when there is a venv, the install prefix otherwise -- and that is
+    the property the packaging contract actually states: ``pip install`` writes the
+    ``[project.scripts]`` entry into the scheme's ``scripts`` directory. A directory
+    derived from ``sys.executable`` is a different property that merely coincides
+    with it, because a venv puts ``python.exe`` and ``Scripts\\`` side by side and a
+    POSIX prefix puts the interpreter *inside* ``bin/`` next to the script.
+
+    Two layouts break that coincidence and CI runs one of them. On GitHub's hosted
+    Windows runners there is no venv: the toolcache interpreter is
+    ``...\\hostedtoolcache\\windows\\Python\\3.12.10\\x64\\python.exe`` while console
+    scripts install one level down into ``...\\x64\\Scripts\\``. The old
+    sibling-of-the-interpreter lookup therefore searched ``x64\\``, found nothing,
+    and failed on a console script that was installed perfectly well -- which is why
+    all four Windows cells were red and all four Ubuntu cells green from the first
+    push, and why ``demo`` and ``build``, which declare ``needs: test``, had never
+    run at all. A ``pip install --user`` separates the two directories as well, on
+    both platforms, which is why the user scheme is searched too.
+
+    The arguments exist so that the layouts a given machine is not running can still
+    be exercised; nothing passes them except
+    :meth:`TestConsoleScript.test_the_scripts_directory_is_read_from_the_installation_scheme`.
+    """
+    if schemes is None:
+        schemes = (sysconfig.get_default_scheme(), sysconfig.get_preferred_scheme("user"))
+    directories = [
+        # ``vars`` is copied because sysconfig extends the mapping it is handed
+        # with every config var, in place.
+        sysconfig.get_path("scripts", scheme, vars=dict(scheme_vars) if scheme_vars else None)
+        for scheme in schemes
+    ]
+    return list(dict.fromkeys(directories))
+
+
 class TestConsoleScript:
     """session-3 §6 item 29: a function returning 3 and a process exiting 3 are
     two different claims, and only the second one is what CI observes."""
@@ -659,8 +706,15 @@ class TestConsoleScript:
         in_process = cli.main(["report", str(log)])
         assert in_process == FROZEN_EXIT_CODES["NO-GO"]
 
-        script = shutil.which("migkit", path=str(Path(sys.executable).parent))
-        assert script, f"the migkit console script is not installed beside {sys.executable}"
+        # Search the scripts directory this installation *declares*, not the one
+        # next to the interpreter: see :func:`_declared_scripts_directories` for
+        # the hosted-toolcache layout that distinction exists for.
+        searched = _declared_scripts_directories()
+        script = shutil.which(CONSOLE_SCRIPT, path=os.pathsep.join(searched))
+        assert script, (
+            f"the {CONSOLE_SCRIPT} console script is not installed in the scripts "
+            f"directory this environment declares: searched {searched}"
+        )
         completed = subprocess.run(  # noqa: S603
             [script, "report", str(log)],
             capture_output=True,
@@ -669,6 +723,40 @@ class TestConsoleScript:
             check=False,
         )
         assert completed.returncode == in_process, completed.stderr
+
+    def test_the_scripts_directory_is_read_from_the_installation_scheme(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The regression guard for the layout that kept CI red. Reconstruct the
+        # hosted Windows toolcache here -- on any host, by naming the ``nt`` scheme
+        # explicitly, since every scheme table ships on every platform -- and show
+        # both halves: the sibling-of-the-interpreter lookup finds nothing there,
+        # and the scheme lookup finds the script. Without the first half the fix
+        # would be verified only on the machines where it never broke.
+        monkeypatch.chdir(tmp_path)  # `shutil.which` may also consult the cwd
+        prefix = tmp_path / "hostedtoolcache" / "windows" / "Python" / "3.12.10" / "x64"
+        interpreter = prefix / "python.exe"
+        prefix.mkdir(parents=True)
+        interpreter.write_bytes(b"")
+
+        (declared,) = _declared_scripts_directories(
+            schemes=("nt",), scheme_vars={"base": str(prefix)}
+        )
+        assert Path(declared) != interpreter.parent, (
+            "this simulation is only worth anything if the two directories differ"
+        )
+        Path(declared).mkdir(parents=True)
+        # Named the way *this* host's `shutil.which` looks: since 3.12 it will not
+        # match an extensionless file on Windows, and PATHEXT means nothing on POSIX.
+        filename = f"{CONSOLE_SCRIPT}.exe" if os.name == "nt" else CONSOLE_SCRIPT
+        installed = Path(declared) / filename
+        installed.write_bytes(b"")
+        installed.chmod(0o755)  # POSIX `which` insists on the execute bit
+
+        assert shutil.which(CONSOLE_SCRIPT, path=str(interpreter.parent)) is None
+        found = shutil.which(CONSOLE_SCRIPT, path=declared)
+        assert found is not None
+        assert Path(found) == installed
 
 
 # --------------------------------------------------------------------------- #
