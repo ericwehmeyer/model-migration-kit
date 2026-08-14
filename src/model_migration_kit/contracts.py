@@ -20,7 +20,6 @@ import json
 import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 #: Bumped when the on-disk shape of a run artifact changes incompatibly. Written
@@ -51,9 +50,45 @@ def hash_bytes(data: bytes) -> str:
     return hashlib.sha256(data.replace(b"\r\n", b"\n")).hexdigest()
 
 
+#: How much of a file :func:`hash_file` holds at once. A module constant so the
+#: test that proves chunked hashing agrees with whole-file hashing can shrink it
+#: and drive a CRLF pair across a chunk boundary on purpose.
+HASH_CHUNK_BYTES = 1 << 20
+
+
 def hash_file(path: str | os.PathLike[str]) -> str:
-    """sha256 of a file's content, newline-normalised."""
-    return hash_bytes(Path(path).read_bytes())
+    """sha256 of a file's content, newline-normalised, read a chunk at a time.
+
+    The obvious spelling -- ``hash_bytes(Path(path).read_bytes())`` -- was what
+    this was, and it costs *twice* the file in resident memory: once for the bytes
+    and once for the copy ``.replace(b"\\r\\n", b"\\n")`` returns. That is invisible
+    on a judges.toml and it is not invisible on an evidence log, which is the
+    largest artifact this pipeline produces and which every report hashes. Chunked,
+    the peak is a megabyte regardless of the file.
+
+    The one subtlety is that a ``\\r\\n`` pair can straddle a chunk boundary, and
+    normalising each chunk independently would leave that one pair unnormalised --
+    a hash that depends on where the reads happened to land, which is the opposite
+    of the property this convention exists to provide. A trailing ``\\r`` is
+    therefore held back and prepended to the next chunk.
+    """
+    digest = hashlib.sha256()
+    carry = b""
+    with open(path, "rb") as handle:
+        while True:
+            chunk = handle.read(HASH_CHUNK_BYTES)
+            if not chunk:
+                break
+            data = carry + chunk
+            carry = b""
+            if data.endswith(b"\r"):
+                data, carry = data[:-1], b"\r"
+            digest.update(data.replace(b"\r\n", b"\n"))
+    if carry:
+        # A file whose last byte is a lone \r: nothing follows it, so it is not
+        # half of a CRLF and is hashed as itself.
+        digest.update(carry)
+    return digest.hexdigest()
 
 
 def canonical_json(payload: Mapping[str, Any]) -> bytes:

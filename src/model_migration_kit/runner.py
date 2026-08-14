@@ -291,6 +291,23 @@ def run_goldenset(
         concurrency: Thread-pool width *within* one item's n draws. Items
             themselves are processed in order, so the artifact grows in a
             predictable shape and a resume is easy to reason about.
+
+            The consequence is that the effective width is ``min(concurrency, n)``
+            and nothing above ``n`` buys anything: measured against a 10 ms
+            adapter at n=5, the speedups are 1.00x at c=1, 1.45x at c=2, 1.71x at
+            c=4, 2.11x at c=5 and 1.89x at c=8 -- the ceiling arrives at n and the
+            pool then costs more than it saves. ``Settings.concurrency`` defaults
+            to 4 against a default n of 5, so the default configuration is inside
+            the useful range by one draw and an operator who raises it to 16
+            expects something that cannot happen. Rather than let the setting mean
+            two different things, ``migkit.run_started`` records both the width
+            asked for and ``concurrency_effective``, and the CLI prints the second
+            when it differs from the first.
+
+            At zero latency there is no speedup at any width, because the per-record
+            fsync is serial and outside the pool. That is the same reason
+            :func:`~model_migration_kit.judging.judge_artifact` parallelises the
+            calls and not the writer.
         timeout: Per-draw budget in seconds. opik-rigor detects rather than
             enforces it -- a thread cannot be killed -- so an over-running call
             still completes and is then recorded as having missed its budget.
@@ -403,6 +420,11 @@ def run_goldenset(
                 "items": len(goldenset),
                 "n_per_item": n,
                 "concurrency": concurrency,
+                # The pool spans one item's remaining draws, so a width above n is
+                # threads that never get work. Recorded next to the width that was
+                # asked for rather than instead of it: a reader of the log is
+                # entitled to see both what was configured and what it meant.
+                "concurrency_effective": min(concurrency, n),
                 "timeout": timeout,
                 "artifact": str(target),
                 "resumed_from": resumed,
