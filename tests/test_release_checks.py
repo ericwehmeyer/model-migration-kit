@@ -3,7 +3,8 @@
 The release script is the thing that decides whether a release is allowed to
 happen, so its own logic needs checking by something other than itself. Every
 expectation below is written from the contracts (`docs/session-4-release-contract.md`
-sections 1 and 5, `docs/session-3-contract.md` section 5.1), not from running the code.
+sections 1 and 5, `docs/session-3-contract.md` section 5.1,
+`docs/readme-scan-contract.md` in full), not from running the code.
 
 The wheel-shaped tests build synthetic zip files rather than invoking hatchling:
 the interesting cases are the *broken* ones -- a wheel with no demo data, a wheel
@@ -149,6 +150,9 @@ def test_unknown_licence_text_yields_none_rather_than_a_guess():
 
 
 def test_pip_install_targets_are_extracted_from_prose_and_fences():
+    # Still true, but no longer for the reason the name gives: under
+    # `docs/readme-scan-contract.md` rule 1 the trailing prose sentence is not
+    # scanned at all, so the single target comes from the fence alone.
     readme = """
 # model-migration-kit
 
@@ -161,6 +165,12 @@ Or from a checkout: `python -m pip install -e ".[dev]"`.
     assert vr.readme_pip_install_targets(readme) == ["model-migration-kit"]
 
 
+@pytest.mark.xfail(
+    reason="asserts pre-contract behaviour: `docs/readme-scan-contract.md` rule 1 scans "
+    "only fenced blocks, and its last clause explicitly refuses four-space indented code "
+    "(table row F9), so this unfenced indented line now yields []. The behaviour it means "
+    "to protect is kept in test_a_fenced_pip_install_names_the_console_script.",
+)
 def test_pip_install_of_the_console_script_name_is_caught():
     """The sibling published `pip install opik-opik_rigor`. The shape of that
     defect is a README naming something that is not the distribution."""
@@ -169,6 +179,12 @@ def test_pip_install_of_the_console_script_name_is_caught():
     assert vr.normalize_project_name(targets[0]) != vr.normalize_project_name(vr.DIST_NAME)
 
 
+@pytest.mark.xfail(
+    reason="asserts pre-contract behaviour: none of these lines are fenced, and "
+    "`docs/readme-scan-contract.md` rule 1 makes unfenced text prose, so this now yields []. "
+    "The argument filter it exercises is unchanged and is re-covered, fenced, by "
+    "test_the_argument_filter_still_drops_paths_wheels_and_flag_values.",
+)
 def test_pip_install_ignores_paths_wheels_and_flag_values():
     readme = "\n".join(
         [
@@ -182,6 +198,11 @@ def test_pip_install_ignores_paths_wheels_and_flag_values():
     assert vr.readme_pip_install_targets(readme) == ["model-migration-kit"]
 
 
+@pytest.mark.xfail(
+    reason="asserts pre-contract behaviour: `migkit demo` here is an inline code span in "
+    "prose, which `docs/readme-scan-contract.md` rule 1 (and table row C7) calls a mention "
+    "rather than an instruction, so the expected list is now ['compare', 'report'].",
+)
 def test_readme_commands_finds_every_invocation_shape():
     readme = """
 Run `migkit demo` to see it work.
@@ -597,6 +618,10 @@ def test_readme_naming_the_real_distribution_passes(tmp_path):
 
 
 def test_readme_may_install_a_declared_dependency(tmp_path):
+    # Passes under the contract too, but note the line is unfenced: after the
+    # rule 1 rewrite this asserts "an unfenced line is not a claim", not "a
+    # dependency is an allowed target". The fenced form is asserted in
+    # test_a_fenced_install_of_a_declared_dependency_is_allowed.
     _write_pyproject(tmp_path)
     (tmp_path / "README.md").write_text("pip install opik-rigor\n", encoding="utf-8")
     assert vr.check_readme_pip_install(tmp_path).status == vr.PASS
@@ -610,6 +635,12 @@ def test_readme_with_no_install_line_passes_and_says_so(tmp_path):
     assert "no `pip install" in result.summary
 
 
+@pytest.mark.xfail(
+    reason="asserts pre-contract behaviour: the only invocation here is an inline code span "
+    "in prose (`docs/readme-scan-contract.md` rule 1, table row C7), so the README now shows "
+    "no commands and the check has nothing to verify -- PASS, not SKIP. The SKIP path itself "
+    "is re-covered by test_a_fenced_command_still_skips_when_the_cli_is_not_this_tree.",
+)
 def test_readme_commands_skip_when_the_cli_is_not_this_tree(tmp_path):
     """Verifying README commands against an importable CLI from a *different*
     checkout would be a claim about someone else's code."""
@@ -641,3 +672,454 @@ def test_a_skip_is_not_a_pass():
     and the driver maps them to different exit codes."""
     assert vr.skipped("n", "why").status != vr.ok("n", "s").status
     assert vr.FLAG not in (vr.PASS, vr.SKIP)
+
+
+# ==================================================================================
+# The frozen README-scan contract -- docs/readme-scan-contract.md
+#
+# Everything below is derived from that document, or from reading README.md by
+# eye. Nothing below was obtained by running the functions under test; the
+# document exists precisely because the implementer and this file were written in
+# parallel and could not see each other.
+#
+# Section headings name the rule; the "F#", "P#", "C#" tags are the row labels in
+# the contract's "Hand-derived expected values" tables.
+# ==================================================================================
+
+
+def _fenced(*lines: str, info: str = "bash") -> str:
+    """The contract's tables say "fenced: <line>"; this is what that means.
+
+    The info string is a parameter because rule 1 accepts *any* info string --
+    ` ```bash `, ` ```console `, or none at all -- and never filters on it.
+    """
+    return "```" + info + "\n" + "\n".join(lines) + "\n```\n"
+
+
+# ----------------------------------------------------------------------------------
+# Rule 1 -- only fenced code blocks are shell
+# ----------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # F1: backticks.
+        ("a\n```\nb\n```\nc\n", ["b\n"]),
+        # F2: tildes, which CommonMark allows and this README does not use --
+        # supported anyway, because the rule is about delimiters, not fashion.
+        ("a\n~~~\nb\n~~~\nc\n", ["b\n"]),
+        # F3: an info string on the opening fence is not part of the body.
+        ("```bash\nb\n```", ["b\n"]),
+    ],
+)
+def test_a_fenced_block_yields_its_body_without_the_fence_lines(text, expected):
+    """Contract table F1-F3."""
+    assert vr.fenced_code_blocks(text) == expected
+
+
+def test_a_tilde_line_inside_a_backtick_block_is_body_not_a_delimiter():
+    """Contract table F4: only a fence of the *same* character can close."""
+    assert vr.fenced_code_blocks("```\na\n~~~\nb\n```\n") == ["a\n~~~\nb\n"]
+
+
+def test_an_unterminated_block_yields_its_body_to_the_end_of_input():
+    """Contract table F5. The README would be malformed, but discarding the tail
+    would hide commands -- which is the failure mode this whole document is about."""
+    assert vr.fenced_code_blocks("```\nx\n") == ["x\n"]
+
+
+def test_text_with_no_fences_yields_no_blocks():
+    """Contract table F6."""
+    assert vr.fenced_code_blocks("no fences here") == []
+
+
+def test_two_blocks_separated_by_prose_are_returned_separately():
+    """Contract table F7: the prose between them is neither block's body."""
+    assert vr.fenced_code_blocks("```\na\n```\nprose\n```\nb\n```\n") == ["a\n", "b\n"]
+
+
+def test_a_shorter_inner_run_does_not_close_a_longer_fence():
+    """Contract table F8: the closing run must be at least as long as the opening
+    one, which is how a block quotes a fence."""
+    assert vr.fenced_code_blocks("````\na\n```\nb\n````\n") == ["a\n```\nb\n"]
+
+
+def test_four_space_indented_code_is_not_recognised_as_a_block():
+    """Contract table F9 and rule 1's last clause: CommonMark calls this code, and
+    the contract deliberately does not, because an indented *prose* block read as
+    shell is the mistake being fixed."""
+    assert vr.fenced_code_blocks("    indented code\n") == []
+
+
+# ----------------------------------------------------------------------------------
+# Rule 2 -- only text in command position is a command
+#
+# The contract names the steps but not the helper's signature. These tests assume
+# `command_segments(line) -> list[str]`, returning each segment already reduced to
+# command position (prompt, comment marker and label, quote and path prefix
+# stripped). If the implementation splits that differently, these four are the
+# tests to re-aim -- the behaviour they describe is still rule 2 steps 1-4.
+# ----------------------------------------------------------------------------------
+
+
+def test_a_shell_prompt_is_not_part_of_the_command():
+    """Rule 2 step 1: `$`, `>`, or a PowerShell `PS ...>` followed by whitespace."""
+    assert vr.command_segments("$ pip install rich") == ["pip install rich"]
+    assert vr.command_segments("PS> py -m pip install rich") == ["py -m pip install rich"]
+
+
+def test_a_line_splits_into_one_segment_per_shell_separator():
+    """Rule 2 step 2. Each segment gets its own shot at command position, which is
+    why the second half of an `&&` chain is found at all."""
+    assert vr.command_segments("migkit run --n 20 && migkit compare --baseline x") == [
+        "migkit run --n 20",
+        "migkit compare --baseline x",
+    ]
+
+
+def test_a_platform_label_in_a_comment_is_stripped_but_the_command_is_kept():
+    """Rule 2 step 3: `# Windows: ...` is where a second platform's command lives,
+    so a comment must not be dropped wholesale."""
+    assert vr.command_segments("# Windows: python -m pip install .") == [
+        "python -m pip install ."
+    ]
+
+
+def test_a_path_prefix_is_stripped_so_the_program_name_is_first():
+    """Rule 2 step 4: any run of non-whitespace ending in `/` or `\\`."""
+    assert vr.command_segments(".venv/bin/python -m pip install .") == [
+        "python -m pip install ."
+    ]
+    assert vr.command_segments(r".venv\Scripts\migkit.exe demo") == ["migkit.exe demo"]
+
+
+# ----------------------------------------------------------------------------------
+# readme_pip_install_targets -- contract table P1-P10
+# ----------------------------------------------------------------------------------
+
+
+def test_a_prose_pip_install_mention_promises_nothing():
+    """REGRESSION, contract table P1 and "Why this document exists" defect (1).
+
+    The README sentence below is a statement that the command does *not* work.
+    Read as flat text it yielded twelve package names -- `does`, `not`, `work`,
+    `today.`, `Install`, `from`, `a`, `checkout:` among them -- and failed the
+    release on English grammar."""
+    prose = "So `pip install model-migration-kit` does not work today. Install from a checkout:\n"
+    assert vr.readme_pip_install_targets(prose) == []
+
+
+def test_a_fenced_pip_install_names_its_target():
+    """Contract table P2: the check has to keep working, or it protects nothing."""
+    assert vr.readme_pip_install_targets(_fenced("pip install model-migration-kit")) == [
+        "model-migration-kit"
+    ]
+
+
+def test_installing_a_path_through_a_python_interpreter_names_nothing():
+    """Contract table P3: `.` is not a distribution name anyone can get wrong."""
+    assert vr.readme_pip_install_targets(_fenced(".venv/bin/python -m pip install .")) == []
+
+
+def test_an_editable_install_of_an_extra_names_nothing():
+    """Contract table P4: `-e` is a flag and `".[dev]"` starts with a dot."""
+    assert vr.readme_pip_install_targets(_fenced('python -m pip install -e ".[dev]"')) == []
+
+
+def test_an_install_inside_a_platform_comment_is_a_real_claim():
+    """Contract table P5: the README's Windows variant lives in a trailing comment,
+    and a name is just as wrong there as anywhere else."""
+    assert vr.readme_pip_install_targets(
+        _fenced("# Windows: python -m pip install jinja2")
+    ) == ["jinja2"]
+
+
+def test_a_pip_install_inside_a_string_is_not_in_command_position():
+    """Contract table P6: same shape as the C2 regression, on the install side."""
+    assert vr.readme_pip_install_targets(_fenced('echo "pip install nonsense"')) == []
+
+
+def test_both_halves_of_an_and_chain_are_scanned():
+    """Contract table P7. The order is order of appearance -- unlike
+    `readme_cli_commands`, which the C8 row sorts."""
+    assert vr.readme_pip_install_targets(
+        _fenced("pip install rich && pip install jinja2")
+    ) == ["rich", "jinja2"]
+
+
+def test_a_prompt_is_stripped_and_a_version_specifier_truncated():
+    """Contract table P8: the claim is about the name, not the range."""
+    assert vr.readme_pip_install_targets(_fenced("$ pip install opik-rigor>=0.1")) == [
+        "opik-rigor"
+    ]
+
+
+def test_installing_a_wheel_by_path_names_nothing():
+    """Contract table P9."""
+    assert vr.readme_pip_install_targets(_fenced("pip install ./dist/x.whl")) == []
+
+
+def test_a_powershell_prompt_and_the_py_launcher_are_both_recognised():
+    """Contract table P10: `py` is one of the four accepted interpreter spellings."""
+    assert vr.readme_pip_install_targets(_fenced("PS> py -m pip install rich")) == ["rich"]
+
+
+def test_the_argument_filter_still_drops_paths_wheels_and_flag_values():
+    """The contract says the existing argument filter is "unchanged and still
+    correct", so its coverage has to survive rule 1 -- this is the fenced version of
+    the now-xfailed test_pip_install_ignores_paths_wheels_and_flag_values."""
+    readme = _fenced(
+        "pip install dist/model_migration_kit-0.1.0-py3-none-any.whl",
+        "pip install -r requirements.txt",
+        "pip install --index-url https://test.pypi.org/simple/ model-migration-kit==0.1.0",
+        "pip install .",
+        r"pip install C:\wheels\thing.whl",
+    )
+    assert vr.readme_pip_install_targets(readme) == ["model-migration-kit"]
+
+
+def test_a_fenced_pip_install_names_the_console_script():
+    """The sibling published `pip install opik-opik_rigor`; the fenced version of
+    the now-xfailed test_pip_install_of_the_console_script_name_is_caught keeps that
+    defect shape covered."""
+    targets = vr.readme_pip_install_targets(_fenced("pip install migkit"))
+    assert targets == ["migkit"]
+    assert vr.normalize_project_name(targets[0]) != vr.normalize_project_name(vr.DIST_NAME)
+
+
+# ----------------------------------------------------------------------------------
+# readme_cli_commands -- contract table C1-C10
+# ----------------------------------------------------------------------------------
+
+
+def test_a_fenced_invocation_yields_its_subcommand():
+    """Contract table C1."""
+    assert vr.readme_cli_commands(_fenced("migkit demo")) == ["demo"]
+
+
+def test_a_program_name_inside_a_quoted_string_is_not_an_invocation():
+    """REGRESSION, contract table C2 and "Why this document exists" defect (2).
+
+    This is the README's CI gate, showing what to print when the tool errors. It
+    yielded the subcommand `failed`, and `migkit failed --help` exits 3 -- so the
+    release check failed on a line that is a message, not a command. Restricting the
+    scan to fenced blocks does *not* fix this one: it is inside a fence."""
+    assert vr.readme_cli_commands(_fenced('*) echo "migkit failed"     ; exit 1 ;;')) == []
+
+
+def test_a_windows_path_prefix_is_stripped_before_the_program_name_is_matched():
+    """Contract table C3: the quickstart types the interpreter out of `.venv`."""
+    assert vr.readme_cli_commands(_fenced(r".venv\Scripts\migkit.exe demo")) == ["demo"]
+
+
+def test_a_call_operator_with_a_quoted_path_still_matches():
+    """Contract table C4: `&` splits, the opening quote and the path prefix strip."""
+    assert vr.readme_cli_commands(_fenced(r'& "$tmp\Scripts\migkit.exe" demo')) == ["demo"]
+
+
+def test_the_programs_own_log_prefix_is_not_an_invocation():
+    """Contract table C5. `migkit:` prefixes every stderr line in the README's
+    pasted output, so reading it as a command would invent a subcommand per line;
+    a colon is neither whitespace nor a closing quote."""
+    assert vr.readme_cli_commands(_fenced("migkit: sampling fake-baseline-v1")) == []
+
+
+def test_a_prompt_is_stripped_before_the_program_name():
+    """Contract table C6."""
+    assert vr.readme_cli_commands(_fenced(r"$ migkit report .\does-not-exist.jsonl")) == [
+        "report"
+    ]
+
+
+def test_an_inline_code_span_in_prose_is_a_mention_not_an_invocation():
+    """Contract table C7 and rule 1's closing paragraph."""
+    assert vr.readme_cli_commands("`migkit demo` runs the whole flow\n") == []
+
+
+def test_subcommands_are_deduplicated_and_sorted():
+    """Contract table C8."""
+    assert vr.readme_cli_commands(
+        _fenced("migkit run --n 20 && migkit compare --baseline x")
+    ) == ["compare", "run"]
+
+
+def test_a_filename_containing_the_program_name_is_not_an_invocation():
+    """Contract table C9: the demo prints this path as its last line."""
+    assert vr.readme_cli_commands(_fenced(r"...\migkit-demo-report.html")) == []
+
+
+def test_a_bare_program_name_alone_on_a_fenced_line_is_not_an_invocation():
+    """Contract table C10: rule 2 requires a following word."""
+    assert vr.readme_cli_commands(_fenced("migkit")) == []
+
+
+def test_a_fenced_command_still_skips_when_the_cli_is_not_this_tree(tmp_path):
+    """Fenced version of the now-xfailed
+    test_readme_commands_skip_when_the_cli_is_not_this_tree: verifying commands
+    against an importable CLI from a *different* checkout would be a claim about
+    someone else's code, so the SKIP path must still exist."""
+    (tmp_path / "README.md").write_text("```bash\nmigkit demo\n```\n", encoding="utf-8")
+    result = vr.check_readme_commands(tmp_path)
+    assert result.status == vr.SKIP
+    assert "demo" in " ".join(result.evidence)
+
+
+def test_a_fenced_install_of_a_declared_dependency_is_allowed(tmp_path):
+    """Fenced version of test_readme_may_install_a_declared_dependency, which after
+    rule 1 no longer reaches the dependency-allowlist branch at all."""
+    _write_pyproject(tmp_path)
+    (tmp_path / "README.md").write_text("```\npip install opik-rigor\n```\n", encoding="utf-8")
+    assert vr.check_readme_pip_install(tmp_path).status == vr.PASS
+
+
+# ----------------------------------------------------------------------------------
+# Characterisation -- the real README.md, as it stands
+#
+# The contract's "Against the real README" section. These are the two values the
+# whole change exists to produce, so they are asserted against the file itself
+# rather than a fixture: a fixture cannot go stale, and that is the problem.
+# ----------------------------------------------------------------------------------
+
+_README = Path(__file__).resolve().parent.parent / "README.md"
+
+
+def test_the_real_readme_tells_nobody_to_pip_install_anything():
+    """Contract, "Against the real README": expected `[]`. Read by eye, every fenced
+    `pip install` in README.md targets `.`, `-e ".[dev]"`, or the placeholder
+    `<checkout>`; the only bare-name mention is the prose sentence of P1."""
+    assert vr.readme_pip_install_targets(_README.read_text(encoding="utf-8")) == []
+
+
+def test_the_real_readme_types_exactly_four_subcommands():
+    """Contract, "Against the real README". Read by eye: `demo` (quickstart and the
+    install section), `compare` (the CI gate and the real-models section), `run`
+    (real models, wire check, dupes) and `report` (the exit-3 transcript). Every
+    other `migkit` in the file is a log prefix, a filename, or prose."""
+    assert vr.readme_cli_commands(_README.read_text(encoding="utf-8")) == [
+        "compare",
+        "demo",
+        "report",
+        "run",
+    ]
+
+
+# ----------------------------------------------------------------------------------
+# Adversarial cases the contract does not tabulate
+#
+# Each of these is a behaviour the contract *implies*; where it is genuinely silent
+# the comment says so, and the accompanying report lists them for a human.
+# ----------------------------------------------------------------------------------
+
+
+def test_a_backtick_fence_inside_a_tilde_block_is_body_not_a_delimiter():
+    """F4 in the other direction. The rule is symmetric ("a fence of the *other*
+    character inside an open block is body text"), so a README that quotes a
+    markdown example inside a tilde block keeps it whole."""
+    assert vr.fenced_code_blocks("~~~\na\n```\nb\n~~~\n") == ["a\n```\nb\n"]
+
+
+def test_a_closing_fence_may_carry_trailing_whitespace():
+    """Rule 1 speaks of the line's *stripped* form, so a trailing space -- which no
+    editor shows and every reviewer misses -- must still close the block. If it did
+    not, the rest of the README would be swallowed as body by the F5 clause."""
+    assert vr.fenced_code_blocks("```\nb\n```   \n") == ["b\n"]
+
+
+def test_a_fence_line_carrying_an_info_string_does_not_close_a_block():
+    """Rule 1: the closing line "carries no info string". So ` ```bash ` inside an
+    open block opens nothing and closes nothing -- it is body."""
+    assert vr.fenced_code_blocks("```\nb\n```bash\nc\n```\n") == ["b\n```bash\nc\n"]
+
+
+def test_a_longer_closing_run_still_closes_the_block():
+    """Rule 1 requires the closing run to be "at least as long" as the opening one,
+    not equal to it. F8 covers the shorter case; this is the other side of it."""
+    assert vr.fenced_code_blocks("```\na\n````\nb\n") == ["a\n"]
+
+
+def test_an_empty_fenced_block_yields_an_empty_body():
+    """AMBIGUOUS in the contract: it says the function "returns the body of each
+    fenced block" and never says empty bodies are dropped, so an empty body is "".
+    Nothing downstream can tell the difference; recorded here so the choice is
+    visible rather than accidental."""
+    assert vr.fenced_code_blocks("```\n```\n") == [""]
+
+
+def test_an_indented_fence_opens_and_closes_like_any_other():
+    """Rule 1 tests the *stripped* form of the fence line, so a block indented under
+    a list item is still a block. AMBIGUOUS: the contract does not say whether the
+    body is dedented, so this asserts only that the block is found and its command
+    read -- both true either way."""
+    text = "  ```bash\n  migkit demo\n  ```\n"
+    assert len(vr.fenced_code_blocks(text)) == 1
+    assert vr.readme_cli_commands(text) == ["demo"]
+
+
+@pytest.mark.parametrize("info", ["", "bash", "console", "text", "powershell", "sh"])
+def test_the_info_string_never_decides_whether_a_block_is_scanned(info):
+    """Rule 1 makes the info string optional and never filters on it. This matters
+    in both directions for this README: its long ` ``` ` output blocks carry no info
+    string at all and must still be scanned -- that is where the C5 log-prefix lines
+    live -- while a `text` block is not thereby exempt."""
+    assert vr.readme_cli_commands(_fenced("migkit demo", info=info)) == ["demo"]
+
+
+def test_crlf_line_endings_change_nothing():
+    """Not in the contract, and this repo is on Windows with a CRLF bug already in
+    its history. A `\\r` left on the end of a line would make the closing fence
+    unrecognisable (F5 would then swallow the file) and would strand a `\\r` on the
+    last token of every command."""
+    text = "```bash\r\nmigkit demo\r\npip install rich\r\n```\r\n"
+    assert len(vr.fenced_code_blocks(text)) == 1
+    assert vr.readme_cli_commands(text) == ["demo"]
+    assert vr.readme_pip_install_targets(text) == ["rich"]
+
+
+def test_a_second_command_after_a_separator_is_reached_even_when_the_first_is_noise():
+    """P6 and P7 composed: the quoted-string half must not poison the real half.
+    A whole-line scan sees one `pip install` and stops at the wrong one."""
+    assert vr.readme_pip_install_targets(
+        _fenced('echo "pip install nonsense" && pip install rich')
+    ) == ["rich"]
+
+
+def test_a_subcommand_followed_by_a_flag_is_still_a_subcommand():
+    """Rule 2 matches `[a-z][a-z0-9-]*` after the program name and says nothing
+    about what follows it, so the argument list is irrelevant."""
+    assert vr.readme_cli_commands(_fenced("migkit demo --help")) == ["demo"]
+
+
+def test_a_bare_flag_is_not_a_subcommand():
+    """`--help` does not match `[a-z][a-z0-9-]*` -- it starts with a hyphen -- so
+    `migkit --help` is the C10 case with extra characters."""
+    assert vr.readme_cli_commands(_fenced("migkit --help")) == []
+
+
+def test_the_readme_install_line_with_a_trailing_platform_comment_names_nothing():
+    """The line this contract has to get right, copied from README.md's Install
+    section. AMBIGUOUS: rule 2 step 2 does not list `#` among the separators, yet
+    step 3 and the "Against the real README" expectation of `[]` only both hold if a
+    mid-line `#` begins a new segment. Read literally without that, this line yields
+    `['#', 'Windows:', 'pip', 'install']` -- which is exactly the tail of the twelve
+    bogus names the contract records as defect (1). `[]` is the frozen value, so
+    `[]` is what is asserted."""
+    line = r'.venv/bin/python -m pip install .      # Windows: .venv\Scripts\python.exe -m pip install .'  # noqa: E501
+    assert vr.readme_pip_install_targets(_fenced(line)) == []
+
+
+def test_a_placeholder_argument_truncates_away_to_nothing():
+    """From README.md's quickstart. `<checkout>` truncates at `<` to the empty
+    string, and the argument filter drops empty names -- which is the *only* reason
+    the real-README expectation of `[]` holds for that block."""
+    assert vr.readme_pip_install_targets(
+        _fenced(r".venv\Scripts\python.exe -m pip install <checkout>")
+    ) == []
+
+
+def test_a_quoted_command_alone_on_a_line_is_still_in_command_position():
+    """A wart, asserted rather than left to chance: rule 2 step 4 strips an opening
+    quote unconditionally, so a bare quoted string is indistinguishable from
+    `& "path\\to\\thing" arg`. Unlike P6 there is no `echo` in front to disqualify
+    it. If this is judged wrong, the contract is what has to change."""
+    assert vr.readme_pip_install_targets(_fenced('"pip install nonsense"')) == ["nonsense"]
