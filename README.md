@@ -192,7 +192,7 @@ $ python -c "from pathlib import Path; from model_migration_kit.report import ex
 ()
 ```
 
-The file was 25,748 bytes, LF-terminated, with zero `<script>` and zero `<link>`
+The file was 25,760 bytes, LF-terminated, with zero `<script>` and zero `<link>`
 elements. It contains the verdict banner, what was compared, the per-judge tables,
 the flip list with every sampled output behind a `<details>` element, a generated
 methodology appendix, and a provenance footer of hashes.
@@ -213,7 +213,7 @@ the project treats it as one.
 
 `migkit run` is the exception worth knowing about: it produces no verdict, so its
 `0` means "the run completed" and never means GO. A pipeline gating on `migkit run`
-is gating on nothing. Its `--help` says so too.
+is gating on nothing. `migkit --help` says so too, on the `run` row.
 
 A gate, in shell:
 
@@ -447,8 +447,20 @@ The distribution is named **`model-migration-kit`**, the import package is
 **It is not published yet.** Checked on 2026-08-13:
 
 ```
-$ python -c "import urllib.request; urllib.request.urlopen('https://pypi.org/pypi/migration-kit/json')"
+$ python -c "import urllib.request; urllib.request.urlopen('https://pypi.org/pypi/model-migration-kit/json')"
 urllib.error.HTTPError: HTTP Error 404: Not Found
+```
+
+The JSON endpoint 404s for a name nobody has registered *and* for a name someone
+registered without ever uploading to. The PEP 503 index tells those two apart —
+it answers 200 with an empty file list for the second — so that is the check that
+actually settles it, on both indexes:
+
+```
+404  https://pypi.org/simple/model-migration-kit/
+404  https://test.pypi.org/simple/model-migration-kit/
+404  https://pypi.org/simple/migkit/
+404  https://test.pypi.org/simple/migkit/
 ```
 
 So `pip install model-migration-kit` does not work today. Install from a checkout:
@@ -480,7 +492,7 @@ was written on (Python 3.14.4, Windows):
 
 ```
 $ python -m pytest
-476 passed, 1 warning in 16.75s
+729 passed, 4 xfailed in 49.40s
 ```
 
 The CI workflow additionally runs 3.10 through 3.13 on Ubuntu and Windows, builds a
@@ -508,8 +520,10 @@ release could change that would break this consumer are recorded in
 verified, so that unverified claims do not borrow credibility from the verified
 ones sitting next to them.
 
-Four decisions that are easy to get wrong, documented where they were made in
-[docs/build-plan.md](docs/build-plan.md) §6:
+Four decisions that are easy to get wrong. The first three were made in
+[docs/build-plan.md](docs/build-plan.md) §6; the fourth is a property of the tool
+rather than a recorded decision, and is stated here because it is the one a reader
+is most likely to assume the other way:
 
 - **A failed completion is graded at the judge's minimum score, never dropped.**
   Otherwise a candidate that times out on two items beats one that answers those

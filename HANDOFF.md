@@ -78,10 +78,6 @@ would invalidate every path in these docs for no packaging benefit.
    not public. **rigor has since exported them** (merged, unreleased). When rigor
    cuts that release and this project's bound moves, change the imports to the
    package root and delete the note in PROGRESS.md's known gaps.
-5. **Roadmap Phase 5** — a PR-proposing test agent — has a full build plan at
-   `C:\Users\ewehm\repos\campaign\plans\phase-5-pr-agent-build-plan.md`. Not
-   started, and estimated at six weeks of nights rather than the roadmap's three.
-
 ## Things that will bite you, all learned the hard way tonight
 
 - **The wheel is not your source tree.** Three separate variants of one bug
