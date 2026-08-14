@@ -104,9 +104,9 @@ Rebuilt from `git ls-files` on 2026-08-13, not from memory. Test counts are from
 
 | Path | State |
 |---|---|
-| `pyproject.toml` | Apache-2.0, deps `opik-rigor>=0.1.0,<0.2`, `jinja2>=3.0`, `rich>=13.0`, `tomli` on 3.10 only; `migkit` console script pointing at `model_migration_kit.cli:main`, **which exists and works**; version is `dynamic` and single-sourced from `__init__.py` |
+| `pyproject.toml` | Apache-2.0, deps `opik-rigor>=0.2,<0.3` (floor moved 2026-08-14, in the same change as the `confidence` validation it matches), `jinja2>=3.0`, `rich>=13.0`, `tomli` on 3.10 only; `migkit` console script pointing at `model_migration_kit.cli:main`, **which exists and works**; version is `dynamic` and single-sourced from `__init__.py` |
 | `LICENSE`, `NOTICE` | Apache-2.0 full text (202 lines) and an 8-line NOTICE. Both are in `license-files`, so both ship inside the wheel |
-| `CHANGELOG.md` | 294 lines, `## [0.1.0] - 2026-08-13`, derived from the commit log and this file rather than from memory. The heading is written; the number is **not published** |
+| `CHANGELOG.md` | `## [0.1.0] - 2026-08-14`, derived from the commit log and this file rather than from memory. Carries the rigor-0.2.0 contract entry as a fifth mechanism under **Fixed** |
 | `README.md` | 551 lines, every command in it executed before it was pasted |
 | `HANDOFF.md` | 220 lines, the cold-start document; read it before this one |
 | `COMPATIBILITY.md` | 1,096 lines. What this project uses from rigor, verified against the *installed 0.1.0 wheel*. The dependency table is 11 module rows, enumerated by AST walk |
@@ -188,7 +188,7 @@ handles subcommands adequately for three verbs and costs no dependency, and a
 tool whose selling point is auditability is better with a smaller supply chain.
 Revisit only if subcommand ergonomics genuinely suffer.
 
-**`opik-rigor` comes from PyPI, pinned `>=0.1.0,<0.2`.** Not a path dependency to
+**`opik-rigor` comes from PyPI, pinned `>=0.2,<0.3`.** Not a path dependency to
 the sibling repo. This makes model-migration-kit a real consumer of the published
 package rather than of a working copy, which is the only way the "first real
 consumer" claim means anything. Upper bound because rigor's report objects are
@@ -451,9 +451,11 @@ Recorded entering Session 2 unless noted, and re-checked against the tree on
   0.1.1 shipped on 2026-08-13 with `SCORE_MIN`, `SCORE_MAX`, `hash_rubric_file`
   and `hash_rubric_text` re-exported from `opik_rigor/__init__.py` and present in
   `__all__` — verified by reading `__init__.py` out of the published 0.1.1 wheel,
-  not by trusting the branch. The floor in `pyproject.toml` is now
-  `>=0.1.1,<0.2`, every site imports from the package root, and
-  `grep -rn "from opik_rigor\." src tests` returns nothing.
+  not by trusting the branch. The floor in `pyproject.toml` was moved to
+  `>=0.1.1,<0.2` at that point, every site imports from the package root, and
+  `grep -rn "from opik_rigor\." src tests` returns nothing. *(The floor moved
+  again on 2026-08-14, to `>=0.2,<0.3`, for rigor's confidence narrowing — the
+  import-site finding below is unaffected.)*
 
   **The site count was wrong twice, in the same direction, and that is the part
   worth keeping.** This record originally said three names at one site; a

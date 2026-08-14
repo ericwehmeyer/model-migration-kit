@@ -668,10 +668,30 @@ Frozen rules:
   same argument `goldenset.py` already makes for its `ALLOWED_KEYS`: a mistyped
   `pass_rate_flor` leaves the gate at 0.90 while its author believes it is at 0.80,
   and the failure surfaces as a verdict nobody can explain.
-- **Ranges are validated at load**: `0 < alpha < 1`, `0 < confidence < 1`,
+- **Ranges are validated at load**: `0 < alpha < 1`, `0.5 < confidence < 1`,
   `0 ≤ pass_rate_floor ≤ 1`, `0 ≤ judge_failure_tolerance ≤ 1`, `min_completions ≥
   1`, `n ≥ 1`, `concurrency ≥ 1`, `timeout > 0`. Out of range is `ConfigError`, not
   a clamp; a clamped threshold is a silently different gate.
+
+  *Amended 2026-08-14.* This clause originally specified `0 < confidence < 1`.
+  `opik-rigor` 0.2.0 made a one-sided `confidence` at or below 0.5 a `ValueError`
+  out of `assert_pass_rate`, which is where `comparison.py` sends this value, so
+  the original range let a config file past load that the gate would then refuse
+  at verdict time — after the completions had been paid for. The floor is 0.5
+  rather than some other number because it is the **intersection of two
+  consumers**: the same field also reaches `wilson_interval`, which is two-sided,
+  never inverts, and still legitimately accepts all of `(0, 1)`. The narrowing
+  therefore costs a legal two-sided confidence, and that is the deliberate price
+  of one field serving both.
+
+  **The clause is amended rather than the code made to satisfy it**, which is the
+  opposite of the usual direction here and needs saying: the original sentence was
+  correct against rigor 0.1.1 and is not correct against 0.2.0. A test author
+  working from the unamended contract would write the old range back in, which is
+  precisely how this was caught — the 172 tests pinning the new floor were written
+  from the contract, and the two that matter deliberately name no number at all,
+  bisecting both libraries for the least value each accepts and comparing. Those
+  go red if either project moves its floor alone.
 - The config file's own content hash goes in the report's provenance block, so the
   echoed thresholds can be tied back to a file in version control.
 - `[report].max_output_chars` truncates long outputs in the HTML and **always

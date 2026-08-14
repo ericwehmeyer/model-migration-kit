@@ -5,7 +5,7 @@ All notable changes to this project are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0] - 2026-08-13
+## [0.1.0] - 2026-08-14
 
 First release. `migkit` takes a golden set, runs two models against it *n* times
 per item, grades every completion with the same pinned judges, and answers
@@ -128,8 +128,9 @@ about that dependency, and how, is in [COMPATIBILITY.md](COMPATIBILITY.md).
 
 For a first release this is the record of defects found *during* the build. The
 mechanism that caught each one is the part worth keeping, because it is why they
-were found at all — and because three of the four mechanisms found things no
-amount of careful reading did.
+were found at all — and because four of the five mechanisms found things no
+amount of careful reading did. The fifth is the only one nobody here ran: a
+dependency narrowed its own contract, and that is recorded last.
 
 **Simulation of the plan, before any code was written against it.** Ten defects
 came back confirmed by computation rather than by argument, and several would
@@ -191,6 +192,45 @@ removes the namespace-package mechanism entirely. **The wheel is not your source
 tree**, and no packaging claim here was verified from an environment with the
 source on its path.
 
+**A dependency narrowing its own contract.** `opik-rigor` 0.2.0 made a one-sided
+`confidence` at or below 0.5 a `ValueError` out of `wilson_lower_bound` and
+`assert_pass_rate`, where 0.1.1 accepted such a value and answered. **Nothing
+here broke: the 929 tests that existed before this change all pass against 0.2.0
+with the source untouched.** What the narrowing surfaced is a latent mismatch in
+*this* package's own validation. `Thresholds` validated `confidence` on the open
+interval `(0, 1)` and `comparison.py` hands the value straight to
+`assert_pass_rate`, so this package accepted a configuration it could not
+honour: `Thresholds(confidence=0.3)` returned an object, and
+`assert_pass_rate((18, 20), 0.8, confidence=0.3)` raises. No user had hit it —
+this is the first release — and nothing in this repository sets a confidence
+below the 0.95 default, which is exactly why 929 tests could not see it. The
+defect was real all the same, and reachable by the first person to write a
+config file.
+
+`Thresholds.confidence` is now validated on `(0.5, 1)` and raises `ConfigError`
+outside it, quoting the value and saying what it would have bought rather than
+only what the legal range is. The dependency floor moved to
+`opik-rigor>=0.2,<0.3` in the same change and deliberately not in a separate
+one: any other pairing leaves a window in which a configuration passes
+validation here and raises inside rigor at verdict time, after the completions
+have been paid for. Refusing it at config load is the argument this project
+already makes about unpinned judge model ids — the operator is still looking at
+the file they just edited.
+
+**0.5 is the intersection of two consumers, not rigor's number copied across.**
+`thresholds.confidence` reaches `assert_pass_rate` at `comparison.py:1243`,
+which is one-sided and now requires more than 0.5, and `wilson_interval` at
+`comparison.py:1273`, which is two-sided, takes `z = ppf((1 + c) / 2)`, is
+untouched by rigor's change and still accepts the whole open unit interval. The
+legal range is the range both accept, and the refusal message says so rather
+than leaving the number looking arbitrary. 172 tests pin it, written from the
+contract by an author who did not write the validator and who derived no
+expected value by running this package; 25 of them are red against the old
+range. The two that matter name no boundary at all — they bisect each side for
+the least confidence it accepts and compare the results — so the pair goes red
+if either project moves its floor alone, including if rigor ever loosens this
+again.
+
 Individually, and worth naming because each is a trap rather than a slip:
 
 - `argparse` exits 2 on a usage error, and 2 means REVIEW in this tool's CI
@@ -220,24 +260,28 @@ Individually, and worth naming because each is a trap rather than a slip:
 A limitation you wrote down is a design decision; the same limitation discovered
 by a user is a bug report.
 
-- **Not yet published.** As of this section's date the package is on no index —
-  no PyPI release, no TestPyPI upload. Install from a checkout until this line
-  says otherwise.
+- **This is the first release, so nothing here is a change *from* anything.**
+  Every entry above describes how the code got to 0.1.0, not how it differs from a
+  version somebody is running. The one exception is the dependency floor, which
+  moved during the release itself and is recorded under **Fixed** with the reason.
 - **There is no public Python API.** `__all__` is empty by decision, and it is a
   decision rather than an omission: v0.1's definition of done is entirely a CLI
   story, and the objects a library API would expose are built on opik-rigor's
-  report dictionaries, which are `dict[str, Any]` today and scheduled to become
-  typed objects in its 0.2. Promising that surface now would mean the first thing
-  the promise did was prevent taking the improvement. The modules stay importable
-  at your own risk; only the CLI and its exit codes are a compatibility promise.
+  report dictionaries, which are `dict[str, Any]` today and on rigor's roadmap to
+  become typed objects. That was expected in its 0.2; 0.2.0 shipped without it,
+  so the surface is still untyped and the reason for not promising an API here
+  still holds. Promising that surface now would mean the first thing the promise
+  did was prevent taking the improvement. The modules stay importable at your own
+  risk; only the CLI and its exit codes are a compatibility promise.
 - ~~`judging.py` reaches into `opik_rigor.judge` for names outside rigor's public
   surface.~~ **Resolved before release.** rigor 0.1.1 exports `SCORE_MIN`,
   `SCORE_MAX`, `hash_rubric_file` and `hash_rubric_text` from its package root;
-  the dependency floor here is now `>=0.1.1,<0.2` and every site imports from the
-  root. This was a *declared* dependency on unpromised names rather than a hidden
-  one, and the reason it mattered is narrow and real: if rigor had renamed any of
-  them, this project's pinned CI would have stayed green while its users hit the
-  break on upgrade.
+  the dependency floor here moved to `>=0.1.1,<0.2` at that point — it has since
+  moved again, see below — and every site imports from the root. This was a
+  *declared* dependency on unpromised names rather than a hidden one, and the
+  reason it mattered is narrow and real: if rigor had renamed any of them, this
+  project's pinned CI would have stayed green while its users hit the break on
+  upgrade.
 - **`Completion.tokens_in` and `tokens_out` are `None` for every adapter.**
   rigor's `Adapter` protocol is a model id plus `complete(str) -> str` and
   exposes no usage data, so a cost gate cannot be built without reaching past the
@@ -277,11 +321,14 @@ by a user is a bug report.
   credentials in the environment this was built in. Both are covered through the
   same `cli.main` entry point by the test suite, and the README says which is
   which rather than presenting all four as executed.
-- **Verified against `opik-rigor` 0.1.0 only.** The declared bound is
-  `>=0.1.0,<0.2`: the lower bound because that is the only version verified, the
-  upper because rigor's report objects are untyped dicts today and its 0.2
-  roadmap changes exactly that surface. The reasoning, and what would have to
-  change here when it moves, is in [COMPATIBILITY.md](COMPATIBILITY.md).
+- **Verified against `opik-rigor` 0.2.0 only.** The declared bound is
+  `>=0.2,<0.3` (`pyproject.toml`), and the floor moved for a behaviour change
+  rather than for a feature — the confidence entry under **Fixed** above. It
+  moved in the same change as the validation it matches, because at any other
+  pairing the two projects disagree about which configurations are legal. The
+  upper bound is `<0.3` because rigor reserves each minor for changes to what a
+  recorded sample means. The reasoning, and what would have to change here when
+  it moves, is in [COMPATIBILITY.md](COMPATIBILITY.md).
 - **One comparison, one report.** No trend history, no Opik experiment logging,
   no cost model, no multi-judge weighting, no dashboard, and no claim about any
   item outside your golden set.

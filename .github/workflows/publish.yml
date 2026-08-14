@@ -38,6 +38,28 @@ jobs:
       - run: python -m pip install --upgrade pip build twine
       - run: python -m build
       - run: python -m twine check dist/*
+      # `twine check` validates metadata and long-description rendering. It never
+      # opens the zip, so it cannot tell you the demo data is missing, the console
+      # script points at a module that is not shipped, or the version in the
+      # filename disagrees with the one in the package. `scripts/verify_release.py`
+      # opens the artifact and checks all three, and it lived in this repository
+      # unwired to the path that actually publishes -- so the gate that exists
+      # would not have run on the release it exists for.
+      #
+      # The editable install has to come after the build so no editable artefact
+      # reaches the sdist, and before the checks because `version-matches-installed`
+      # and `dependencies-declared` read installed metadata.
+      #
+      # `--no-build` reuses the artifacts twine just checked. Building a second time
+      # would verify a different zip from the one that gets uploaded, which is the
+      # failure this whole script exists to refuse.
+      #
+      # No `--allow-dev-version`: on this workflow `version-not-dev` is the last
+      # gate before an upload to an index that will never let a filename be reused.
+      - run: python -m pip install -e .
+      - run: python scripts/verify_release.py --no-build
+      # Upload last, so a downloadable `dist` only ever exists for a build that
+      # passed verification.
       - uses: actions/upload-artifact@v7
         with:
           name: dist

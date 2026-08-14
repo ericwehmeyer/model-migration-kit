@@ -30,7 +30,15 @@ classifiers = [
 ]
 dependencies = [
   # The whole point: every statistical primitive is imported, none reimplemented.
-  "opik-rigor>=0.1.1,<0.2",
+  #
+  # Floor raised to 0.2 on 2026-08-14, and the reason is a behaviour change rather
+  # than a new feature: 0.2.0 refuses a one-sided `confidence` at or below 0.5,
+  # which 0.1.1 accepted and answered. `Thresholds.confidence` is handed straight
+  # to `assert_pass_rate`, so a config this package used to accept would now raise
+  # from inside rigor. The floor and the tightened validation in `judging.py` moved
+  # together; splitting them would leave a version window where a config passes
+  # validation here and fails there.
+  "opik-rigor>=0.2,<0.3",
   "jinja2>=3.0",
   "rich>=13.0",
   # tomllib arrived in the stdlib in 3.11, and this floor is 3.10 -- which CI

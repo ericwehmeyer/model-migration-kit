@@ -13,66 +13,104 @@ the installed package and the output is pasted, not summarised.
 
 | | |
 |---|---|
-| `opik-rigor` | **0.1.1** (installed from PyPI — see provenance below) |
+| `opik-rigor` | **0.2.0** (installed from PyPI — see provenance below) |
 | `jinja2` | **3.1.6** |
 | `rich` | **15.0.0** |
-| Declared bound | `opik-rigor>=0.1.1,<0.2` (`pyproject.toml`) |
+| Declared bound | `opik-rigor>=0.2,<0.3` (`pyproject.toml`) |
 | Python used to verify | **3.14.4** (Windows, `.venv`) |
 | Python in CI | **3.10, 3.11, 3.12, 3.13** × `ubuntu-latest`, `windows-latest` (`.github/workflows/ci.yml`) |
 | rigor's `Requires-Python` | `>=3.10` |
-| rigor's runtime deps | `scipy>=1.10` (pulls `numpy`; here 1.18.0 / 2.5.2) |
-| Verified on | **2026-08-14** against 0.1.1; first written 2026-08-13 against 0.1.0 |
-| Method | Introspected the installed wheel with `inspect`, `typing.get_protocol_members`, and live calls in `.venv` |
+| rigor's runtime deps | `numpy>=1.21`, `scipy>=1.10` (here 2.5.2 / 1.18.0). numpy is now declared directly rather than inherited through scipy |
+| Verified on | **2026-08-14** against 0.2.0; earlier the same day against 0.1.1; first written 2026-08-13 against 0.1.0 |
+| Method | Introspected the installed wheel with `inspect`, `typing.get_protocol_members`, live calls in `.venv`, and one `pytest` run for the marker path |
 
-> ### ⚠ Two defects in 0.1.1 make the documented real-model path unusable
+> ### ⚠ 0.2.0 refuses a one-sided `confidence` at or below 0.5 — the one behaviour change that can break a caller
 >
-> Verified against **the installed 0.1.1 wheel**, not rigor's source tree. Both are
-> fixed on rigor's `main` and **unreleased**, so they are what a user gets today.
->
-> **1. `is_pinned` refuses every current frontier model id**, and accepts one
-> retired six months ago. `migkit` calls `require_pinned` at judge-config load,
-> before a single API call is spent, so this is the first thing a user meets:
+> Verified against **the installed 0.2.0 wheel** by running it, not by reading
+> rigor's tree. `wilson_lower_bound` and `assert_pass_rate` now raise `ValueError`
+> for `confidence <= 0.5`, where 0.1.1 accepted the value and answered:
 >
 > ```
-> is_pinned('claude-opus-5'             ) = False   # current frontier
-> is_pinned('claude-sonnet-5'           ) = False   # current frontier
-> is_pinned('claude-opus-4-8'           ) = False   # current frontier
-> is_pinned('claude-opus-4-6'           ) = False   # current
-> is_pinned('claude-haiku-4-5'          ) = False   # current
-> is_pinned('claude-haiku-4-5-20251001' ) = True    # current, dated
-> is_pinned('claude-3-7-sonnet-20250219') = True    # RETIRED 2026-02-19
-> is_pinned('gpt-4.1'                   ) = True    # OpenAI alias, re-points
+> wilson_lower_bound(18, 20, 0.4 ) -> ValueError: confidence must be greater than 0.5
+>                                     for a one-sided bound, got 0.4. ...
+> wilson_lower_bound(18, 20, 0.5 ) -> ValueError  (0.5 exactly is refused too)
+> wilson_lower_bound(18, 20, 0.51) -> 0.8983057373544914
+> assert_pass_rate((18, 20), 0.5, confidence=0.5) -> ValueError  (same message)
+> assert_pass_rate((18, 20), 0.5, confidence=0.51) -> ok, lower_bound=0.8983057373544914
 > ```
 >
-> **What a user can do today:** name a *dated* model id — `claude-haiku-4-5-20251001`
-> is both accepted and current. 0.1.1's rule requires a trailing date or explicit
-> version marker, and Anthropic still publishes dated snapshots for some models.
-> There is no route to `claude-opus-5`, which carries no date at all.
+> `wilson_interval` is **not** affected and still takes the whole open interval —
+> `wilson_interval(18, 20, 0.1)` returns `(0.8912522331050441, 0.9081166342348816)`
+> — because its `z` is `ppf((1 + c) / 2)`, never negative. All three functions
+> still refuse `0.0`, `1.0` and anything outside `(0, 1)`, under a *different*
+> message (`confidence must be strictly between 0 and 1`) but the same
+> `ValueError`, so the out-of-range refusal and the new one-sided refusal are
+> distinguishable only by message text. See §4.10 for the full range, run value by
+> value.
 >
-> **2. `AnthropicAdapter` sends `temperature` unconditionally**, and the current
-> generation returns HTTP 400 for it:
+> **A third surface carries `confidence` and is not in `__all__`:** rigor's pytest
+> marker. `@pytest.mark.rigor_repeat(n, min_rate, confidence=...)` forwards the
+> value to `assert_pass_rate` **unvalidated and after the runs are spent**, so a
+> suite carrying a low confidence on a marker pays for `n` executions and then
+> errors. Run here against 0.2.0, `n=8`:
 >
 > ```
-> AnthropicAdapter.__init__(self, model_id, *, max_tokens=1024,
->                           temperature: float = 0.0, timeout=60.0, **forbidden)
-> complete() contains:  temperature=self._temperature,
-> AnthropicAdapter(model_id=..., temperature=None)
->   -> TypeError: float() argument must be a string or a real number, not 'NoneType'
+> $ .\.venv\Scripts\python.exe -m pytest -s -q --tb=line     (scratch dir, not this repo)
+> [rigor_repeat] test_marker_confidence.py::test_low_confidence_marker runs=8 successes=8
+>                failures=0 exceptions=0 pass_rate=1.0000 n=8 min_rate=0.5000 confidence=0.4000
+> F
+> RUNS SPENT: low=8 ok=8
+> E   ValueError: confidence must be greater than 0.5 for a one-sided bound, got 0.4. ...
+> ...\opik_rigor\distribution.py:213: ValueError
+> 1 failed, 2 passed
 > ```
 >
-> **No caller-side escape**: no omit-sentinel, `None` rejected by the constructor,
-> passed on every call. So even a model id that clears defect 1 fails at the API
-> boundary. The two are sequential — the pin rule is the front door locked, this is
-> there being no room behind it.
+> The `runs=8` line prints *before* the `ValueError`, and the test body's own
+> counter confirms it: eight executions, then the refusal. model-migration-kit does
+> not use the marker (§7.9), so this costs it nothing — it is recorded because the
+> marker autoloads into every suite that installs rigor (§1) and the failure lands
+> at the end of a run rather than at collection.
 >
-> Neither touches the keyless path. `migkit demo`, `--adapter fake` and the whole
-> test suite are unaffected, which is exactly why this repository's CI is green
-> while the documented real-model path is not usable.
+> **Both 0.1.1 defects are fixed in 0.2.0**, verified by running the installed
+> wheel rather than by reading a changelog:
+>
+> ```
+> is_pinned('claude-opus-5'             ) = True    (was False)
+> is_pinned('claude-sonnet-5'           ) = True    (was False)
+> is_pinned('claude-opus-4-8'           ) = True    (was False)
+> is_pinned('claude-opus-4-6'           ) = True    (was False)
+> is_pinned('claude-haiku-4-5'          ) = True    (was False)
+> is_pinned('claude-haiku-4-5-20251001' ) = True    (unchanged)
+> is_pinned('claude-3-7-sonnet-20250219') = True    (unchanged; retired, but pinned)
+> is_pinned('gpt-4.1'                   ) = False   (was True)
+>
+> AnthropicAdapter(self, model_id: 'str', *, max_tokens: 'int' = 1024,
+>                  temperature: 'float | None' = None, timeout: 'float' = 60.0,
+>                  **forbidden: 'ForbiddenKwarg') -> 'None'
+> AnthropicAdapter('some-model-v1').temperature                 -> None
+> AnthropicAdapter('some-model-v1', temperature=None).temperature -> None
+>
+> inspect.getsource(AnthropicAdapter.complete) now contains:
+>     if self._temperature is not None:
+>         request["temperature"] = self._temperature
+> ```
+>
+> So the real-model path is reachable in 0.2.0: `claude-opus-5` clears the pin
+> rule, and `temperature` defaults to `None` on the Anthropic adapter instead of
+> `0.0`. Note the one id that moved the *other* way — `gpt-4.1` is now refused,
+> which is a tightening a user could meet as a new `ConfigError` on a judge config
+> that loaded under 0.1.1.
+>
+> Neither fix touches the keyless path: `FakeAdapter`'s default `fake-scripted-v1`
+> was pinned under both rules, and no adapter here is constructed with a
+> `temperature`. So `migkit demo`, `--adapter fake` and the test suite see nothing
+> of either change — which is also why neither defect was caught by this
+> repository's own runs while it had them (§7.7, §7.9).
 
 ```
 $ .\.venv\Scripts\python.exe -c "import sys, importlib.metadata as md; print(sys.version); [print(d, md.version(d)) for d in ('opik-rigor','jinja2','rich','pytest','scipy','numpy')]"
 3.14.4 (tags/v3.14.4:23116f9, Apr  7 2026, 14:10:54) [MSC v.1944 64 bit (AMD64)]
-opik-rigor 0.1.1
+opik-rigor 0.2.0
 jinja2 3.1.6
 rich 15.0.0
 pytest 9.1.1
@@ -87,12 +125,12 @@ installed from a local path, a VCS URL, or a direct file, and omits it for an
 index install.
 
 ```
-$ cat .venv/Lib/site-packages/opik_rigor-0.1.1.dist-info/INSTALLER
+$ cat .venv/Lib/site-packages/opik_rigor-0.2.0.dist-info/INSTALLER
 pip
-$ ls .venv/Lib/site-packages/opik_rigor-0.1.1.dist-info/
+$ ls .venv/Lib/site-packages/opik_rigor-0.2.0.dist-info/
 INSTALLER  METADATA  RECORD  REQUESTED  WHEEL  entry_points.txt  licenses
-$ cat .venv/Lib/site-packages/opik_rigor-0.1.1.dist-info/direct_url.json
-cat: .venv/Lib/site-packages/opik_rigor-0.1.1.dist-info/direct_url.json: No such file or directory
+$ cat .venv/Lib/site-packages/opik_rigor-0.2.0.dist-info/direct_url.json
+cat: .venv/Lib/site-packages/opik_rigor-0.2.0.dist-info/direct_url.json: No such file or directory
 (no direct_url.json -> installed from an index, not a path)
 ```
 
@@ -108,16 +146,18 @@ needing separate evidence — the sibling project learned this by asserting a fa
 in someone else's docs on the strength of one HTML-to-markdown converter, and had
 to retract it (see `opik-rigor/COMPATIBILITY.md`, "A correction to this file, not
 to the docs"). So: every statement below is about **behaviour of the installed
-0.1.1 wheel**, backed by a command. Where this file talks about rigor's *roadmap*
+0.2.0 wheel**, backed by a command. Where this file talks about rigor's *roadmap*
 or its *intentions*, it cites `opik-rigor/PROGRESS.md` and says so.
 
 **A second rule, learned on 2026-08-14:** a statement about rigor's *source tree*
-is not a statement about what users get either. rigor's `main` currently carries a
-rewritten pin rule, an adapter that omits `temperature`, a lazily-imported scipy
-and several tightened gates — **none of it released**. Everything below was run
-against the wheel `pip` resolved, and where a defect is fixed upstream that is
-said explicitly and separately, never merged into the description of what 0.1.1
-does.
+is not a statement about what users get either. The morning's revision of this
+file recorded a rewritten pin rule, an adapter that omits `temperature`, a
+lazily-imported scipy and several tightened gates as sitting **unreleased** on
+rigor's `main`, and refused to describe them as behaviour. 0.2.0 published them
+that afternoon and every one of them is confirmed above and below — by running
+the wheel, not by promoting the earlier note. The rule paid for itself in both
+directions: nothing had to be retracted when the release landed, and nothing was
+claimed in the window where the tree said one thing and the index another.
 
 ---
 
@@ -147,6 +187,7 @@ table — so the completeness claim is checkable rather than asserted.
 | `tests/test_report_scale.py` | `EvidenceLog`, `FakeAdapter` |
 | `tests/test_runner.py` | `EvidenceLog`, `FakeAdapter`, `PassRateError`, `assert_pass_rate`, `sample_of` |
 | `tests/test_stranger_path.py` | `EvidenceLog`, `anthropic`, `openai_compat` |
+| `tests/test_thresholds_confidence_contract.py` | `assert_pass_rate`, `wilson_lower_bound` |
 
 Enumerated by parsing every `.py` file rather than by grepping line starts,
 because a `grep "^from opik_rigor"` misses an import indented inside a function —
@@ -156,36 +197,50 @@ are under active development, so re-run this rather than trusting the table afte
 a session boundary:
 
 ```
-$ .\.venv\Scripts\python.exe -c "import ast, pathlib; [print(f'{p.as_posix()}:{n.lineno} from {n.module} import ' + ', '.join(sorted(a.name for a in n.names))) if isinstance(n, ast.ImportFrom) and (n.module or '').split('.')[0]=='opik_rigor' else [print(f'{p.as_posix()}:{n.lineno} import {a.name}') for a in getattr(n,'names',[]) if isinstance(n, ast.Import) and a.name.split('.')[0]=='opik_rigor'] for p in sorted(pathlib.Path('.').rglob('*.py')) if '.venv' not in p.parts for n in ast.walk(ast.parse(p.read_text(encoding='utf-8')))]"
-src/model_migration_kit/cli.py:42 from opik_rigor import Adapter, AdapterError, AnthropicAdapter, EvidenceLog, FakeAdapter, OpenAICompatAdapter, RigorError, SampleTimeout
-src/model_migration_kit/cli.py:52 from opik_rigor import __version__
-src/model_migration_kit/comparison.py:72 from opik_rigor import EvidenceLog, PassRateError, RegressionError, assert_no_regression, assert_pass_rate, wilson_interval
-src/model_migration_kit/demo.py:50 from opik_rigor import AdapterError, EvidenceLog, FakeAdapter
-src/model_migration_kit/judging.py:39 from opik_rigor import Adapter, EvidenceLog, JudgeOutputError, ModelPinError, PinnedJudge, require_pinned
-src/model_migration_kit/judging.py:47 from opik_rigor.judge import SCORE_MIN, hash_rubric_file
-src/model_migration_kit/report.py:71 import opik_rigor
-src/model_migration_kit/report.py:73 from opik_rigor import EvidenceLog
+$ .\.venv\Scripts\python.exe -c "import ast, pathlib; [print(f'{p.as_posix()}:{n.lineno} from {n.module} import ' + ', '.join(sorted(a.name for a in n.names))) if isinstance(n, ast.ImportFrom) and (n.module or '').split('.')[0]=='opik_rigor' else [print(f'{p.as_posix()}:{n.lineno} import {a.name}') for a in getattr(n,'names',[]) if isinstance(n, ast.Import) and a.name.split('.')[0]=='opik_rigor'] for p in sorted(pathlib.Path('.').rglob('*.py')) if not {'.venv', '.claude'} & set(p.parts) for n in ast.walk(ast.parse(p.read_text(encoding='utf-8')))]"
+src/model_migration_kit/cli.py:43 from opik_rigor import Adapter, AdapterError, AnthropicAdapter, EvidenceLog, FakeAdapter, OpenAICompatAdapter, RigorError, SampleTimeout
+src/model_migration_kit/cli.py:53 from opik_rigor import __version__
+src/model_migration_kit/comparison.py:88 from opik_rigor import EvidenceLog, PassRateError, RegressionError, SCORE_MAX, SCORE_MIN, assert_no_regression, assert_pass_rate, wilson_interval
+src/model_migration_kit/demo.py:91 from opik_rigor import AdapterError, EvidenceLog, FakeAdapter
+src/model_migration_kit/judging.py:54 from opik_rigor import Adapter, EvidenceLog, JudgeOutputError, ModelPinError, PinnedJudge, SCORE_MIN, hash_rubric_file, require_pinned
+src/model_migration_kit/report.py:108 import opik_rigor
+src/model_migration_kit/report.py:110 from opik_rigor import EvidenceError, EvidenceRecord
 src/model_migration_kit/runner.py:38 from opik_rigor import Adapter, EvidenceLog, sample
+tests/fixtures/make_fixtures.py:68 from opik_rigor import EvidenceLog, FakeAdapter
 tests/test_cli.py:55 from opik_rigor import AdapterError, EvidenceError, EvidenceLog, FakeAdapter, JudgeOutputError, ModelPinError, PassRateError, RegressionError, RigorError, RubricDriftError, SampleTimeout
-tests/test_comparison.py:52 from opik_rigor.judge import SCORE_MAX, SCORE_MIN
-tests/test_judging.py:46 from opik_rigor import EvidenceLog, FakeAdapter, ModelPinError, PinnedJudge, is_pinned
-tests/test_judging.py:47 from opik_rigor.judge import SCORE_MIN, hash_rubric_file
-tests/test_judging.py:429 from opik_rigor import JudgeOutputError
+tests/test_comparison.py:52 from opik_rigor import SCORE_MAX, SCORE_MIN
+tests/test_comparison_regressions.py:66 from opik_rigor import PassRateError, RegressionError, SCORE_MAX, SCORE_MIN, assert_no_regression
+tests/test_evidence_scale.py:43 from opik_rigor import EvidenceError, EvidenceLog, FakeAdapter
+tests/test_judging.py:46 from opik_rigor import EvidenceLog, FakeAdapter, ModelPinError, PinnedJudge, SCORE_MIN, hash_rubric_file, is_pinned
+tests/test_judging.py:436 from opik_rigor import JudgeOutputError
+tests/test_property_based.py:58 from opik_rigor import FakeAdapter, SCORE_MAX, SCORE_MIN
 tests/test_report.py:65 from opik_rigor import EvidenceLog, wilson_interval
 tests/test_report.py:2248 import opik_rigor
+tests/test_report_scale.py:72 from opik_rigor import EvidenceLog, FakeAdapter
 tests/test_runner.py:29 from opik_rigor import EvidenceLog, FakeAdapter, PassRateError, assert_pass_rate, sample_of
+tests/test_stranger_path.py:677 from opik_rigor import EvidenceLog
+tests/test_stranger_path.py:702 from opik_rigor.adapters import anthropic
+tests/test_stranger_path.py:703 from opik_rigor.adapters import openai_compat
+tests/test_thresholds_confidence_contract.py:56 from opik_rigor import assert_pass_rate, wilson_lower_bound
 ```
+
+The `.claude` exclusion is new and was earned: agent worktrees under
+`.claude/worktrees/` are checkouts of this same repository, so without it the
+command prints four stale copies of every row above and the output stops being an
+inventory of what ships. `scripts/dependency_surface.py` never had the problem —
+it walks `src/` and `tests/` by name — which is the argument for the script being
+the check and this command being the illustration.
 
 `__version__` is load-bearing rather than decorative: `migkit --version` prints
 it, so removing it from the package root would break the CLI's most trivial
-invocation at import time (`cli.py:52` is a `from … import`, not a `getattr`).
+invocation at import time (`cli.py:53` is a `from … import`, not a `getattr`).
 
 ```
 $ .\.venv\Scripts\python.exe -c "import sys; sys.path.insert(0,'src'); from model_migration_kit import cli; cli.main(['--version'])"
-migkit 0.1.0.dev0 (opik-rigor 0.1.0)
+migkit 0.1.0.dev0 (opik-rigor 0.2.0)
 ```
 
-`report.py:667` reads the same attribute off the module to stamp it into the
+`report.py:913` reads the same attribute off the module to stamp it into the
 report, but defensively — `getattr(opik_rigor, "__version__", "unknown")` — so
 that path degrades rather than raising. `tests/test_report.py:2251-2252` asserts
 the stamped value equals `opik_rigor.__version__` and that it appears in the
@@ -223,22 +278,51 @@ repository's long-lived `.venv` kept 0.1.0, so for a day this document described
 version strangers were no longer getting, and nothing detected that. A long-lived
 venv stops being evidence about what users get the moment a floor is permissive.
 
-The signatures those names have — recorded against 0.1.0, re-verified unchanged in
-0.1.1:
+**What 0.1.1 → 0.2.0 changed for this consumer: the name surface did not move at
+all, and one accepted argument value became a `ValueError`.** Re-run the same way
+on 2026-08-14 against the installed 0.2.0:
+
+```
+__all__: 38 names -> 38     added: none     removed: none
+signatures checked: 14, changed: 1
+  FakeAdapter  **forbidden: 'object' -> **forbidden: 'ForbiddenKwarg'   (annotation only)
+outside the recorded set, three more signatures moved:
+  AnthropicAdapter     temperature: 'float' = 0.0 -> 'float | None' = None
+  OpenAICompatAdapter  temperature: 'float' = 0.0 -> 'float | None' = 0.0   (default held)
+  hash_rubric_text     (data: 'bytes') -> (data: 'bytes | str')
+attribute-level dependencies -- Run, Verdict, SampleResult, PinnedJudge,
+EvidenceLog, EvidenceRecord: none missing; SampleResult gained .errored_runs
+SCORE_MIN = 1.0   SCORE_MAX = 5.0     (unchanged)
+Adapter protocol members: ['complete', 'model_id']   (unchanged)
+pytest11 entry point: rigor = opik_rigor.integrations.pytest_plugin  (unchanged)
+PassRateError.stats on the failure path: 15 keys -> 18   (added, see §4.3)
+```
+
+So the thing that breaks a caller is not on this list. `__all__` is identical name
+for name across the two releases and every relied-on signature still accepts every
+call this project makes — while the release refuses a `confidence` this project's
+own config schema used to allow (§4.10). That is a change in the *accepted values*
+behind an unchanged signature, which is the failure mode a name-level diff cannot
+see, and the reason this section is not the whole check.
+
+The signatures those names have — recorded against 0.1.0, re-verified in 0.1.1,
+re-verified in 0.2.0 with the one annotation change marked inline:
 
 ```
 $ .\.venv\Scripts\python.exe -c "import inspect, opik_rigor; print(opik_rigor.__all__); ..."
 __all__ = ['Adapter', 'AdapterError', 'AnthropicAdapter', 'Baseline', 'BaselineError',
  'EvidenceError', 'EvidenceLog', 'EvidenceRecord', 'FakeAdapter', 'JudgeOutputError',
  'ModelPinError', 'OpenAICompatAdapter', 'PassRateError', 'PinnedJudge', 'RegressionError',
- 'RigorError', 'RubricDriftError', 'Run', 'SampleResult', 'SampleTimeout',
- 'ScoreDistributionError', 'StatisticalAssertionError', 'Verdict', '__version__',
- 'assert_no_regression', 'assert_pass_rate', 'assert_score_distribution', 'is_pinned',
+ 'RigorError', 'RubricDriftError', 'Run', 'SCORE_MAX', 'SCORE_MIN', 'SampleResult',
+ 'SampleTimeout', 'ScoreDistributionError', 'StatisticalAssertionError', 'Verdict',
+ '__version__', 'assert_no_regression', 'assert_pass_rate', 'assert_score_distribution',
+ 'example_rubric_path', 'hash_rubric_file', 'hash_rubric_text', 'is_pinned',
  'require_pinned', 'sample', 'sample_of', 'wilson_interval', 'wilson_lower_bound']
+                                        (38 names, sorted, identical in 0.1.1 and 0.2.0)
 
 Adapter(*args, **kwargs)
 EvidenceLog(path: 'str | os.PathLike[str]') -> 'None'
-FakeAdapter(*, model_id: 'str' = 'fake-scripted-v1', responses: 'ResponseSource', cycle: 'bool' = False, seed: 'int | None' = None, latency: 'float' = 0.0, fail_with: 'BaseException | type[BaseException] | None' = None, fail_after: 'int | None' = None, **forbidden: 'object') -> 'None'
+FakeAdapter(*, model_id: 'str' = 'fake-scripted-v1', responses: 'ResponseSource', cycle: 'bool' = False, seed: 'int | None' = None, latency: 'float' = 0.0, fail_with: 'BaseException | type[BaseException] | None' = None, fail_after: 'int | None' = None, **forbidden: 'ForbiddenKwarg') -> 'None'
 PinnedJudge(adapter: 'Adapter', rubric_path: 'str | os.PathLike[str]', evidence: 'EvidenceLog', *, name: 'str' = 'default', accept_rubric_change: 'bool' = False) -> 'None'
 Verdict(passed: 'bool', score: 'float | None', raw: 'str', model_id: 'str' = '', rubric_hash: 'str' = '', reason: 'str | None' = None) -> None
 sample(fn: 'Callable[[], Any]', n: 'int', *, concurrency: 'int' = 1, timeout: 'float | None' = None, errors_as_failures: 'bool' = True, outcome: 'Callable[[Any], bool] | None' = None, evidence: 'EvidenceLog | None' = None, label: 'str | None' = None) -> 'SampleResult'
@@ -262,6 +346,7 @@ PinnedJudge   used:   .name, .model_id, .rubric_hash, .evaluate(input, output)
 EvidenceLog   used:   .append(event_type, payload) -> EvidenceRecord, .read() -> list
 EvidenceRecord fields: ts, event_type, payload, schema_version
 PassRateError / RegressionError: .stats  (dict)
+                          all present in 0.2.0; nothing on this list moved
 ```
 
 `assert_pass_rate` and `assert_no_regression` accept more than a `SampleResult`:
@@ -273,8 +358,9 @@ ScoreData = opik_rigor.sampling.SampleResult | collections.abc.Sequence[float]
 
 ### Some names are imported from a submodule, not from `__all__`
 
-`judging.py` does `from opik_rigor.judge import SCORE_MIN, hash_rubric_file`, and
-the tests add `SCORE_MAX`. None of them is re-exported at package level:
+`judging.py` used to do `from opik_rigor.judge import SCORE_MIN, hash_rubric_file`,
+and the tests added `SCORE_MAX`. In 0.1.0 none of them was re-exported at package
+level:
 
 ```
 $ .\.venv\Scripts\python.exe -c "..."
@@ -302,6 +388,9 @@ AnthropicAdapter       in __all__: True  top-level attr: True
 EvidenceError          in __all__: True  top-level attr: True
 ...                                                             (23 names, all True)
 __version__            in __all__: True  top-level attr: True
+                    (re-run against 0.2.0: all 23 still True, plus the four
+                     attribute-only names Verdict, Run, SampleResult,
+                     wilson_lower_bound and EvidenceRecord)
 ```
 
 These were the thinnest part of the promise under invariant 1
@@ -311,7 +400,8 @@ leading underscore, and `SCORE_MIN` / `SCORE_MAX` documented in
 so a rigor release could have moved them without touching `__all__` and been
 within its rights.
 
-**Closed in 0.1.1**, which is the version this file is now verified against:
+**Closed in 0.1.1 and still closed in 0.2.0**, the version this file is now
+verified against:
 
 ```
 $ .\.venv\Scripts\python.exe -c "import opik_rigor; [print(...) for n in (...)]"
@@ -321,6 +411,12 @@ hash_rubric_file     in __all__: True  top-level attr: True
 hash_rubric_text     in __all__: True  top-level attr: True
 example_rubric_path  in __all__: True  top-level attr: True
 ```
+
+The `opik_rigor.judge` spellings also still resolve, and to the same objects
+(`opik_rigor.judge.SCORE_MIN is opik_rigor.SCORE_MIN` and the same for the other
+three) — so the re-export is an alias rather than a move, and a consumer still on
+the old spelling is not broken by 0.2.0. That was rigor's stated intent when the
+names landed; it is now a run result rather than an intent.
 
 Every site in this repository now imports them from the package root, and
 `grep -rn "from opik_rigor\." src` returns nothing. That is checked on every push
@@ -340,7 +436,7 @@ listed rather than waved through.
 ### rigor's pytest plugin autoloads into this suite
 
 ```
-$ cat .venv/Lib/site-packages/opik_rigor-0.1.0.dist-info/entry_points.txt
+$ cat .venv/Lib/site-packages/opik_rigor-0.2.0.dist-info/entry_points.txt
 [pytest11]
 rigor = opik_rigor.integrations.pytest_plugin
 ```
@@ -353,8 +449,15 @@ marker; the plugin registers correctly, so this is currently benign:
 $ .\.venv\Scripts\python.exe -m pytest --markers
 ...
 @pytest.mark.rigor_repeat(n, min_rate, confidence=0.95, errors_as_failures=True): run this
-test n times and gate the pass rate with opik_rigor.assert_pass_rate. ...
+test n times and gate the pass rate with opik_rigor.assert_pass_rate. A body that returns
+is a pass, one that raises AssertionError is a failure, any other exception is an exception
+(harness broke, not the system under test).
 ```
+
+The marker's `confidence=` is the third surface carrying 0.2.0's new refusal, and
+the only one that is not in `__all__` — see the box at the top of this file and
+§4.10. It reaches this suite whether or not this suite asks for it, which is why
+an autoloading plugin is worth an entry here at all.
 
 Optional provider SDKs are absent, as invariant 3 requires, and importing
 `opik_rigor` does not pull them in:
@@ -365,7 +468,15 @@ anthropic  ABSENT
 openai     ABSENT
 scipy      installed
 numpy      installed
+
+modules in sys.modules after `import opik_rigor`, from that list: ['numpy']
 ```
+
+New in 0.2.0: `scipy` is **not** imported by `import opik_rigor` — it is now
+loaded on first use. It is still a declared runtime dependency and still installed
+here, so nothing this project does changes; the observable difference is import
+time, and the absence of scipy from `sys.modules` is what shows the lazy import is
+real rather than intended.
 
 ---
 
@@ -382,7 +493,10 @@ A rigor release breaks model-migration-kit if it changes any of:
    `underpowered` and `runs_needed` off the raised exception and lets them decide
    REVIEW vs NO-GO (build-plan §6). These keys exist **only on the failure path**
    — see §4.3. A rename is a silent verdict change, not an exception, and is the
-   single highest-consequence drift risk in this dependency.
+   single highest-consequence drift risk in this dependency. 0.2.0 grew that dict
+   from 15 keys to 18 without touching either of the two that are read, which is
+   the additive case; the read is by name and ignores the rest, so the new keys
+   cost nothing here.
 4. **The `p_value` key** on `assert_no_regression`'s return and on
    `RegressionError.stats`; Holm-Bonferroni correction is applied to it.
 5. **`Verdict.passed` / `.score` / `.reason`**, and `JudgeOutputError` being the
@@ -390,17 +504,20 @@ A rigor release breaks model-migration-kit if it changes any of:
    tolerance in `judging.py` counts exactly that type.
 6. **`PinnedJudge`'s constructor keywords** and the `judge.init`-record semantics
    of rubric-drift detection (§4.6).
-7. **`SCORE_MIN`, `SCORE_MAX` and `hash_rubric_file` remaining importable from
-   `opik_rigor.judge`** — and their *values*: `tests/test_comparison.py` asserts
-   against the 1.0–5.0 range directly, so a configurable score range in rigor is
-   a change here even if the constants survive.
+7. **`SCORE_MIN`, `SCORE_MAX` and `hash_rubric_file` remaining importable at
+   all** — relaxed from "importable from `opik_rigor.judge`" once 0.1.1 exported
+   them at the package root and every site here moved to that spelling. Their
+   *values* still matter: `tests/test_comparison.py` asserts against the 1.0–5.0
+   range directly, so a configurable score range in rigor is a change here even
+   if the constants survive. Both held at 1.0 / 5.0 in 0.2.0.
 8. **`EvidenceLog.append` / `.read`** and `EvidenceRecord`'s four fields, on which
    invariant 2 (the report renders from the evidence log) depends entirely.
 
 9. **`FakeAdapter`'s constructor keywords** — `model_id`, `responses`, `cycle`,
    `latency`, `fail_with`, `fail_after`. Not production code, but the test suite
    and `migkit demo` are built on it, and CI's `demo` job is part of the
-   definition of done. Note `**forbidden: object` in its signature: it rejects
+   definition of done. Note `**forbidden: ForbiddenKwarg` in its signature
+   (`object` before 0.2.0 — the annotation moved, the behaviour did not): it rejects
    unknown keywords rather than ignoring them, so drift here fails loudly —
    `FakeAdapter(responses=["x"], nonsense=1)` gives
    `TypeError: FakeAdapter got unexpected keyword argument(s): nonsense`. Related
@@ -422,20 +539,23 @@ A rigor release breaks model-migration-kit if it changes any of:
 
 12. **`AnthropicAdapter` and `OpenAICompatAdapter` taking `model_id` positionally
     as their first argument, and remaining importable from the package root.**
-    `cli.py:281` and `cli.py:283` construct them — `AnthropicAdapter(model_id)`,
+    `cli.py:336` and `cli.py:338` construct them — `AnthropicAdapter(model_id)`,
     `OpenAICompatAdapter(model_id)` — as the `--adapter anthropic` and
-    `--adapter openai-compat` arms of `_model_adapter` (`cli.py:279`). What is
+    `--adapter openai-compat` arms of `_model_adapter` (`cli.py:333`). What is
     relied on is exactly three things and no more: the import, the one positional
     parameter, and that the result satisfies the `Adapter` protocol, because
     `_model_adapter` is annotated `-> Adapter` and everything downstream reaches
     the object only through `.complete(prompt)` and `.model_id`. No keyword is
     passed, so `max_tokens`, `temperature`, `timeout` and `base_url` may all move;
-    the defaults are accepted sight unseen. Verified against the installed 0.1.0:
+    the defaults are accepted sight unseen. **They moved in 0.2.0 and this is what
+    "accepted sight unseen" buys**: `AnthropicAdapter`'s `temperature` default went
+    from `0.0` to `None` and nothing here changed, because no keyword is passed.
+    Verified against the installed 0.2.0:
 
     ```
     $ .\.venv\Scripts\python.exe -c "import inspect; from opik_rigor import AnthropicAdapter, OpenAICompatAdapter; [print(c.__name__, inspect.signature(c.__init__)) for c in (AnthropicAdapter, OpenAICompatAdapter)]"
-    AnthropicAdapter (self, model_id: 'str', *, max_tokens: 'int' = 1024, temperature: 'float' = 0.0, timeout: 'float' = 60.0, **forbidden: 'object') -> 'None'
-    OpenAICompatAdapter (self, model_id: 'str', *, base_url: 'str | None' = None, max_tokens: 'int' = 1024, temperature: 'float' = 0.0, timeout: 'float' = 60.0, **forbidden: 'object') -> 'None'
+    AnthropicAdapter (self, model_id: 'str', *, max_tokens: 'int' = 1024, temperature: 'float | None' = None, timeout: 'float' = 60.0, **forbidden: 'ForbiddenKwarg') -> 'None'
+    OpenAICompatAdapter (self, model_id: 'str', *, base_url: 'str | None' = None, max_tokens: 'int' = 1024, temperature: 'float | None' = 0.0, timeout: 'float' = 60.0, **forbidden: 'ForbiddenKwarg') -> 'None'
 
     $ ANTHROPIC_API_KEY=x OPENAI_API_KEY=x .\.venv\Scripts\python.exe -c "from opik_rigor import AnthropicAdapter, OpenAICompatAdapter, Adapter; [print(c.__name__, 'model_id=', repr(c('some-model-v1').model_id), 'isinstance(Adapter)=', isinstance(c('some-model-v1'), Adapter)) for c in (AnthropicAdapter, OpenAICompatAdapter)]"
     AnthropicAdapter model_id= 'some-model-v1' isinstance(Adapter)= True
@@ -447,14 +567,14 @@ A rigor release breaks model-migration-kit if it changes any of:
     behaviour of either adapter this project has observed, and it is on the
     common path: `migkit run --adapter anthropic` with no key set must exit with
     one stderr line rather than a traceback, which works because `AdapterError`
-    is in `cli.py`'s `EXPECTED_ERRORS` tuple (`cli.py:99-106`). Credentials are
+    is in `cli.py`'s `EXPECTED_ERRORS` tuple (`cli.py:105-112`). Credentials are
     read from the environment inside the constructor, never passed in:
 
     ```
     $ .\.venv\Scripts\python.exe -c "import os; os.environ.pop('ANTHROPIC_API_KEY', None); from opik_rigor import AnthropicAdapter; AnthropicAdapter('some-model-v1')"
-      File ".../opik_rigor/adapters/anthropic.py", line 71, in __init__
+      File ".../opik_rigor/adapters/anthropic.py", line 172, in __init__
         self._api_key = require_env_key(ENV_ANTHROPIC_API_KEY, type(self).__name__)
-      File ".../opik_rigor/adapters/base.py", line 80, in require_env_key
+      File ".../opik_rigor/adapters/base.py", line 105, in require_env_key
         raise AdapterError(
     opik_rigor.adapters.base.AdapterError: AnthropicAdapter needs the ANTHROPIC_API_KEY
     environment variable. Credentials are read from the environment only -- they are
@@ -463,7 +583,7 @@ A rigor release breaks model-migration-kit if it changes any of:
     ```
 
     Note the direction: `AdapterError` subclasses `Exception` directly, not
-    `RigorError`, which is why `cli.py:92-95` names it separately from
+    `RigorError`, which is why `cli.py:105-112` names it separately from
     `RigorError` in that tuple — catching only `RigorError` would let a missing
     credential escape as an unhandled traceback:
 
@@ -482,7 +602,16 @@ A rigor release breaks model-migration-kit if it changes any of:
     A rigor release that *added* `RigorError` to `AdapterError`'s or
     `SampleTimeout`'s bases would not break anything here; it would only make
     those two tuple entries redundant. Removing `RigorError` from one of the other
-    six would.
+    six would. All eight MROs are unchanged in 0.2.0.
+
+14. **The range of `confidence` `assert_pass_rate` accepts**, added on 2026-08-14
+    because 0.2.0 changed it. `comparison.py` passes `thresholds.confidence`
+    straight through, so the accepted range *is* this project's accepted range,
+    and a tightening at either end turns a config that used to run into a
+    `ValueError` raised from inside a statistics call — no rename, no signature
+    change, nothing a name-level diff sees. Recorded value by value in §4.10.
+    Distinct from item 3 in one way that matters: this one raises, where item 3
+    would return a wrong verdict quietly.
 
 A rigor release does **not** break model-migration-kit by adding names, adding optional
 keywords, changing the Opik integration, or changing anything about `Baseline` or
@@ -529,12 +658,25 @@ summary(): {'n': 3, 'runs': 3, 'successes': 0, 'failures': 0, 'exceptions': 3,
             'pass_rate': 0.0, 'errors_as_failures': True, 'concurrency': 1, ...}
 ```
 
-The `TypeError` is rigor's own, raised by `default_outcome`:
+The `TypeError` is rigor's own, raised by `default_outcome`. **The message grew in
+0.2.0 and now names the trap this section was written to record** — re-run against
+the installed wheel, in full:
 
 ```
-cannot decide pass/fail from str; return a bool or an object with a boolean
-.passed attribute, or pass an explicit outcome=... callable to sample()
+cannot decide pass/fail from str 'Paris'; sample() records this run as errored,
+which drops it from .values, .outcomes, .successes and .completed -- so a whole
+sample of these reads as pass_rate=0.0 beside failures=0, which looks like an
+outage rather than an unanswered question. Return a bool or an object with a
+boolean .passed attribute, or pass an explicit outcome=... callable to sample().
+If you have no pass/fail question yet and only want the values back, say so with
+outcome=lambda value: True.
 ```
+
+It also now quotes the offending value (`str 'Paris'`), which is the difference
+between reading the message and having to reproduce the call. The *behaviour*
+below is unchanged in 0.2.0 — the refusal still lands in `Run.error` and `.values`
+is still empty — so nothing in this section is retired, only the excuse that a
+reader could not have known.
 
 The refusal is right — rigor cannot know whether `"Paris"` is a pass. What is
 awkward is *where the refusal lands*. `Run.error` is the same field an exception
@@ -627,6 +769,11 @@ A sweep of every public name for anything usage-shaped finds only those two caps
 ['AnthropicAdapter.max_tokens', 'OpenAICompatAdapter.max_tokens']
 ```
 
+All three blocks above are unchanged in 0.2.0 — same two protocol members, same
+public attributes on all three adapters, same sweep result over a 38-name
+`__all__`. This section is entirely intact and neither of §3's two behaviours has
+been retired.
+
 `complete(prompt) -> str` is the entire contract, and a `str` cannot carry a token
 count. `contracts.Completion` therefore declares `tokens_in: int | None` and
 `tokens_out: int | None` and leaves both `None` for every adapter rigor ships;
@@ -648,12 +795,24 @@ the report cannot say what a verdict cost.
 ```
 wilson_interval(0, 0)     -> ValueError: n must be >= 1, got 0; a rate over zero runs is not a rate
 wilson_lower_bound(0, 0)  -> ValueError: n must be >= 1, got 0; a rate over zero runs is not a rate
-wilson_interval(0, 5)     -> (0.0, 0.43448246478317476)
+wilson_interval(0, 5)     -> (0.0, 0.43448246478317465)
 wilson_lower_bound(0, 5)  -> 0.0
 wilson_interval(18, 20)   -> (0.6989663547715128, 0.9721335187862319)
-wilson_lower_bound(18, 20)-> 0.7383369536731331
+wilson_lower_bound(18, 20)-> 0.7383369536731332
 wilson_interval(5, 3)     -> ValueError: successes (5) cannot exceed n (3)
 ```
+
+**Two of those numbers moved by one unit in the last place between 0.1.1 and
+0.2.0**, and they are recorded rather than quietly re-pasted:
+`wilson_interval(0, 5)`'s upper edge was `0.43448246478317476` and is now
+`…65`; `wilson_lower_bound(18, 20)` was `0.7383369536731331` and is now `…32`.
+Every other number in this section is identical to the digit. A last-place move is
+what a rearranged floating-point expression looks like from outside — the same
+formula, associated differently — and it is worth knowing that these values are
+not stable enough to assert with `==` in a test. Nothing here does — the one test
+that pins a rigor lower bound to full precision uses
+`pytest.approx(..., rel=1e-9)` (`tests/test_comparison.py:647`), and the report
+renders to 4 decimal places, where both numbers are unchanged.
 
 Consequence for `report.py` (Session 3): a judge with zero completions on one side
 must be rendered as an em-dash, never as `[0.0, 1.0]`. Calling the interval to
@@ -663,7 +822,10 @@ Note also that `wilson_interval` is **two-sided** and `wilson_lower_bound` is
 **one-sided**; the gate uses the one-sided bound and the report prints the
 two-sided interval, so the printed lower edge is *lower* than the number the gate
 tested (`0.8350` vs `0.8597` in the example below). That is correct and it will
-look like a bug to a reader unless the report says which is which.
+look like a bug to a reader unless the report says which is which. That
+distinction stopped being cosmetic in 0.2.0: the one-sided function now refuses a
+`confidence` the two-sided one accepts (§4.10), so the two are no longer
+interchangeable at the argument level either.
 
 ### 4.2 `assert_no_regression` rejects `bool` and `None` in a score array
 
@@ -671,7 +833,10 @@ look like a bug to a reader unless the report says which is which.
 bools        -> ValueError: current[0] must be a number, got bool True
 None present -> ValueError: current[1] must be a number, got NoneType None
 float(bool)  -> {'gate': 'no_regression', ..., 'p_value': 0.9999946491728054, ...}
-empty current-> ValueError: current has no scores; there is nothing to compare against baseline
+                (current = ten 1.0s, baseline = ten 0.0s -- the inputs are stated
+                 because the first revision of this block did not, and re-running
+                 it in 0.2.0 meant searching for them)
+empty current-> ValueError: current has no scores; there is nothing to compare against baseline.
 ```
 
 Both refusals are load-bearing for this project:
@@ -689,23 +854,51 @@ The key set is identical on the success dict and on `RegressionError.stats`
 (16 keys, including `p_value`), so `comparison.py` can read `p_value` off either
 path without branching. `assert_pass_rate` is **not** like this — see next.
 
+All four lines above held in 0.2.0, `p_value` to the last digit and the key set at
+the same 16 names on both paths. The only difference is a full stop: the "no
+scores" message now ends in one, and when the input is a `SampleResult` rather
+than an empty sequence it continues into a second sentence naming what the runs
+actually contained (§5.D). An assertion matching that message with `==` would
+break; nothing here matches it at all.
+
 ### 4.3 `assert_pass_rate` carries `underpowered` / `runs_needed` only when it fails
 
 Failure path, 38/40 against a 0.90 floor:
 
 ```
 PassRateError.stats = {'gate': 'pass_rate', 'label': None, 'passed': False, 'n': 40,
- 'successes': 38, 'failures': 2, 'pass_rate': 0.95, 'lower_bound': 0.8596681784340271,
+ 'successes': 38, 'failures': 2, 'pass_rate': 0.95, 'lower_bound': 0.8596681784340272,
  'interval_lower': 0.8349612263085903, 'interval_upper': 0.9861793326138516,
  'min_rate': 0.9, 'confidence': 0.95, 'method': 'wilson-one-sided',
- 'underpowered': True, 'runs_needed': 113}
+ 'underpowered': True, 'runs_needed': 113,
+ 'power_at_runs_needed': 0.6638064775606558, 'target_power': 0.8,
+ 'runs_for_target_power': 188}
 
 pass rate gate failed: 38/40 passed (observed 0.9500); one-sided 95% Wilson lower bound
 0.8597 < min_rate 0.9000. Two-sided 95% interval [0.8350, 0.9862]. The observed rate
 0.9500 clears min_rate 0.9000 but the lower bound does not: this is an underpowered
 sample, not a demonstrated failure. 40 runs cannot distinguish a system at 95.0% from
-one at 86.0%. At this observed rate roughly 113 runs would clear the bar.
+one at 86.0%. Hold the rate at exactly 0.9500 and the bound clears from 113 runs on.
+That is arithmetic on this one rate, not a power calculation: a fresh sample of 113
+runs from a system whose true rate is 95.0% lands above or below 95.0% at random, and
+clears this gate only 66% of the time. Budget 188 runs to clear it 80% of the time;
+that is the number to plan against.
 ```
+
+**What moved here in 0.2.0, and what did not.** `runs_needed` is still 113 and
+`underpowered` is still `True` — the two keys `comparison.py` decides REVIEW vs
+NO-GO on. Three keys were added (`power_at_runs_needed`, `target_power`,
+`runs_for_target_power`), taking the failure dict from 15 keys to 18, and the
+message gained the paragraph that explains what 113 does and does not buy. Only
+`lower_bound` moved, by one unit in the last place (`…271` → `…272`; the same
+kind of move as §4.1). The success dict below is unchanged in every key and every
+digit, at 13 keys.
+
+The added keys are additive and safe here, but note what they are: `runs_needed`
+now sits next to a number saying that running exactly `runs_needed` more times
+clears the gate only 66% of the time. Anything that quotes 113 to a user without
+`runs_for_target_power` beside it is quoting the optimistic half of a pair rigor
+now ships whole.
 
 Success path, 200/200:
 
@@ -738,17 +931,33 @@ is_pinned('gpt-4o')                     -> False
 is_pinned('my-model-v1-stable')         -> False
 ```
 
+All six held across 0.1.1 → 0.2.0 even though the rule underneath was rewritten
+(see the box at the top: five undated frontier ids flipped `False` → `True`, and
+`gpt-4.1` flipped `True` → `False`). Six unchanged answers over a replaced
+implementation is the case for pinning examples rather than describing rules.
+
 `my-model-v1-stable` is the instructive one: it *does* end in a version marker,
 and it is still refused, because an alias token anywhere in the string
 disqualifies it.
 
+**The refusal message is rewritten in 0.2.0** and no longer states the rule the
+same way — it now names the offending suffix and explains it, where 0.1.1 recited
+the grammar:
+
 ```
 require_pinned('gpt-4o') -> ModelPinError: judge refuses unpinned model id 'gpt-4o'.
-It must end in a concrete version marker (a date such as '-20250514' or '-2024-08-06',
-or an explicit version such as '-v1' or '-2.1.0') and must not contain an alias token
-(latest, newest, current, stable, default). An alias re-points over time, which
-silently invalidates every score recorded against it.
+It ends in '4o', which names a kind of model rather than one release of it, and a kind
+is what a provider re-points. A pinned id names one immutable model version: it must
+not contain an alias token (latest, newest, current, stable, default), and it must end
+in a release designator -- a release number, a date stamp, or an explicit version -- as
+in claude-opus-4-8, claude-haiku-4-5-20251001, gpt-4o-2024-08-06, my-finetune-v1. An
+alias re-points over time, which silently invalidates every score recorded against it.
 ```
+
+The operative change is "a release number" as an accepted designator: that is what
+lets `claude-opus-5` and `claude-haiku-4-5` through, and it is why an undated
+frontier id is now nameable as a judge. `migkit` passes `context='judge'`, which
+is the word at the front of the message.
 
 And the check fires in the constructor:
 
@@ -763,26 +972,43 @@ the keyless demo path possible at all.
 
 ### 4.5 Rubric hashing: CRLF is normalised, a bare CR is not, and a trailing newline changes the hash
 
-`hash_rubric_text` normalises only the two-byte sequence `\r\n`:
+`hash_rubric_text` normalises only the two-byte sequence `\r\n`. In 0.2.0 it also
+accepts `str` (§5.C); the hashing itself is unchanged:
 
 ```python
-def hash_rubric_text(data: bytes) -> str:
+def hash_rubric_text(data: bytes | str) -> str:
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+    elif not isinstance(data, (bytes, bytearray)):
+        raise TypeError(...)
     return hashlib.sha256(data.replace(b"\r\n", b"\n")).hexdigest()
 ```
 
+Re-run against 0.2.0. **The input is `b"# Rubric\nBe helpful.\n"`, stated here
+because the previous revision of this block pinned digests without saying what was
+hashed, which made every number in it unreproducible — including by the next
+person to verify it:**
+
 ```
-hash_rubric_text(LF)          = ef35f7b567d955394f93b99c31112e66a6712ece22d1afaafb87e302892cf609
-hash_rubric_text(CRLF)        = ef35f7b567d955394f93b99c31112e66a6712ece22d1afaafb87e302892cf609
+hash_rubric_text(LF)          = ee07eae3a91581280602eabfc8ba2fafddd15aa13294db4b35b6193f356f9638
+hash_rubric_text(CRLF)        = ee07eae3a91581280602eabfc8ba2fafddd15aa13294db4b35b6193f356f9638
 LF == CRLF                    : True
-hash_rubric_text(bare CR)     = b7c7197a17aa74b73d29d7064f95be08296b1376795b3435de894024e9b20007
+hash_rubric_text(bare CR)     = 0de45a5bb3b5137963cfca8c125ffa3281089c108a050fdcd8fccd25a823d39d
 LF == bare CR                 : False
-no trailing newline           = d5727533b46f6e5714575b0b5d9e35e7b58f3a74b38c938ac631c5a6a9ffbddd
+no trailing newline           = 718ecc0e50283db35cc59a0061759fe57e4746f0e9156dca3483204a7ab1a198
 trailing newline changes hash : True
-raw sha256(LF bytes)          = ef35f7b567d955394f93b99c31112e66a6712ece22d1afaafb87e302892cf609
+raw sha256(LF bytes)          = ee07eae3a91581280602eabfc8ba2fafddd15aa13294db4b35b6193f356f9638
 equals hash_rubric_text(LF)   : True
+hash_rubric_text("# Rubric\nBe helpful.\n")  ==  hash_rubric_text(same as bytes) : True
 hash_rubric_file(lf.md)   == hash_rubric_file(crlf.md) : True
 hash_rubric_file(missing) -> FileNotFoundError   (not a rigor-specific exception)
 ```
+
+Every *relation* in this block is what it was in 0.1.1 — CRLF folds, bare CR does
+not, the trailing newline matters, and an LF file's hash is plain `sha256` of its
+bytes. The digests differ from the ones previously printed here only because the
+input differs; there is no way to tell that from the old block, which is the
+lesson. Digests are pinned to a stated input from now on.
 
 Three things follow:
 
@@ -804,15 +1030,23 @@ checkout.
 
 ### 4.6 Rubric drift is scoped to `(judge name, evidence log)`
 
+Re-run in 0.2.0 with the §4.5 rubric edited from `Be helpful.` to
+`Be extremely helpful.`:
+
 ```
 RubricDriftError: rubric drift for judge 'helpfulness': evidence log last recorded
-ba90f6aae204cdf1e218502b243901d45cddb749a796729be5c587d5be8b8105, rubric file now
-hashes to 129990b35a16bcae...
+ee07eae3a91581280602eabfc8ba2fafddd15aa13294db4b35b6193f356f9638, rubric file now
+hashes to 4cb8e0a1eda1fd62fed0d1c1833e145402ab17fc0c40793f83b9d5833f9f96fa. Scores
+before and after this change are not comparable. Pass accept_rubric_change=True to
+acknowledge and record the change.
 
-different judge name, changed rubric -> constructed fine: 129990b35a16bcae...
+different judge name, changed rubric -> constructed fine: 4cb8e0a1eda1fd62...
 ```
 
-Constructing the same changed rubric under a different `name=` succeeds. rigor
+The two sentences after the hashes are printed in full this time; the previous
+revision elided the tail, so whether they are new in 0.2.0 cannot be settled from
+what this file recorded. Constructing the same changed rubric under a different
+`name=` still succeeds. rigor
 filters `judge.init` records by name alone, which is exactly why
 `docs/session-2-contract.md` §1 rejects two judges sharing a name as a
 `ConfigError`: duplicates would make the drift lookup, the judges hash, and the
@@ -855,13 +1089,20 @@ real `PinnedJudge`:
 | `{"pass": false, "score": null, "reason": "no basis"}` | `passed=False score=None reason='no basis'` |
 | the same object wrapped in a `json` markdown fence | `passed=True score=5.0` — **fenced JSON is accepted** |
 | `{"passed": true, "score": 3}` | `passed=True score=3.0` — `PASS_KEYS = ('pass', 'passed')` |
-| `I think it is fine, honestly.` | `JudgeOutputError: response contained no JSON object` |
+| `I think it is fine, honestly.` | `JudgeOutputError: judge response is not a verdict: response contained no JSON object` |
 | `{"pass": "true", "score": 3}` | `JudgeOutputError: 'pass' must be a JSON boolean, got str 'true'` |
-| `{"pass": true, "score": 9}` | `JudgeOutputError: 'score' 9 is outside the rubric's range 1-5; it is not clamped` |
+| `{"pass": true, "score": 9}` | `JudgeOutputError: 'score' 9 is outside the rubric's range 1-5; it is not clamped because a score the rubric cannot express means the judge misread the rubric` |
 
-`SCORE_MIN == 1.0`, `SCORE_MAX == 5.0`, and both are hardcoded in 0.1.0 — a
-configurable range is on rigor's roadmap, not in this release. `judging.py`
-imputes failed completions at `SCORE_MIN`.
+Every row still classifies the same way in 0.2.0 — same verdicts, same scores,
+same three refusals. Two message texts grew: the no-JSON case gained the
+`judge response is not a verdict:` prefix, the out-of-range case gained the clause
+explaining why it is not clamped, and **all three `JudgeOutputError` messages now
+end in `(raw response recorded in evidence log)`**, trimmed from the table above
+for width. `judging.py` counts the exception type and never matches on text, so
+this is free here; a consumer matching messages would be broken by it.
+
+`SCORE_MIN == 1.0`, `SCORE_MAX == 5.0`, unchanged in 0.2.0 and still not
+configurable. `judging.py` imputes failed completions at `SCORE_MIN`.
 
 Two consequences for `judging.py`'s tolerance rule:
 
@@ -876,6 +1117,7 @@ Evidence written by the judge, over 7 evaluate calls:
 ```
 Counter({'judge.verdict': 4, 'judge.parse_failure': 3, 'judge.init': 1})
 first record payload keys: ['judge', 'model_id', 'rubric_hash', 'rubric_path']
+                                          (both lines identical in 0.2.0)
 ```
 
 One `judge.init` per constructed judge, one record per call on either path. The
@@ -892,8 +1134,21 @@ event types from sample + assert_pass_rate: Counter({'sample.completed': 1, 'ass
   sample.completed    ['concurrency','errors_as_failures','exceptions','failures','label',
                        'n','pass_rate','runs','successes','wall_clock']
   assertion.evaluated ['confidence','failures','gate','interval_lower','interval_upper',
-                       'label','lower_bound','method','min_rate','n','pass_rate','passed']
+                       'label','lower_bound','method','min_rate','n','pass_rate','passed',
+                       'successes']
+
+  on the failing path the same record carries the six extra keys from §4.3:
+  assertion.evaluated ['confidence','failures','gate','interval_lower','interval_upper',
+                       'label','lower_bound','method','min_rate','n','pass_rate','passed',
+                       'power_at_runs_needed','runs_for_target_power','runs_needed',
+                       'successes','target_power','underpowered']
 ```
+
+`assertion.evaluated` carries `successes` in 0.2.0, which the 0.1.1 record of this
+block did not list — one key, and no way to tell from here whether it was added by
+the release or missed by the earlier transcription. Recorded as observed rather
+than as a diff. The evidence payload mirrors the stats dict on both paths, so the
+asymmetry in §4.3 is visible in the log as well as in the exception.
 
 `sample.completed` carries no per-item output. That is why `runner.py` writes its
 own `migkit.completion` evidence line per completion — the acceptance contract
@@ -924,6 +1179,104 @@ denominator (`n == runs == 2`) but are counted as `exceptions`, not `failures`:
 `failures` means "produced an output that did not pass", and that meaning does not
 change with the flag.
 
+Re-run in 0.2.0: every line above is identical, including the MRO. This is the
+section §2 item 10 depends on — the class name is written into artifacts as data —
+and it did not move.
+
+### 4.10 0.2.0 refuses a one-sided `confidence` at or below 0.5
+
+The one behaviour change in this release that can turn working code into a
+`ValueError`. Run value by value against the installed wheel; `18/20` is used
+throughout so the accepted answers are comparable:
+
+```
+wilson_lower_bound(18, 20, -0.2      ) -> ValueError: confidence must be strictly between 0 and 1, got -0.2
+wilson_lower_bound(18, 20,  0.0      ) -> ValueError: confidence must be strictly between 0 and 1, got 0.0
+wilson_lower_bound(18, 20,  0.1      ) -> ValueError: confidence must be greater than 0.5 for a one-sided bound, got 0.1
+wilson_lower_bound(18, 20,  0.5      ) -> ValueError: confidence must be greater than 0.5 for a one-sided bound, got 0.5
+wilson_lower_bound(18, 20,  0.5000001) -> 0.8999999831850252
+wilson_lower_bound(18, 20,  0.51     ) -> 0.8983057373544914
+wilson_lower_bound(18, 20,  0.9      ) -> 0.7816040731078
+wilson_lower_bound(18, 20,  0.95     ) -> 0.7383369536731332
+wilson_lower_bound(18, 20,  0.999    ) -> 0.5567327780349589
+wilson_lower_bound(18, 20,  1.0      ) -> ValueError: confidence must be strictly between 0 and 1, got 1.0
+
+assert_pass_rate((18, 20), 0.5, confidence=0.5      ) -> ValueError  (same two messages,
+assert_pass_rate((18, 20), 0.5, confidence=0.0      ) -> ValueError   same boundaries)
+assert_pass_rate((18, 20), 0.5, confidence=0.5000001) -> ok, lower_bound=0.8999999831850252
+assert_pass_rate((18, 20), 0.5, confidence=0.51     ) -> ok, lower_bound=0.8983057373544914
+```
+
+So the accepted range is the open interval `(0.5, 1.0)` on both one-sided
+surfaces, and `0.5` itself is refused. The boundary is exact: `0.5000001` is
+accepted and returns `0.8999999831850252` — the observed rate `0.9` to seven
+places, which is what the refusal message says a bound at 0.5 degenerates to.
+
+**`wilson_interval` is deliberately unaffected** and still takes the full open
+interval, which is the part a reader is most likely to assume wrong:
+
+```
+wilson_interval(18, 20, 0.0001) -> (0.8999915921989916, 0.9000084071726899)
+wilson_interval(18, 20, 0.1   ) -> (0.8912522331050441, 0.9081166342348816)
+wilson_interval(18, 20, 0.5   ) -> (0.8454875495484072, 0.9367197215490332)
+wilson_interval(18, 20, 0.95  ) -> (0.6989663547715128, 0.9721335187862319)
+wilson_interval(18, 20, 0.0   ) -> ValueError: confidence must be strictly between 0 and 1, got 0.0
+wilson_interval(18, 20, 1.0   ) -> ValueError: confidence must be strictly between 0 and 1, got 1.0
+```
+
+Its `z` is `ppf((1 + c) / 2)`, non-negative across `(0, 1)`, so it never inverts
+and there is nothing to refuse. The asymmetry is intentional and it means a caller
+cannot infer one function's accepted range from the other's — §4.1's two-sided /
+one-sided distinction now has teeth.
+
+Both refusals raise plain `ValueError`, not a `RigorError` subclass, so they land
+in `cli.py`'s `EXPECTED_ERRORS` through the `ValueError` entry rather than through
+`RigorError`, and the two cases are distinguishable only by message text.
+
+**The third surface: the pytest marker, which is not in `__all__`.**
+`@pytest.mark.rigor_repeat(n, min_rate, confidence=...)` hands its value to
+`assert_pass_rate` with no validation of its own, and does it *after* running the
+test body `n` times. Verified by running pytest in a scratch directory (not this
+repository) with `n=8` and `confidence=0.4`:
+
+```
+[rigor_repeat] ...::test_low_confidence_marker runs=8 successes=8 failures=0
+               exceptions=0 pass_rate=1.0000 n=8 min_rate=0.5000 confidence=0.4000
+F
+RUNS SPENT: low=8 ok=8              <- counter incremented inside the test body
+E   ValueError: confidence must be greater than 0.5 for a one-sided bound, got 0.4
+...\opik_rigor\distribution.py:213: ValueError
+1 failed, 2 passed
+```
+
+Eight executions, then the refusal — the plugin's own line reports `runs=8` before
+raising, and the body's counter agrees. For a suite whose repeats are real model
+calls that is `n` calls' worth of budget spent on a value that was invalid before
+the first one. The marker is reachable in every suite that installs rigor, because
+the plugin autoloads (§1). model-migration-kit does not use it (§7.9); this is
+recorded for the consumer who does.
+
+**One half of this is not re-runnable from here, and is marked rather than
+smuggled in.** That 0.1.1 *accepted* `confidence <= 0.5` and answered is stated
+throughout this file as the "before" side of the change; it cannot be verified in
+this venv, because 0.1.1 is gone — `pip` replaced it. Everything above is a
+statement about the installed 0.2.0, which is the version this file is verified
+against; the 0.1.1 side rests on this repository's own history — `Thresholds`
+bounded `confidence` to `(0.0, 1.0)` until today's commit widened nothing and
+narrowed it to `(0.5, 1.0)` — rather than on a wheel anyone can still introspect
+here. A future
+re-verification could settle it in a throwaway venv; this one did not, because no
+`pip install` was run (§7.11).
+
+**What it costs this project:** nothing at runtime. `Thresholds.__post_init__`
+(`judging.py:133-163`) bounds `confidence` to the open interval `(0.5, 1.0)` and
+raises `ConfigError` at config load — the same interval rigor now enforces, one
+level up and before any completions are paid for — and `pyproject.toml`'s floor
+moved to `>=0.2` in the same change (§6). Both halves are needed: the floor
+without the validation gives a config that fails inside a statistics call after
+the runs, and the validation without the floor gives a config this package rejects
+and the installed rigor would have accepted.
+
 ---
 
 ## 5. Friction found here that rigor's roadmap did **not** already have
@@ -932,180 +1285,155 @@ Recorded rather than worked around, per invariant 1. None of these blocks
 Session 2; all are cheap for rigor to fix and expensive for a consumer to
 discover.
 
-**Status of A–F, as of the verification date at the top of this file.** Each was
-filed against rigor after this section recorded it and now appears on rigor's
-roadmap as items 10–15 (`opik-rigor/PROGRESS.md`), and rigor's working tree
-records all six as closed under its `CHANGELOG.md` `[Unreleased]` heading and its
-"Phase 3 — closing the recorded gaps" section. **That work is unreleased**: rigor's
-tree is at commit `c5e43e9` with `version = "0.1.0"` still in its
-`pyproject.toml`, and nothing in it has reached PyPI. So every item below still
-describes the wheel model-migration-kit installs and runs against, and none of
-it may be relied on here yet. Re-verify this section against the installed
-package — not against the sibling checkout — on the first rigor release that
-lands them.
+**Status of A–F: all six are closed in 0.2.0, and each was re-checked by running
+the installed wheel rather than by reading a changelog.** The morning's revision
+of this section recorded them as fixed in rigor's tree but **unreleased**, and
+refused to describe them as behaviour on that basis. 0.2.0 released them. Each
+entry below now carries what the wheel does, under the description of what it
+used to do — kept rather than deleted, because the entry is also the record of how
+the gap was found, and a consumer still pinned to 0.1.x meets the old behaviour.
 
 ```
-$ git -C ..\opik-rigor log --oneline -1 --decorate
-c5e43e9 (HEAD -> main, origin/main, origin/HEAD) Merge Phase 3: close six recorded gaps, additively
-$ git -C ..\opik-rigor tag
-v0.1.0
 $ .\.venv\Scripts\python.exe -c "import opik_rigor; print(opik_rigor.__version__)"
-0.1.0
+0.2.0
 ```
 
-**A. `opik-rigor` ships no `py.typed` marker.**
+**A. `opik-rigor` shipped no `py.typed` marker. Closed in 0.2.0.**
 
 ```
 $ .\.venv\Scripts\python.exe -c "from pathlib import Path; import opik_rigor; print((Path(opik_rigor.__file__).parent/'py.typed').exists())"
-False
+True             (False in 0.1.0, and recorded here as still open at 0.1.1)
 ```
 
 The package is thoroughly annotated — every signature in §1 carries types — but
 PEP 561 says a type checker must not use inline annotations from an installed
-package that ships no `py.typed`. On that reading a consumer gets no type
-information at all from a fully typed dependency. This is a different and
-arguably larger gap than rigor's own roadmap item 4 (untyped report dicts): item
-4 is about `dict[str, Any]` *return values*, whereas this suppresses the
-annotations that already exist. An empty `py.typed` inside `src/opik_rigor/`
-fixes it.
+package that ships no `py.typed`. On that reading a consumer got no type
+information at all from a fully typed dependency. That is now fixed: the marker is
+in the wheel, alongside a new `typecheck` extra in rigor's metadata
+(`mypy>=1.11; extra == 'typecheck'`).
 
-Latent rather than biting, and honestly labelled as such: model-migration-kit runs
-`ruff` but no type checker (`dev = ["pytest", "pytest-cov", "ruff"]`), so **no
-checker was run to observe this** — the claim above is the absence of the marker
-file, which is what the command shows, plus what PEP 561 specifies. The day
-either project adds mypy or pyright, it becomes real.
+Still honestly labelled: model-migration-kit runs `ruff` but no type checker
+(`dev = ["pytest>=7.0", "pytest-cov>=4.0", "ruff>=0.6"]`), so **no checker has
+been run against the annotations this marker now exposes**. The claim here is the
+presence of the file, which is what the command shows, plus what PEP 561
+specifies. What changed is that the gap is on this side of the fence now.
 
-**B. `SampleResult.exceptions` returns `Run` objects, not exceptions.**
+**B. `SampleResult.exceptions` returns `Run` objects, not exceptions. Renamed —
+not fixed — in 0.2.0, deliberately.**
 
 ```python
 @property
 def exceptions(self) -> tuple[Run, ...]:
-    return tuple(run for run in self.runs if run.raised)
+    """Deprecated alias of :attr:`errored_runs`, kept working forever."""
+    return self.errored_runs
 ```
 
-Verified by printing `type(e).__name__` over the tuple, which gave `Run` for every
-element. The name reads as "the exceptions that were raised", and the annotation
-is honest, but a caller writing
-`[str(e) for e in result.exceptions]` gets run reprs rather than error messages
-and will not notice until the log is read. `errored_runs` would say what it is;
-alternatively an `exception` alias returning the actual `BaseException` objects.
+`errored_runs` is the new name and says what it hands back; `exceptions` still
+returns the same tuple of `Run` objects, still emits no `DeprecationWarning`, and
+per its docstring will keep working. Re-verified by printing
+`type(e).__name__` over both: `['Run', 'Run']` from each, and the two tuples
+compare equal. So the trap in the *old* name is unchanged — a caller writing
+`[str(e) for e in result.exceptions]` still gets run reprs — and the fix is that
+there is now a name that does not invite the mistake. Nothing here uses either.
 
-**C. `hash_rubric_text(data: bytes)` takes bytes despite the name.**
-Passing a `str` fails inside the function rather than at the boundary:
+**C. `hash_rubric_text(data: bytes)` took bytes despite the name. Closed in
+0.2.0.** Passing a `str` used to fail inside the function rather than at the
+boundary:
 
 ```
-TypeError: replace() argument 1 must be str, not bytes
+0.1.1:  TypeError: replace() argument 1 must be str, not bytes
+0.2.0:  hash_rubric_text("hello\n")  == hash_rubric_text(b"hello\n")  -> True
+        hash_rubric_text(3)          -> TypeError: hash_rubric_text() wants the
+        rubric's text or bytes, got int; pass a str, pass bytes, or use
+        hash_rubric_file(path) if what you have is a path
 ```
 
-— which points at rigor's own `b"\r\n"` literal rather than at the argument the
-caller got wrong, so the message reads as the inverse of the actual mistake. The
-docstring does explain the design ("normalising the *bytes we hash* — not the
-file"), and the choice is right; the name is what misleads. `hash_rubric_bytes`,
-or a guard raising `TypeError("expected bytes, got str; encode() it first")`,
-would cost nothing. model-migration-kit only uses `hash_rubric_file`, so this cost one
-scratch-script iteration and nothing more.
+The old message pointed at rigor's own `b"\r\n"` literal rather than at the
+argument the caller got wrong, so it read as the inverse of the actual mistake.
+0.2.0 takes `bytes | str` — a `str` is encoded UTF-8 and hashed identically — and
+refuses anything else by name at the boundary. model-migration-kit only uses
+`hash_rubric_file`, so this cost one scratch-script iteration and nothing more,
+which is the whole reason it was worth writing down rather than working around.
 
 **D. `assert_no_regression(SampleResult, SampleResult)` on text completions
-reports "no scores" rather than a type error.**
+reported "no scores" rather than a type error. Closed in 0.2.0** — the message now
+distinguishes the two cases, which is exactly what this entry asked for:
 
 ```
-assert_no_regression(r, r) -> ValueError: current has no scores; there is nothing
-                              to compare against baseline
+0.1.1:  ValueError: current has no scores; there is nothing to compare against
+        baseline
+0.2.0:  ValueError: current has no scores; there is nothing to compare against
+        baseline. It is a SampleResult of 3 runs, 3 of which completed, but none
+        of them carried a numeric .score: run 0 returned str 'Paris'. This gate
+        compares judge scores, so pass the verdicts -- or a sequence of numbers --
+        rather than the raw completions.
 ```
 
-`SampleResult.scores()` harvests `getattr(run.value, "score", None)`, so a sample
-of *strings* yields an empty tuple and the caller is told they have no data when
-what they actually have is data of the wrong shape. It is the same class of
-confusion as §3.1 — a structural problem reported as an empty result. Distinguishing
-"n runs, none of which carried a score" from "no runs" in the message would name
-the actual mistake.
+`SampleResult.scores()` still harvests `getattr(run.value, "score", None)`, so a
+sample of *strings* still yields an empty tuple; what changed is that the caller
+is now told the shape is wrong rather than that the data is missing. It was the
+same class of confusion as §3.1 — a structural problem reported as an empty
+result — and both were addressed in the same release. An empty sequence still
+gets the short message, unchanged (§4.2).
 
-**E. The published wheel contains no example rubric.** True of the installed
-0.1.0, which is what this project runs against. Verified by walking the installed
-package rather than by reading rigor's repository — it ships no `.md` file at all:
+**E. The published wheel contained no example rubric. Closed in 0.2.0.** Verified
+by walking the installed package rather than by reading rigor's repository — the
+0.1.x wheel shipped no `.md` file at all, the 0.2.0 wheel ships one:
 
 ```
 $ .\.venv\Scripts\python.exe -c "from pathlib import Path; import opik_rigor; r=Path(opik_rigor.__file__).parent; print(sorted(p.relative_to(r).as_posix() for p in r.rglob('*') if '__pycache__' not in p.parts)); print('markdown files:', [p.name for p in r.rglob('*.md')])"
 ['__init__.py', 'adapters', 'adapters/__init__.py', 'adapters/anthropic.py',
  'adapters/base.py', 'adapters/fake.py', 'adapters/openai_compat.py',
- 'baseline.py', 'distribution.py', 'errors.py', 'evidence.py', 'integrations',
+ 'baseline.py', 'distribution.py', 'errors.py', 'evidence.py', 'examples',
+ 'examples/__init__.py', 'examples/summarise_eval.py', 'integrations',
  'integrations/__init__.py', 'integrations/opik.py',
- 'integrations/pytest_plugin.py', 'judge.py', 'pinning.py', 'sampling.py']
-markdown files: []
+ 'integrations/pytest_plugin.py', 'judge.py', 'pinning.py', 'py.typed',
+ 'rubrics', 'rubrics/example-rubric.md', 'sampling.py']
+markdown files: ['example-rubric.md']
+
+$ .\.venv\Scripts\python.exe -c "import opik_rigor; p=opik_rigor.example_rubric_path(); print(p, p.exists())"
+...\.venv\Lib\site-packages\opik_rigor\rubrics\example-rubric.md True
 ```
 
-So `pip install opik-rigor==0.1.0` gives a consumer a `PinnedJudge` and nothing to
-point it at. At the `v0.1.0` tag the example lived at `rubrics/example-rubric.md`,
-outside the package directory, and the README linked it as a repository path
-(`README.md:119` at that tag) — which is why it was not in the wheel:
+`pip install opik-rigor==0.1.1` gave a consumer a `PinnedJudge` and nothing to
+point it at; `pip install opik-rigor` now gives them a rubric that parses,
+reachable as `opik_rigor.example_rubric_path()` without knowing a path. Three
+things arrived in the wheel with it and are worth naming because they are new
+surface a consumer can now reach: `py.typed` (item A), a `rubrics/` directory, and
+an `examples/` subpackage containing `summarise_eval.py`. None of them is imported
+here.
+
+model-migration-kit wrote its own rubric (`src/model_migration_kit/data/demo_rubric.md`)
+before this landed, which is arguably correct anyway — a rubric is the one file a
+consumer should own — so nothing here changes on the strength of it.
+
+The double-instruction hazard this entry used to carry is gone as well: the
+shipped example does **not** contain `OUTPUT_FORMAT_INSTRUCTION`, so a rubric
+copied from it will not carry the format block twice in the rendered prompt.
+Checked against the file in the wheel, not against rigor's repository:
 
 ```
-$ git -C ..\opik-rigor ls-tree -r v0.1.0 --name-only | grep rubric
-rubrics/example-rubric.md
-$ git -C ..\opik-rigor show v0.1.0:README.md | grep -n "rubrics/example-rubric"
-119:Save a rubric as `rubric.md` (the one in [`rubrics/example-rubric.md`](rubrics/example-rubric.md)
+$ .\.venv\Scripts\python.exe -c "import opik_rigor; from opik_rigor.judge import OUTPUT_FORMAT_INSTRUCTION as OFI; t=opik_rigor.example_rubric_path().read_text(encoding='utf-8'); print('shipped example contains OUTPUT_FORMAT_INSTRUCTION:', OFI.strip() in t)"
+shipped example contains OUTPUT_FORMAT_INSTRUCTION: False
 ```
 
-model-migration-kit wrote its own (`src/model_migration_kit/data/demo_rubric.md`),
-which is arguably correct anyway — but the first thing a new user of the judge
-needs is a rubric that parses, and the install does not include one.
-
-**Where this stands in rigor's tree — unreleased, and it also invalidates the
-caveat this entry used to carry.** rigor has moved the example into the package at
-`src/opik_rigor/rubrics/example-rubric.md`, reachable as
-`opik_rigor.example_rubric_path()`, and its README now says the rubric "ships
-**inside the package**" (`README.md:117-121` at commit `c5e43e9`) instead of
-linking a repository path. The old `rubrics/` directory is gone. None of this is
-in 0.1.0 — `example_rubric_path` is neither an attribute of the installed package
-nor in its `__all__` — so the paragraph above still describes what a consumer
-gets today.
-
-This file previously warned that a rubric copied from rigor's example would carry
-`OUTPUT_FORMAT_INSTRUCTION` twice in the rendered prompt, because
-`PROMPT_TEMPLATE` already appends it. **That was true of the `v0.1.0` file and is
-no longer true of the one in rigor's tree**, which no longer contains the
-instruction at all:
-
-```
-$ .\.venv\Scripts\python.exe -c "from pathlib import Path; import opik_rigor; from opik_rigor.judge import OUTPUT_FORMAT_INSTRUCTION as OFI; print('example_rubric_path in installed 0.1.0:', hasattr(opik_rigor,'example_rubric_path'), '| in __all__:', 'example_rubric_path' in opik_rigor.__all__); t=Path(r'..\opik-rigor\src\opik_rigor\rubrics\example-rubric.md').read_text(encoding='utf-8'); print('sibling-tree rubric contains OUTPUT_FORMAT_INSTRUCTION:', OFI.strip() in t)"
-example_rubric_path in installed 0.1.0: False | in __all__: False
-sibling-tree rubric contains OUTPUT_FORMAT_INSTRUCTION: False
-
-$ git -C ..\opik-rigor show v0.1.0:rubrics/example-rubric.md > %TEMP%\v010-rubric.md
-$ .\.venv\Scripts\python.exe -c "import os; from pathlib import Path; from opik_rigor.judge import OUTPUT_FORMAT_INSTRUCTION as OFI; t=Path(os.environ['TEMP'], 'v010-rubric.md').read_text(encoding='utf-8'); print('v0.1.0-tagged rubric ends with OUTPUT_FORMAT_INSTRUCTION:', t.rstrip().endswith(OFI.strip()))"
-v0.1.0-tagged rubric ends with OUTPUT_FORMAT_INSTRUCTION: True
-```
-
-The double-instruction hazard therefore belongs to the `v0.1.0` example only. It
-never affected model-migration-kit, whose own `data/demo_rubric.md` carries no
-format block (§4.7).
-
-**F. Three names model-migration-kit needs are not in `__all__`** — `SCORE_MIN`,
+**F. Three names model-migration-kit needs were not in `__all__`** — `SCORE_MIN`,
 `SCORE_MAX` and `hash_rubric_file`. Detailed in §1; repeated here because it is
-the one item on this list that model-migration-kit is *relying* on rather than merely
-tripping over.
-
-rigor's unreleased tree exports all three from the package root, plus
-`hash_rubric_text`. **Not in 0.1.0**, verified against the installed package, so
-the three `from opik_rigor.judge import ...` lines in §1's enumeration
-(`judging.py:47`, `tests/test_comparison.py:52`, `tests/test_judging.py:47`) must
-stay as they are until a release that carries the re-exports is the one pinned
-here:
+the one item on this list that model-migration-kit was *relying* on rather than merely
+tripping over. **Closed in 0.1.1, and confirmed still closed in 0.2.0:**
 
 ```
-$ .\.venv\Scripts\python.exe -c "import opik_rigor; [print(f'  {n:18} top-level attr in installed 0.1.0: {hasattr(opik_rigor, n)}') for n in ('SCORE_MIN','SCORE_MAX','hash_rubric_file','hash_rubric_text')]"
-  SCORE_MIN          top-level attr in installed 0.1.0: False
-  SCORE_MAX          top-level attr in installed 0.1.0: False
-  hash_rubric_file   top-level attr in installed 0.1.0: False
-  hash_rubric_text   top-level attr in installed 0.1.0: False
+$ .\.venv\Scripts\python.exe -c "import opik_rigor; [print(f'  {n:18} top-level attr in installed 0.2.0: {hasattr(opik_rigor, n)}') for n in ('SCORE_MIN','SCORE_MAX','hash_rubric_file','hash_rubric_text')]"
+  SCORE_MIN          top-level attr in installed 0.2.0: True
+  SCORE_MAX          top-level attr in installed 0.2.0: True
+  hash_rubric_file   top-level attr in installed 0.2.0: True
+  hash_rubric_text   top-level attr in installed 0.2.0: True
 ```
 
-When it lands, moving those three import lines is the whole migration, and §2
-item 7 relaxes from "importable from `opik_rigor.judge`" to "importable at all".
-Because the change is additive, the `opik_rigor.judge` path is expected to keep
-working — but that is rigor's stated intent, not something verifiable from here,
-so nothing in this file should be rewritten on the strength of it before the
-release exists.
+The migration was moving three import lines, and it is done — no file in `src/`
+or `tests/` imports from `opik_rigor.judge` any more (§1's enumeration). §2 item 7
+has been relaxed accordingly. The old spellings still resolve, to the same objects
+(§1), which is now a run result rather than rigor's stated intent.
 
 ---
 
@@ -1116,23 +1444,35 @@ release exists.
 ```toml
 dependencies = [
   # The whole point: every statistical primitive is imported, none reimplemented.
-  "opik-rigor>=0.1.0,<0.2",
+  #
+  # Floor raised to 0.2 on 2026-08-14, and the reason is a behaviour change rather
+  # than a new feature: 0.2.0 refuses a one-sided `confidence` at or below 0.5,
+  # ...
+  "opik-rigor>=0.2,<0.3",
   ...
 ]
 ```
 
-- **Lower bound `0.1.0`** because 0.1.0 is what the surface in §1 was verified
-  against. `opik-rigor/PROGRESS.md` records it as the first release
-  ("v0.1.0 published to PyPI 2026-08-13"); that is cited, not independently
-  checked — see §7.3.
-- **Upper bound `<0.2`** because 0.2 is scheduled to change exactly what
-  model-migration-kit reads. rigor's own roadmap items are a non-raising
-  `check_pass_rate(...) -> report` beside the asserting one (item 3) and frozen
-  report dataclasses replacing `dict[str, Any]` (item 4) — and `comparison.py`
-  gets `underpowered` and `runs_needed` by catching `PassRateError` and reading
-  `.stats`, which is precisely the shape those items propose to move. Items 8 and
-  9 above would change `sample`'s classification behaviour and the `Adapter`
-  protocol, both of which `runner.py` sits on.
+- **Lower bound `0.2`**, raised from `0.1.1` on 2026-08-14, and note *why*: not
+  because 0.2.0 added something this project wanted, but because it **removed an
+  accepted argument value** (§4.10). `Thresholds.confidence` is handed straight to
+  `assert_pass_rate`, and `judging.py` now refuses the same range at config load.
+  The floor and that validation have to move together — a floor without the
+  validation lets a config fail inside a statistics call after the runs are paid
+  for, and validation without the floor rejects configs the installed rigor would
+  have accepted. This is the first floor here raised by a *narrowing*, and it is
+  the argument for pinning a floor to verified behaviour rather than to a feature
+  list.
+- **Upper bound `<0.3`** for the reason `<0.2` was written: the next minor is
+  where rigor's own roadmap proposes to move exactly what this project reads — a
+  non-raising `check_pass_rate(...) -> report` beside the asserting one (item 3)
+  and frozen report dataclasses replacing `dict[str, Any]` (item 4), while
+  `comparison.py` gets `underpowered` and `runs_needed` by catching
+  `PassRateError` and reading `.stats`. Items 8 and 9 would change `sample`'s
+  classification behaviour and the `Adapter` protocol, both of which `runner.py`
+  sits on. 0.2.0 did none of those; it did the confidence narrowing instead, which
+  is a reminder that the bound is protection against *a* change, not a prediction
+  of which one.
 
   The failure mode of guessing wrong is what makes the bound tight rather than
   polite. `assert_pass_rate` returns a plain `dict`, so a renamed key is a
@@ -1141,9 +1481,18 @@ dependencies = [
   that looks like a right one is the one failure this project exists to refuse,
   so the bound stays at the minor version until the surface is re-verified.
 
-Because rigor is `>=3.10` and depends on `scipy>=1.10`, model-migration-kit inherits
-scipy and numpy transitively. `comparison.py` does not import either; the
-statistics come through rigor's API, which is the point.
+  0.1.1 → 0.2.0 is the first upgrade this file has performed rather than
+  described, and the cost of the re-verification was one afternoon against a
+  release that broke one argument value and no names. The bound did its job in
+  the boring direction: nothing resolved to 0.2.0 until this document said it
+  could.
+
+rigor depends on `numpy>=1.21` and `scipy>=1.10` (numpy is declared directly in
+0.2.0, not merely inherited through scipy), so model-migration-kit gets both
+transitively. `comparison.py` imports neither; the statistics come through rigor's
+API, which is the point. New in 0.2.0: scipy is imported lazily, so it is no
+longer in `sys.modules` after `import opik_rigor` (§1) — a change to import cost,
+not to the dependency.
 
 ---
 
@@ -1163,13 +1512,17 @@ their credibility.
 2. **No claim is made about opik-rigor's rendered documentation.** This file
    describes the installed package only. Where it quotes docstrings, they are
    docstrings read out of the installed module, not a website.
-3. **What else `>=0.1.0,<0.2` could resolve to was not checked.** No network call
-   was made while writing this file. The installed version is 0.1.0; whether PyPI
-   now carries a 0.1.1 that would satisfy the bound is unknown here.
+3. **What else `>=0.2,<0.3` could resolve to was not checked.** No network call
+   was made while re-verifying this file — the 0.2.0 wheel was already installed
+   when this pass began. The installed version is 0.2.0; whether PyPI now carries
+   a 0.2.1 that would satisfy the bound is unknown here. This is the gap that bit
+   once already: a permissive floor plus a long-lived venv meant this document
+   described 0.1.0 for a day after strangers were getting 0.1.1.
 4. **The `.venv` here is not clean-room.** It is the working environment, created
-   with `pip install -e ".[dev]"`. The opik-rigor wheel inside it has no
-   `direct_url.json`, which establishes it came from an index rather than a path,
-   but the venv as a whole has not been rebuilt from scratch for this file.
+   with `pip install -e ".[dev]"` and since upgraded in place from 0.1.0 to 0.1.1
+   to 0.2.0. The opik-rigor 0.2.0 dist-info has no `direct_url.json` and does have
+   `REQUESTED`, which establishes it came from an index by name rather than from a
+   path, but the venv as a whole has not been rebuilt from scratch for this file.
 5. **Concurrency was not exercised.** `sample(..., concurrency=N)` for `N > 1` is
    passed through by `runner.py` and was verified only at the default `1`.
 6. **`assert_score_distribution` and `Baseline` were not verified**, because
@@ -1185,13 +1538,22 @@ their credibility.
 8. **Judge behaviour was verified against `FakeAdapter`,** so §4.7 describes
    rigor's *parser*, not how any real model actually answers. The parse-failure
    tolerance in `judging.py` exists precisely because that number is unknown.
-9. **rigor's pytest plugin was confirmed to load and register its marker, and no
-   more.** `rigor_repeat`, the `rigor_evidence` / `rigor_judge` fixtures and the
-   `rigor_evidence_path` ini option were not exercised; model-migration-kit does not
-   use them. The test suite itself was not run while writing this file — other
-   work was in flight in `tests/` — so nothing here rests on a green suite.
-10. **No type checker was run** (see §5.A), and no `pip install` was performed:
-    every command above was read-only against the existing `.venv`.
+9. **rigor's pytest plugin: `rigor_repeat` was exercised in 0.2.0, the rest was
+   not.** The marker was run end to end in a scratch directory to establish where
+   its `confidence=` is validated (§4.10) — that much is now behaviour, not
+   inference. The `rigor_evidence` / `rigor_judge` fixtures and the
+   `rigor_evidence_path` ini option remain unexercised; model-migration-kit does not
+   use any of them. This repository's own test suite was not run while re-verifying
+   this file — other work was in flight in `tests/` — so nothing here rests on a
+   green suite.
+10. **No type checker was run** (see §5.A). 0.2.0 ships `py.typed`, so the
+    annotations are now exposed to one; nobody has pointed one at them from this
+    side, and `dev` still has no mypy or pyright.
+11. **No `pip install` was performed during this pass.** The upgrade to 0.2.0 was
+    already in the venv when re-verification began; every command in this file is
+    read-only against it, apart from the one `pytest` run in a scratch directory
+    for §4.10 and the temporary rubric files §4.5 and §4.6 hash, none of which are
+    in this repository.
 
 ---
 
@@ -1209,3 +1571,14 @@ their credibility.
 4. New friction goes in this file **and** in `opik-rigor/PROGRESS.md`. The
    dependency direction stays clean: record it, work around it at the public API
    surface, do not monkey-patch and do not reach into internals.
+5. **Diff the accepted *values*, not only the names.** 0.1.1 → 0.2.0 moved no name
+   and no signature this project relies on, and still broke a config: `confidence`
+   at or below 0.5 became a `ValueError`. `__all__` and `inspect.signature` cannot
+   see that. Re-run the boundary cases in §4.10, §4.1 and §4.4 — the arguments a
+   caller is most likely to have set to something unusual — before concluding a
+   release is additive.
+6. **Pin every number to a stated input.** The digests in §4.5 could not be
+   reproduced on re-verification because the text that was hashed was never
+   written down, and the `p_value` in §4.2 had to be found by search. A number
+   without its input is a number nobody can check, which is the one thing this
+   file is for.

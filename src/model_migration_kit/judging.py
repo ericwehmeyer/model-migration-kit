@@ -94,6 +94,20 @@ _THRESHOLD_KEYS = frozenset(
     }
 )
 
+#: Why ``confidence`` has a floor of 0.5 rather than 0, spelled out for whoever
+#: typed the number that got refused. The generic bounds message tells an operator
+#: what to type; this tells them what they were about to do. rigor refuses the same
+#: value one level down with the same argument, but it refuses it at analysis time,
+#: after the completions have been paid for -- this one fires while the operator is
+#: still looking at the config they just edited.
+_CONFIDENCE_FLOOR_REASON = (
+    "Below 0.5 the z of a one-sided Wilson bound is negative, so the 'lower bound' "
+    "sits above the observed rate and falls as the sample grows -- more evidence, "
+    "worse bound -- and a gate set there is looser than comparing the raw rate. At "
+    "exactly 0.5 it is the raw rate. This same value also feeds the two-sided "
+    "interval, which accepts all of (0, 1); the usable range is the intersection."
+)
+
 
 @dataclass(frozen=True)
 class Thresholds:
@@ -106,6 +120,9 @@ class Thresholds:
 
     pass_rate_floor: float = 0.90
     alpha: float = 0.05
+    #: Bounded below at 0.5 rather than at 0, exclusively, because the gate reads it
+    #: as a one-sided Wilson bound -- see :data:`_CONFIDENCE_FLOOR_REASON`, which is
+    #: the text an operator who sets it lower actually gets.
     confidence: float = 0.95
     judge_failure_tolerance: float = 0.05
     #: The regression this tool promises to be able to notice: a ten-point drop in
@@ -115,20 +132,35 @@ class Thresholds:
     power_target: float = 0.80
 
     def __post_init__(self) -> None:
-        for name, value, lo, hi, inclusive in (
-            ("pass_rate_floor", self.pass_rate_floor, 0.0, 1.0, True),
-            ("alpha", self.alpha, 0.0, 1.0, False),
-            ("confidence", self.confidence, 0.0, 1.0, False),
-            ("judge_failure_tolerance", self.judge_failure_tolerance, 0.0, 1.0, True),
-            ("min_detectable_effect", self.min_detectable_effect, 0.0, 1.0, False),
-            ("power_target", self.power_target, 0.0, 1.0, False),
+        # The last column is why the bound is where it is, and it is empty on five of
+        # the six rows: "a proportion is between 0 and 1" needs no defending. Only
+        # ``confidence`` has a bound a reader could reasonably read as arbitrary, so
+        # only it pays for a sentence, and the row carries it rather than the loop
+        # asking which threshold it is holding.
+        for name, value, lo, hi, inclusive, why in (
+            ("pass_rate_floor", self.pass_rate_floor, 0.0, 1.0, True, ""),
+            ("alpha", self.alpha, 0.0, 1.0, False, ""),
+            ("confidence", self.confidence, 0.5, 1.0, False, _CONFIDENCE_FLOOR_REASON),
+            ("judge_failure_tolerance", self.judge_failure_tolerance, 0.0, 1.0, True, ""),
+            ("min_detectable_effect", self.min_detectable_effect, 0.0, 1.0, False, ""),
+            ("power_target", self.power_target, 0.0, 1.0, False, ""),
         ):
             if not isinstance(value, (int, float)) or isinstance(value, bool):
                 raise ConfigError(f"threshold {name!r} must be a number, got {value!r}")
             ok = lo <= value <= hi if inclusive else lo < value < hi
             if not ok:
                 bounds = f"[{lo}, {hi}]" if inclusive else f"({lo}, {hi})"
-                raise ConfigError(f"threshold {name!r} must be in {bounds}, got {value!r}")
+                # Appended, not interpolated into the sentence, so the five rows
+                # without a reason raise the message they have always raised.
+                #
+                # Only when the *floor* was the bound crossed. `why` explains a floor,
+                # and `confidence=1.0` is a real thing to type -- someone reaching for
+                # "total confidence" -- who would otherwise be handed a paragraph
+                # about z going negative below 0.5, which is not what they did. This
+                # asks which bound was crossed, never which threshold it is, so a
+                # later row with a floor of its own gets the same treatment free.
+                detail = f". {why}" if why and value <= lo else ""
+                raise ConfigError(f"threshold {name!r} must be in {bounds}, got {value!r}{detail}")
 
     def to_dict(self) -> dict[str, Any]:
         return {

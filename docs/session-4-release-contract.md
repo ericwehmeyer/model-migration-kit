@@ -228,8 +228,27 @@ Get-Content $out\*.dist-info\licenses\LICENSE -TotalCount 3
 6. `licenses/LICENSE` begins `Apache License / Version 2.0, January 2004`, matching
    the SPDX identifier. A declared identifier that disagrees with the shipped text
    is the mismatch this phase exists to catch, and no tool checks it for you.
-7. `Requires-Dist` lists `opik-rigor>=0.1.0,<0.2`, `jinja2>=3.0`, `rich>=13.0`,
+7. `Requires-Dist` lists `opik-rigor>=0.2,<0.3`, `jinja2>=3.0`, `rich>=13.0`,
    `tomli>=2.0; python_version < '3.11'` and nothing else; `Requires-Python: >=3.10`.
+
+   *Amended 2026-08-14.* The opik-rigor bound was `>=0.1.0,<0.2` and is now
+   `>=0.2,<0.3`. rigor 0.2.0 narrowed a contract this package depends on — a
+   one-sided `confidence` at or below 0.5 is now refused — and the floor moved in
+   the same change as the validation that matches it, because any other pairing
+   leaves a window where a config passes validation here and raises inside rigor.
+
+   **This amendment was not prompted by the release script, and that is the part
+   worth recording.** `contract-dependency-clause` reported PASS across the bump.
+   It compares the *set of distribution names* the clause lists against the set
+   the wheel declares; `requirement_name()` discards the specifier before the
+   comparison, so `>=0.1.0,<0.2` in this sentence and `>=0.2,<0.3` in the build
+   are the same string to it. That is defensible for the criterion it was written
+   for — "and nothing else" is a claim about which distributions ship — but the
+   check's PASS message says "the build matches the frozen contract's dependency
+   clause", and the clause it quotes contains the bound. A reader would reasonably
+   take the bound as checked. It is not. Recorded rather than fixed mid-release;
+   the fix is to compare specifiers too, or to narrow the message to what is
+   actually verified.
 
    *Amended 2026-08-13.* The clause originally named three dependencies. `tomli`
    was added afterwards and deliberately: `tomllib` arrived in the standard
