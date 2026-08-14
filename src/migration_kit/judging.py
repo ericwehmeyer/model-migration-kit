@@ -36,7 +36,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from opik_rigor import Adapter, EvidenceLog, JudgeOutputError, PinnedJudge
+from opik_rigor import (
+    Adapter,
+    EvidenceLog,
+    JudgeOutputError,
+    ModelPinError,
+    PinnedJudge,
+    require_pinned,
+)
 from opik_rigor.judge import SCORE_MIN, hash_rubric_file
 
 from .contracts import (
@@ -187,6 +194,16 @@ class JudgeConfig:
                 )
             name = _required_str(entry, "name", where, index)
             model = _required_str(entry, "model", where, index)
+            try:
+                # Refused here, at load, and not left to PinnedJudge construction.
+                # Both refuse it, but they refuse it at different moments: this one
+                # happens while the operator is still looking at the config they
+                # just edited, before any credential is spent. rigor makes the same
+                # argument one level down about discovering an alias at analysis
+                # time -- a week of verdicts from a moving target is a week wasted.
+                require_pinned(model, context=f"judge {name!r} in {where}")
+            except ModelPinError as exc:
+                raise ConfigError(str(exc)) from exc
             if name in seen:
                 raise ConfigError(
                     f"{where}: two judges are named {name!r}. The name keys the judges "
