@@ -41,9 +41,9 @@ dev = ["pytest>=7.0", "pytest-cov>=4.0", "ruff>=0.6"]
 migkit = "model_migration_kit.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/ericwehmeyer/migration-kit"
-Repository = "https://github.com/ericwehmeyer/migration-kit"
-Issues = "https://github.com/ericwehmeyer/migration-kit/issues"
+Homepage = "https://github.com/ericwehmeyer/model-migration-kit"
+Repository = "https://github.com/ericwehmeyer/model-migration-kit"
+Issues = "https://github.com/ericwehmeyer/model-migration-kit/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/model_migration_kit"]

@@ -11,9 +11,26 @@ which is the approved plan this build follows and was written before any code.
 |---|---|---|
 | 0 | Scaffold, license, CI, frozen contracts | **complete**, committed `45b6567` |
 | 1 | Data path, offline: `goldenset.py`, `runner.py`, resumability | **complete** |
-| 2 | Judgment and verdict: `judging.py`, `comparison.py` | contract frozen, code not started |
-| 3 | Faces: `report.py`, `cli.py`, `migkit demo`, README | contract frozen, code not started |
-| 4 | Release: name check, `__init__.py`, publish workflow, PyPI | contract frozen, not started |
+| 2 | Judgment and verdict: `judging.py`, `comparison.py` | **complete** |
+| 3 | Faces: `report.py`, `cli.py`, `migkit demo`, README | **complete** |
+| 4 | Release: name check, `__init__.py`, publish workflow, PyPI | in progress — name settled, verification tooling built, nothing published |
+
+675 tests green, ruff clean. `migkit demo` runs keyless in under two seconds and
+returns NO-GO at exit 1, with a self-contained report carrying the fake-model
+band — the definition of done's stranger-with-no-keys path, executed rather than
+imagined.
+
+The package was renamed to **model-migration-kit** (import `model_migration_kit`,
+console script still `migkit`) before publication. Research killed the premise
+that prompted it — Python's database-migration tools never use `-kit`, and "LLM
+migration" is the term of art in this niche — but found a better reason: the old
+name gave the verb and omitted the object, colliding with 198 GitHub repositories,
+a taken npm name, and a trademarked commercial product on the exact phrase.
+
+Session 4 still to do: `__init__.py` (written last, deliberately), the version
+bump off `0.1.0.dev0`, trusted-publisher registration on both indexes, and the
+release itself. `scripts/verify_release.py` reports the remaining blockers and
+refuses to pass while they stand.
 
 Session 4 is not in the build plan, which defines three build sessions. It is the
 release phase the plan defers *into* ("check the PyPI name in Phase 0 of
