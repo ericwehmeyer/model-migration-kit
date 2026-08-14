@@ -676,7 +676,7 @@ def _tool_version() -> str:
     from importlib.metadata import PackageNotFoundError, version
 
     try:
-        return version("migration-kit")
+        return version("model-migration-kit")
     except PackageNotFoundError:  # pragma: no cover - only when run from a bare checkout
         return "0+unknown"
 

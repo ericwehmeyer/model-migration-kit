@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "migration-kit"
+name = "model-migration-kit"
 version = "0.1.0.dev0"
 description = "Statistically defensible go/no-go verdicts for LLM model migrations."
 readme = "README.md"
@@ -38,7 +38,7 @@ dependencies = [
 dev = ["pytest>=7.0", "pytest-cov>=4.0", "ruff>=0.6"]
 
 [project.scripts]
-migkit = "migration_kit.cli:main"
+migkit = "model_migration_kit.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/ericwehmeyer/migration-kit"
@@ -46,7 +46,7 @@ Repository = "https://github.com/ericwehmeyer/migration-kit"
 Issues = "https://github.com/ericwehmeyer/migration-kit/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/migration_kit"]
+packages = ["src/model_migration_kit"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -64,5 +64,5 @@ src = ["src", "tests"]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.coverage.run]
-source = ["migration_kit"]
+source = ["model_migration_kit"]
 branch = true

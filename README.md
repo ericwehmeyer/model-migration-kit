@@ -1,4 +1,4 @@
-# migration-kit
+# model-migration-kit
 
 Is it safe to move from model A to model B? `migkit` answers with **GO**,
 **NO-GO** or **REVIEW** — decided by Wilson intervals and a Mann-Whitney test over
@@ -53,9 +53,9 @@ python -m venv .venv
 ```
 
 ```
-Successfully built migration-kit
-Installing collected packages: pygments, numpy, mdurl, MarkupSafe, scipy, markdown-it-py, jinja2, rich, opik-rigor, migration-kit
-Successfully installed MarkupSafe-3.0.3 jinja2-3.1.6 markdown-it-py-4.2.0 mdurl-0.1.2 migration-kit-0.1.0.dev0 numpy-2.5.2 opik-rigor-0.1.0 pygments-2.20.0 rich-15.0.0 scipy-1.18.0
+Successfully built model-migration-kit
+Installing collected packages: pygments, numpy, mdurl, MarkupSafe, scipy, markdown-it-py, jinja2, rich, opik-rigor, model-migration-kit
+Successfully installed MarkupSafe-3.0.3 jinja2-3.1.6 markdown-it-py-4.2.0 mdurl-0.1.2 model-migration-kit-0.1.0.dev0 numpy-2.5.2 opik-rigor-0.1.0 pygments-2.20.0 rich-15.0.0 scipy-1.18.0
 ```
 
 Progress goes to stderr:
@@ -188,7 +188,7 @@ on a machine with no route to the internet, so it fetches nothing at view time �
 checked with the tool's own detector against the file the run above produced:
 
 ```
-$ python -c "from pathlib import Path; from migration_kit.report import external_urls; print(external_urls(Path('migkit-demo-report.html').read_text(encoding='utf-8')))"
+$ python -c "from pathlib import Path; from model_migration_kit.report import external_urls; print(external_urls(Path('migkit-demo-report.html').read_text(encoding='utf-8')))"
 ()
 ```
 
@@ -278,7 +278,7 @@ Underpowered is the normal case for a small golden set. The tool computes what i
 would need from the observed baseline rate:
 
 ```
-$ python -c "from migration_kit.comparison import required_sample_size as r; print([r(p, min_detectable_effect=0.10, power_target=0.80, alpha=0.05) for p in (0.99, 0.95, 0.90, 0.80)])"
+$ python -c "from model_migration_kit.comparison import required_sample_size as r; print([r(p, min_detectable_effect=0.10, power_target=0.80, alpha=0.05) for p in (0.99, 0.95, 0.90, 0.80)])"
 [67, 109, 155, 229]
 ```
 
@@ -357,7 +357,7 @@ Two things about that config *were* checked, because they can be checked without
 spending a credential — it parses, and the judge's model id survives the pin rule:
 
 ```
-$ python -c "from migration_kit.judging import JudgeConfig; c = JudgeConfig.load('judges.toml'); print(c.specs[0]); print(c.thresholds)"
+$ python -c "from model_migration_kit.judging import JudgeConfig; c = JudgeConfig.load('judges.toml'); print(c.specs[0]); print(c.thresholds)"
 JudgeSpec(name='accuracy', model='claude-sonnet-4-5-20250929', rubric=WindowsPath('rubric.md'), rubric_hash='cc39e4aad0ef5db821fb627bb1217bab78095543642634bc2d30581f642c6268', adapter='anthropic')
 Thresholds(pass_rate_floor=0.9, alpha=0.05, confidence=0.95, judge_failure_tolerance=0.05, min_detectable_effect=0.1, power_target=0.8)
 ```
@@ -422,7 +422,7 @@ that hash is embedded in every downstream artifact. Two artifacts are comparable
 only if it matches. Tags feed the distribution the report prints:
 
 ```
-$ python -c "from migration_kit.goldenset import GoldenSet; gs = GoldenSet.load('src/migration_kit/data/demo_goldenset.jsonl'); print(gs.stats()); print(gs.hash)"
+$ python -c "from model_migration_kit.goldenset import GoldenSet; gs = GoldenSet.load('src/model_migration_kit/data/demo_goldenset.jsonl'); print(gs.stats()); print(gs.hash)"
 {'size': 12, 'with_reference': 8, 'untagged': 0, 'tags': {'arithmetic': 4, 'extraction': 4, 'multi-value': 2, 'refusal': 4}}
 5fef50364057cad869f16698df32d927b650778c34382f6f68d9fd53ba4e9a04
 ```
@@ -441,8 +441,8 @@ exit: 3
 
 ## Install
 
-The distribution is named **`migration-kit`**, the import package is
-`migration_kit`, and the console script is `migkit`.
+The distribution is named **`model-migration-kit`**, the import package is
+`model_migration_kit`, and the console script is `migkit`.
 
 **It is not published yet.** Checked on 2026-08-13:
 
@@ -451,7 +451,7 @@ $ python -c "import urllib.request; urllib.request.urlopen('https://pypi.org/pyp
 urllib.error.HTTPError: HTTP Error 404: Not Found
 ```
 
-So `pip install migration-kit` does not work today. Install from a checkout:
+So `pip install model-migration-kit` does not work today. Install from a checkout:
 
 ```bash
 python -m venv .venv
@@ -497,7 +497,7 @@ Every statistical primitive is imported from
 [opik-rigor](https://pypi.org/project/opik-rigor/), none reimplemented: Wilson
 intervals and the pass-rate gate, Mann-Whitney U for regressions, pinned judges
 with hashed rubrics, and the append-only evidence log that every report is rendered
-from. migration-kit consumes the published wheel from PyPI rather than a path
+from. model-migration-kit consumes the published wheel from PyPI rather than a path
 dependency on a sibling checkout, so "first real consumer" means something — the
 install transcript in the quickstart shows `opik-rigor-0.1.0` arriving from the
 index.

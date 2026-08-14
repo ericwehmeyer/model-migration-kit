@@ -1,6 +1,6 @@
 # PROGRESS
 
-Running state of the migration-kit v0.1 build. Updated at the end of every
+Running state of the model-migration-kit v0.1 build. Updated at the end of every
 session. If you are picking this up cold, read [HANDOFF.md](HANDOFF.md) first —
 it is written for exactly that — then [docs/build-plan.md](docs/build-plan.md),
 which is the approved plan this build follows and was written before any code.
@@ -24,22 +24,22 @@ project improvised it and paid for that.
 
 | Path | State |
 |---|---|
-| `pyproject.toml` | Apache-2.0, deps `opik-rigor>=0.1.0,<0.2`, `jinja2`, `rich`; `migkit` console script pointing at `migration_kit.cli:main` (not yet written) |
+| `pyproject.toml` | Apache-2.0, deps `opik-rigor>=0.1.0,<0.2`, `jinja2`, `rich`; `migkit` console script pointing at `model_migration_kit.cli:main` (not yet written) |
 | `LICENSE`, `NOTICE` | Apache-2.0 full text, copyright filled in |
 | `.gitattributes` | forces LF — load-bearing, see invariants |
 | `.gitignore` | ignores `*.jsonl` outputs but whitelists `goldensets/**` and test fixtures |
 | `.github/workflows/ci.yml` | py3.10–3.13 × Ubuntu + Windows, ruff, pytest, **plus a `demo` job** that runs `migkit demo` under a 120s timeout and uploads the HTML |
-| `src/migration_kit/errors.py` | exception hierarchy — frozen, unfrozen once for `ReportError` (see decisions) |
-| `src/migration_kit/contracts.py` | shared data shapes — frozen; `EVENT_COMPLETION` added after review |
-| `src/migration_kit/goldenset.py` | strict JSONL loader, content + provenance hashes, `stats()` |
-| `src/migration_kit/runner.py` | n draws per item via rigor's `sample`, resumable, append-only artifact |
+| `src/model_migration_kit/errors.py` | exception hierarchy — frozen, unfrozen once for `ReportError` (see decisions) |
+| `src/model_migration_kit/contracts.py` | shared data shapes — frozen; `EVENT_COMPLETION` added after review |
+| `src/model_migration_kit/goldenset.py` | strict JSONL loader, content + provenance hashes, `stats()` |
+| `src/model_migration_kit/runner.py` | n draws per item via rigor's `sample`, resumable, append-only artifact |
 | `tests/test_goldenset.py`, `tests/test_runner.py` | written by agents who did not write the modules |
 | `docs/build-plan.md` | the approved plan, verbatim |
 | `.venv` | created, `pip install -e ".[dev]"` done, imports verified |
 
 Verified working: `opik-rigor 0.1.0` (installed **from PyPI**, not from the local
-repo — migration-kit consumes the published artifact), `jinja2 3.1.6`,
-`rich 15.0.0`, and `migration_kit.contracts` imports clean.
+repo — model-migration-kit consumes the published artifact), `jinja2 3.1.6`,
+`rich 15.0.0`, and `model_migration_kit.contracts` imports clean.
 
 ## Decisions made, and why
 
@@ -49,7 +49,7 @@ tool whose selling point is auditability is better with a smaller supply chain.
 Revisit only if subcommand ergonomics genuinely suffer.
 
 **`opik-rigor` comes from PyPI, pinned `>=0.1.0,<0.2`.** Not a path dependency to
-the sibling repo. This makes migration-kit a real consumer of the published
+the sibling repo. This makes model-migration-kit a real consumer of the published
 package rather than of a working copy, which is the only way the "first real
 consumer" claim means anything. Upper bound because rigor's report objects are
 untyped dicts today and its 0.2 roadmap changes that surface.
@@ -101,9 +101,9 @@ exception types to exit codes, so "this evidence log contains no verdict" has to
 be distinguishable from "the tool broke"; reusing the base class would have made
 every unrelated failure look like a report failure at the one place it matters.
 
-**The demo golden set lives in `src/migration_kit/data/`, not repo-root
+**The demo golden set lives in `src/model_migration_kit/data/`, not repo-root
 `goldensets/`.** Two independent reviews found the same trap: the wheel packages
-only `src/migration_kit`, and CI's demo job uses `pip install -e .`, which keeps
+only `src/model_migration_kit`, and CI's demo job uses `pip install -e .`, which keeps
 the repo root importable. A demo reading from `goldensets/` therefore passes CI
 and every local test, and fails only for people who installed the wheel — who are
 exactly the audience the definition of done is written about. `.gitignore` needed
@@ -121,7 +121,7 @@ Session 3 delivers `migkit demo`.
 
 ## Invariants
 
-1. **migration-kit imports opik-rigor's *public* API only.** No reaching into
+1. **model-migration-kit imports opik-rigor's *public* API only.** No reaching into
    internals. If something needed is missing, that is a rigor roadmap item —
    record it in this file, work around it at the API surface, do not monkey-patch.
 2. **The report renders from the evidence log, not from in-memory state.** A
@@ -182,9 +182,9 @@ Session 3 delivers `migkit demo`.
 
 ## Known gaps entering Session 1 (historical)
 
-- `src/migration_kit/__init__.py` does not exist yet. Write it last, as in the
+- `src/model_migration_kit/__init__.py` does not exist yet. Write it last, as in the
   previous project, once there is a surface to re-export.
-- The `migkit` console script points at `migration_kit.cli:main`, which does not
+- The `migkit` console script points at `model_migration_kit.cli:main`, which does not
   exist — `pip install -e .` succeeds anyway, but running `migkit` will fail
   until Session 3.
 - No tests exist. The acceptance contract is section 3 of the build plan; treat

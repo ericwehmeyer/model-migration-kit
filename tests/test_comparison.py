@@ -1,4 +1,4 @@
-"""Acceptance tests for :mod:`migration_kit.comparison`.
+"""Acceptance tests for :mod:`model_migration_kit.comparison`.
 
 Written from the frozen contract, never from the module: `docs/build-plan.md`
 §6 Amendment 1 (the authoritative verdict spec), `docs/session-2-contract.md`
@@ -51,13 +51,13 @@ from typing import Any
 import pytest
 from opik_rigor.judge import SCORE_MAX, SCORE_MIN
 
-from migration_kit.contracts import Completion, RunHeader, Verdict, utc_now
-from migration_kit.errors import ArtifactError, JudgeConfigError
-from migration_kit.judging import JudgedArtifact, JudgeRecord, Thresholds
-from migration_kit.runner import RunArtifact
+from model_migration_kit.contracts import Completion, RunHeader, Verdict, utc_now
+from model_migration_kit.errors import ArtifactError, JudgeConfigError
+from model_migration_kit.judging import JudgedArtifact, JudgeRecord, Thresholds
+from model_migration_kit.runner import RunArtifact
 
 try:  # The module is written in parallel with this file; absence is a finding,
-    from migration_kit import comparison as _comparison  # not a reason to skip.
+    from model_migration_kit import comparison as _comparison  # not a reason to skip.
 except Exception as exc:  # pragma: no cover - exercised only while it is missing
     _comparison = None
     _IMPORT_ERROR: Exception | None = exc
@@ -230,7 +230,7 @@ def _write_run(path: Any, model_id: str, durations: Mapping[str, Sequence[float]
 def _module() -> Any:
     if _comparison is None:
         raise AssertionError(
-            f"migration_kit.comparison could not be imported: {_IMPORT_ERROR!r}"
+            f"model_migration_kit.comparison could not be imported: {_IMPORT_ERROR!r}"
         )
     return _comparison
 
@@ -450,7 +450,7 @@ def _resolver() -> Any:
             return found
     raise AssertionError(
         "build-plan §6 requires the verdict resolution to be a separate pure "
-        f"function of the per-judge flags, tested directly. migration_kit."
+        f"function of the per-judge flags, tested directly. model_migration_kit."
         f"comparison exports none of {list(_RESOLVER_NAMES)}; it exposes "
         f"{_surface(module)}"
     )

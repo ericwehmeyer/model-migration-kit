@@ -23,9 +23,12 @@ htmlcov/
 # ignored, every local test and the editable-install CI demo job still pass, and
 # the demo breaks only for people who install the wheel -- who are exactly the
 # audience the definition of done is written about.
-!src/migration_kit/data/*.jsonl
+!src/model_migration_kit/data/*.jsonl
 .migkit/
 reports/
 *.report.html
 
 .DS_Store
+
+# Agent worktrees live here; they are checkouts of this same repo.
+.claude/

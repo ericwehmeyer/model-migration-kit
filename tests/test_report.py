@@ -1,4 +1,4 @@
-"""Acceptance tests for :mod:`migration_kit.report`.
+"""Acceptance tests for :mod:`model_migration_kit.report`.
 
 Written from the frozen contract, never from the module. The specification is
 ``docs/session-3-contract.md`` §§1-4 (§1.2 pins the evidence payload, §2.2 the
@@ -30,7 +30,7 @@ code under test.
 * Hashes are computed with stdlib :mod:`hashlib` under the convention
   ``contracts.py`` states for the whole project (sha256 of the bytes with CRLF
   normalised to LF), so the provenance block is checked against an oracle outside
-  ``migration_kit``.
+  ``model_migration_kit``.
 * Every statistic that reaches the report is a hand-chosen literal in the
   evidence payload, deliberately inconsistent with what a recomputation would
   produce, so "the report never recomputes a statistic" (§1.2) is testable rather
@@ -64,7 +64,7 @@ from typing import Any
 import pytest
 from opik_rigor import EvidenceLog, wilson_interval
 
-from migration_kit.contracts import (
+from model_migration_kit.contracts import (
     ARTIFACT_SCHEMA_VERSION,
     EVENT_COMPARISON,
     EVENT_JUDGING_COMPLETED,
@@ -72,11 +72,11 @@ from migration_kit.contracts import (
     EVENT_VERDICT,
     Verdict,
 )
-from migration_kit.errors import MigrationKitError
-from migration_kit.goldenset import GoldenSet
+from model_migration_kit.errors import MigrationKitError
+from model_migration_kit.goldenset import GoldenSet
 
 try:  # The module is written in parallel with this file; absence is a finding,
-    from migration_kit import report as _report  # not a reason to skip.
+    from model_migration_kit import report as _report  # not a reason to skip.
 except Exception as exc:  # pragma: no cover - exercised only while it is missing
     _report = None
     _IMPORT_ERROR: Exception | None = exc
@@ -147,7 +147,7 @@ _MISSING = object()
 
 
 # --------------------------------------------------------------------------- #
-# Oracles. stdlib only -- nothing in this section may import migration_kit.
+# Oracles. stdlib only -- nothing in this section may import model_migration_kit.
 # --------------------------------------------------------------------------- #
 
 
@@ -327,14 +327,14 @@ def _hash_bytes(data: bytes) -> str:
 
     ``contracts.py`` states it in its own docstring: sha256 of the bytes with
     CRLF normalised to LF. Computed here rather than imported so the provenance
-    block is checked against something outside ``migration_kit``.
+    block is checked against something outside ``model_migration_kit``.
     """
     return hashlib.sha256(data.replace(b"\r\n", b"\n")).hexdigest()
 
 
 def test_the_hashing_oracle_agrees_with_the_projects_stated_convention() -> None:
     """Guards the oracle: if this fails, every hash expectation below is wrong."""
-    from migration_kit.contracts import hash_bytes as _theirs
+    from model_migration_kit.contracts import hash_bytes as _theirs
 
     assert _hash_bytes(b"line one\r\nline two\n") == _theirs(b"line one\r\nline two\n")
     assert _hash_bytes(b"a\nb\n") == hashlib.sha256(b"a\nb\n").hexdigest()
@@ -903,7 +903,7 @@ def _scenario(
 def _module() -> Any:
     if _report is None:
         raise AssertionError(
-            f"migration_kit.report could not be imported: {_IMPORT_ERROR!r}"
+            f"model_migration_kit.report could not be imported: {_IMPORT_ERROR!r}"
         )
     return _report
 
@@ -1006,7 +1006,7 @@ def test_the_public_surface_the_contract_names_exists(name: str) -> None:
     """Contract §2.1 lists this API in full. Every name in it is load-bearing."""
     module = _module()
     assert hasattr(module, name), (
-        f"contract §2.1 requires {name!r} on migration_kit.report; it exposes "
+        f"contract §2.1 requires {name!r} on model_migration_kit.report; it exposes "
         f"{_surface(module)}"
     )
 
@@ -1196,7 +1196,7 @@ def test_assert_self_contained_raises_and_lists_every_violation() -> None:
         checker(NEGATIVE_CONTROL, source="fixture.html")
     message = str(caught.value)
     assert isinstance(caught.value, MigrationKitError), (
-        f"a self-containment failure should be a migration-kit error, got "
+        f"a self-containment failure should be a model-migration-kit error, got "
         f"{type(caught.value).__name__}"
     )
     for tag in ("link", "img", "style"):
@@ -1556,7 +1556,7 @@ def test_the_two_refusals_raise_the_type_the_contract_names(tmp_path: Path) -> N
     which is what the CLI maps to exit 3 -- is pinned by the two tests above and
     holds whichever way the lead settles it.
     """
-    from migration_kit.errors import ArtifactError
+    from model_migration_kit.errors import ArtifactError
 
     root = tmp_path / "types"
     root.mkdir()
@@ -2222,7 +2222,7 @@ def test_the_evidence_hash_is_the_hash_of_the_evidence_file(tmp_path: Path) -> N
     """§2.2 item 7: the evidence log's path and hash, under the project convention.
 
     The oracle is stdlib hashlib, not ``contracts.hash_file``, so this checks the
-    report against something outside ``migration_kit``.
+    report against something outside ``model_migration_kit``.
     """
     scenario = _scenario(tmp_path / "evhash")
     model = _from_evidence(scenario)

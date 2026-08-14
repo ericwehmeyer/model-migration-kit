@@ -1,4 +1,4 @@
-"""Acceptance tests for :mod:`migration_kit.judging`.
+"""Acceptance tests for :mod:`model_migration_kit.judging`.
 
 Written against `docs/session-2-contract.md` §1 as governed by `docs/build-plan.md`
 §6. Per HANDOFF.md's working method, **no expected value in this file was obtained
@@ -8,11 +8,11 @@ by running the code under test**. Every expectation is one of:
   event name ``migkit.judging_completed``, the error type for each rejection);
 * a hand derivation (2 parse failures in 20 records is 10%, which is over a 5%
   tolerance; 1 in 20 is exactly 5%, which is not *over* it);
-* computed by a tool outside ``migration_kit`` -- stdlib ``hashlib``/``json`` used
+* computed by a tool outside ``model_migration_kit`` -- stdlib ``hashlib``/``json`` used
   directly, which is how ``_sha256_lf`` grounds every rubric-hash expectation.
 
 **How the judge response format was established.** Not guessed and not copied from
-migration-kit: read from ``opik_rigor/judge.py`` in the installed 0.1.0 wheel.
+model-migration-kit: read from ``opik_rigor/judge.py`` in the installed 0.1.0 wheel.
 ``PinnedJudge.evaluate`` passes the adapter's reply to ``_parse_response``, which
 scans the text for embedded top-level JSON objects (``_json_objects``) and keeps
 those carrying a ``pass`` or ``passed`` key (``PASS_KEYS``). That key must be a
@@ -46,20 +46,20 @@ import pytest
 from opik_rigor import EvidenceLog, FakeAdapter, ModelPinError, PinnedJudge, is_pinned
 from opik_rigor.judge import SCORE_MIN, hash_rubric_file
 
-from migration_kit.contracts import (
+from model_migration_kit.contracts import (
     ARTIFACT_SCHEMA_VERSION,
     EVENT_JUDGING_COMPLETED,
     Completion,
     RunHeader,
 )
-from migration_kit.errors import (
+from model_migration_kit.errors import (
     ArtifactError,
     ConfigError,
     JudgeConfigError,
     JudgeReliabilityError,
 )
-from migration_kit.goldenset import GoldenSet
-from migration_kit.judging import (
+from model_migration_kit.goldenset import GoldenSet
+from model_migration_kit.judging import (
     JudgeConfig,
     JudgedArtifact,
     JudgePanel,
@@ -68,7 +68,7 @@ from migration_kit.judging import (
     judge_artifact,
     judged_path_for,
 )
-from migration_kit.runner import RunArtifact
+from model_migration_kit.runner import RunArtifact
 
 # --------------------------------------------------------------------------- #
 # Constants taken from the contract, not from the implementation.

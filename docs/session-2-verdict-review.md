@@ -4,7 +4,7 @@ Reviewed against `docs/build-plan.md` §§1–4, frozen `contracts.py` / `errors
 `PROGRESS.md` invariants 1/2/4/5/6, and the installed `opik-rigor 0.1.0`
 (introspected at `.venv/Lib/site-packages/opik_rigor/`). Every number below was
 computed with that interpreter; scratch scripts are in the scratchpad, nothing
-under `migration-kit` was touched.
+under `model-migration-kit` was touched.
 
 ---
 
@@ -319,7 +319,7 @@ outcomes, not scores."*
   one-sided. `JudgeReliabilityError(judge_name, failures, total, tolerance)` in the
   frozen `errors.py` matches the arity Amendment 3 assumes.
 - **Rubric hashing is genuinely identical.** `opik_rigor.judge.hash_rubric_text`
-  and `migration_kit.contracts.hash_bytes` return the same digest on plain, CRLF,
+  and `model_migration_kit.contracts.hash_bytes` return the same digest on plain, CRLF,
   and trailing-whitespace inputs (verified). A rubric differing only by trailing
   whitespace therefore hashes differently and is rejected — that is *correct*, since
   rigor would raise `RubricDriftError` on the same edit; consistency beats

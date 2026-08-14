@@ -28,7 +28,7 @@ from typing import Any
 #: rather than misinterpret it.
 ARTIFACT_SCHEMA_VERSION = 1
 
-#: Event types migration-kit writes to the rigor evidence log. rigor's own events
+#: Event types model-migration-kit writes to the rigor evidence log. rigor's own events
 #: (judge.verdict, sample.completed, assertion.evaluated) appear alongside these;
 #: the `migkit.` prefix keeps the two namespaces legible in one file.
 EVENT_RUN_STARTED = "migkit.run_started"

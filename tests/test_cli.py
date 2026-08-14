@@ -1,4 +1,4 @@
-"""Acceptance tests for :mod:`migration_kit.cli` and :mod:`migration_kit.demo`.
+"""Acceptance tests for :mod:`model_migration_kit.cli` and :mod:`model_migration_kit.demo`.
 
 Written from the frozen contract, never from the modules: ``docs/session-3-contract.md``
 §§3 and 5 (the command surface, the exit-code table, the exception map, the stream
@@ -19,7 +19,7 @@ invariants 3 and 7. The author of this file did not write ``cli.py`` or
   ("an HTML report that shows a NO-GO verdict"). It is asserted, not observed. If
   the implementation disagrees, the implementation is wrong, not this line.
 * The bundled golden set's size and tag distribution are counted by hand from
-  ``src/migration_kit/data/demo_goldenset.jsonl``: twelve items, four tagged
+  ``src/model_migration_kit/data/demo_goldenset.jsonl``: twelve items, four tagged
   ``arithmetic``, four ``extraction``, four ``refusal``, and two ``multi-value``
   (``extract-04`` and ``refuse-04``). Session-3 §5.1 independently states the
   twelve and the three slices.
@@ -66,10 +66,10 @@ from opik_rigor import (
     SampleTimeout,
 )
 
-from migration_kit import cli, demo
-from migration_kit.comparison import compare
-from migration_kit.contracts import EVENT_COMPARISON, EVENT_VERDICT, Verdict
-from migration_kit.errors import (
+from model_migration_kit import cli, demo
+from model_migration_kit.comparison import compare
+from model_migration_kit.contracts import EVENT_COMPARISON, EVENT_VERDICT, Verdict
+from model_migration_kit.errors import (
     ArtifactError,
     ConfigError,
     GoldenSetError,
@@ -77,9 +77,9 @@ from migration_kit.errors import (
     JudgeReliabilityError,
     ReportError,
 )
-from migration_kit.goldenset import GoldenSet
-from migration_kit.judging import JudgeConfig, judge_artifact
-from migration_kit.runner import run_goldenset
+from model_migration_kit.goldenset import GoldenSet
+from model_migration_kit.judging import JudgeConfig, judge_artifact
+from model_migration_kit.runner import run_goldenset
 
 # --------------------------------------------------------------------------- #
 # Expectations, all from outside the implementation
@@ -94,7 +94,7 @@ FROZEN_EXIT_CODES = {"GO": 0, "NO-GO": 1, "REVIEW": 2, "ERROR": 3}
 #: session-3 §5.2 and build-plan §5. The demo exists to show a refused migration.
 DEMO_VERDICT = "NO-GO"
 
-#: Hand-counted from ``src/migration_kit/data/demo_goldenset.jsonl``.
+#: Hand-counted from ``src/model_migration_kit/data/demo_goldenset.jsonl``.
 DEMO_ITEM_IDS = (
     "arith-01",
     "arith-02",
@@ -691,20 +691,20 @@ class TestPackagedDemoData:
         "name", ["demo_goldenset.jsonl", "demo_rubric.md", "demo.toml"]
     )
     def test_the_file_is_reachable_as_package_data(self, name: str) -> None:
-        resource = resources.files("migration_kit.data") / name
+        resource = resources.files("model_migration_kit.data") / name
         assert resource.is_file(), f"{name} is not reachable through importlib.resources"
         assert resource.read_text(encoding="utf-8").strip(), f"{name} is empty"
 
     def test_the_bundled_goldenset_is_the_twelve_items_the_contract_describes(self) -> None:
-        raw = (resources.files("migration_kit.data") / "demo_goldenset.jsonl").read_bytes()
-        goldenset = GoldenSet.parse(raw, source="migration_kit.data/demo_goldenset.jsonl")
+        raw = (resources.files("model_migration_kit.data") / "demo_goldenset.jsonl").read_bytes()
+        goldenset = GoldenSet.parse(raw, source="model_migration_kit.data/demo_goldenset.jsonl")
         assert len(goldenset) == 12
         assert goldenset.ids == DEMO_ITEM_IDS
         assert goldenset.stats()["tags"] == DEMO_TAG_COUNTS
 
     def test_the_bundled_rubric_declares_rigors_one_to_five_scale(self) -> None:
         # session-3 §5.1: "one rubric, scored on rigor's 1-5 scale".
-        text = (resources.files("migration_kit.data") / "demo_rubric.md").read_text(
+        text = (resources.files("model_migration_kit.data") / "demo_rubric.md").read_text(
             encoding="utf-8"
         )
         assert "1-5" in text or "1–5" in text
@@ -712,7 +712,7 @@ class TestPackagedDemoData:
     def test_the_bundled_config_loads_and_pins_its_judge(self) -> None:
         # session-3 §5.1: demo.toml carries "the thresholds the demo runs under,
         # so the demo also demonstrates the threshold echo".
-        with resources.as_file(resources.files("migration_kit.data") / "demo.toml") as path:
+        with resources.as_file(resources.files("model_migration_kit.data") / "demo.toml") as path:
             config = JudgeConfig.load(path)
         assert config.specs, "the demo config declares no judge"
         assert all(spec.model.startswith("fake-") for spec in config.specs)
@@ -788,7 +788,7 @@ class TestDemo:
     def test_the_demo_is_its_own_module(self) -> None:
         # session-3 D4: "Frozen default: a small demo.py", so the wiring does not
         # make cli.py two pages. Asserted structurally, not by reading line counts.
-        assert demo.__name__ == "migration_kit.demo"
+        assert demo.__name__ == "model_migration_kit.demo"
         tree = ast.parse(Path(inspect.getsourcefile(cli) or "").read_text(encoding="utf-8"))
         imported = {
             alias.name
@@ -917,7 +917,7 @@ class TestDemo:
         to the internet, and an outbound request from a document containing model
         outputs is itself the finding.
         """
-        from migration_kit.report import assert_self_contained, external_urls
+        from model_migration_kit.report import assert_self_contained, external_urls
 
         _strip_keys(monkeypatch, mode="absent")
         _code, out, _work = _run_demo(tmp_path, monkeypatch, "contained")

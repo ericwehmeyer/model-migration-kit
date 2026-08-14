@@ -1,13 +1,13 @@
-# migration-kit — v0.1 Build Plan
+# model-migration-kit — v0.1 Build Plan
 ## Model-migration regression testing built on opik-rigor
 
-Working name: **migration-kit** (same rule as before: package name is one constant; check PyPI in Phase 0 of publishing, not now). One sentence: a CLI that answers "is it safe to move from model A to model B?" with a statistically defensible go/no-go verdict instead of vibes. It is opik-rigor's first real consumer — every statistical primitive is imported, none reimplemented. License Apache-2.0, personal account, personal repo.
+Working name: **model-migration-kit** (same rule as before: package name is one constant; check PyPI in Phase 0 of publishing, not now). One sentence: a CLI that answers "is it safe to move from model A to model B?" with a statistically defensible go/no-go verdict instead of vibes. It is opik-rigor's first real consumer — every statistical primitive is imported, none reimplemented. License Apache-2.0, personal account, personal repo.
 
 The pitch that governs scope: every team running LLMs in production faces forced migrations (deprecations, price changes, provider switches). Today they eyeball a few outputs and ship. This tool makes the decision auditable: golden set in, two models compared under identical pinned judges, distribution-diff report out, exit code a CI gate can consume. SR 11-7 framing: model change management is model risk management — the report *is* the change-control evidence.
 
 ## 1. Architecture
 
-Six modules and a CLI, one page each. Hard rules: migration-kit imports opik-rigor's public API only (no reaching into internals — if something's missing, that's a rigor roadmap item, recorded, not monkey-patched); the report is generated from the evidence log, not from in-memory state, so a crashed run can still render a partial report from disk.
+Six modules and a CLI, one page each. Hard rules: model-migration-kit imports opik-rigor's public API only (no reaching into internals — if something's missing, that's a rigor roadmap item, recorded, not monkey-patched); the report is generated from the evidence log, not from in-memory state, so a crashed run can still render a partial report from disk.
 
 **goldenset.py** — loader/validator for the golden set format: JSONL, each line {id, input, reference (optional), tags (optional)}. Versioned the rigor way: file hash embedded in every downstream artifact. Validation is strict and loud: duplicate ids, empty inputs, and malformed lines are errors, not warnings. A `stats()` method reports set size and tag distribution so the report can say what was actually tested.
 
@@ -47,7 +47,7 @@ Dogfooding clause (non-negotiable, learned last time): the suite gates one of it
 
 ## 4. Risks, pre-decided
 
-opik-rigor gaps discovered mid-build → recorded as rigor roadmap items and worked around at the API surface; if truly blocking, pause migration-kit, ship a rigor point release, resume — the dependency direction stays clean. Verdict-logic bikeshedding → the (regression, floor, power) decision table in this plan is the spec; changes require editing the plan first. Report scope creep (dashboards, history, trends) → v0.1 is one comparison, one report; longitudinal tracking is the roadmap's headline item and probably the Opik-integration story. Demo credibility → the bundled demo uses FakeAdapters and says so loudly; a second documented path shows real-adapter usage for readers with keys.
+opik-rigor gaps discovered mid-build → recorded as rigor roadmap items and worked around at the API surface; if truly blocking, pause model-migration-kit, ship a rigor point release, resume — the dependency direction stays clean. Verdict-logic bikeshedding → the (regression, floor, power) decision table in this plan is the spec; changes require editing the plan first. Report scope creep (dashboards, history, trends) → v0.1 is one comparison, one report; longitudinal tracking is the roadmap's headline item and probably the Opik-integration story. Demo credibility → the bundled demo uses FakeAdapters and says so loudly; a second documented path shows real-adapter usage for readers with keys.
 
 ## 5. Definition of done for v0.1
 

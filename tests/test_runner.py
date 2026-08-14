@@ -1,8 +1,8 @@
-"""Acceptance tests for :mod:`migration_kit.runner`.
+"""Acceptance tests for :mod:`model_migration_kit.runner`.
 
 Written against the session brief as amended by AMENDMENT 1. Every expectation
 comes from the contract, from hand derivation, or from a tool outside
-``migration_kit`` -- never from running the code under test. Two hashing rules are
+``model_migration_kit`` -- never from running the code under test. Two hashing rules are
 re-implemented locally on purpose, so that the expected value and the observed
 value have independent provenance:
 
@@ -28,10 +28,10 @@ import json
 import pytest
 from opik_rigor import EvidenceLog, FakeAdapter, PassRateError, assert_pass_rate, sample_of
 
-from migration_kit.contracts import ARTIFACT_SCHEMA_VERSION
-from migration_kit.errors import ArtifactError
-from migration_kit.goldenset import GoldenSet
-from migration_kit.runner import RunArtifact, artifact_path_for, run_goldenset
+from model_migration_kit.contracts import ARTIFACT_SCHEMA_VERSION
+from model_migration_kit.errors import ArtifactError
+from model_migration_kit.goldenset import GoldenSet
+from model_migration_kit.runner import RunArtifact, artifact_path_for, run_goldenset
 
 #: A one-item golden set used wherever a filename is asserted verbatim.
 KNOWN_SET_BYTES = b'{"id":"a","input":"x"}\n'
@@ -40,7 +40,7 @@ KNOWN_SET_BYTES = b'{"id":"a","input":"x"}\n'
 KNOWN_SET_FILE_HASH = "1bcdca7f33c2173558c98000ffc3fb22a6b4cdaa2d1f9f9ff8de13edc6fff2ec"
 #: The content hash of the same set: sha256 of b'{"id":"a","input":"x"}' (no
 #: trailing newline, one item, so no join). Derived offline with the system
-#: Python's hashlib, outside this repo's virtualenv and without migration_kit.
+#: Python's hashlib, outside this repo's virtualenv and without model_migration_kit.
 KNOWN_SET_HASH = "a0cce966940a34408bf00877694d404f8ffc017254044878debd200720c8617b"
 KNOWN_SET_HASH_16 = "a0cce966940a3440"
 

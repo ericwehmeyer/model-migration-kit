@@ -11,7 +11,7 @@ contract records was invisible in the source and obvious in the wheel.
 Design rules, in order of importance:
 
 1. **A skipped check is never a passing check.** Anything that cannot run yet --
-   because `migration_kit.cli` does not exist, because `twine` is not installed --
+   because `model_migration_kit.cli` does not exist, because `twine` is not installed --
    prints SKIPPED with the reason and pushes the process exit code to 2. A
    verification script that quietly skips manufactures confidence, which is worse
    than no script at all.
@@ -21,7 +21,7 @@ Design rules, in order of importance:
    `sys.path` all lie in the same direction: they make a wheel that is missing the
    demo data look fine. The resource check therefore runs in a subprocess with
    `-S`, with only the *extracted wheel* on `sys.path`, and asserts that
-   `migration_kit.__path__` contains nothing else.
+   `model_migration_kit.__path__` contains nothing else.
 
 Exit codes:
 
@@ -60,10 +60,10 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only on 3.10
 # What this project is. Changing any of these is a release-contract change, not a tweak.
 # --------------------------------------------------------------------------------------
 
-DIST_NAME = "migration-kit"
-IMPORT_NAME = "migration_kit"
+DIST_NAME = "model-migration-kit"
+IMPORT_NAME = "model_migration_kit"
 CONSOLE_SCRIPT = "migkit"
-ENTRY_POINT_MODULE = "migration_kit.cli"
+ENTRY_POINT_MODULE = "model_migration_kit.cli"
 
 # Session 3 contract §5.1. These must be *inside the wheel*, not merely on disk.
 DEMO_DATA = ("demo_goldenset.jsonl", "demo_rubric.md", "demo.toml")
@@ -121,7 +121,7 @@ def flagged(name: str, summary: str, evidence: list[str] | None = None) -> Resul
 
 
 def normalize_project_name(name: str) -> str:
-    """PEP 503 normalisation. `migration-kit`, `migration_kit` and `Migration.Kit`
+    """PEP 503 normalisation. `model-migration-kit`, `model_migration_kit` and `Migration.Kit`
     are the same project, which is exactly the point Phase 0 leans on."""
     return re.sub(r"[-_.]+", "-", name).strip().lower()
 
@@ -296,7 +296,7 @@ def parse_metadata(raw: str) -> email.message.Message:
 
 
 def wheel_version_from_filename(filename: str) -> str:
-    """`migration_kit-0.1.0-py3-none-any.whl` -> `0.1.0` (PEP 427 field order)."""
+    """`model_migration_kit-0.1.0-py3-none-any.whl` -> `0.1.0` (PEP 427 field order)."""
     return Path(filename).name.split("-")[1]
 
 
@@ -422,7 +422,7 @@ def check_wheel_demo_data(wheel: Path, source_data_dir: Path) -> Result:
     """The check that matters most: is the demo actually inside the wheel?
 
     Two independent reviews found that `.gitignore`'s `*.jsonl` rule plus
-    `packages = ["src/migration_kit"]` can produce a wheel with no demo golden set
+    `packages = ["src/model_migration_kit"]` can produce a wheel with no demo golden set
     while every local test and the editable-install CI demo job still pass. The
     only evidence that settles it is the bytes in the zip.
     """
@@ -456,14 +456,14 @@ def check_wheel_demo_data(wheel: Path, source_data_dir: Path) -> Result:
             [
                 *evidence,
                 "this is the failure that passes every local test and fails every user;",
-                "check .gitignore whitelists src/migration_kit/data/ and rebuild",
+                "check .gitignore whitelists src/model_migration_kit/data/ and rebuild",
             ],
         )
     if mismatched:
         return bad(
             name, "demo data in the wheel does not match the source tree", evidence + mismatched
         )
-    evidence.append("each file byte-identical to src/migration_kit/data/")
+    evidence.append("each file byte-identical to src/model_migration_kit/data/")
     return ok(name, f"all {len(DEMO_DATA)} demo files present inside {wheel.name}", evidence)
 
 
@@ -475,9 +475,9 @@ sys.path.insert(0, target)
 out = {}
 try:
     import importlib.resources as ir
-    import migration_kit
-    out["paths"] = [str(p) for p in list(migration_kit.__path__)]
-    files = ir.files("migration_kit.data")
+    import model_migration_kit
+    out["paths"] = [str(p) for p in list(model_migration_kit.__path__)]
+    files = ir.files("model_migration_kit.data")
     out["anchor"] = str(files)
     sizes = {}
     for name in sys.argv[2:]:
@@ -495,7 +495,7 @@ def check_demo_data_importable(wheel: Path, workdir: Path) -> Result:
 
     Run with `-S` (no site-packages, no .pth files) so an editable install of the
     repo cannot serve the file the wheel forgot. Without that isolation this check
-    is worthless: `migration_kit` has no `__init__.py` yet, so it is a namespace
+    is worthless: `model_migration_kit` has no `__init__.py` yet, so it is a namespace
     package, and a namespace package *multiplexes* -- the repo's `src/` directory
     silently supplies anything the wheel is missing. The cwd is a temp directory
     for the same reason the contract runs the demo from `$tmp`: a repo-root cwd
@@ -533,7 +533,7 @@ def check_demo_data_importable(wheel: Path, workdir: Path) -> Result:
     evidence = [
         f"probe ran with -S, cwd={workdir}, sys.path[0]={extract}",
         f"anchor: {data.get('anchor')}",
-        f"migration_kit.__path__ = {data.get('paths')}",
+        f"model_migration_kit.__path__ = {data.get('paths')}",
     ]
     expected_path = (extract / IMPORT_NAME).resolve()
     leaked = [p for p in data.get("paths", []) if Path(p).resolve() != expected_path]
@@ -1167,7 +1167,8 @@ def main(argv: list[str] | None = None) -> int:
     # Printed output stays ASCII-only: this runs on Windows consoles whose code
     # page is whatever the machine's locale says, and a UnicodeEncodeError in the
     # banner would take down the check that was about to report a real problem.
-    print("migration-kit release verification -- docs/session-4-release-contract.md, section 5")
+    print("model-migration-kit release verification")
+    print("docs/session-4-release-contract.md, section 5")
     print("=" * 100)
     print(f"repo        : {repo}")
     print(f"dist dir    : {dist_dir}")

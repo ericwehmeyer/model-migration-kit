@@ -1,4 +1,4 @@
-# migration-kit — Session 4 contract: release and publishing
+# model-migration-kit — Session 4 contract: release and publishing
 
 Frozen. Derived 2026-08-13 from `docs/build-plan.md`, `HANDOFF.md`, `PROGRESS.md`,
 and — mostly — from the sibling project `opik-rigor`, which went through this exact
@@ -11,7 +11,7 @@ Session 4, and this contract does not invent one: it specifies the phase that th
 plan and `HANDOFF.md` already defer *into*. The plan says the package name is
 checked "in Phase 0 of publishing, not now" (§ preamble). `HANDOFF.md`'s "Not yet
 done, deliberately" defers three things and no more — no GitHub remote, the PyPI
-name unchecked, `src/migration_kit/__init__.py` unwritten. Session 4 is the
+name unchecked, `src/model_migration_kit/__init__.py` unwritten. Session 4 is the
 discharge of exactly those three deferrals and nothing else.
 
 **Scope is closed.** No product features. No change to v0.1 scope. Nothing is
@@ -20,7 +20,7 @@ logging, cost-per-verdict, and multi-judge weighting stay out, and stay out of t
 README too, because a README that describes them is a feature commitment wearing
 documentation's clothes.
 
-Session 4 ends when a stranger with no keys can `pip install migration-kit`, run
+Session 4 ends when a stranger with no keys can `pip install model-migration-kit`, run
 `migkit demo`, and be reading an HTML report inside two minutes — the plan's §5
 definition of done, restated as an acceptance test rather than an aspiration.
 
@@ -64,7 +64,7 @@ immediately before Phase 8. No tag exists until Phase 0's evidence is in
 deprecates the classifier in favour of the SPDX expression, and **PyPI rejects
 uploads that set both**.
 
-migration-kit's `pyproject.toml` is already in the corrected shape —
+model-migration-kit's `pyproject.toml` is already in the corrected shape —
 `license = "Apache-2.0"`, `license-files = ["LICENSE", "NOTICE"]`, and no
 `License ::` classifier. That is the *declaration*. Nobody has yet checked that
 the declaration matches the shipped bytes, or that both files land in the wheel.
@@ -142,10 +142,10 @@ The *import* name is what collides silently in `site-packages` — the sibling's
 actual failure. The *console script* name is what collides on `PATH`, which is
 worse than either because it is invisible until two tools are installed together.
 
-migration-kit gets one piece of luck the sibling did not have, and it is worth
+model-migration-kit gets one piece of luck the sibling did not have, and it is worth
 stating because it changes how much work this phase is. PEP 503 normalises a
-project name with `re.sub(r"[-_.]+", "-", name).lower()`, so `migration-kit`,
-`migration_kit`, and `Migration.Kit` are **the same project on PyPI**. The
+project name with `re.sub(r"[-_.]+", "-", name).lower()`, so `model-migration-kit`,
+`model_migration_kit`, and `Migration.Kit` are **the same project on PyPI**. The
 distribution name and the import name therefore resolve to one URL, and one check
 covers both. opik-rigor had two genuinely different names (`opik-rigor` and
 `rigor`) needing two checks, and only the second one collided. Do not let the
@@ -163,20 +163,20 @@ foreach ($u in @(
 }
 
 # Second, independent check through pip's own resolver, not through a URL.
-.\.venv\Scripts\python.exe -m pip index versions migration-kit
+.\.venv\Scripts\python.exe -m pip index versions model-migration-kit
 .\.venv\Scripts\python.exe -m pip index versions migkit
 ```
 
 Then, by hand and recorded with the date, a search for a distribution under some
-*other* name that ships a top-level `migration_kit/` — the shape of the sibling's
+*other* name that ships a top-level `model_migration_kit/` — the shape of the sibling's
 collision. `https://pypi.org/search/?q=%22migration_kit%22` is JavaScript-rendered
 and will not answer from a script; open it in a browser and paste the result count
 into `PROGRESS.md`. This check is inherently weaker than the others, which is why
 Phase 7 and Phase 9 both re-verify it empirically by asserting where
-`migration_kit.__file__` actually resolves in a clean install.
+`model_migration_kit.__file__` actually resolves in a clean install.
 
 **Evidence already collected, 2026-08-13:** all four `Invoke-WebRequest` URLs
-above returned **404**. `migration-kit` and `migkit` are unclaimed on both PyPI and
+above returned **404**. `model-migration-kit` and `migkit` are unclaimed on both PyPI and
 TestPyPI as of that date. This is a snapshot, not a reservation — PyPI names are
 claimed by strangers at any moment, and the whole point of the sibling's failure is
 that a stale check is no check. **Re-run this entire phase immediately before
@@ -220,7 +220,7 @@ Get-Content $out\*.dist-info\licenses\LICENSE -TotalCount 3
 3. `METADATA` contains `License-File: LICENSE` **and** `License-File: NOTICE`, and
    both files are present under `.dist-info/licenses/`. Apache-2.0 §4(d) requires
    the NOTICE to travel with the work; a wheel that drops it ships a licence
-   migration-kit is not complying with.
+   model-migration-kit is not complying with.
 4. There is **no** `Classifier: License ::` line. PyPI rejects an upload carrying
    both that and an SPDX expression (`387b741`).
 5. The `License:` field does not contain the Apache text. If the full licence body
@@ -243,14 +243,14 @@ Get-Content $out\*.dist-info\licenses\LICENSE -TotalCount 3
    dependency makes the check fail rather than pass.
 
 One licence question the tooling will not raise: opik-rigor is MIT and
-migration-kit is Apache-2.0. MIT is inbound-compatible with Apache-2.0 and no
+model-migration-kit is Apache-2.0. MIT is inbound-compatible with Apache-2.0 and no
 relicensing problem exists, but `NOTICE` must not be read as claiming authorship of
-opik-rigor. Confirm the current NOTICE text — it claims only migration-kit — is
+opik-rigor. Confirm the current NOTICE text — it claims only model-migration-kit — is
 still accurate at release.
 
 ---
 
-### Phase 2 — `src/migration_kit/__init__.py`
+### Phase 2 — `src/model_migration_kit/__init__.py`
 
 **Precondition:** Phase 1 clear; Sessions 1–3 complete, so there is a surface to
 re-export. Written last, deliberately, exactly as `PROGRESS.md`'s "Known gaps"
@@ -261,7 +261,7 @@ four new package-level tests §2 mandates (frozen `__all__`, every name importab
 no duplicates, import-purity subprocess check). Plus:
 
 ```powershell
-.\.venv\Scripts\python.exe -c "import migration_kit as m; print(m.__version__); print(len(m.__all__))"
+.\.venv\Scripts\python.exe -c "import model_migration_kit as m; print(m.__version__); print(len(m.__all__))"
 ```
 
 ---
@@ -272,7 +272,7 @@ no duplicates, import-purity subprocess check). Plus:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
-.\.venv\Scripts\python.exe -c "import migration_kit, importlib.metadata as md; v=migration_kit.__version__; d=md.version('migration-kit'); print(v, d); assert v==d, (v,d); assert 'dev' not in v"
+.\.venv\Scripts\python.exe -c "import model_migration_kit, importlib.metadata as md; v=model_migration_kit.__version__; d=md.version('model-migration-kit'); print(v, d); assert v==d, (v,d); assert 'dev' not in v"
 ```
 
 **Exit criterion:** that command prints `0.1.0 0.1.0` and exits 0; `CHANGELOG.md`
@@ -322,7 +322,7 @@ Copy it and change only what must change; every design decision in it was paid f
 today. Specified in §4 below. It publishes nothing until a release is published.
 
 **Exit criterion:** the CI matrix is green — py3.10–3.13 × Ubuntu + Windows — and
-so are the `demo` and `build` jobs. Note that migration-kit's `demo` job was
+so are the `demo` and `build` jobs. Note that model-migration-kit's `demo` job was
 written before the demo existed (a `PROGRESS.md` decision: *"A `demo` CI job exists
 before the demo does"*), so this is the first push on which it can pass. If it is
 red, Session 3 is not actually complete and Session 4 stops here.
@@ -348,9 +348,9 @@ On https://pypi.org/manage/account/publishing/ :
 
 | Field | Value |
 |---|---|
-| PyPI Project Name | `migration-kit` |
+| PyPI Project Name | `model-migration-kit` |
 | Owner | `ericwehmeyer` |
-| Repository name | `migration-kit` |
+| Repository name | `model-migration-kit` |
 | Workflow name | `publish.yml` |
 | Environment name | `pypi` |
 
@@ -398,8 +398,8 @@ py -3.12 -m venv $tmp
 & "$tmp\Scripts\python.exe" -m pip install `
     --index-url https://test.pypi.org/simple/ `
     --extra-index-url https://pypi.org/simple/ `
-    "migration-kit==0.1.0"
-& "$tmp\Scripts\python.exe" -c "import migration_kit; print(migration_kit.__file__, migration_kit.__version__)"
+    "model-migration-kit==0.1.0"
+& "$tmp\Scripts\python.exe" -c "import model_migration_kit; print(model_migration_kit.__file__, model_migration_kit.__version__)"
 & "$tmp\Scripts\migkit.exe" demo --out $tmp\demo.html
 ```
 
@@ -407,10 +407,10 @@ py -3.12 -m venv $tmp
 mirror of PyPI, so `opik-rigor`, `jinja2`, and `rich` do not resolve there. The
 usual objection to spanning two indexes — that pip may silently prefer a same-named
 package from the wrong one — does not apply here, because Phase 0 established that
-`migration-kit` exists on neither index before this upload, so there is exactly one
+`model-migration-kit` exists on neither index before this upload, so there is exactly one
 candidate. Record that reasoning; it stops being true for 0.2.
 
-**Exit criterion:** the run is green; `migration_kit.__file__` resolves under
+**Exit criterion:** the run is green; `model_migration_kit.__file__` resolves under
 `$tmp\Lib\site-packages\` and **not** under `C:\Users\ewehm\repos\`; `migkit demo`
 exits 0 and writes the HTML. Then delete `$tmp`.
 
@@ -454,12 +454,12 @@ failure means and 0.1.0 is still unclaimed while it does.
 ```powershell
 $tmp = Join-Path $env:TEMP ('mk-real-' + [guid]::NewGuid().ToString('N'))
 py -3.12 -m venv $tmp
-& "$tmp\Scripts\python.exe" -m pip install migration-kit
+& "$tmp\Scripts\python.exe" -m pip install model-migration-kit
 $sw = [Diagnostics.Stopwatch]::StartNew()
 & "$tmp\Scripts\migkit.exe" demo --out $tmp\demo.html
 $code = $LASTEXITCODE; $sw.Stop()
 "exit={0}  elapsed={1:n1}s" -f $code, $sw.Elapsed.TotalSeconds
-& "$tmp\Scripts\python.exe" -m pip show migration-kit
+& "$tmp\Scripts\python.exe" -m pip show model-migration-kit
 ```
 
 No `--index-url`, no `--pre`, no flags — the sibling verified exactly this
@@ -478,7 +478,7 @@ green on it.
 
 ---
 
-## 2. `src/migration_kit/__init__.py` — the public surface
+## 2. `src/model_migration_kit/__init__.py` — the public surface
 
 ### The rule
 
@@ -501,7 +501,7 @@ Session 3 leaves eight modules: `contracts`, `errors`, `goldenset`, `runner`,
 **From `errors` — all six, unconditionally.** `MigrationKitError`,
 `GoldenSetError`, `ArtifactError`, `JudgeConfigError`, `JudgeReliabilityError`,
 `ConfigError`. Criterion (c) has no exceptions: you cannot write `except` against a
-name you cannot import, and forcing `from migration_kit.errors import ...` on a
+name you cannot import, and forcing `from model_migration_kit.errors import ...` on a
 caller is friction with no benefit. This mirrors `opik_rigor/__init__.py`, which
 re-exports its whole hierarchy.
 
@@ -514,7 +514,7 @@ belongs on the surface rather than one module down.
 Staying private: `canonical_json`, `artifact_stem`, `utc_now`, `as_sequence`, and
 the seven `EVENT_*` constants. The event names are a real consumer need for anyone
 parsing the evidence log, but seven flattened constants would dominate the
-namespace; they are reachable as `migration_kit.contracts.EVENT_VERDICT`, which
+namespace; they are reachable as `model_migration_kit.contracts.EVENT_VERDICT`, which
 reads better anyway.
 
 **From `goldenset`:** `GoldenSet`, `content_hash`. (Confirmed present.)
@@ -532,7 +532,7 @@ a name for unwritten code and never checking back is precisely what put
 `@rigor.repeat(...)` into a published file (`d41856c`).
 
 **Not re-exported at all: `report` and `cli`.** They are reached as
-`migration_kit.report` / `migration_kit.cli`. `cli` is the console-script entry
+`model_migration_kit.report` / `model_migration_kit.cli`. `cli` is the console-script entry
 point and importing it at package-import time would run argparse construction for
 every consumer; `report` pulls in jinja2 and rich, which a caller embedding the
 verdict logic in their own harness should not pay for. This is a weaker argument
@@ -546,14 +546,14 @@ Also exported: `__version__` (see §3), listed in `__all__` as the sibling does.
 ### The mechanical rules
 
 1. `__all__` is sorted and contains no duplicates.
-2. A test freezes the **exact set**: `assert set(migration_kit.__all__) == {...}`
+2. A test freezes the **exact set**: `assert set(model_migration_kit.__all__) == {...}`
    with the set written out literally in the test. Adding a public name then
    requires two deliberate edits, which is the point.
 3. A test asserts every name in `__all__` resolves via `getattr` — an entry that
    was renamed in its module and not here is otherwise invisible until a user hits
    it.
-4. A **subprocess** test asserts that importing `migration_kit` loads neither
-   `migration_kit.cli` nor `migration_kit.report`, and neither `jinja2` nor `rich`.
+4. A **subprocess** test asserts that importing `model_migration_kit` loads neither
+   `model_migration_kit.cli` nor `model_migration_kit.report`, and neither `jinja2` nor `rich`.
    In-process it would pass or fail depending on what the rest of the suite
    imported first; opik-rigor learned this the expensive way when three tests
    asserted `find_spec("openai") is None` and were testing the environment rather
@@ -570,7 +570,7 @@ Also exported: `__version__` (see §3), listed in `__all__` as the sibling does.
 
 ### Where the version lives
 
-**One place: `__version__` in `src/migration_kit/__init__.py`**, with
+**One place: `__version__` in `src/model_migration_kit/__init__.py`**, with
 `pyproject.toml` reading it:
 
 ```toml
@@ -578,7 +578,7 @@ Also exported: `__version__` (see §3), listed in `__all__` as the sibling does.
 dynamic = ["version"]
 
 [tool.hatch.version]
-path = "src/migration_kit/__init__.py"
+path = "src/model_migration_kit/__init__.py"
 ```
 
 opik-rigor carries the number twice — `version = "0.1.0"` in `pyproject.toml` and
@@ -589,7 +589,7 @@ metadata, and that is the copy a user prints when filing a bug. Single-sourcing
 removes the failure mode instead of testing for it.
 
 Belt and braces, since the cost is one line: the Phase 3 test asserts
-`importlib.metadata.version("migration-kit") == migration_kit.__version__`. That
+`importlib.metadata.version("model-migration-kit") == model_migration_kit.__version__`. That
 also catches the subtler case where a stale wheel is installed over an editable
 checkout.
 
@@ -622,7 +622,7 @@ Sections for 0.1.0, in this order:
 - **Fixed** — for a first release this covers defects found *during* the build, and
   the sibling's version records **the mechanism that caught each one**, which is
   the part worth keeping: three from authorship separation, one from an environment
-  change that falsified a test's hidden assumption. migration-kit runs the same
+  change that falsified a test's hidden assumption. model-migration-kit runs the same
   method (`HANDOFF.md` §"The working method"), so it will have the same material.
 - **Known limitations** — mandatory, and the section that does the most work. It is
   where the caller friction goes, the `dict[str, Any]` reports inherited from
@@ -691,7 +691,7 @@ any dispatch; the dispatch happens before the release; the release happens after
 the tag; the tag happens after the name check.** The sibling violated the last of
 those and paid 34 files for it; it violated the first and paid three attempts.
 
-`ci.yml` needs no rework — migration-kit's already matches the sibling's shape and
+`ci.yml` needs no rework — model-migration-kit's already matches the sibling's shape and
 adds the `demo` job. One change belongs here (Open Decision 4): have the `demo` job
 install the built **wheel** rather than `pip install -e .`, so that CI exercises
 what a user gets.
@@ -731,13 +731,13 @@ Evidence: the listings. The sdist must contain `LICENSE`, `NOTICE`, `README.md`,
 `pyproject.toml`, `src/`, and `tests/`. The **wheel must contain the demo golden
 set**, and this is the row most likely to fail.
 
-`[tool.hatch.build.targets.wheel] packages = ["src/migration_kit"]` puts only that
+`[tool.hatch.build.targets.wheel] packages = ["src/model_migration_kit"]` puts only that
 directory in the wheel. `goldensets/` at the repo root is not in it. `migkit demo`
 needs a bundled toy golden set, and if that set lives at the repo root the demo
 works in the dev venv, works in CI's `demo` job (an editable install keeps the repo
 root importable), and **fails for every user who installs the wheel** — the exact
 population the plan's §5 definition of done is about. Package data belongs at
-`src/migration_kit/data/` and is loaded via `importlib.resources`, never via
+`src/model_migration_kit/data/` and is loaded via `importlib.resources`, never via
 `Path(__file__).parent.parent.parent`. See Open Decision 3.
 
 **5. Clean throwaway venv, wheel install, demo, timed.** The definition-of-done
@@ -751,14 +751,14 @@ $sw = [Diagnostics.Stopwatch]::StartNew()
 & "$tmp\Scripts\migkit.exe" demo --out "$tmp\demo.html"
 $code = $LASTEXITCODE; $sw.Stop()
 "exit={0} elapsed={1:n1}s" -f $code, $sw.Elapsed.TotalSeconds
-& "$tmp\Scripts\python.exe" -c "import migration_kit,opik_rigor; print(migration_kit.__file__); print(opik_rigor.__file__)"
+& "$tmp\Scripts\python.exe" -c "import model_migration_kit,opik_rigor; print(model_migration_kit.__file__); print(opik_rigor.__file__)"
 Pop-Location
 ```
 Evidence: exit code 0; elapsed seconds (the number the README's two-minute claim
 rests on); `demo.html` exists and is non-trivial in size; **both** `__file__` paths
 under `$tmp\Lib\site-packages` and neither under `C:\Users\ewehm\repos\` — the
 latter is the empirical version of Phase 0's import-name check, and also proves
-migration-kit is consuming the published opik-rigor rather than the sibling working
+model-migration-kit is consuming the published opik-rigor rather than the sibling working
 copy, which is the entire basis of its "first real consumer" claim.
 
 Running from `$tmp` rather than the repo matters. A demo that reads
@@ -786,7 +786,7 @@ actually built.
 
 **8. Import purity, in a subprocess, from the installed wheel.**
 ```powershell
-& "$tmp\Scripts\python.exe" -c "import sys, migration_kit; tops={m.split('.')[0] for m in sys.modules}; bad=tops & {'jinja2','rich','anthropic','openai','opik'}; print(sorted(bad)); assert not bad, bad; assert 'migration_kit.cli' not in sys.modules; assert 'migration_kit.report' not in sys.modules"
+& "$tmp\Scripts\python.exe" -c "import sys, model_migration_kit; tops={m.split('.')[0] for m in sys.modules}; bad=tops & {'jinja2','rich','anthropic','openai','opik'}; print(sorted(bad)); assert not bad, bad; assert 'model_migration_kit.cli' not in sys.modules; assert 'model_migration_kit.report' not in sys.modules"
 ```
 Evidence: prints `[]`, exits 0. Top-level names, not prefixes (`8b6e6a9`).
 
@@ -798,11 +798,11 @@ verbatim."* Evidence: the transcript, and a diff that is empty.
 
 **10. Version consistency, four ways.**
 ```powershell
-& "$tmp\Scripts\python.exe" -c "import migration_kit, importlib.metadata as md; print(migration_kit.__version__, md.version('migration-kit'))"
+& "$tmp\Scripts\python.exe" -c "import model_migration_kit, importlib.metadata as md; print(model_migration_kit.__version__, md.version('model-migration-kit'))"
 (Get-ChildItem dist\*.whl).Name
 git tag --list 'v*'
 ```
-Evidence: `0.1.0`, `0.1.0`, `migration_kit-0.1.0-py3-none-any.whl`, and after
+Evidence: `0.1.0`, `0.1.0`, `model_migration_kit-0.1.0-py3-none-any.whl`, and after
 Phase 8, `v0.1.0`. All four agree or Phase 8 stops.
 
 **11. Teardown.** `Remove-Item -Recurse -Force $tmp`. A throwaway venv that
@@ -812,7 +812,7 @@ survives becomes the environment the next check accidentally trusts.
 
 ## 6. What must be true in COMPATIBILITY.md and README.md
 
-migration-kit's vendor dependency is **opik-rigor itself** — a package written by
+model-migration-kit's vendor dependency is **opik-rigor itself** — a package written by
 the same author, in a sibling directory on the same disk, published to PyPI today.
 That proximity is the hazard. A vendor-API record is worth something only if it
 records what the *installed artifact* does; the temptation to answer a question by
@@ -832,7 +832,7 @@ sibling repo". `PROGRESS.md` already records that the venv holds opik-rigor 0.1.
 be produced the same way, and must assert `opik_rigor.__file__` is under
 `site-packages`.
 
-**The exact surface migration-kit calls**, read off the installed package. On
+**The exact surface model-migration-kit calls**, read off the installed package. On
 current evidence that is: `sample`, `SampleResult`, `Run`, `SampleTimeout`;
 `Adapter`, `FakeAdapter`, `AdapterError`; `PinnedJudge`, `Verdict`;
 `EvidenceLog`, `EvidenceRecord`; `assert_pass_rate`, `assert_no_regression`,
@@ -848,12 +848,12 @@ surface (already reasoned in `PROGRESS.md`). This is the same argument shape as 
 sibling's `opik>=2.0,<3`, and the same discipline: the bound is justified by a
 named failure mode, not by habit.
 
-**The two known frictions, because they are vendor behaviour migration-kit depends
-on working around.** Both were found by migration-kit itself and recorded upstream
+**The two known frictions, because they are vendor behaviour model-migration-kit depends
+on working around.** Both were found by model-migration-kit itself and recorded upstream
 in `601b40b`:
 
 1. `sample` records a classifier failure in the same field as a call failure, and
-   `default_outcome` raises `TypeError` on a plain `str`. migration-kit's first
+   `default_outcome` raises `TypeError` on a plain `str`. model-migration-kit's first
    end-to-end run reported *6 completions and 6 provider failures against a
    `FakeAdapter` that answered every prompt correctly*. The workaround is one
    explicit `outcome=` at every `sample` call site. Document it: a future reader
@@ -869,7 +869,7 @@ in `601b40b`:
 the rule that the version bound and this document are updated **in the same commit
 as the code fix**, so the record of what was verified never lags the code.
 
-**Predictions need checking back.** COMPATIBILITY.md will describe migration-kit's
+**Predictions need checking back.** COMPATIBILITY.md will describe model-migration-kit's
 own names alongside rigor's, and Session 4 is writing it after those names exist —
 so every such statement is re-checked against the shipped code, not against the
 build plan. `@rigor.repeat(...)` got into a published file precisely because a name
@@ -912,7 +912,7 @@ evidence.
 8. **The opik-rigor section says what is imported and links COMPATIBILITY.md.**
    The current text — *"Every statistical primitive is imported from opik-rigor,
    none reimplemented"* — is the right claim and is checkable: no Wilson interval,
-   no Mann-Whitney, no bootstrap anywhere in `src/migration_kit/`. Check it with
+   no Mann-Whitney, no bootstrap anywhere in `src/model_migration_kit/`. Check it with
    `Select-String` before shipping it, because it is the project's central claim
    and the one a reviewer will test first.
 9. **No roadmap item is described as if it exists.** Trend history, Opik experiment
@@ -923,7 +923,7 @@ evidence.
 
 ## 7. Open decisions for the lead
 
-**1. Fallback distribution name if `migration-kit` is claimed before Phase 8.**
+**1. Fallback distribution name if `model-migration-kit` is claimed before Phase 8.**
 Unclaimed on PyPI and TestPyPI as of 2026-08-13 (four HEAD requests, all 404), and
 `migkit` is unclaimed too. Names get taken; the re-run in Phase 8 may come back
 different. The fork: `migkit` as the distribution name — shorter, and it matches
@@ -933,20 +933,20 @@ a `pip install` that does not match the command. Deciding now costs nothing;
 deciding under a claimed name at tag time is how the sibling ended up renaming 34
 files.
 
-**2. Import name: `migration_kit` or `migkit`.** They are currently different from
+**2. Import name: `model_migration_kit` or `migkit`.** They are currently different from
 the console-script name (`migkit`) and identical to the distribution name modulo
-PEP 503 normalisation. Keeping `migration_kit` is unambiguous and already written
+PEP 503 normalisation. Keeping `model_migration_kit` is unambiguous and already written
 through the codebase and its tests. Moving to `migkit` makes the import, the
 command, and the distribution one word. **Phase 2 is the last cheap moment** —
 after `__init__.py` and after publication the cost is the sibling's rename plus a
-PyPI redirect that does not exist. Recommendation is to keep `migration_kit`, but
+PyPI redirect that does not exist. Recommendation is to keep `model_migration_kit`, but
 it is a one-way door and belongs to the lead.
 
-**3. Where the demo golden set lives.** `src/migration_kit/data/demo.jsonl` loaded
+**3. Where the demo golden set lives.** `src/model_migration_kit/data/demo.jsonl` loaded
 through `importlib.resources` (ships in the wheel; the demo works for a stranger)
 versus `goldensets/` at the repo root (visible, editable, browsable on GitHub — and
 absent from the wheel). This is not a preference: the current
-`packages = ["src/migration_kit"]` wheel config means option two produces a demo
+`packages = ["src/model_migration_kit"]` wheel config means option two produces a demo
 that passes CI and fails for every user, because CI installs editable. If the lead
 wants the golden set browsable at the repo root, the wheel config has to grow a
 `force-include` and Phase 1's listing check has to prove it landed.
@@ -969,7 +969,7 @@ number can never be reused."* Cheap either way; worth choosing on purpose rather
 than by default.
 
 **7. Is there a public Python API at all in v0.1?** §2 specifies a small re-export
-surface. The alternative is to ship `migration_kit` as CLI-only, with an explicitly
+surface. The alternative is to ship `model_migration_kit` as CLI-only, with an explicitly
 private Python API and an empty `__all__` — no compatibility promises, total
 freedom to reshape `judging` and `comparison` in 0.2 when opik-rigor's typed report
 objects land underneath them. The cost is that anyone embedding the verdict logic

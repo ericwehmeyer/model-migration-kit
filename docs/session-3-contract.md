@@ -1,4 +1,4 @@
-# migration-kit Session 3 — module contract (DRAFT, pending review)
+# model-migration-kit Session 3 — module contract (DRAFT, pending review)
 
 Derived from `docs/build-plan.md` §1 (the `report.py`, `cli.py`, and Config
 paragraphs), §2 (Session 3 exit criteria), §3 (Report and CLI rows), and §5 (the
@@ -171,7 +171,7 @@ open, and the CI job already names that path.
 
 ---
 
-## 2. `migration_kit.report`
+## 2. `model_migration_kit.report`
 
 ### 2.1 Public API
 
@@ -408,11 +408,11 @@ autoescape=select_autoescape(default_for_string=True, default=True),
 undefined=StrictUndefined, trim_blocks=True, lstrip_blocks=True)`.
 
 *Amended 2026-08-13.* This clause originally specified
-`PackageLoader("migration_kit", "templates")` over a `templates/` directory. The
+`PackageLoader("model_migration_kit", "templates")` over a `templates/` directory. The
 loader was changed to `DictLoader` over a module constant for one reason: a
 template on disk is one more file that has to survive packaging, and this project
 has already been bitten twice in the same place. `.gitignore` plus
-`packages = ["src/migration_kit"]` was found capable of dropping the demo's golden
+`packages = ["src/model_migration_kit"]` was found capable of dropping the demo's golden
 set from the wheel while every local test and the editable-install CI job passed,
 and the failure surfaced only for someone who installed the wheel. A missing
 template fails identically — invisibly in development, fatally for a stranger —
@@ -523,7 +523,7 @@ that is asserted.
 
 ---
 
-## 3. `migration_kit.cli`
+## 3. `model_migration_kit.cli`
 
 `argparse`, per the decision already recorded in PROGRESS.md.
 
@@ -549,7 +549,7 @@ def main(argv: Sequence[str] | None = None) -> int: ...
 
 `main` returns the exit code rather than calling `sys.exit`, so unit tests assert
 `main([...]) == 1` in-process; the console-script entry in `pyproject.toml`
-(`migkit = "migration_kit.cli:main"`) already wraps it in `sys.exit`. A returned
+(`migkit = "model_migration_kit.cli:main"`) already wraps it in `sys.exit`. A returned
 int and a process exit status are two different claims, so §6 asserts both.
 
 Two readings of the plan are resolved here and should be confirmed (§7):
@@ -590,7 +590,7 @@ error, and mapping it to GO would be the one failure mode that ships a bad model
 Caught at the `main` boundary, printed to **stderr** as `migkit: <type>: <message>`
 with no traceback, returning 3:
 
-- every `migration_kit.errors.MigrationKitError` — `GoldenSetError`,
+- every `model_migration_kit.errors.MigrationKitError` — `GoldenSetError`,
   `ArtifactError`, `JudgeConfigError`, `JudgeReliabilityError`, `ConfigError`.
   These already carry the explanatory messages; the CLI adds nothing to them.
 - every `opik_rigor.RigorError` — `EvidenceError`, `ModelPinError`,
@@ -693,8 +693,8 @@ Session 2 as much as Session 3.
 
 ### 5.1 What is bundled
 
-Package data under `src/migration_kit/data/`, loaded with
-`importlib.resources.files("migration_kit.data")` so it works identically from a
+Package data under `src/model_migration_kit/data/`, loaded with
+`importlib.resources.files("model_migration_kit.data")` so it works identically from a
 source checkout, an editable install and a wheel:
 
 - `demo_goldenset.jsonl` — 12 items, tagged across three slices (`arithmetic`,
@@ -707,11 +707,11 @@ source checkout, an editable install and a wheel:
 
 **Packaging trap, and it is already armed.** `.gitignore` line 18 ignores `*.jsonl`
 and whitelists only `goldensets/**` and `tests/**/fixtures/*.jsonl`. A file at
-`src/migration_kit/data/demo_goldenset.jsonl` would be untracked by git and, since
+`src/model_migration_kit/data/demo_goldenset.jsonl` would be untracked by git and, since
 hatchling honours VCS ignore files when collecting build targets, absent from the
 wheel — while `pip install -e .` and every local test still pass, because the file
 is on disk. The demo would then fail only for the stranger in the definition of
-done. Fix: add `!src/migration_kit/data/*.jsonl` to `.gitignore` (Session 3 edits
+done. Fix: add `!src/model_migration_kit/data/*.jsonl` to `.gitignore` (Session 3 edits
 one line), and assert reachability through `importlib.resources` in the suite (§6).
 Note also that the CI `demo` job installs editable and so cannot catch a wheel
 omission; the `build` job should list the wheel's contents and assert the demo set
@@ -859,7 +859,7 @@ all stated here so the test author has them from outside.
 33. Two demo runs produce identical verdicts and identical flip id lists — the demo
     is deterministic; no RNG, no seed, no wall-clock dependence.
 34. The demo's report passes `assert_self_contained` and carries the fake-model band.
-35. `importlib.resources.files("migration_kit.data")` resolves
+35. `importlib.resources.files("model_migration_kit.data")` resolves
     `demo_goldenset.jsonl` and `demo_rubric.md`, and the golden set loads through
     `GoldenSet.load` with 12 items and the expected tag distribution.
 36. The demo completes within a wall-clock budget asserted in the suite (`slow`

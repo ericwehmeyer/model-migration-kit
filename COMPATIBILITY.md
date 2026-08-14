@@ -1,6 +1,6 @@
 # opik-rigor compatibility
 
-What migration-kit depends on in `opik-rigor`, how each claim here was verified,
+What model-migration-kit depends on in `opik-rigor`, how each claim here was verified,
 and what a rigor release could change that would break this consumer.
 
 The dependency was written by the same author. That makes this record more useful,
@@ -62,16 +62,16 @@ or its *intentions*, it cites `opik-rigor/PROGRESS.md` and says so.
 
 ---
 
-## 1. The API migration-kit actually calls
+## 1. The API model-migration-kit actually calls
 
 Name by name. This is the whole dependency surface; anything not on this list is
 not relied on and a rigor release may move it freely.
 
 | Module | Imported from `opik_rigor` |
 |---|---|
-| `src/migration_kit/runner.py` | `Adapter`, `EvidenceLog`, `sample` |
-| `src/migration_kit/judging.py` | `Adapter`, `EvidenceLog`, `JudgeOutputError`, `ModelPinError`, `PinnedJudge`, `require_pinned` — **plus** `SCORE_MIN` and `hash_rubric_file` from `opik_rigor.judge` |
-| `src/migration_kit/comparison.py` | `EvidenceLog`, `PassRateError`, `RegressionError`, `assert_no_regression`, `assert_pass_rate`, `wilson_interval` |
+| `src/model_migration_kit/runner.py` | `Adapter`, `EvidenceLog`, `sample` |
+| `src/model_migration_kit/judging.py` | `Adapter`, `EvidenceLog`, `JudgeOutputError`, `ModelPinError`, `PinnedJudge`, `require_pinned` — **plus** `SCORE_MIN` and `hash_rubric_file` from `opik_rigor.judge` |
+| `src/model_migration_kit/comparison.py` | `EvidenceLog`, `PassRateError`, `RegressionError`, `assert_no_regression`, `assert_pass_rate`, `wilson_interval` |
 | `tests/test_runner.py` | `EvidenceLog`, `FakeAdapter`, `PassRateError`, `assert_pass_rate`, `sample_of` |
 | `tests/test_judging.py` | `EvidenceLog`, `FakeAdapter`, `JudgeOutputError`, `ModelPinError`, `PinnedJudge`, `is_pinned` — plus `SCORE_MIN`, `hash_rubric_file` from `opik_rigor.judge` |
 | `tests/test_comparison.py` | `SCORE_MAX`, `SCORE_MIN` from `opik_rigor.judge` |
@@ -155,7 +155,7 @@ Every other name on the list above **is** in `__all__` (checked individually;
 
 These are not private — no leading underscore, and `SCORE_MIN` / `SCORE_MAX` are
 documented in `docs/session-2-contract.md` §0 — but they are the thinnest part of
-the promise under invariant 1 ("migration-kit imports opik-rigor's *public* API
+the promise under invariant 1 ("model-migration-kit imports opik-rigor's *public* API
 only"). A rigor release could move them without touching `__all__` and be within
 its rights. The exposure is small and bounded: two floats used for imputation and
 range checks, and one sha256 wrapper; any of them could be inlined in an
@@ -170,7 +170,7 @@ $ cat .venv/Lib/site-packages/opik_rigor-0.1.0.dist-info/entry_points.txt
 rigor = opik_rigor.integrations.pytest_plugin
 ```
 
-So the plugin is active in every `pytest` run here, without migration-kit asking.
+So the plugin is active in every `pytest` run here, without model-migration-kit asking.
 `pyproject.toml` sets `--strict-markers`, which would fail on an unregistered
 marker; the plugin registers correctly, so this is currently benign:
 
@@ -196,7 +196,7 @@ numpy      installed
 
 ## 2. The compatibility promise this implies
 
-A rigor release breaks migration-kit if it changes any of:
+A rigor release breaks model-migration-kit if it changes any of:
 
 1. **`Run`'s five fields** (`index`, `value`, `outcome`, `error`, `duration`) or
    `SampleResult.runs`. `runner.py` builds every `Completion` from a `Run`, so a
@@ -239,13 +239,13 @@ A rigor release breaks migration-kit if it changes any of:
     `tests/test_runner.py` and `tests/test_judging.py` assert the literal string
     `"SampleTimeout"`. Renaming the class — without changing any signature —
     would break those assertions and silently change the contents of every
-    artifact already on disk. This is the only place migration-kit depends on a
+    artifact already on disk. This is the only place model-migration-kit depends on a
     rigor identifier as *data* rather than as an import.
 11. **What `require_pinned` accepts.** Tightening the pin rule turns a working
     judge config into a `ConfigError`; loosening it lets an alias through. The
     rule is stated in §4.4 so a change is visible as a diff against it.
 
-A rigor release does **not** break migration-kit by adding names, adding optional
+A rigor release does **not** break model-migration-kit by adding names, adding optional
 keywords, changing the Opik integration, or changing anything about `Baseline`,
 `assert_score_distribution`, or the `anthropic` and `openai` adapters — none of
 which is imported here.
@@ -298,7 +298,7 @@ The refusal is right — rigor cannot know whether `"Paris"` is a pass. What is
 awkward is *where the refusal lands*. `Run.error` is the same field an exception
 from `fn` lands in, so an adapter that answered every prompt correctly is
 indistinguishable from a provider that was down. That is how it was found: per
-`opik-rigor/PROGRESS.md` item 8, migration-kit's first end-to-end run reported six
+`opik-rigor/PROGRESS.md` item 8, model-migration-kit's first end-to-end run reported six
 completions *and* six provider failures for the same six draws. That run predates
 this file; what is reproduced above is the same behaviour at n=3, run today.
 
@@ -322,7 +322,7 @@ for "give me the text back" — sees *nothing at all*, not text-with-an-error. A
 `pass_rate` is `0.0` with `failures == 0`, a combination that reads as "the
 system never responded".
 
-**What migration-kit does about it.** One explicit `outcome=`, in
+**What model-migration-kit does about it.** One explicit `outcome=`, in
 `runner.py:_answered`, with the reasoning in the docstring so the next person
 does not delete it as noise:
 
@@ -546,7 +546,7 @@ Three things follow:
 
 - **A Windows checkout and a Linux CI runner agree** on a rubric's identity, which
   is why `.gitattributes` forcing LF is belt-and-braces rather than the mechanism.
-  Both projects hash the same way; migration-kit's `contracts.py` documents the
+  Both projects hash the same way; model-migration-kit's `contracts.py` documents the
   same convention for golden sets, so the two hashes are computed compatibly.
 - **A bare-CR file (classic Mac line endings) does not normalise.** Vanishingly
   rare, but it is a silent `RubricDriftError` if it ever happens.
@@ -580,7 +580,7 @@ resume key all wrong at once.
 
 rigor appends `OUTPUT_FORMAT_INSTRUCTION` to the prompt itself
 (`PROMPT_TEMPLATE` ends in `{output_format}`), so a rubric does **not** need to
-carry it — migration-kit's `data/demo_rubric.md` does not, verified:
+carry it — model-migration-kit's `data/demo_rubric.md` does not, verified:
 
 ```
 ends with instruction: False
@@ -706,7 +706,7 @@ arguably larger gap than rigor's own roadmap item 4 (untyped report dicts): item
 annotations that already exist. An empty `py.typed` inside `src/opik_rigor/`
 fixes it.
 
-Latent rather than biting, and honestly labelled as such: migration-kit runs
+Latent rather than biting, and honestly labelled as such: model-migration-kit runs
 `ruff` but no type checker (`dev = ["pytest", "pytest-cov", "ruff"]`), so **no
 checker was run to observe this** — the claim above is the absence of the marker
 file, which is what the command shows, plus what PEP 561 specifies. The day
@@ -739,7 +739,7 @@ caller got wrong, so the message reads as the inverse of the actual mistake. The
 docstring does explain the design ("normalising the *bytes we hash* — not the
 file"), and the choice is right; the name is what misleads. `hash_rubric_bytes`,
 or a guard raising `TypeError("expected bytes, got str; encode() it first")`,
-would cost nothing. migration-kit only uses `hash_rubric_file`, so this cost one
+would cost nothing. model-migration-kit only uses `hash_rubric_file`, so this cost one
 scratch-script iteration and nothing more.
 
 **D. `assert_no_regression(SampleResult, SampleResult)` on text completions
@@ -769,8 +769,8 @@ files shipped in opik_rigor package:
 it (`README.md:117`, "Save a rubric as `rubric.md` (the one in
 `rubrics/example-rubric.md` ...")  — but it is not packaged, so
 `pip install opik-rigor` gives a consumer a
-`PinnedJudge` and nothing to point it at. migration-kit wrote its own
-(`src/migration_kit/data/demo_rubric.md`), which is arguably correct anyway — but
+`PinnedJudge` and nothing to point it at. model-migration-kit wrote its own
+(`src/model_migration_kit/data/demo_rubric.md`), which is arguably correct anyway — but
 the first thing a new user of the judge needs is a rubric that parses, and the
 install does not include one. Related and worth stating because it is *not* a
 problem: because `PROMPT_TEMPLATE` already appends `OUTPUT_FORMAT_INSTRUCTION`, a
@@ -782,9 +782,9 @@ the file in the sibling checkout:
 example rubric ends with OUTPUT_FORMAT_INSTRUCTION: True
 ```
 
-**F. Three names migration-kit needs are not in `__all__`** — `SCORE_MIN`,
+**F. Three names model-migration-kit needs are not in `__all__`** — `SCORE_MIN`,
 `SCORE_MAX` and `hash_rubric_file`. Detailed in §1; repeated here because it is
-the one item on this list that migration-kit is *relying* on rather than merely
+the one item on this list that model-migration-kit is *relying* on rather than merely
 tripping over.
 
 ---
@@ -806,7 +806,7 @@ dependencies = [
   ("v0.1.0 published to PyPI 2026-08-13"); that is cited, not independently
   checked — see §7.3.
 - **Upper bound `<0.2`** because 0.2 is scheduled to change exactly what
-  migration-kit reads. rigor's own roadmap items are a non-raising
+  model-migration-kit reads. rigor's own roadmap items are a non-raising
   `check_pass_rate(...) -> report` beside the asserting one (item 3) and frozen
   report dataclasses replacing `dict[str, Any]` (item 4) — and `comparison.py`
   gets `underpowered` and `runs_needed` by catching `PassRateError` and reading
@@ -821,7 +821,7 @@ dependencies = [
   that looks like a right one is the one failure this project exists to refuse,
   so the bound stays at the minor version until the surface is re-verified.
 
-Because rigor is `>=3.10` and depends on `scipy>=1.10`, migration-kit inherits
+Because rigor is `>=3.10` and depends on `scipy>=1.10`, model-migration-kit inherits
 scipy and numpy transitively. `comparison.py` does not import either; the
 statistics come through rigor's API, which is the point.
 
@@ -853,7 +853,7 @@ their credibility.
 5. **Concurrency was not exercised.** `sample(..., concurrency=N)` for `N > 1` is
    passed through by `runner.py` and was verified only at the default `1`.
 6. **`assert_score_distribution` and `Baseline` were not verified**, because
-   migration-kit does not import them.
+   model-migration-kit does not import them.
 7. **No live provider adapter was called.** `AnthropicAdapter` and
    `OpenAICompatAdapter` were introspected, never invoked; there are no
    credentials in this environment and CI blanks them.
@@ -862,7 +862,7 @@ their credibility.
    tolerance in `judging.py` exists precisely because that number is unknown.
 9. **rigor's pytest plugin was confirmed to load and register its marker, and no
    more.** `rigor_repeat`, the `rigor_evidence` / `rigor_judge` fixtures and the
-   `rigor_evidence_path` ini option were not exercised; migration-kit does not
+   `rigor_evidence_path` ini option were not exercised; model-migration-kit does not
    use them. The test suite itself was not run while writing this file — other
    work was in flight in `tests/` — so nothing here rests on a green suite.
 10. **No type checker was run** (see §5.A), and no `pip install` was performed:

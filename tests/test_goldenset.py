@@ -1,7 +1,7 @@
-"""Acceptance tests for ``migration_kit.goldenset``.
+"""Acceptance tests for ``model_migration_kit.goldenset``.
 
 Every expected value here comes from the session-1 contract brief and its
-amendment 1, from hand derivation, or from a tool outside ``migration_kit`` --
+amendment 1, from hand derivation, or from a tool outside ``model_migration_kit`` --
 never from running the code under test. The sha256 constants below were derived
 with ``hashlib``/``json`` called directly, and the content-hash oracle in
 ``content_hash`` below is an independent re-implementation of the rule amendment
@@ -20,8 +20,8 @@ from pathlib import Path
 
 import pytest
 
-from migration_kit.errors import GoldenSetError
-from migration_kit.goldenset import GoldenSet
+from model_migration_kit.errors import GoldenSetError
+from model_migration_kit.goldenset import GoldenSet
 
 
 def content_hash(items: list[dict]) -> str:

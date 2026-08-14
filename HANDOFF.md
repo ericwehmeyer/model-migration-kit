@@ -1,11 +1,11 @@
 # HANDOFF — read this first
 
-You are picking up **migration-kit** cold, with no conversation history. This file
+You are picking up **model-migration-kit** cold, with no conversation history. This file
 is written so that is fine. Nothing important lives only in a transcript.
 
 ## In one paragraph
 
-migration-kit is a CLI that answers *"is it safe to move from model A to model
+model-migration-kit is a CLI that answers *"is it safe to move from model A to model
 B?"* with a statistically defensible go/no-go verdict instead of a vibe check. A
 golden set goes in; two models are run against it and graded by identical pinned
 judges; a distribution-diff report comes out; the exit code is a CI gate. It is
@@ -22,7 +22,7 @@ imported from it, none reimplemented. Apache-2.0, personal repo.
    plan first, deliberately.
 2. **[PROGRESS.md](PROGRESS.md)** — what exists, what is decided and why, the
    invariants, and the known gaps.
-3. **`src/migration_kit/contracts.py`** and **`errors.py`** — the frozen seams.
+3. **`src/model_migration_kit/contracts.py`** and **`errors.py`** — the frozen seams.
    Read them before writing anything that touches a golden set or an artifact.
 
 ## Where the build stands
@@ -40,7 +40,7 @@ PROGRESS.md for what was frozen and why.
 Sessions 3 and 4 also have frozen contracts now. Session 4 is not in the build
 plan — it is the release phase the plan defers into, specified because the
 sibling project improvised it and paid for that. Two things it established that
-are worth knowing early: `migration-kit`, `migration_kit` and `migkit` were all
+are worth knowing early: `model-migration-kit`, `model_migration_kit` and `migkit` were all
 unclaimed on PyPI and TestPyPI when checked on 2026-08-13 (**re-check before
 tagging** — the sibling checked after tagging and ate a 34-file rename), and the
 demo's golden set must live inside the package rather than at the repo root, or
@@ -110,7 +110,7 @@ again in Session 2.
 **opik-rigor** lives at `C:\Users\ewehm\repos\opik-rigor`, is published at
 <https://pypi.org/project/opik-rigor/>, and is public at
 <https://github.com/ericwehmeyer/opik-rigor>. Its own `PROGRESS.md` records the
-decision log and a roadmap built from real caller friction. If migration-kit needs
+decision log and a roadmap built from real caller friction. If model-migration-kit needs
 something rigor does not expose, that is a rigor roadmap item — record it, work
 around it at the public API surface, and do not reach into internals.
 
@@ -124,4 +124,4 @@ record, including a retraction of a claim that project got wrong.
   Phase 0 of publishing, not now. **Check it before the first release** — the
   previous project discovered its intended import name was already taken, after
   tagging.
-- `src/migration_kit/__init__.py` does not exist. Write it last.
+- `src/model_migration_kit/__init__.py` does not exist. Write it last.

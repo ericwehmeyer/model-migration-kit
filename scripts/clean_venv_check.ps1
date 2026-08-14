@@ -134,7 +134,7 @@ function Invoke-DemoCheck {
         return
     }
     Write-Check 'PASS' 'install' ("installed {0} from the local file" -f (Split-Path -Leaf $WheelPath))
-    foreach ($line in (& $VenvPython -m pip show migration-kit)) {
+    foreach ($line in (& $VenvPython -m pip show model-migration-kit)) {
         if ($line -match '^(Name|Version|Location):') { Write-Evidence $line }
     }
 
@@ -144,9 +144,9 @@ function Invoke-DemoCheck {
 import json
 out = {}
 try:
-    import migration_kit
-    out["migration_kit"] = list(
-        getattr(migration_kit, "__path__", [getattr(migration_kit, "__file__", "")])
+    import model_migration_kit
+    out["model_migration_kit"] = list(
+        getattr(model_migration_kit, "__path__", [getattr(model_migration_kit, "__file__", "")])
     )
 except Exception as exc:
     out["migration_kit_error"] = "%s: %s" % (type(exc).__name__, exc)
@@ -164,7 +164,7 @@ print(json.dumps(out))
     $located = @()
     if ($LASTEXITCODE -eq 0) {
         $parsed = $raw | ConvertFrom-Json
-        foreach ($key in @('migration_kit', 'opik_rigor')) {
+        foreach ($key in @('model_migration_kit', 'opik_rigor')) {
             if ($parsed.PSObject.Properties.Name -contains $key) { $located += $parsed.$key }
         }
         foreach ($key in @('migration_kit_error', 'opik_rigor_error')) {
@@ -177,10 +177,10 @@ print(json.dumps(out))
         Write-Check 'FAIL' 'isolation' 'an import resolved inside the repository, so this environment is not clean'
     }
     elseif ($located.Count -lt 2) {
-        Write-Check 'FAIL' 'isolation' 'migration_kit and/or opik_rigor did not import from the clean venv'
+        Write-Check 'FAIL' 'isolation' 'model_migration_kit and/or opik_rigor did not import from the clean venv'
     }
     else {
-        Write-Check 'PASS' 'isolation' 'migration_kit and opik_rigor both resolve inside the throwaway venv'
+        Write-Check 'PASS' 'isolation' 'model_migration_kit and opik_rigor both resolve inside the throwaway venv'
     }
 
     # ----------------------------------------------------------------------
@@ -227,7 +227,7 @@ print(json.dumps(out))
     # claim and fails on it. Here it means only that the definition of done could
     # not be exercised -- so it is SKIPPED (exit 2), never a pass, and the reason
     # names the row that will tell you why.
-    if (-not $reportExists -and $errText -match "No module named '(migration_kit[\w.]*)'") {
+    if (-not $reportExists -and $errText -match "No module named '(model_migration_kit[\w.]*)'") {
         Write-Check 'SKIPPED' 'migkit demo' ("the installed wheel has no {0} module" -f $Matches[1])
         Write-Evidence 'Session 3 has not landed cli.py, or the wheel omitted it'
         Write-Evidence 'see the console-script row of: python scripts/verify_release.py'
@@ -269,7 +269,7 @@ if (-not $RepoRoot) { $RepoRoot = Split-Path -Parent $PSScriptRoot }
 $RepoRoot = (Resolve-Path -LiteralPath $RepoRoot).Path
 
 Write-Host ('=' * 100)
-Write-Host 'migration-kit clean-venv check -- a stranger with no keys'
+Write-Host 'model-migration-kit clean-venv check -- a stranger with no keys'
 Write-Host 'docs/session-4-release-contract.md, pre-release checklist item 5'
 Write-Host ('=' * 100)
 Write-Host ("repo        : {0}" -f $RepoRoot)

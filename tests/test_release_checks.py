@@ -44,11 +44,16 @@ vr = _load_module()
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
-        ("migration-kit", "migration-kit"),
-        ("migration_kit", "migration-kit"),
-        ("Migration.Kit", "migration-kit"),
-        ("MIGRATION--KIT", "migration-kit"),
-        ("  migration-kit  ", "migration-kit"),
+        ("model-migration-kit", "model-migration-kit"),
+        ("model_migration_kit", "model-migration-kit"),
+        # Deliberately odd spellings: PEP 503 folds case, runs of separators, and
+        # the three separator characters onto one normalised name. The rename
+        # sweep rewrote the *expected* value here and left these inputs alone,
+        # which is exactly the class of edit a mechanical replacement gets wrong --
+        # test data that merely looks like the thing being renamed.
+        ("Model.Migration.Kit", "model-migration-kit"),
+        ("MODEL--MIGRATION--KIT", "model-migration-kit"),
+        ("  model-migration-kit  ", "model-migration-kit"),
     ],
 )
 def test_pep503_normalisation_collapses_the_three_spellings(raw, expected):
@@ -59,7 +64,7 @@ def test_pep503_normalisation_collapses_the_three_spellings(raw, expected):
 def test_migkit_is_a_different_name_from_migration_kit():
     """The contract's warning: do not let PEP 503's convenience become an
     assumption. `migkit` is a third, unrelated project name."""
-    assert vr.normalize_project_name("migkit") != vr.normalize_project_name("migration-kit")
+    assert vr.normalize_project_name("migkit") != vr.normalize_project_name("model-migration-kit")
 
 
 @pytest.mark.parametrize(
@@ -145,15 +150,15 @@ def test_unknown_licence_text_yields_none_rather_than_a_guess():
 
 def test_pip_install_targets_are_extracted_from_prose_and_fences():
     readme = """
-# migration-kit
+# model-migration-kit
 
 ```console
-$ pip install migration-kit
+$ pip install model-migration-kit
 ```
 
 Or from a checkout: `python -m pip install -e ".[dev]"`.
 """
-    assert vr.readme_pip_install_targets(readme) == ["migration-kit"]
+    assert vr.readme_pip_install_targets(readme) == ["model-migration-kit"]
 
 
 def test_pip_install_of_the_console_script_name_is_caught():
@@ -167,14 +172,14 @@ def test_pip_install_of_the_console_script_name_is_caught():
 def test_pip_install_ignores_paths_wheels_and_flag_values():
     readme = "\n".join(
         [
-            "pip install dist/migration_kit-0.1.0-py3-none-any.whl",
+            "pip install dist/model_migration_kit-0.1.0-py3-none-any.whl",
             "pip install -r requirements.txt",
-            "pip install --index-url https://test.pypi.org/simple/ migration-kit==0.1.0",
+            "pip install --index-url https://test.pypi.org/simple/ model-migration-kit==0.1.0",
             "pip install .",
             r"pip install C:\wheels\thing.whl",
         ]
     )
-    assert vr.readme_pip_install_targets(readme) == ["migration-kit"]
+    assert vr.readme_pip_install_targets(readme) == ["model-migration-kit"]
 
 
 def test_readme_commands_finds_every_invocation_shape():
@@ -244,9 +249,9 @@ def test_release_versions_are_not_dev(version):
 
 
 def test_wheel_version_comes_from_the_filename_field():
-    assert vr.wheel_version_from_filename("migration_kit-0.1.0-py3-none-any.whl") == "0.1.0"
+    assert vr.wheel_version_from_filename("model_migration_kit-0.1.0-py3-none-any.whl") == "0.1.0"
     assert (
-        vr.wheel_version_from_filename("/tmp/d/migration_kit-0.1.0.dev0-py3-none-any.whl")
+        vr.wheel_version_from_filename("/tmp/d/model_migration_kit-0.1.0.dev0-py3-none-any.whl")
         == "0.1.0.dev0"
     )
 
@@ -268,7 +273,7 @@ def test_dunder_version_absent_before_phase_2(tmp_path):
 # ----------------------------------------------------------------------------------
 
 METADATA_GOOD = """Metadata-Version: 2.5
-Name: migration-kit
+Name: model-migration-kit
 Version: 0.1.0
 License-Expression: Apache-2.0
 License-File: LICENSE
@@ -291,25 +296,25 @@ def _make_wheel(
     metadata=METADATA_GOOD,
     licenses=("LICENSE", "NOTICE"),
     license_text=APACHE_HEAD,
-    entry_points="[console_scripts]\nmigkit = migration_kit.cli:main\n",
+    entry_points="[console_scripts]\nmigkit = model_migration_kit.cli:main\n",
     modules=("cli.py",),
 ) -> Path:
     with zipfile.ZipFile(path, "w") as zf:
         for name in data_files:
-            zf.writestr(f"migration_kit/data/{name}", f"payload of {name}\n")
+            zf.writestr(f"model_migration_kit/data/{name}", f"payload of {name}\n")
         for module in modules:
-            zf.writestr(f"migration_kit/{module}", "def main():\n    return 0\n")
-        zf.writestr("migration_kit-0.1.0.dist-info/METADATA", metadata)
+            zf.writestr(f"model_migration_kit/{module}", "def main():\n    return 0\n")
+        zf.writestr("model_migration_kit-0.1.0.dist-info/METADATA", metadata)
         if entry_points is not None:
-            zf.writestr("migration_kit-0.1.0.dist-info/entry_points.txt", entry_points)
+            zf.writestr("model_migration_kit-0.1.0.dist-info/entry_points.txt", entry_points)
         for name in licenses:
             body = license_text if name == "LICENSE" else "NOTICE body\n"
-            zf.writestr(f"migration_kit-0.1.0.dist-info/licenses/{name}", body)
+            zf.writestr(f"model_migration_kit-0.1.0.dist-info/licenses/{name}", body)
     return path
 
 
 def _make_source_data(root: Path, names=vr.DEMO_DATA) -> Path:
-    data = root / "src" / "migration_kit" / "data"
+    data = root / "src" / "model_migration_kit" / "data"
     data.mkdir(parents=True, exist_ok=True)
     for name in names:
         # write_bytes, not write_text: text mode turns \n into \r\n on Windows, and
@@ -328,7 +333,7 @@ def test_demo_data_present_in_the_wheel_passes(tmp_path):
 
 def test_a_wheel_missing_the_golden_set_fails(tmp_path):
     """The defect two independent reviews found: `.gitignore`'s `*.jsonl` rule
-    plus `packages = ["src/migration_kit"]` ships a wheel with no demo, while
+    plus `packages = ["src/model_migration_kit"]` ships a wheel with no demo, while
     every local test and the editable-install CI job still pass."""
     wheel = _make_wheel(tmp_path / "w.whl", data_files=("demo_rubric.md", "demo.toml"))
     result = vr.check_wheel_demo_data(wheel, _make_source_data(tmp_path))
@@ -349,7 +354,7 @@ def test_demo_data_in_the_wheel_that_differs_from_source_fails(tmp_path):
 def test_empty_demo_file_in_the_wheel_fails(tmp_path):
     with zipfile.ZipFile(tmp_path / "w.whl", "w") as zf:
         for name in vr.DEMO_DATA:
-            zf.writestr(f"migration_kit/data/{name}", "")
+            zf.writestr(f"model_migration_kit/data/{name}", "")
     result = vr.check_wheel_demo_data(tmp_path / "w.whl", _make_source_data(tmp_path))
     assert result.status == vr.FAIL
 
@@ -438,7 +443,7 @@ def test_wrongly_conditioned_tomli_is_rejected(tmp_path):
 def _write_pyproject(root: Path, extra: str = "") -> None:
     (root / "pyproject.toml").write_text(
         "[project]\n"
-        'name = "migration-kit"\n'
+        'name = "model-migration-kit"\n'
         'version = "0.1.0"\n'
         'requires-python = ">=3.10"\n'
         "dependencies = [\n"
@@ -519,12 +524,12 @@ def test_missing_contract_skips_rather_than_passes(tmp_path):
 
 
 def test_console_script_target_must_be_in_the_wheel(tmp_path):
-    """A wheel declaring `migkit = migration_kit.cli:main` without shipping
+    """A wheel declaring `migkit = model_migration_kit.cli:main` without shipping
     cli.py installs a command that dies with ModuleNotFoundError on first use."""
     wheel = _make_wheel(tmp_path / "w.whl", modules=())
     result = vr.check_console_script(wheel)
     assert result.status == vr.FAIL
-    assert "migration_kit.cli" in " ".join([result.summary, *result.evidence])
+    assert "model_migration_kit.cli" in " ".join([result.summary, *result.evidence])
 
 
 def test_console_script_present_passes(tmp_path):
@@ -534,11 +539,11 @@ def test_console_script_present_passes(tmp_path):
 def _make_sdist(path: Path, names) -> Path:
     root = path.parent / "stage"
     for name in names:
-        target = root / "migration_kit-0.1.0" / name
+        target = root / "model_migration_kit-0.1.0" / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("x\n", encoding="utf-8")
     with tarfile.open(path, "w:gz") as tf:
-        tf.add(root / "migration_kit-0.1.0", arcname="migration_kit-0.1.0")
+        tf.add(root / "model_migration_kit-0.1.0", arcname="model_migration_kit-0.1.0")
     return path
 
 
@@ -547,8 +552,8 @@ SDIST_FULL = (
     "NOTICE",
     "README.md",
     "pyproject.toml",
-    "src/migration_kit/runner.py",
-    *[f"src/migration_kit/data/{n}" for n in vr.DEMO_DATA],
+    "src/model_migration_kit/runner.py",
+    *[f"src/model_migration_kit/data/{n}" for n in vr.DEMO_DATA],
     "tests/test_runner.py",
 )
 
@@ -585,7 +590,9 @@ def test_readme_naming_the_wrong_distribution_fails(tmp_path):
 
 def test_readme_naming_the_real_distribution_passes(tmp_path):
     _write_pyproject(tmp_path)
-    (tmp_path / "README.md").write_text("```\npip install migration-kit\n```\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text(
+        "```\npip install model-migration-kit\n```\n", encoding="utf-8"
+    )
     assert vr.check_readme_pip_install(tmp_path).status == vr.PASS
 
 
@@ -597,7 +604,7 @@ def test_readme_may_install_a_declared_dependency(tmp_path):
 
 def test_readme_with_no_install_line_passes_and_says_so(tmp_path):
     _write_pyproject(tmp_path)
-    (tmp_path / "README.md").write_text("# migration-kit\n\nProse only.\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text("# model-migration-kit\n\nProse only.\n", encoding="utf-8")
     result = vr.check_readme_pip_install(tmp_path)
     assert result.status == vr.PASS
     assert "no `pip install" in result.summary

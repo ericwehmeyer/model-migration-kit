@@ -66,7 +66,7 @@ JUDGE_MODEL_ID = "fake-judge-v1"
 #: and a wheel all resolve the same three files. A path relative to ``__file__``
 #: would work for the first two and fail for the third, which is the audience the
 #: definition of done is about.
-DATA_PACKAGE = "migration_kit.data"
+DATA_PACKAGE = "model_migration_kit.data"
 GOLDENSET_FILE = "demo_goldenset.jsonl"
 RUBRIC_FILE = "demo_rubric.md"
 CONFIG_FILE = "demo.toml"

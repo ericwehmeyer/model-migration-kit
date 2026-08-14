@@ -1,4 +1,4 @@
-"""Exception hierarchy for migration-kit.
+"""Exception hierarchy for model-migration-kit.
 
 Everything that can stop a migration decision gets its own type, because the CLI
 turns these into distinct exit codes and a CI system needs to tell "the tool
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 
 class MigrationKitError(Exception):
-    """Base class for every error raised by migration-kit."""
+    """Base class for every error raised by model-migration-kit."""
 
 
 class GoldenSetError(MigrationKitError):
@@ -71,7 +71,7 @@ class ConfigError(MigrationKitError):
 class DependencyContractError(MigrationKitError):
     """Raised when opik-rigor's output no longer has the shape this build reads.
 
-    Not a defensive flourish. migration-kit consumes rigor's report dictionaries
+    Not a defensive flourish. model-migration-kit consumes rigor's report dictionaries
     by string key, and one of those keys -- ``underpowered`` on a failed pass-rate
     gate -- is what separates "this model demonstrably missed the bar" (NO-GO)
     from "this sample is too small to say" (REVIEW). If the key ever disappears,

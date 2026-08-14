@@ -1,6 +1,6 @@
 """Rendering a migration verdict, from the evidence log and nothing else.
 
-This module is the only part of migration-kit a stranger sees, and it is written
+This module is the only part of model-migration-kit a stranger sees, and it is written
 to protect two claims the definition of done makes in public: that a keyless
 reader understands the verdict in under two minutes, and that the HTML file is
 change-control evidence a compliance reviewer can open on a machine with no route
@@ -734,7 +734,7 @@ def _tool_version() -> str:
     from importlib.metadata import version as _version
 
     try:
-        return _version("migration-kit")
+        return _version("model-migration-kit")
     except PackageNotFoundError:  # pragma: no cover - only in a non-installed tree
         return "unknown"
 
@@ -1534,7 +1534,7 @@ def _print_changes(console: Console, title: str, rows: Sequence[FlipRow]) -> Non
 # HTML rendering
 # --------------------------------------------------------------------------- #
 
-#: The template lives in this module rather than in ``src/migration_kit/templates/``
+#: The template lives in this module rather than in ``src/model_migration_kit/templates/``
 #: so that ``report.py`` is one self-contained file; the Environment is otherwise
 #: configured exactly as the contract specifies. ``select_autoescape`` keys off the
 #: name, so the key must keep an ``.html`` suffix.
@@ -1945,7 +1945,7 @@ quality regression.</p>
 <footer id="provenance">
 <h2>Provenance</h2>
 <dl class="facts">
-  <dt>migration-kit</dt><dd>{{ model.tool_version }}</dd>
+  <dt>model-migration-kit</dt><dd>{{ model.tool_version }}</dd>
   <dt>opik-rigor</dt><dd>{{ model.rigor_version }}</dd>
   <dt>evidence log</dt><dd><code>{{ model.evidence_path }}</code></dd>
   <dt>evidence hash</dt><dd><span class="hash">{{ model.hashes.evidence }}</span></dd>
@@ -2116,7 +2116,7 @@ _VERDICT_CLASS = {
 def _default_title(model: ReportModel) -> str:
     base = model.baseline.model_id or "baseline"
     cand = model.candidate.model_id or "candidate"
-    head = f"{model.verdict_word} {EM_DASH} {base} to {cand} {EM_DASH} migration-kit"
+    head = f"{model.verdict_word} {EM_DASH} {base} to {cand} {EM_DASH} model-migration-kit"
     if model.is_demo:
         return f"FAKE MODELS {EM_DASH} {head}"
     return head
