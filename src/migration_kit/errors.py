@@ -98,6 +98,15 @@ class ReportError(MigrationKitError):
     Note what this must never be used for: a report that is *partial* is not a
     report that failed. A run killed halfway still renders, showing observed
     counts against expected ones -- that is the whole point of rendering from the
-    evidence log. This is for evidence that cannot be read or does not describe a
-    comparison at all.
+    evidence log.
+
+    Narrowed after the fact, and the narrowing is worth recording. This docstring
+    originally claimed the two cases "the evidence file is missing" and "the log
+    holds no comparison record", but the frozen Session 3 contract assigns both to
+    ``ArtifactError`` and names it in a test. An unreadable or wrong-shaped
+    artifact is an artifact problem wherever it is encountered, and having two
+    types for it by which module noticed would be a distinction no caller could
+    use -- both map to exit 3 regardless. So this type keeps the case the contract
+    left to it and nothing else: a report that was built but cannot honestly be
+    written, which today means a self-containment violation.
     """

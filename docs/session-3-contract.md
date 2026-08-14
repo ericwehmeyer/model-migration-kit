@@ -403,9 +403,23 @@ containing model outputs is itself the finding.
 Two mechanisms, and both are needed:
 
 **Escaping.** The Jinja environment is
-`Environment(loader=PackageLoader("migration_kit", "templates"),
+`Environment(loader=DictLoader({"report.html": TEMPLATE}),
 autoescape=select_autoescape(default_for_string=True, default=True),
-undefined=StrictUndefined, trim_blocks=True, lstrip_blocks=True)`. jinja2's
+undefined=StrictUndefined, trim_blocks=True, lstrip_blocks=True)`.
+
+*Amended 2026-08-13.* This clause originally specified
+`PackageLoader("migration_kit", "templates")` over a `templates/` directory. The
+loader was changed to `DictLoader` over a module constant for one reason: a
+template on disk is one more file that has to survive packaging, and this project
+has already been bitten twice in the same place. `.gitignore` plus
+`packages = ["src/migration_kit"]` was found capable of dropping the demo's golden
+set from the wheel while every local test and the editable-install CI job passed,
+and the failure surfaced only for someone who installed the wheel. A missing
+template fails identically — invisibly in development, fatally for a stranger —
+and the mitigation would be another packaging include and another wheel-contents
+assertion. A template that cannot be separated from the code it renders with
+cannot be lost. The `.html` key is retained so `select_autoescape`'s
+extension-based keying still applies. jinja2's
 default is `autoescape=False` (verified, §0), and model outputs are arbitrary
 attacker-influenced text: an output containing `<img src="https://tracker/x.png">`
 becomes a real network fetch in an unescaped template. `StrictUndefined` is there
