@@ -27,8 +27,15 @@ imported from it, none reimplemented. Apache-2.0, personal repo.
 
 ## Where the build stands (2026-08-13, ~23:00)
 
-**Sessions 0 through 3 are complete, committed and pushed. 675 tests green, ruff
-clean.** Session 4 (release) is partly done and is the remaining work.
+**Sessions 0 through 3 are complete, committed and pushed. 730 tests pass with 4
+xfailed, ruff clean.** Session 4 (release) is partly done and is the remaining
+work.
+
+The 4 xfails are all in `tests/test_release_checks.py` and are deliberate: they
+assert the README scanner's pre-contract behaviour, each has a named fenced
+replacement beside it, and they are marked rather than deleted so that a human
+decides whether the replacement really covers the original's intent. Retiring
+them is a small, real task, not a formality.
 
 Everything builds and runs. The headline check, which you should run first
 because it proves the whole pipeline in two seconds:
@@ -48,8 +55,10 @@ carrying a red FAKE MODELS band. Exit 0 or 2 there means something regressed.
 | `judging.py`, `comparison.py` | Session 2, complete |
 | `report.py`, `cli.py`, `demo.py` | Session 3, complete |
 | `__init__.py` | written, `__all__` empty by decision |
-| `scripts/verify_release.py` | 15 release checks, executable |
+| `scripts/verify_release.py` | 15 release checks, 14 passing, 1 deliberate skip |
 | `.github/workflows/{ci,drift-canary}.yml` | CI plus a weekly drift canary |
+| `.github/workflows/publish.yml` | copied verbatim from the sibling; see below |
+| `CHANGELOG.md` | written, `## [0.1.0]`, dated at release |
 
 **The package was renamed** to `model-migration-kit` / `model_migration_kit`
 (console script still `migkit`). The GitHub repo is renamed too and is **private**
@@ -59,25 +68,43 @@ would invalidate every path in these docs for no packaging benefit.
 
 ## What is left, in order
 
-1. **`readme-pip-install` and `readme-commands` in `scripts/verify_release.py`
-   fail on prose, not on a defect.** They split the README on whitespace and read
-   `install from a checkout: # Windows: pip install` as package names. The README
-   is correct. Fix the parser to read fenced code blocks. This is the only known
-   *wrong* thing in the tree.
-2. **Version bump** `0.1.0.dev0` → `0.1.0` in `pyproject.toml` and
-   `__init__.py`. `verify_release.py` blocks on this deliberately, and it is a
-   release act — do it when actually releasing, not before.
-3. **Session 4 phases 0 and 5 onward** in `docs/session-4-release-contract.md`:
-   re-check the name on PyPI (it was free on 2026-08-13, but check again — the
-   sibling checked after tagging and ate a 34-file rename), make the repo public,
-   register trusted publishers on **both** TestPyPI and PyPI (separate sites,
-   separate registrations, different environment names — the sibling lost three
-   attempts to this), TestPyPI dry run, then tag and release.
-4. **Retire the last invariant-1 violation.** `judging.py` imports `SCORE_MIN`,
-   `SCORE_MAX` and `hash_rubric_file` from `opik_rigor.judge` because they were
-   not public. **rigor has since exported them** (merged, unreleased). When rigor
-   cuts that release and this project's bound moves, change the imports to the
-   package root and delete the note in PROGRESS.md's known gaps.
+1. **Get CI green, and confirm it with your own eyes.** This was not on the list
+   before and should have been at the top of it: **CI had never once been green
+   on this repository.** All four Windows cells failed on a single test that
+   looked for the console script beside `sys.executable` — true in a venv and on
+   Ubuntu, false on GitHub's Windows toolcache, where the interpreter is in
+   `x64\` and scripts land in `x64\Scripts\`. Because `demo` and `build` declare
+   `needs: test`, neither had ever executed. The test now resolves the directory
+   through `sysconfig.get_path("scripts", …)`, which is where the installation
+   *declares* scripts go rather than where one layout happens to put them.
+   The fix is pushed and unverified on the real matrix. **Watch a run.** The
+   release contract's Phase 5 stops the release on a red matrix, so until you
+   have seen 8/8 green plus `demo` and `build`, nothing below this line counts.
+2. **Version bump** `0.1.0.dev0` → `0.1.0`. This is now **one** edit, in
+   `src/model_migration_kit/__init__.py`: the version is single-sourced through
+   `dynamic = ["version"]` and `[tool.hatch.version]`. `verify_release.py` blocks
+   on it deliberately, and it is a release act — do it when actually releasing.
+   Date the `## [0.1.0]` heading in `CHANGELOG.md` in the same commit.
+3. **Session 4 phases 0 and 5 onward** in `docs/session-4-release-contract.md`.
+   The contract's stale pre-rename repo name has been fixed — it previously told
+   you to register a trusted publisher against `ericwehmeyer/migration-kit`,
+   which does not exist, and that is precisely the failure the sibling lost three
+   attempts to. Re-check the name on the PEP 503 `/simple/` index, not the JSON
+   endpoint: JSON 404s both for an unregistered name and for one registered and
+   never uploaded to, and only `/simple/` tells those apart. All four probes were
+   404 on 2026-08-13; re-run on the day you tag. Then make the repo public,
+   register pending publishers on **both** TestPyPI and PyPI (separate sites,
+   separate logins, different environment names), TestPyPI dry run, tag, release.
+   Note the dry run is one-shot per version: TestPyPI burns a filename exactly
+   as PyPI does, so do it only once the tree is what you intend to publish.
+4. **Retire the last invariant-1 violation.** `judging.py:47` imports `SCORE_MIN`
+   and `hash_rubric_file` from `opik_rigor.judge`; `tests/test_comparison.py:52`
+   and `tests/test_judging.py:47` do the same — **three** sites, not the one this
+   file used to claim, and not the names it used to list. rigor has exported them
+   from its package root (merged, unreleased) and a `0.1.1` is prepared. When it
+   ships, move the floor of the bound in `pyproject.toml` to `>=0.1.1,<0.2`, fold
+   the imports into the root import at all three sites, and delete the note in
+   PROGRESS.md's known gaps and the corresponding CHANGELOG limitation.
 ## Things that will bite you, all learned the hard way tonight
 
 - **The wheel is not your source tree.** Three separate variants of one bug
