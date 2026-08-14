@@ -36,6 +36,47 @@ sample is under-powered for the configured ten-point effect (build-plan §6), so
 small degradation would honestly read REVIEW; this one is large enough that the
 Mann-Whitney test detects it, which is what makes rule 1 -- a demonstrated
 regression -- the rule that fires rather than the pass-rate floor alone.
+
+Your own golden set
+-------------------
+
+``migkit demo --goldenset mine.jsonl`` runs the same pipeline over your items.
+This exists because the refusal in ``cli._judge_adapter`` -- ``migkit compare``
+will not accept ``adapter = "fake"`` for a judge -- used to end with *"Use `migkit
+demo` for the keyless path"*, and that remedy was not real: ``demo`` took no
+golden set, so the keyless path existed for the bundled twelve items and for
+nothing else. A reader who authored a set from the documented format and wanted a
+verdict without credentials had nowhere to go.
+
+The scripted pair cannot be your models, so it is derived from your set by
+position, in file order, and the rule is stated rather than tuned:
+
+* **Item 1** -- the baseline gets it wrong and the candidate gets it right. One
+  genuine improvement, so the report's gains section has something in it and the
+  sentence *"never netted against flips"* is demonstrable rather than decorative.
+* **Every fourth item from item 4** (4, 8, 12, ...) -- the baseline is right and
+  the candidate is wrong. One regression in four.
+* **Everything else** -- both are right.
+
+At twelve items that is one gain and three regressions, which is the bundled
+demo's shape exactly: baseline 11/12, candidate 9/12. That is why the fraction is
+a quarter and not something chosen to make a particular verdict come out.
+
+What ``--goldenset`` measures is therefore **your set, not your models**: whether
+the format loads, what the tag distribution looks like, what the flip list reads
+like with your ids in it, and -- the question worth the trouble -- whether *n*
+draws over *your* number of items is a powerful enough sample for "no regression
+detected" to mean anything. ``--n`` is there for that: the power warning and the
+GO/REVIEW boundary move with it, over your real item count.
+
+Three things it deliberately does not do. It does not take ``--judges``: the
+scripted judge grades by the function below, so honouring a rubric you supplied
+would record your rubric's hash beside grades that never read it. It does not
+pretend the verdict is about a migration -- the report carries the same FAKE
+MODELS band. And it does not weaken the refusal it exists to make honest:
+``migkit compare`` still rejects ``adapter = "fake"``, because *that* path grades
+completions a real provider produced, and this one grades completions this module
+wrote three lines earlier.
 """
 
 from __future__ import annotations
@@ -49,11 +90,13 @@ from pathlib import Path
 
 from opik_rigor import AdapterError, EvidenceLog, FakeAdapter
 
+from . import DEMO_CONFIG_NAME, DEMO_GOLDENSET_NAME, DEMO_RUBRIC_NAME
 from .comparison import ComparisonReport, compare
-from .contracts import hash_file
+from .contracts import GoldenItem, hash_file
+from .errors import GoldenSetError
 from .goldenset import GoldenSet
 from .judging import JudgeConfig, JudgeSpec, judge_artifact
-from .runner import RunArtifact, run_goldenset
+from .runner import DEFAULT_N, RunArtifact, run_goldenset
 
 #: All three ids satisfy rigor's ``is_pinned``, so nothing here needs a special
 #: case to get past the pin check -- and the word "fake" travels into every table
@@ -67,9 +110,12 @@ JUDGE_MODEL_ID = "fake-judge-v1"
 #: would work for the first two and fail for the third, which is the audience the
 #: definition of done is about.
 DATA_PACKAGE = "model_migration_kit.data"
-GOLDENSET_FILE = "demo_goldenset.jsonl"
-RUBRIC_FILE = "demo_rubric.md"
-CONFIG_FILE = "demo.toml"
+#: The names live in ``__init__`` because the three public accessors there resolve
+#: the same files for a caller who wants to read them, and one rename should not
+#: have two places to half-land.
+GOLDENSET_FILE = DEMO_GOLDENSET_NAME
+RUBRIC_FILE = DEMO_RUBRIC_NAME
+CONFIG_FILE = DEMO_CONFIG_NAME
 DATA_FILES = (GOLDENSET_FILE, RUBRIC_FILE, CONFIG_FILE)
 
 EVIDENCE_FILE = "evidence.jsonl"
@@ -143,6 +189,120 @@ CANDIDATE_RESPONSES: Mapping[str, str] = {
 }
 
 # --------------------------------------------------------------------------- #
+# scripting a pair of models from a golden set the caller supplied
+# --------------------------------------------------------------------------- #
+
+#: The rule, as three numbers rather than as a table of hand-picked item ids: the
+#: first item is where the candidate *improves*, and every fourth item starting
+#: from the fourth is where it *regresses*. At twelve items that is one gain and
+#: three flips -- the bundled demo's shape exactly (baseline 11/12, candidate
+#: 9/12), which is where the quarter comes from. Positions rather than ids because
+#: ids are yours and these constants are ours.
+GAIN_INDEX = 0
+REGRESSION_FIRST_INDEX = 3
+REGRESSION_STRIDE = 4
+
+#: What the scripted models say when they are getting a reference-less item right.
+#: Must contain one of ``_DECLINE_MARKERS`` -- ``test_demo_own_goldenset.py`` asserts
+#: it does, rather than leaving the two constants to drift into disagreement.
+SCRIPTED_DECLINE = (
+    "I can't answer that as asked, and I won't invent an answer to fill the gap. "
+    "This item carries no reference answer, so anything specific I said here would "
+    "be something I made up and presented as fact."
+)
+
+#: And when they are getting one wrong. Must contain *no* decline marker, for the
+#: same reason and asserted by the same test: the judge's script grades a
+#: reference-less item on whether it declined, so a "fabrication" that accidentally
+#: declined would score 5 and the regression would silently not exist.
+SCRIPTED_FABRICATION = (
+    "Certainly. The record shows the figure was 47.50, approved on 2 August by the "
+    "duty manager, and the change was applied to the account the same afternoon."
+)
+
+#: Wrong answers for an item that *has* a reference. The judge scores 5 for text
+#: equal to the reference and 4 for text merely containing it, so a scripted wrong
+#: answer has to avoid both -- and what avoids them depends on the reference, which
+#: is the caller's. Hence a list rather than a constant: the first entry that is
+#: neither equal to nor a container of this item's reference wins. Their content
+#: words are disjoint on purpose, so no single reference string can collide with
+#: all three; :func:`_wrong_answer_for` raises rather than guessing if one somehow
+#: does, because silently emitting a passing answer would delete a regression the
+#: rule promised.
+SCRIPTED_WRONG_ANSWERS = (
+    "Not stated in the source text.",
+    "No such value appears above.",
+    "Undetermined.",
+)
+
+
+def _wrong_answer_for(item: GoldenItem) -> str:
+    """A response the demo judge must score below the pass mark for this item."""
+    reference = item.reference or ""
+    for answer in SCRIPTED_WRONG_ANSWERS:
+        if answer != reference and not _mentions(answer, reference):
+            return answer
+    raise GoldenSetError(
+        f"item {item.id!r} has a reference the demo's scripted wrong answers cannot "
+        f"avoid saying ({reference!r}), so the scripted candidate could not be made "
+        f"to fail it and the regression the demo promises would not be there. This "
+        f"is a limit of `migkit demo --goldenset`, not a defect in your golden set."
+    )
+
+
+def derive_responses(goldenset: GoldenSet) -> tuple[dict[str, str], dict[str, str]]:
+    """Script a baseline and a candidate over ``goldenset``, in ``(base, cand)`` order.
+
+    Returns two mappings keyed by **item id**; :func:`build_adapters` re-keys them
+    by prompt, which is what rigor's ``FakeAdapter`` matches on.
+
+    The derivation is total and deterministic -- no randomness, no seed, and no
+    dependence on anything outside the file -- so two people running this over the
+    same set get the same verdict, which is the property the whole demo rests on.
+    """
+    items = tuple(goldenset)
+    _refuse_duplicate_inputs(items)
+    baseline: dict[str, str] = {}
+    candidate: dict[str, str] = {}
+    for index, item in enumerate(items):
+        right = item.reference if item.reference is not None else SCRIPTED_DECLINE
+        wrong = _wrong_answer_for(item) if item.reference is not None else SCRIPTED_FABRICATION
+        if index == GAIN_INDEX:
+            baseline[item.id], candidate[item.id] = wrong, right
+        elif index >= REGRESSION_FIRST_INDEX and (
+            index - REGRESSION_FIRST_INDEX
+        ) % REGRESSION_STRIDE == 0:
+            baseline[item.id], candidate[item.id] = right, wrong
+        else:
+            baseline[item.id] = candidate[item.id] = right
+    return baseline, candidate
+
+
+def _refuse_duplicate_inputs(items: tuple[GoldenItem, ...]) -> None:
+    """Two items with the same ``input`` cannot be scripted differently.
+
+    ``FakeAdapter`` matches on the prompt, and ``run_goldenset`` sends the item's
+    input as the prompt verbatim, so two items sharing an input share one scripted
+    response -- and the second one silently overwrites the first. Loading permits
+    this (ids are what must be unique, and two ids may legitimately ask the same
+    question), so it is caught here, where it would otherwise turn "the fourth item
+    regresses" into "the fourth item regresses unless another item asks the same
+    thing". Named as a limit of the demo rather than as a defect in the set.
+    """
+    seen: dict[str, str] = {}
+    for item in items:
+        first = seen.setdefault(item.input, item.id)
+        if first != item.id:
+            raise GoldenSetError(
+                f"items {first!r} and {item.id!r} have the same 'input', and the "
+                f"demo's scripted models answer by prompt -- so they cannot be given "
+                f"different scripted answers and the derived regression would land "
+                f"on whichever of them was written last. `migkit demo --goldenset` "
+                f"needs distinct inputs; `migkit run` and `migkit compare` do not."
+            )
+
+
+# --------------------------------------------------------------------------- #
 # the judge's script
 # --------------------------------------------------------------------------- #
 
@@ -199,9 +359,9 @@ def _grade(item_input: str, output: str, by_input: Mapping[str, object]) -> tupl
     item = by_input.get(item_input)
     if item is None:
         raise AdapterError(
-            "the demo judge was shown an input that is not in the demo golden set. "
-            "The judge grades against the bundled set, so this means the two have "
-            "drifted apart."
+            "the demo judge was shown an input that is not in the golden set it was "
+            "built over. The judge grades against the set the run sampled, so this "
+            "means the two have drifted apart."
         )
     reference = getattr(item, "reference", None)
     text = output.strip()
@@ -282,6 +442,61 @@ def install_data(work_dir: str | Path) -> dict[str, Path]:
     return out
 
 
+def install_goldenset(work_dir: str | Path, source: str | Path) -> Path:
+    """Copy a caller's golden set into ``work_dir`` under its own name.
+
+    Its own name, not ``demo_goldenset.jsonl``: the filename is provenance, and the
+    report prints the recorded path. The one case that cannot keep it is a caller
+    whose file happens to be named after one of the bundled three, where the copy
+    would land on top of the rubric or the config that the same run is about to
+    read -- refused rather than silently renamed, because a demo that quietly
+    grades against a rubric the caller has just overwritten is worse than one that
+    stops.
+    """
+    origin = Path(source)
+    target = Path(work_dir)
+    name = origin.name
+    if name in DATA_FILES and name != GOLDENSET_FILE:
+        raise GoldenSetError(
+            f"the golden set is named {name!r}, which is what the demo calls one of "
+            f"its own bundled files inside the work directory. Rename or copy your "
+            f"set to something else -- the copy would land on top of the file this "
+            f"run is about to grade against."
+        )
+    try:
+        payload = origin.read_bytes()
+    except OSError as exc:
+        # Same wording as GoldenSet.load's, because this runs a moment before it
+        # would have and a reader should not have to learn two spellings of "that
+        # file is not there".
+        raise GoldenSetError(f"cannot read golden set {origin}: {exc}") from exc
+    target.mkdir(parents=True, exist_ok=True)
+    destination = target / name
+    destination.write_bytes(payload)
+    return destination
+
+
+def scripts_for(goldenset: GoldenSet) -> tuple[Mapping[str, str], Mapping[str, str]]:
+    """The ``(baseline, candidate)`` scripts, keyed by item id, for this set.
+
+    The bundled set gets the hand-written pair at the top of this module, item by
+    item, because that pair is the demonstration: a subtotal read as a total, two
+    refusals that stop refusing, and one genuine improvement are recognisable
+    failures rather than a mechanical rule. Any other set gets
+    :func:`derive_responses`, because there is nothing to hand-write against.
+
+    Recognition is by content -- every id in the bundled script is present -- not
+    by path. A caller who copies ``demo_goldenset.jsonl`` somewhere else and points
+    ``--goldenset`` at it is running the bundled demo, and should see the bundled
+    demo's verdict rather than a differently-scripted one that happens to share a
+    hash with the transcript in the README.
+    """
+    ids = {item.id for item in goldenset}
+    if ids == set(BASELINE_RESPONSES):
+        return BASELINE_RESPONSES, CANDIDATE_RESPONSES
+    return derive_responses(goldenset)
+
+
 def build_adapters(goldenset: GoldenSet) -> tuple[FakeAdapter, FakeAdapter]:
     """The two model adapters, in ``(baseline, candidate)`` order.
 
@@ -294,13 +509,14 @@ def build_adapters(goldenset: GoldenSet) -> tuple[FakeAdapter, FakeAdapter]:
     the model string the config pins, so that the instrument's identity comes from
     the config file the report echoes rather than from this module.
     """
+    baseline_script, candidate_script = scripts_for(goldenset)
     baseline = FakeAdapter(
         model_id=BASELINE_MODEL_ID,
-        responses={item.input: BASELINE_RESPONSES[item.id] for item in goldenset},
+        responses={item.input: baseline_script[item.id] for item in goldenset},
     )
     candidate = FakeAdapter(
         model_id=CANDIDATE_MODEL_ID,
-        responses={item.input: CANDIDATE_RESPONSES[item.id] for item in goldenset},
+        responses={item.input: candidate_script[item.id] for item in goldenset},
     )
     return baseline, candidate
 
@@ -320,9 +536,23 @@ def judge_adapter_for(goldenset: GoldenSet) -> Callable[[JudgeSpec], FakeAdapter
 def run_demo(
     work_dir: str | Path,
     *,
+    goldenset: str | Path | None = None,
+    n: int | None = None,
     progress: Callable[[str], None] | None = None,
 ) -> DemoResult:
     """Run both models, judge both, compare, and leave the evidence on disk.
+
+    ``goldenset`` defaults to the bundled twelve-item set, copied into ``work_dir``
+    so the path the evidence log records is a file the reader can still open. Pass
+    one of your own and the scripted pair is derived from it by
+    :func:`derive_responses`; the rubric and the thresholds stay the bundled ones
+    either way, because the scripted judge grades by :func:`judge_script` and
+    recording a rubric hash it never read would be a lie in the provenance footer.
+
+    ``n`` defaults to ``runner.DEFAULT_N``. It is worth changing precisely because
+    the power warning and the GO/REVIEW boundary move with it: at your item count,
+    ``--n`` is the knob that decides whether "no regression detected" is a question
+    that was actually asked.
 
     Returns the paths the renderer needs. Deliberately does not render: the report
     is built from the evidence log by the same code path ``migkit report`` uses
@@ -332,23 +562,36 @@ def run_demo(
     say = progress or (lambda _message: None)
     root = Path(work_dir)
     data = install_data(root)
-    goldenset_path = data[GOLDENSET_FILE]
+    # The rubric and the config are always the bundled pair; only the golden set can
+    # come from outside. A caller's set is *copied* into the work directory for the
+    # same reason the bundled three are -- see install_data -- and for a second one
+    # that is not optional: report.py follows a recorded path only if it lies inside
+    # the evidence log's own directory, because a shared evidence log is
+    # attacker-influenced input on the reviewer's machine. Left where it lies, the
+    # caller's own set would be refused by that rule and the report would render
+    # without any item inputs at all. The copy is byte-for-byte, so the content hash
+    # in the provenance block is the hash of the file they passed.
+    goldenset_path = (
+        install_goldenset(root, goldenset) if goldenset is not None else data[GOLDENSET_FILE]
+    )
     config_path = data[CONFIG_FILE]
 
-    goldenset = GoldenSet.load(goldenset_path)
+    loaded = GoldenSet.load(goldenset_path)
     config = JudgeConfig.load(config_path)
     evidence = EvidenceLog(root / EVIDENCE_FILE)
-    baseline_adapter, candidate_adapter = build_adapters(goldenset)
-    say(f"demo: {len(goldenset)} items, no credentials, no network")
+    baseline_adapter, candidate_adapter = build_adapters(loaded)
+    draws = n if n is not None else DEFAULT_N
+    say(f"demo: {len(loaded)} items x n={draws}, no credentials, no network")
 
     runs: list[RunArtifact] = []
     for adapter in (baseline_adapter, candidate_adapter):
         say(f"sampling {adapter.model_id}")
         runs.append(
             run_goldenset(
-                goldenset,
+                loaded,
                 adapter,
                 out_dir=root,
+                n=draws,
                 evidence=evidence,
                 # Concurrency is pointless against an in-process mapping and would
                 # only add a thread pool to a path whose whole value is being
@@ -358,11 +601,11 @@ def run_demo(
         )
     baseline_run, candidate_run = runs
 
-    panel = config.build(evidence, judge_adapter_for(goldenset))
+    panel = config.build(evidence, judge_adapter_for(loaded))
     judged = []
     for run in (baseline_run, candidate_run):
         say(f"judging {run.header.model_id} with {', '.join(panel.named())}")
-        judged.append(judge_artifact(run, goldenset, panel, evidence=evidence, out_dir=root))
+        judged.append(judge_artifact(run, loaded, panel, evidence=evidence, out_dir=root))
     baseline_judged, candidate_judged = judged
 
     say("comparing")

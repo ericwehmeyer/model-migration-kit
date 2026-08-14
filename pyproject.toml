@@ -41,6 +41,21 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# The provider SDKs. Neither is a runtime dependency: opik-rigor imports them
+# lazily inside the first sampling call, so every keyless path -- `migkit demo`,
+# `--adapter fake`, and the whole test suite -- runs without either installed, and
+# making them mandatory would put a provider's HTTP client on the machine of
+# everybody who only ever wanted the demo.
+#
+# They are declared as extras rather than left undeclared because the README's
+# documented real-model path names `--adapter anthropic`, and following the Install
+# section exactly used to leave a reader one undeclared package short of it. Worse,
+# they found out at *grading* time, after both runs were already sampled -- which
+# sat badly beside the README's claim that the pin rule is checked "before a single
+# API call is spent". `cli._require_sdk` now checks at adapter construction, and
+# this is the line its error message tells you to install.
+anthropic = ["anthropic>=0.40"]
+openai = ["openai>=1.0"]
 dev = ["pytest>=7.0", "pytest-cov>=4.0", "ruff>=0.6"]
 
 [project.scripts]

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import importlib.util
 import shutil
 import sys
 import tempfile
@@ -290,7 +291,47 @@ def _wire_check_response(_prompt: str) -> str:
     )
 
 
+#: Which provider SDK each adapter kind needs at call time, and the extra that
+#: installs it. rigor imports these lazily -- deliberately, so that ``import
+#: opik_rigor.adapters`` works on a machine that has never installed a provider --
+#: and raises ``AdapterError`` from inside the first sampling call. That is the
+#: right place for *rigor* to raise and the wrong place for this tool to find out:
+#: ``migkit compare`` samples nothing, but it grades both sides, so a missing SDK
+#: surfaced after the baseline is already graded, minutes in.
+#:
+#: ``tests/test_cli.py`` asserts these names against ``PACKAGE`` in rigor's own
+#: adapter modules, so the pairing is checked rather than copied.
+SDK_FOR_ADAPTER: Mapping[str, str] = {"anthropic": "anthropic", "openai-compat": "openai"}
+EXTRA_FOR_ADAPTER: Mapping[str, str] = {"anthropic": "anthropic", "openai-compat": "openai"}
+
+
+def _require_sdk(kind: str) -> None:
+    """Fail now, with the install line, if the adapter's SDK is not importable.
+
+    ``find_spec`` rather than ``import``: the question is whether the package is
+    installed, and importing a provider SDK to answer it costs a second or more and
+    drags the whole client library into a process that may be about to exit 3.
+
+    The check runs *before* the adapter is constructed, so a reader missing both
+    the SDK and the credential is told about the SDK first. That ordering is
+    deliberate: exporting a key cannot fix a missing package, but installing the
+    package plus exporting a key fixes both, so the prerequisite that has to be
+    satisfied first is the one named first.
+    """
+    package = SDK_FOR_ADAPTER.get(kind)
+    if package is None or importlib.util.find_spec(package) is not None:
+        return
+    raise ConfigError(
+        f"adapter {kind!r} needs the {package!r} package, which is not installed. "
+        f"It is an optional dependency because the keyless paths -- `{PROG} demo` "
+        f"and `--adapter fake` -- do not need it. Install it with: "
+        f"pip install \"model-migration-kit[{EXTRA_FOR_ADAPTER[kind]}]\"  (or: "
+        f"pip install {package})"
+    )
+
+
 def _model_adapter(kind: str, model_id: str) -> Adapter:
+    _require_sdk(kind)
     if kind == "anthropic":
         return AnthropicAdapter(model_id)
     if kind == "openai-compat":
@@ -311,6 +352,12 @@ def _judge_adapter(spec: JudgeSpec) -> Adapter:
     bill of health with nothing in the document saying the grades were invented.
     The supported fake-judge path is ``migkit demo``, which supplies a judge that
     actually grades and labels every number it produces as scripted.
+
+    That last sentence used to end the error message as *"Use `migkit demo` for the
+    keyless path"*, and the remedy did not exist: ``demo`` took no golden set, so
+    the advice was true for the bundled twelve items and false for the set the
+    reader had in front of them -- which is the only set they were asking about.
+    ``demo`` now takes ``--goldenset`` and ``--n``, and the message names them.
     """
     kind = spec.adapter.strip().lower()
     if not kind:
@@ -324,7 +371,12 @@ def _judge_adapter(spec: JudgeSpec) -> Adapter:
         raise JudgeConfigError(
             f"judge {spec.name!r} declares adapter = \"fake\". A scripted judge "
             f"grading real completions produces numbers nothing in the report "
-            f"marks as invented. Use `{PROG} demo` for the keyless path."
+            f"marks as invented. Judging is a credentialed verb for that reason. "
+            f"The keyless path over your own items is "
+            f"`{PROG} demo --goldenset <your set> --n <draws>`, which scripts both "
+            f"models as well as the judge and bands the report accordingly -- it "
+            f"tells you whether your set and your n are big enough to decide "
+            f"anything, not whether your candidate model is good."
         )
     if kind not in ADAPTER_KINDS:
         raise JudgeConfigError(
@@ -529,7 +581,9 @@ def cmd_demo(args: argparse.Namespace) -> int:
     keep = bool(args.keep) or named
     work_dir = Path(args.work_dir) if named else Path(tempfile.mkdtemp(prefix="migkit-demo-"))
     try:
-        result = demo_module.run_demo(work_dir, progress=say)
+        result = demo_module.run_demo(
+            work_dir, goldenset=args.goldenset, n=args.n, progress=say
+        )
         if keep:
             say(f"artifacts kept in {work_dir.resolve()}")
         # No goldenset= or artifact_dir= override: the paths recorded in the
@@ -687,8 +741,32 @@ def build_parser() -> argparse.ArgumentParser:
     demo = subparsers.add_parser(
         "demo",
         help="run the keyless, deterministic demo and write its report",
+        description=(
+            "Two scripted models, a scripted judge, a real verdict, no credentials. "
+            "With --goldenset it runs your items instead of the bundled twelve -- "
+            "which measures your set, not your models: whether it loads, what the "
+            "flip list reads like with your ids in it, and whether --n draws over "
+            "this many items is a powerful enough sample for 'no regression "
+            "detected' to mean anything. The models and the judge stay scripted "
+            "either way, and the report says so on every table."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     demo.add_argument("--out", default=str(DEMO_HTML), help=f"HTML report (default: {DEMO_HTML})")
+    demo.add_argument(
+        "--goldenset",
+        default=None,
+        help=(
+            "run over your own golden set instead of the bundled one; the rubric and "
+            "the thresholds stay the bundled ones, because the judge is scripted"
+        ),
+    )
+    demo.add_argument(
+        "--n",
+        type=int,
+        default=None,
+        help=f"draws per item (default: {DEFAULT_N}); the power warning moves with it",
+    )
     demo.add_argument(
         "--work-dir",
         default=None,
