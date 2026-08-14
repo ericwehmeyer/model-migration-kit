@@ -1,0 +1,10 @@
+# Normalise to LF in the repository. This matters here for the same reason it did
+# in opik-rigor: golden sets and judge rubrics are hashed, and their hashes are
+# embedded in every downstream artifact. A file checked out with CRLF on Windows
+# would hash differently than the same file on a Linux CI runner, and the tool
+# would correctly -- but uselessly -- report that the golden set had changed.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary

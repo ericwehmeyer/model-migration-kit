@@ -1,0 +1,63 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "migration-kit"
+version = "0.1.0.dev0"
+description = "Statistically defensible go/no-go verdicts for LLM model migrations."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "E. Wehmeyer" }]
+keywords = ["llm", "evaluation", "migration", "regression", "testing", "opik"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Testing",
+]
+dependencies = [
+  # The whole point: every statistical primitive is imported, none reimplemented.
+  "opik-rigor>=0.1.0,<0.2",
+  "jinja2>=3.0",
+  "rich>=13.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "pytest-cov>=4.0", "ruff>=0.6"]
+
+[project.scripts]
+migkit = "migration_kit.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/ericwehmeyer/migration-kit"
+Repository = "https://github.com/ericwehmeyer/migration-kit"
+Issues = "https://github.com/ericwehmeyer/migration-kit/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/migration_kit"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = [
+  "requires_network: test needs a live provider endpoint (deselected by default in CI)",
+  "slow: test takes more than a couple of seconds",
+]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.coverage.run]
+source = ["migration_kit"]
+branch = true

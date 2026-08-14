@@ -1,0 +1,25 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+.venv-*/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+.env
+
+# Run artifacts and evidence logs are outputs, not source. The bundled demo
+# golden set IS source and is whitelisted below.
+*.jsonl
+!goldensets/**/*.jsonl
+!tests/**/fixtures/*.jsonl
+.migkit/
+reports/
+*.report.html
+
+.DS_Store
