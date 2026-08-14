@@ -278,7 +278,9 @@ def command_segments(line: str) -> list[str]:
     segments: list[str] = []
     for raw in _SEPARATOR.split(_PROMPT.sub("", line, count=1)):
         segment = _COMMENT_LABEL.sub("", raw[1:], count=1) if raw.startswith("#") else raw
-        segment = segment.lstrip()
+        # Both ends: leading whitespace hides the head of the command, and trailing
+        # whitespace is only an artifact of where the separator happened to fall.
+        segment = segment.strip()
         if segment[:1] in ('"', "'"):
             segment = segment[1:]
         segment = _PATH_PREFIX.sub("", segment, count=1)

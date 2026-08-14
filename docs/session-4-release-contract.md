@@ -153,8 +153,8 @@ convenience turn into an assumption: `migkit` is a third, unrelated name.
 
 ```powershell
 foreach ($u in @(
-    'https://pypi.org/simple/migration-kit/',
-    'https://test.pypi.org/simple/migration-kit/',
+    'https://pypi.org/simple/model-migration-kit/',
+    'https://test.pypi.org/simple/model-migration-kit/',
     'https://pypi.org/simple/migkit/',
     'https://test.pypi.org/simple/migkit/'
 )) {
@@ -169,7 +169,7 @@ foreach ($u in @(
 
 Then, by hand and recorded with the date, a search for a distribution under some
 *other* name that ships a top-level `model_migration_kit/` — the shape of the sibling's
-collision. `https://pypi.org/search/?q=%22migration_kit%22` is JavaScript-rendered
+collision. `https://pypi.org/search/?q=%22model_migration_kit%22` is JavaScript-rendered
 and will not answer from a script; open it in a browser and paste the result count
 into `PROGRESS.md`. This check is inherently weaker than the others, which is why
 Phase 7 and Phase 9 both re-verify it empirically by asserting where
@@ -307,11 +307,11 @@ claim that the package is published.
 The remote is a Phase 5 concern rather than a Phase 0 one because a trusted
 publisher claim binds `owner/repo/workflow/environment`, and creating the repo
 under the wrong account means re-registering everything. `pyproject.toml` already
-declares `https://github.com/ericwehmeyer/migration-kit`; confirm that is right
+declares `https://github.com/ericwehmeyer/model-migration-kit`; confirm that is right
 before this phase, not after (Open Decision 5).
 
 ```powershell
-gh repo create ericwehmeyer/migration-kit --public --source . --remote origin --push
+gh repo create ericwehmeyer/model-migration-kit --public --source . --remote origin --push
 gh workflow list
 gh run watch
 ```
@@ -364,9 +364,9 @@ Create the two GitHub environments explicitly rather than letting a workflow run
 conjure them:
 
 ```powershell
-gh api -X PUT repos/ericwehmeyer/migration-kit/environments/testpypi
-gh api -X PUT repos/ericwehmeyer/migration-kit/environments/pypi
-gh api repos/ericwehmeyer/migration-kit/environments --jq '.environments[].name'
+gh api -X PUT repos/ericwehmeyer/model-migration-kit/environments/testpypi
+gh api -X PUT repos/ericwehmeyer/model-migration-kit/environments/pypi
+gh api repos/ericwehmeyer/model-migration-kit/environments --jq '.environments[].name'
 ```
 
 **Exit criterion:** both pending publishers are visible in their respective
@@ -440,7 +440,7 @@ equals `v` + the version parsed out of the wheel filename — which is also what
 would catch a leftover `0.1.0.dev0`, since that wheel's version field is
 `0.1.0.dev0` and would not match `v0.1.0`.
 
-**Exit criterion:** the `pypi` job is green and `https://pypi.org/project/migration-kit/0.1.0/`
+**Exit criterion:** the `pypi` job is green and `https://pypi.org/project/model-migration-kit/0.1.0/`
 resolves. If the job fails on OIDC, do not retry blindly — go back to Phase 6 and
 diff the five registered fields against the workflow, because that is what the
 failure means and 0.1.0 is still unclaimed while it does.
@@ -942,7 +942,7 @@ after `__init__.py` and after publication the cost is the sibling's rename plus 
 PyPI redirect that does not exist. Recommendation is to keep `model_migration_kit`, but
 it is a one-way door and belongs to the lead.
 
-**3. Where the demo golden set lives.** `src/model_migration_kit/data/demo.jsonl` loaded
+**3. Where the demo golden set lives.** `src/model_migration_kit/data/demo_goldenset.jsonl` loaded
 through `importlib.resources` (ships in the wheel; the demo works for a stranger)
 versus `goldensets/` at the repo root (visible, editable, browsable on GitHub — and
 absent from the wheel). This is not a preference: the current
@@ -957,7 +957,7 @@ get; it also means the `demo` job depends on `build`, lengthening the critical p
 on every push. Real trade, lead's call.
 
 **5. Repository account and visibility, before Phase 6.** `pyproject.toml` assumes
-`github.com/ericwehmeyer/migration-kit` and public. A trusted publisher claim binds
+`github.com/ericwehmeyer/model-migration-kit` and public. A trusted publisher claim binds
 `owner/repo/workflow/environment`; changing the owner later means re-registering on
 both indexes. Confirm before Phase 5, not after.
 

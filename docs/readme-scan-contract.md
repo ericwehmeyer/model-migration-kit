@@ -62,20 +62,53 @@ work yet.
 
 Within a code-block body, each line is processed as follows.
 
+0. Normalise line endings: `\r\n` and `\r` both become `\n` before anything else
+   looks at the text. This repository is developed on Windows and its history
+   already contains one CRLF defect.
 1. Strip a leading shell prompt: `$`, `>`, or a PowerShell `PS ...>`, when it is
    followed by whitespace.
-2. Split the line on the shell separators `&&`, `||`, `|`, `;`, `&` into
-   segments. (Separators inside quotes are not tracked; a false split can only
-   cause a missed match, never an invented one, and the alternative is a shell
-   parser.)
-3. If a segment begins with `#`, strip the `#` and then an optional label of the
-   form `Word:` or `Some words:` (up to 30 characters, ending in a colon and
-   whitespace). `# Windows: python -m pip install .` is a real instruction and
-   must stay in scope; a comment is where a second platform's command lives.
-4. Strip leading whitespace, then an optional opening quote (`"` or `'`), then an
+2. Split the line into segments at every shell separator — `&&`, `||`, `|`, `;`,
+   `&` — and at every `#` that starts the line or is preceded by whitespace. The
+   `#` case is what makes the second half of
+
+       python -m pip install .      # Windows: python.exe -m pip install .
+
+   reachable: a comment is where a second platform's command lives, and without
+   this the trailing comment is not a segment of its own, the words after it are
+   not at command position, and the argument filter reads `#`, `Windows:`, `pip`,
+   `install` as package names — the exact tail of defect (1) above. A `#` not
+   preceded by whitespace (a URL fragment, `foo#bar`) does not split.
+3. **Discard any segment that begins inside a quoted string.** A segment is
+   inside a string when the text preceding it *on that line* holds an odd number
+   of unescaped `"` or an odd number of unescaped `'`. Splitting without tracking
+   quotes does not merely miss matches — it invents them: `echo "a && migkit
+   demo"` splits into `echo "a` and `migkit demo"`, and the second half sits at
+   command position and yields a `demo` that nobody typed. Quote *parity* is
+   cheap and settles it; a shell parser is not needed.
+4. If a segment begins with `#` (it now always does when rule 2 split there),
+   strip the `#` and then an optional label of the form `Word:` or `Some words:`
+   — up to 30 characters, ending in a colon and whitespace.
+5. Strip leading whitespace, then an optional opening quote (`"` or `'`), then an
    optional path prefix — any run of non-whitespace ending in `/` or `\`.
 
 What survives is in **command position**. A match anywhere else is ignored.
+
+The helper that performs steps 0–5 is frozen as
+`command_segments(line: str) -> list[str]`, returning the segments already
+reduced to command position, in order of appearance, with discarded segments
+absent rather than blank. Each returned segment is stripped at **both** ends:
+leading whitespace hides the head of the command, and trailing whitespace is an
+artifact of where the separator happened to fall. Neither carries meaning.
+
+### Accepted over-reports
+
+Step 5 strips an opening quote unconditionally, which is what lets
+`& "$tmp\Scripts\migkit.exe" demo` work. The cost is that a line consisting only
+of a quoted string — `"pip install nonsense"` — is treated as a command and
+yields `nonsense`. This is accepted deliberately: it fails **loud**, and a loud
+false positive on a line no real README contains is a better failure than a
+narrower rule that hides a genuine wrong package name. Do not "fix" it by making
+the quote strip conditional.
 
 ### `readme_pip_install_targets`
 
