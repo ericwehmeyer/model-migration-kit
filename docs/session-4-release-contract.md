@@ -228,8 +228,19 @@ Get-Content $out\*.dist-info\licenses\LICENSE -TotalCount 3
 6. `licenses/LICENSE` begins `Apache License / Version 2.0, January 2004`, matching
    the SPDX identifier. A declared identifier that disagrees with the shipped text
    is the mismatch this phase exists to catch, and no tool checks it for you.
-7. `Requires-Dist` lists `opik-rigor>=0.1.0,<0.2`, `jinja2>=3.0`, `rich>=13.0` and
-   nothing else; `Requires-Python: >=3.10`.
+7. `Requires-Dist` lists `opik-rigor>=0.1.0,<0.2`, `jinja2>=3.0`, `rich>=13.0`,
+   `tomli>=2.0; python_version < '3.11'` and nothing else; `Requires-Python: >=3.10`.
+
+   *Amended 2026-08-13.* The clause originally named three dependencies. `tomli`
+   was added afterwards and deliberately: `tomllib` arrived in the standard
+   library in 3.11, this project's floor is 3.10, and CI actually runs 3.10 — so
+   on the lowest supported Python the config loader has nothing to parse TOML
+   with. Deleting the dependency to satisfy the old sentence would break that
+   loader for every 3.10 user, which is why the release script raises this as a
+   flag rather than letting either side win silently. Note the script reads this
+   sentence out of this file rather than holding its own copy of the list, so
+   editing the contract is the only way to clear the flag, and removing the
+   dependency makes the check fail rather than pass.
 
 One licence question the tooling will not raise: opik-rigor is MIT and
 migration-kit is Apache-2.0. MIT is inbound-compatible with Apache-2.0 and no
