@@ -197,6 +197,96 @@ def spdx_from_license_text(text: str) -> str | None:
     return None
 
 
+# --------------------------------------------------------------------------------------
+# Reading the README. The rules below are `docs/readme-scan-contract.md`, frozen
+# 2026-08-13; that document is the specification and this is only its implementation.
+# --------------------------------------------------------------------------------------
+
+_FENCE = re.compile(r"^(`{3,}|~{3,})(.*)$")
+
+
+def fenced_code_blocks(text: str) -> list[str]:
+    """The body of every fenced code block in `text`, the fence lines excluded.
+
+    Contract rule 1. Prose is not shell. Scanning the whole README as flat text read
+    the sentence "So `pip install model-migration-kit` does not work today. Install
+    from a checkout:" as an install line and reported the package names `does`,
+    `not`, `work`, `today.`. An inline code span is a mention, and that particular
+    mention is a claim that the command does *not* work yet.
+
+    A fence closes only on a run of the same character, at least as long as the one
+    that opened it, carrying no info string -- so a tilde fence inside a backtick
+    block is body text. An unterminated block yields its body to the end of the
+    input: the README would be malformed, but silently dropping the tail would hide
+    commands instead of reporting them. Four-space indented blocks are deliberately
+    not recognised, because reading an indented paragraph as shell is the very
+    mistake this rule exists to stop.
+    """
+    blocks: list[str] = []
+    body: list[str] | None = None
+    char, length = "", 0
+    for line in text.splitlines():
+        fence = _FENCE.match(line.strip())
+        if body is None:
+            if fence:
+                char, length = fence.group(1)[0], len(fence.group(1))
+                body = []
+            continue
+        closes = fence and fence.group(1)[0] == char and len(fence.group(1)) >= length
+        if closes and not fence.group(2).strip():
+            blocks.append("".join(f"{entry}\n" for entry in body))
+            body = None
+            continue
+        body.append(line)
+    if body is not None:
+        blocks.append("".join(f"{entry}\n" for entry in body))
+    return blocks
+
+
+# `PS C:\...>` as well as `$` and `>`, because the README's transcripts were pasted
+# from both shells.
+_PROMPT = re.compile(r"^\s*(?:PS[^>]*>|[$>])\s")
+
+# `&&`, `||`, `|`, `;`, `&` end a command; `#` begins a comment, which is where a
+# second platform's command lives, so it begins a segment rather than ending the line.
+_SEPARATOR = re.compile(r"&&|\|\||[|;&]|(?=#)")
+
+# `Windows:` in `# Windows: python -m pip install .` -- a label naming the platform,
+# not the program being run. Capped at 30 characters so a comment written as a
+# sentence cannot swallow its own verb.
+_COMMENT_LABEL = re.compile(r"^\s*[^\s:][^:]{0,28}:\s")
+
+_PATH_PREFIX = re.compile(r"^\S*[/\\]")
+
+
+def command_segments(line: str) -> list[str]:
+    """Every point on `line` where a command could begin, each cut back to that point.
+
+    Contract rule 2. Restricting the scan to code blocks is not enough on its own:
+    the CI gating example contains
+
+        *) echo "migkit failed"                    ; exit 1 ;;
+
+    and a match anywhere in the line turned that string into the subcommand `failed`,
+    which does not exist. Only the head of a segment is a command; `migkit` inside an
+    argument to `echo` is data.
+
+    Separators inside quotes are not tracked. That is a deliberate limit rather than
+    an oversight: a false split can only lose a match, never invent one, and the
+    alternative is a shell parser.
+    """
+    segments: list[str] = []
+    for raw in _SEPARATOR.split(_PROMPT.sub("", line, count=1)):
+        segment = _COMMENT_LABEL.sub("", raw[1:], count=1) if raw.startswith("#") else raw
+        segment = segment.lstrip()
+        if segment[:1] in ('"', "'"):
+            segment = segment[1:]
+        segment = _PATH_PREFIX.sub("", segment, count=1)
+        if segment:
+            segments.append(segment)
+    return segments
+
+
 _PIP_FLAGS_WITH_VALUE = {
     "-r",
     "-c",
@@ -211,61 +301,88 @@ _PIP_FLAGS_WITH_VALUE = {
 }
 
 
+# `[<python> -m ] pip[3] install <args...>`, anchored, so it only fires at the head of
+# a segment. `python.exe` and `py` are here because the README's Windows lines use them.
+_PIP_INSTALL = re.compile(r"^(?:(?:python3?|py)(?:\.exe)?\s+-m\s+)?pip3?\s+install\s+(.*)$")
+
+
+def _pip_argument_names(tail: str) -> list[str]:
+    """The distribution names among the arguments of one `pip install`.
+
+    Local paths, wheels, `-e .` and flag values are not names a user can get wrong,
+    so they are dropped. What survives is a claim about what this project is called.
+    """
+    names: list[str] = []
+    tokens = tail.replace("`", " ").split()
+    skip_next = False
+    for token in tokens:
+        if skip_next:
+            skip_next = False
+            continue
+        if token in _PIP_FLAGS_WITH_VALUE:
+            skip_next = True
+            continue
+        if token.startswith("-"):
+            continue
+        candidate = token.strip("\"'")
+        if not candidate or candidate.startswith("."):
+            continue
+        if "/" in candidate or "\\" in candidate:
+            continue
+        if candidate.endswith((".whl", ".tar.gz", ".zip", ".txt")):
+            continue
+        name = re.split(r"[<>=!~\[]", candidate, maxsplit=1)[0].strip()
+        if name:
+            names.append(name)
+    return names
+
+
 def readme_pip_install_targets(text: str) -> list[str]:
     """Every distribution name a `pip install` line in the README would fetch.
 
-    Local paths, wheels, `-e .` and flag values are not names a user can get wrong,
-    so they are dropped. What survives is the set of claims about what this project
-    is called -- the exact thing the sibling got wrong when a rename turned
-    `opik-rigor` into `opik-opik_rigor` in the published install hint.
+    Only fenced code blocks are read, and only at command position, so the README's
+    own sentence about `pip install model-migration-kit` *not* working stays prose --
+    the exact thing the sibling got wrong when a rename turned `opik-rigor` into
+    `opik-opik_rigor` in the published install hint is still caught, because a real
+    install line lives in a code block.
     """
     targets: list[str] = []
-    for raw_line in text.splitlines():
-        line = raw_line.strip().lstrip("$#>").strip()
-        line = line.strip("`")
-        if "pip install" not in line:
-            continue
-        tail = line.split("pip install", 1)[1]
-        tokens = tail.replace("`", " ").split()
-        skip_next = False
-        for token in tokens:
-            if skip_next:
-                skip_next = False
-                continue
-            if token in _PIP_FLAGS_WITH_VALUE:
-                skip_next = True
-                continue
-            if token.startswith("-"):
-                continue
-            candidate = token.strip("\"'")
-            if not candidate or candidate.startswith("."):
-                continue
-            if "/" in candidate or "\\" in candidate:
-                continue
-            if candidate.endswith((".whl", ".tar.gz", ".zip", ".txt")):
-                continue
-            name = re.split(r"[<>=!~\[]", candidate, maxsplit=1)[0].strip()
-            if name:
-                targets.append(name)
+    for block in fenced_code_blocks(text):
+        for line in block.splitlines():
+            for segment in command_segments(line):
+                match = _PIP_INSTALL.match(segment)
+                if match:
+                    targets.extend(_pip_argument_names(match.group(1)))
     return targets
 
 
 def readme_cli_commands(text: str, prog: str = CONSOLE_SCRIPT) -> list[str]:
     """Subcommands the README shows being typed, e.g. `migkit demo` -> `demo`.
 
-    Matches the bare name, the `.exe` form, and the quoted-path form the contract
-    itself uses (`& "$tmp\\Scripts\\migkit.exe" demo`). A bare `migkit` with no
-    following word is prose, not a command, and is ignored.
+    Only a segment that *begins* with the program name counts, in its bare, `.exe`,
+    path-prefixed and quoted-path forms (`& "$tmp\\Scripts\\migkit.exe" demo`). A
+    match elsewhere in a line is not an invocation: `echo "migkit failed"` in the
+    README's CI gating example produced the subcommand `failed`, and `migkit failed
+    --help` exits 3.
+
+    A bare `migkit` with no following word is prose. `migkit:`, the program's own log
+    prefix, appears throughout the README's pasted output and is not an invocation
+    either, because a colon is neither whitespace nor a closing quote.
     """
     pattern = re.compile(
-        rf"(?<![\w-]){re.escape(prog)}(?:\.exe)?[\"']?\s+([a-z][a-z0-9-]*)",
+        rf"^{re.escape(prog)}(?:\.exe)?[\"']?\s+([a-z][a-z0-9-]*)",
         re.IGNORECASE,
     )
     found: list[str] = []
-    for match in pattern.finditer(text):
-        command = match.group(1).lower()
-        if command not in found:
-            found.append(command)
+    for block in fenced_code_blocks(text):
+        for line in block.splitlines():
+            for segment in command_segments(line):
+                match = pattern.match(segment)
+                if match is None:
+                    continue
+                command = match.group(1).lower()
+                if command not in found:
+                    found.append(command)
     return sorted(found)
 
 
