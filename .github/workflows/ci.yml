@@ -58,13 +58,41 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - run: python -m pip install --upgrade pip && python -m pip install -e .
+      # Built and installed as a wheel, not `pip install -e .`. An editable
+      # install leaves the repo root importable, so the demo would find its
+      # bundled golden set on disk even if packaging had omitted it -- the job
+      # would pass while every real user's install failed. This is the only job
+      # positioned to catch that, so it must test what users actually get.
+      - run: python -m pip install --upgrade pip build
+      - run: python -m build --wheel
+      - run: python -m pip install dist/*.whl
       # The definition of done says a stranger with no keys gets a report in
       # under two minutes. That claim is only true if something checks it.
+      #
+      # The demo exits 1, and that is the job passing. Exit 1 is NO-GO: the demo
+      # exists to show the tool refusing an unsafe migration, so a demo that
+      # exited 0 would mean the verdict logic had stopped working. The exit code
+      # is asserted exactly, not merely tolerated -- `|| true` here would hide
+      # both a crash (3) and an accidental GO (0).
       - name: migkit demo
         run: |
+          set +e
           timeout 120 migkit demo --out demo-report.html
+          code=$?
+          set -e
+          if [ "$code" -ne 1 ]; then
+            echo "::error::migkit demo exited $code; expected 1 (NO-GO)."
+            echo "::error::0=GO 1=NO-GO 2=REVIEW 3=error. A GO or a REVIEW here means"
+            echo "::error::the bundled demo no longer demonstrates a caught regression."
+            exit 1
+          fi
           test -f demo-report.html
+          # The report must open in an airgapped compliance review, so nothing in
+          # it may be fetched at view time.
+          if grep -qiE 'src="https?:|href="https?:|@import|//(cdn|fonts)\.' demo-report.html; then
+            echo "::error::demo report references an external resource"
+            exit 1
+          fi
       - uses: actions/upload-artifact@v7
         with:
           name: demo-report
