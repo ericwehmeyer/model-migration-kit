@@ -1,0 +1,299 @@
+# Weekly dependency drift canary.
+#
+# CI (ci.yml) tests what users get today: opik-rigor pinned to >=0.1.0,<0.2. This job
+# tests what users will get after the next `pip install --upgrade` -- the latest
+# opik-rigor, ignoring our own upper bound. It exists so that a breaking release is
+# found by us on a Monday, not by a user on a Friday.
+#
+# Only opik-rigor is tracked here. This project has no Opik dependency of its own --
+# deps are opik-rigor, jinja2, rich and tomli -- so the Opik drift surface belongs
+# entirely to rigor's canary. Installing Opik here would test nothing we ship and
+# could file drift for a package we do not use.
+#
+# THIS WORKFLOW'S PASS/FAIL MEANS "IS THE CANARY HEALTHY", NOT "IS THERE DRIFT".
+#   green + no issue  -> latest works, nothing to do
+#   green + an issue  -> DRIFT. Read the issue; it names the versions and the failures.
+#   red               -> the canary itself could not run (index down, yanked release,
+#                        network). Fix the job. Says nothing about compatibility.
+# Drift never turns this red, so the red channel stays scarce and therefore readable.
+
+name: Drift canary
+
+on:
+  schedule:
+    # 06:17 UTC Monday. Off the hour on purpose: GitHub drops scheduled runs that
+    # queue up at :00, and a canary that silently stops running is the exact failure
+    # this job exists to prevent.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  # Never cancel a canary mid-run: a cancelled run is classified as neither drift nor
+  # broken, which is worse than either answer.
+  group: drift-canary
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  canary:
+    name: latest opik-rigor / py${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor and the ceiling, not the whole matrix. 3.10 is where a dependency
+        # raising its requires-python bites first; 3.13 is where a new C extension
+        # fails to build first. The middle versions add runtime, not coverage.
+        python-version: ["3.10", "3.13"]
+    outputs:
+      status: ${{ steps.classify.outputs.status }}
+      detail: ${{ steps.classify.outputs.detail }}
+      versions: ${{ steps.resolve.outputs.versions }}
+    env:
+      # Same invariant as ci.yml: the suite is green with no provider credentials.
+      # It is also what makes a stage-4 failure unambiguous -- there is no network in
+      # the test path, so a failing test cannot be a flake.
+      ANTHROPIC_API_KEY: ""
+      OPENAI_API_KEY: ""
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # --- Stage 1: what IS the latest? -------------------------------------------
+      # Failure here is always a broken canary: we never got far enough to learn
+      # anything about compatibility. A yanked release counts as broken too -- testing
+      # against a withdrawn version tells us nothing and would file a bogus issue.
+      - name: Resolve latest versions
+        id: resolve
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, sys, urllib.request
+
+          def fetch(pkg):
+              url = f"https://pypi.org/pypi/{pkg}/json"
+              err = None
+              for _ in range(3):
+                  try:
+                      with urllib.request.urlopen(url, timeout=30) as r:
+                          return json.load(r)
+                  except Exception as exc:  # noqa: BLE001 - any failure is "index unreachable"
+                      err = exc
+              print(f"::error::Could not reach PyPI for {pkg}: {err}", file=sys.stderr)
+              raise SystemExit(1)
+
+          out = {}
+          for pkg in ("opik-rigor",):
+              data = fetch(pkg)
+              version = data["info"]["version"]
+              files = data["releases"].get(version) or []
+              if files and all(f.get("yanked") for f in files):
+                  print(f"::error::{pkg} {version} is yanked. Not a compatibility "
+                        f"signal -- the canary has nothing valid to test against.",
+                        file=sys.stderr)
+                  raise SystemExit(1)
+              out[pkg] = version
+
+          print(f"versions={json.dumps(out)}")
+          print(f"rigor={out['opik-rigor']}")
+          PY
+
+      # --- Stage 2: can it even be installed? -------------------------------------
+      # The one ambiguous stage, split by reading pip's own diagnosis rather than
+      # guessing. A resolver refusal is a real compatibility fact a user would hit --
+      # most concretely, latest opik-rigor raising requires-python above our 3.10
+      # floor. A timeout is just a timeout.
+      - name: Install at latest
+        id: install
+        continue-on-error: true
+        run: |
+          set +e
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+          log=install.log
+          for attempt in 1 2 3; do
+            echo "--- upgrade attempt $attempt ---"
+            python -m pip install --upgrade \
+              "opik-rigor==${{ steps.resolve.outputs.rigor }}" 2>&1 | tee "$log"
+            rc=${PIPESTATUS[0]}
+            [ "$rc" -eq 0 ] && break
+            grep -qiE "resolutionimpossible|no matching distribution|requires a different python" "$log" && break
+            sleep $(( attempt * 20 ))
+          done
+
+          if [ "$rc" -eq 0 ]; then
+            echo "outcome=ok" >> "$GITHUB_OUTPUT"
+          elif grep -qiE "resolutionimpossible|no matching distribution|requires a different python" "$log"; then
+            # A user running `pip install --upgrade` would hit exactly this.
+            echo "outcome=drift" >> "$GITHUB_OUTPUT"
+            echo "detail=install refused: $(grep -iEm1 'resolutionimpossible|no matching distribution|requires a different python' "$log")" >> "$GITHUB_OUTPUT"
+          else
+            echo "outcome=broken" >> "$GITHUB_OUTPUT"
+            echo "detail=pip failed 3x with no resolver error (network/index)" >> "$GITHUB_OUTPUT"
+          fi
+          exit 0
+
+      # --- Stage 3: did the upgrade actually take? --------------------------------
+      # Guards against the quietest failure available: an install that no-ops, leaving
+      # the pinned version in place, so the suite passes and the canary reports green
+      # having tested nothing. The version assertion is the whole point of this step.
+      - name: Preflight
+        id: preflight
+        if: steps.install.outputs.outcome == 'ok'
+        continue-on-error: true
+        run: |
+          python - <<'PY'
+          import sys
+          import opik_rigor
+          want = "${{ steps.resolve.outputs.rigor }}"
+          got = opik_rigor.__version__
+          print(f"opik_rigor {got} (wanted {want})")
+          if got != want:
+              print(f"::error::upgrade did not take: still on {got}")
+              sys.exit(1)
+          PY
+
+      # --- Stage 4: does it still work? -------------------------------------------
+      # continue-on-error is load-bearing, not defensive: it is the single line that
+      # guarantees drift can never turn this workflow red.
+      - name: Test against latest
+        id: suite
+        if: steps.install.outputs.outcome == 'ok'
+        continue-on-error: true
+        # Deliberately NOT running `migkit demo`: PROGRESS.md records that the demo job
+        # is knowingly broken until Session 3, so including it would report drift every
+        # week from day one. Add it once the demo exists and its exit code is settled.
+        run: python -m pytest -m "not requires_network" -q
+
+      - name: Classify
+        id: classify
+        run: |
+          {
+            echo "### Drift canary — py${{ matrix.python-version }}"
+            echo
+            echo "- opik-rigor: \`${{ steps.resolve.outputs.rigor }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          case "${{ steps.install.outputs.outcome }}" in
+            broken)
+              echo "status=broken" >> "$GITHUB_OUTPUT"
+              echo "detail=${{ steps.install.outputs.detail }}" >> "$GITHUB_OUTPUT" ;;
+            drift)
+              echo "status=drift" >> "$GITHUB_OUTPUT"
+              echo "detail=${{ steps.install.outputs.detail }}" >> "$GITHUB_OUTPUT" ;;
+            ok)
+              if [ "${{ steps.preflight.outcome }}" != "success" ]; then
+                echo "status=drift" >> "$GITHUB_OUTPUT"
+                echo "detail=installed, but the upgrade did not take or the package is unimportable" >> "$GITHUB_OUTPUT"
+              elif [ "${{ steps.suite.outcome }}" != "success" ]; then
+                # No retry and no heuristics: the suite is offline and key-free by
+                # invariant 3, so a failure here cannot be a flake.
+                echo "status=drift" >> "$GITHUB_OUTPUT"
+                echo "detail=the offline suite failed on py${{ matrix.python-version }}" >> "$GITHUB_OUTPUT"
+              else
+                echo "status=clean" >> "$GITHUB_OUTPUT"
+                echo "detail=" >> "$GITHUB_OUTPUT"
+              fi ;;
+          esac
+
+      # The ONLY path that reddens this workflow. Drift cannot reach it.
+      - name: Fail the run only if the canary itself is broken
+        if: steps.classify.outputs.status == 'broken'
+        run: |
+          echo "::error::Canary broken: ${{ steps.classify.outputs.detail }}"
+          echo "::error::This says nothing about compatibility. Fix the job, then re-run."
+          exit 1
+
+  report:
+    name: report drift
+    runs-on: ubuntu-latest
+    needs: canary
+    # Runs even when a matrix cell failed, so a broken 3.10 cell cannot suppress a
+    # drift report from the 3.13 cell.
+    if: always() && needs.canary.result != 'cancelled'
+    permissions:
+      contents: read
+      # Widened here and nowhere else.
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      LABEL: drift-canary
+      MARKER: "<!-- canary-key: latest-opik-rigor -->"
+      STATUS: ${{ needs.canary.outputs.status }}
+      DETAIL: ${{ needs.canary.outputs.detail }}
+      VERSIONS: ${{ needs.canary.outputs.versions }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      # Reconcile a single issue rather than filing one per run. Identity comes from
+      # the label plus the marker in the body, never from the title, so retitling by
+      # hand does not orphan the issue and cause a duplicate.
+      - name: Reconcile the drift issue
+        run: |
+          set -euo pipefail
+          today=$(date -u +%Y-%m-%d)
+
+          existing=$(gh issue list --repo "${{ github.repository }}" \
+            --label "$LABEL" --state open --json number,body --jq '.[0] // empty')
+          number=$(printf '%s' "$existing" | jq -r '.number // empty')
+          oldbody=$(printf '%s' "$existing" | jq -r '.body // empty')
+
+          if [ "$STATUS" != "drift" ]; then
+            # Clean (or the canary was broken, which is reported by the red run, not
+            # here). Close any open drift issue -- self-healing beats a stale yellow light.
+            if [ -n "$number" ] && [ "$STATUS" = "clean" ]; then
+              gh issue comment "$number" --repo "${{ github.repository }}" \
+                --body "Resolved. The suite is green against $VERSIONS as of $today. [Run]($RUN_URL)"
+              gh issue close "$number" --repo "${{ github.repository }}"
+            fi
+            exit 0
+          fi
+
+          body=$(cat <<EOF
+          $MARKER
+
+          The weekly canary ran the offline suite against the **latest** published
+          opik-rigor instead of our pinned bound, and it did not pass.
+
+          | | |
+          |---|---|
+          | Versions tested | \`$VERSIONS\` |
+          | What happened | $DETAIL |
+          | Last checked | **$today** |
+          | Run | [$RUN_URL]($RUN_URL) |
+
+          This is a yellow signal. \`main\` is green and users on the pinned bound are
+          fine; the CI badge is untouched. What it means is that raising the upper bound
+          today would break them.
+
+          Next: reproduce locally with the versions above, then either fix the
+          incompatibility and raise the bound, or record why the bound stays where it is
+          in \`COMPATIBILITY.md\`.
+
+          This issue is maintained by \`.github/workflows/drift-canary.yml\`. It is
+          edited in place each week (no comment, no notification) and closes itself when
+          the canary goes green. A stale \`Last checked\` date means the schedule stopped
+          firing -- GitHub disables cron workflows after 60 days of repo inactivity.
+          EOF
+          )
+
+          if [ -z "$number" ]; then
+            gh issue create --repo "${{ github.repository }}" \
+              --title "Drift: latest opik-rigor fails the suite" \
+              --label "$LABEL" --body "$body"
+            exit 0
+          fi
+
+          # Comment ONLY when the version set changed. A new version that still breaks
+          # is new information and deserves a notification; the same version breaking
+          # for the 40th week is not, and 52 "still broken" comments bury the one
+          # comment that mattered.
+          if ! printf '%s' "$oldbody" | grep -qF "$VERSIONS"; then
+            gh issue comment "$number" --repo "${{ github.repository }}" \
+              --body "Still failing, against new versions: \`$VERSIONS\` — $DETAIL. [Run]($RUN_URL)"
+          fi
+          gh issue edit "$number" --repo "${{ github.repository }}" --body "$body"

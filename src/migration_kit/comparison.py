@@ -553,8 +553,8 @@ class JudgeComparison:
     parse_failures_candidate: int = 0
     missing_scores_baseline: int = 0
     missing_scores_candidate: int = 0
-    item_pass_rate_baseline: float | None = None
-    item_pass_rate_candidate: float | None = None
+    item_counts_baseline: Mapping[str, int] = field(default_factory=dict)
+    item_counts_candidate: Mapping[str, int] = field(default_factory=dict)
     items: int = 0
 
     @property
@@ -599,9 +599,9 @@ class JudgeComparison:
                 "baseline": self.missing_scores_baseline,
                 "candidate": self.missing_scores_candidate,
             },
-            "item_pass_rate": {
-                "baseline": self.item_pass_rate_baseline,
-                "candidate": self.item_pass_rate_candidate,
+            "item_counts": {
+                "baseline": dict(self.item_counts_baseline),
+                "candidate": dict(self.item_counts_candidate),
                 "items": self.items,
             },
         }
@@ -632,7 +632,7 @@ class ComparisonReport:
     unstable: tuple[ItemChange, ...] = ()
     latency: Mapping[str, LatencyStat] = field(default_factory=dict)
     completion_rates: Mapping[str, Any] = field(default_factory=dict)
-    item_rates: Mapping[str, Any] = field(default_factory=dict)
+    item_counts: Mapping[str, Any] = field(default_factory=dict)
     provenance: Mapping[str, Any] = field(default_factory=dict)
     warnings: tuple[str, ...] = ()
     created: str = ""
@@ -672,7 +672,7 @@ class ComparisonReport:
             "unstable": _grouped(self.unstable),
             "latency": {side: stat.to_dict() for side, stat in self.latency.items()},
             "completion_rates": dict(self.completion_rates),
-            "item_rates": dict(self.item_rates),
+            "item_counts": dict(self.item_counts),
             "n_per_item": self.n_per_item,
             "warnings": list(self.warnings),
         }
@@ -832,7 +832,7 @@ def compare(
         unstable=tuple(unstable),
         latency=latency,
         completion_rates=_completion_rates(judges),
-        item_rates=_item_rates(judges),
+        item_counts=_item_counts_by_judge(judges),
         provenance={
             "goldenset_path": goldenset_path or _recorded_goldenset_path(baseline_run),
             "config_path": config_path,
@@ -1060,8 +1060,8 @@ def _compare_one_judge(
         parse_failures_candidate=sum(1 for one in cand_records if one.parse_failure),
         missing_scores_baseline=missing[0],
         missing_scores_candidate=missing[1],
-        item_pass_rate_baseline=_item_pass_rate(base_items),
-        item_pass_rate_candidate=_item_pass_rate(cand_items),
+        item_counts_baseline=_item_counts(base_items),
+        item_counts_candidate=_item_counts(cand_items),
         items=len(base_items),
     )
 
@@ -1277,11 +1277,23 @@ def _item_states(records: Sequence[JudgeRecord]) -> dict[str, tuple[int, int, st
     }
 
 
-def _item_pass_rate(states: Mapping[str, tuple[int, int, str]]) -> float | None:
-    if not states:
-        return None
-    passing = sum(1 for _, _, state in states.values() if state == STATE_PASS)
-    return passing / len(states)
+def _item_counts(states: Mapping[str, tuple[int, int, str]]) -> dict[str, int]:
+    """Items in each of the three states. Deliberately not a rate.
+
+    A three-state classification does not reduce to one fraction without
+    smuggling the ambiguous items into one bucket or the other, and whichever
+    bucket you pick, the number lies in that direction. Ten items each passing
+    3/5 are not "10/10 passing" and not "0/10 passing"; they are ten items this
+    evidence cannot classify, and that is what the report says.
+    """
+    counts = {STATE_PASS: 0, STATE_FAIL: 0, STATE_UNSTABLE: 0}
+    for _, _, state in states.values():
+        counts[state] = counts.get(state, 0) + 1
+    return {
+        "passing": counts[STATE_PASS],
+        "failing": counts[STATE_FAIL],
+        "unstable": counts[STATE_UNSTABLE],
+    }
 
 
 def _classify_items(
@@ -1319,9 +1331,14 @@ def _classify_items(
             flips.append(change)
         elif base_state == STATE_FAIL and cand_state == STATE_PASS:
             gains.append(change)
-        elif STATE_UNSTABLE in (base_state, cand_state) and base_state != cand_state:
-            # Named, not counted. An item that is 3/5 on one side and 5/5 on the
-            # other has moved, but not across a margin that survives a rerun.
+        elif STATE_UNSTABLE in (base_state, cand_state):
+            # Named, not counted -- and named even when nothing moved. The first
+            # version of this line also required base_state != cand_state, which
+            # meant an item sitting at 3/5 under *both* models appeared in no list
+            # at all: not a flip, not a gain, not unstable. That item is the most
+            # interesting row in the report, because its verdict is a coin toss on
+            # both sides of the migration and no rerun will agree with this one.
+            # Naming it is the entire reason a third state exists.
             unstable.append(change)
 
 
@@ -1340,14 +1357,21 @@ def _completion_rates(judges: Sequence[JudgeComparison]) -> dict[str, Any]:
     }
 
 
-def _item_rates(judges: Sequence[JudgeComparison]) -> dict[str, Any]:
-    """Per-judge item-level pass rates, printed beside the completion rates."""
+def _item_counts_by_judge(judges: Sequence[JudgeComparison]) -> dict[str, Any]:
+    """Per-judge item counts in three states, printed beside the completion rates.
+
+    Both units are printed because they answer different questions and a reader
+    given only one will assume it answers both: the completion rate says how often
+    the model is right, and the item counts say how many cases it is reliable on.
+    Ten items at 3/5 make that gap concrete -- a 0.60 completion rate, and not one
+    item anybody should call settled.
+    """
     return {
         "unit": "item",
         "per_judge": {
             one.name: {
-                "baseline": one.item_pass_rate_baseline,
-                "candidate": one.item_pass_rate_candidate,
+                "baseline": dict(one.item_counts_baseline),
+                "candidate": dict(one.item_counts_candidate),
                 "items": one.items,
             }
             for one in judges
