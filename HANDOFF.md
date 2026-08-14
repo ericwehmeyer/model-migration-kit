@@ -25,14 +25,48 @@ imported from it, none reimplemented. Apache-2.0, personal repo.
 3. **`src/model_migration_kit/contracts.py`** and **`errors.py`** — the frozen seams.
    Read them before writing anything that touches a golden set or an artifact.
 
-## Where the build stands (2026-08-14, ~05:00)
+## Where the build stands (2026-08-14, ~03:40)
 
-**Sessions 0 through 3 are complete, committed and pushed. 847 tests pass, 0
-xfailed, ruff clean, and CI is green on Ubuntu and Windows across 3.10–3.13.**
-Session 4 (release) is partly done and is the remaining work.
+**Sessions 0 through 3 are complete, committed and pushed at `19c7722`. 929 tests
+pass, 0 xfailed, ruff clean.** Session 4 (release) is partly done and is the
+remaining work.
+
+**Check CI before you trust that.** The run on `19c7722` was still in flight when
+this was written, and it is the *first* run of a rewritten `demo` job — see "CI
+job that may be red" below. Everything else was green on `c762777`.
 
 The 4 xfails this file used to describe are **gone** — retired, not deleted, with
 their fenced replacements in place. Do not go looking for them.
+
+### The definition of done: now measured, and the measurement disagrees with itself
+
+The `demo` job used to run `timeout 120 migkit demo` and call that the definition
+of done. It was measuring the wrong interval. The claim is *"a stranger with no
+keys gets a report in under two minutes"*, and a stranger's two minutes start at
+`python -m venv` — not after pip has already dragged in numpy and scipy. The old
+job bounded the last ~16 s of a path that measures far longer, and would have
+stayed green with pip taking four minutes.
+
+The job now times `venv` + `pip install` + `migkit demo` together and fails over
+120 s. **It passes at 12 s** on `19c7722`. That is a real result and it is also
+not the whole story:
+
+| where | cold start, end to end |
+|---|---|
+| GitHub Ubuntu runner (the CI job) | **12 s** |
+| This Windows machine, measured twice | **127 s and 142 s** — of which 83–91 s is `pip install` |
+
+Same interval, an order of magnitude apart. Ubuntu runners get manylinux wheels
+for numpy and scipy and a fast warm cache; a Windows stranger gets neither. So CI
+now proves the claim *for a Linux CI machine* and says nothing about the Windows
+desktop where it was falsified. **Do not read the green tick as the claim being
+established.** Either extend the job to a Windows runner — which is the honest fix
+and costs one matrix entry — or narrow the published claim to name the
+environment it holds in.
+
+Whatever you do, do not go back to timing a smaller interval. The job says so in
+a comment, and so does this file, because that is exactly the kind of thing that
+gets quietly reverted at 3am.
 
 Everything builds and runs. The headline check, which you should run first
 because it proves the whole pipeline in two seconds:
@@ -59,11 +93,50 @@ deliberately with `AUDIT_SHUFFLE_SEED` set.
 | `goldenset.py`, `runner.py` | Session 1, complete |
 | `judging.py`, `comparison.py` | Session 2, complete |
 | `report.py`, `cli.py`, `demo.py` | Session 3, complete |
-| `__init__.py` | written, `__all__` empty by decision |
-| `scripts/verify_release.py` | 15 release checks, 14 passing, 1 deliberate skip |
+| `__init__.py` | **`__all__` now names three accessors** — see below |
+| `scripts/verify_release.py` | 15 release checks; 14 pass, 1 skips on the dev version |
+| `scripts/dependency_surface.py` | derives COMPATIBILITY.md's table from the AST; `--check` gates CI |
+| `scripts/audit/{netguard,shuffle_order}.py` | netguard runs in CI; shuffle is run by hand |
 | `.github/workflows/{ci,drift-canary}.yml` | CI plus a weekly drift canary |
 | `.github/workflows/publish.yml` | copied verbatim from the sibling; see below |
 | `CHANGELOG.md` | written, `## [0.1.0]`, dated at release |
+
+### What changed on 2026-08-14 that this file did not say before
+
+- **`__all__` is no longer empty.** It names three accessors for the data files
+  the wheel ships (`demo_goldenset.jsonl`, `demo_rubric.md`, `demo.toml`). A
+  reader who installed the wheel previously had no way to reach any of them, and
+  the README told them to open `src/model_migration_kit/data/…`, which is a path
+  inside a source checkout. The sibling solved this with `example_rubric_path()`;
+  this is the same call. The rest of the no-public-API decision stands.
+- **`migkit demo --goldenset <file> --n <draws>` exists.** Before it, `migkit
+  compare` refused a fake judge and told you to "use `migkit demo` for the keyless
+  path" — and `demo` had no way to take your golden set, so the remedy the error
+  named did not exist. That was the point a cold-start reviewer said they would
+  have given up. There is now a keyless end-to-end path for your own data;
+  verified producing a REVIEW verdict on a hand-written 3-item set.
+- **`anthropic` and `openai` are declared as extras**, and the SDK check moved to
+  adapter construction. Following the Install section used to leave a reader one
+  undeclared package short of the only documented real-model path, and they found
+  out at *grading* time, after both runs had already been sampled.
+- **The HTML report is bounded, judging is parallel, the evidence log is
+  streamed.** A scale audit found 200 items × n=20 — inside the README's own
+  recommended range — produced a 32 MB report, and 1000 × 20 produced 161.8 MB
+  with 41,000 `<pre>` blocks, while every guard the project owns passed on it.
+  `judge_artifact` now takes `concurrency` and the artifact is byte-identical
+  whatever it is set to.
+- **The report reader no longer trusts the evidence log it is handed.** Sharing a
+  log across machines is the designed workflow, so its recorded paths are
+  attacker-influenced input on a reviewer's machine — and they went straight to
+  `open()`. A recorded `\\192.0.2.111\share\x.jsonl` blocked 21 s attempting SMB,
+  which on Windows is how a hash gets collected. Recorded paths are now confined
+  to the log's own directory; `--artifact-dir`/`--goldenset` remain the way to say
+  where files moved to.
+- **Terminal rendering can no longer be driven by the evidence.** A `model_id` of
+  `fake-cand-v1[/]` crashed the run through rich's markup parser; `[bold
+  red]FAKE CLEARED[/bold red]` rendered as styled text. In a tool whose claim is
+  that you cannot get a clean-looking report out of scripted models, that is a
+  forgery vector.
 
 **The package was renamed** to `model-migration-kit` / `model_migration_kit`
 (console script still `migkit`). The GitHub repo is renamed too and is **private**
@@ -98,40 +171,75 @@ would invalidate every path in these docs for no packaging benefit.
    separate logins, different environment names), TestPyPI dry run, tag, release.
    Note the dry run is one-shot per version: TestPyPI burns a filename exactly
    as PyPI does, so do it only once the tree is what you intend to publish.
-4. **Retire the last invariant-1 violation. rigor 0.1.1 shipped on 2026-08-13,
-   so this is unblocked and ready to do.** `judging.py:47` imports `SCORE_MIN`
-   and `hash_rubric_file` from `opik_rigor.judge`; `tests/test_comparison.py:52`
-   and `tests/test_judging.py:47` do the same — **three** sites, not the one this
-   file used to claim, and not the names it used to list. rigor exports them from
-   its package root as of 0.1.1. Move the floor of the bound in `pyproject.toml`
-   to `>=0.1.1,<0.2`, fold the imports into the root import at all three sites,
-   and delete the note in PROGRESS.md's known gaps and the corresponding CHANGELOG
-   limitation.
+4. ~~**Retire the last invariant-1 violation.**~~ **Done.** rigor 0.1.1 exports
+   `SCORE_MIN`, `SCORE_MAX`, `hash_rubric_file` and `hash_rubric_text` from its
+   package root — confirmed by reading `__init__.py` out of the *published wheel*,
+   not by trusting the branch that prepared it. The floor is `>=0.1.1,<0.2` and
+   `src/` imports only from the root.
 
-   Note a clean install already resolves 0.1.1 — the bound `>=0.1.0,<0.2` permits
-   it — so strangers have been getting 0.1.1 while this repo's long-lived `.venv`
-   still has 0.1.0. That is why `COMPATIBILITY.md`'s verified-against table says
-   0.1.0 and needs re-checking against what users actually get.
+   **This file said three sites. There were six.** `comparison.py` had been
+   reaching into `opik_rigor.judge` in shipped code the whole time and appeared on
+   no list, and two more arrived the same night in new test files. That was the
+   third time the count had been recorded too low, always understated — because
+   the pattern a new file copies is the pattern the tree already contains. So
+   `COMPATIBILITY.md`'s dependency-surface table is now **derived from the AST** by
+   `scripts/dependency_surface.py`, and `--check` fails CI when the document and
+   the tree disagree. It found eleven disagreements on its first run against the
+   hand-written table, and has since caught two more changes it was not written
+   for. If you ever find yourself editing that table by hand, stop and regenerate.
 
-5. **Known scale limits, measured but not fixed.** An audit ran the pipeline from
-   12 items to 1000 and found three silent degradations. Wall time stays linear
-   throughout (8.9–14.1 ms per completion-pair over an 830× range) — these are
-   not slowness, they are things that fail without saying so.
+   One recorded exception: `tests/test_stranger_path.py` imports
+   `opik_rigor.adapters.{anthropic,openai_compat}` for their `PACKAGE` constants,
+   which are not in rigor's `__all__`. Test-only, and its purpose is drift
+   detection — it asserts the SDK names this CLI tells you to install are the ones
+   rigor is about to import. Argued in PROGRESS.md rather than hidden.
 
-   - **The HTML report is unbounded.** 200 items × n=20, which is inside the
-     README's own recommended range, produces a 32 MB report in 40 seconds; 1000
-     × 20 produces **161.8 MB** with 41,000 `<pre>` blocks and 1.7 GB peak RSS.
-     Every guard the project owns passes on it: self-contained, no external URLs,
-     every truncation notice present, no warnings. Cap-free by omission.
-   - **`ReportModel.from_evidence` materialises the whole evidence log** to
-     extract three records — 5–6× memory amplification on the pipeline's largest
-     file. This OOMs first, at roughly 2.2 GB of evidence.
-   - **`concurrency` does nothing for judging** (`judging.py` has no pool) and
-     silently caps at `n` for sampling. Against a real provider the README's
-     recommended ~200 completions/side is ~460 strictly serial judge calls.
+5. ~~**Known scale limits.**~~ **Fixed, and re-measure before you trust it.** The
+   report is bounded with disclosure, `judge_artifact` takes `concurrency` with
+   byte-identical output at any setting, and the evidence log is no longer folded
+   whole. The audit numbers that justified this (32 MB inside the recommended
+   range, 161.8 MB at 1000 × 20, every guard passing on a document nobody can
+   open) are in `docs/release-evidence.md`. **The after-numbers were not
+   independently re-measured at the scales in that table** — the agent that made
+   the change was cut off by an API failure before it reported, and its work was
+   salvaged from an uncommitted worktree. The suite passes and the demo is
+   unchanged, but if you are about to publish performance claims, measure first.
 
-   `tests/test_report_scale.py` pins the first of these, and its final assertion
-   is deliberately written to fail on the commit that fixes it.
+6. **`COMPATIBILITY.md` still records verification against rigor 0.1.0.** Users
+   get 0.1.1, because the bound permits it. This was dispatched and the agent died
+   before it started; **nothing was salvaged and none of it is done.** It matters
+   because 0.1.1's `is_pinned` *refuses every current Anthropic model id* while
+   accepting one retired in February, and `migkit` calls `require_pinned` before
+   spending a call — so with the version users actually install, the documented
+   real-model path refuses the models they would reach for. Both defects are fixed
+   on rigor's `main` and **neither is in 0.1.1**. Re-verify against the published
+   0.1.1, not against rigor's working tree, and record what a user can do today.
+## The sibling has moved a long way, and none of it is released
+
+`opik-rigor`'s `main` is far ahead of the published **0.1.1** that this project
+depends on. Do not read rigor's source tree to learn what your users get.
+Unreleased there, all verified in this session:
+
+- **`is_pinned` was rewritten.** 0.1.1 refuses `claude-opus-5`, `claude-sonnet-5`
+  and `claude-opus-4-8`, accepts `claude-3-7-sonnet-20250219` (retired in
+  February), and wrongly accepts `gpt-4.1` (an alias that re-points). All fixed on
+  `main`.
+- **`AnthropicAdapter` sent `temperature` unconditionally**, which every current
+  Anthropic model rejects with a 400. Fixed on `main` by omitting the key
+  entirely; an explicit value against such a model is now refused at construction.
+  These two were sequential blockers — the pin rule was the front door locked,
+  this was there being no room behind it — and **both are needed before rigor can
+  judge with a current model**.
+- `import opik_rigor` went from ~1019 ms to ~303 ms (scipy is now lazy), a
+  score-distribution gate that passed on infinite input was fixed, `py.typed` was
+  made true (an `api_key=` misuse type-checked clean and raised at runtime), and
+  the worked example now ships *inside* the wheel.
+- **One change there is not additive:** `confidence <= 0.5` is now refused by
+  `wilson_lower_bound` and `assert_pass_rate`. It used to be accepted, and
+  `assert_pass_rate((20, 20), 1.0, confidence=0.5)` used to *pass* — the exact
+  claim that module exists to refuse. That needs a version decision on rigor's
+  side before this project raises its floor again.
+
 ## Things that will bite you, all learned the hard way tonight
 
 - **The wheel is not your source tree.** Three separate variants of one bug
@@ -179,9 +287,12 @@ Already created and verified: `opik-rigor` **from PyPI** (not a path dependency 
 that is deliberate), `jinja2 3.1.6`, `rich 15.0.0`. Local Python is 3.14; CI
 covers 3.10–3.13 on Ubuntu and Windows.
 
-The long-lived `.venv` still holds `opik-rigor 0.1.0`; a fresh install resolves
-**0.1.1**, because the bound is `>=0.1.0,<0.2`. Anything you conclude about
-rigor's behaviour from this venv is a claim about a version strangers no longer
+The long-lived `.venv` now holds `opik-rigor` **0.1.1**, upgraded 2026-08-14. It
+had been on 0.1.0 for a while, silently, because the bound `>=0.1.0,<0.2` let
+every *fresh* install resolve 0.1.1 while this venv kept what it already had — so
+the venv had stopped being evidence about what users get, and nobody noticed.
+Re-check it whenever the floor moves. Anything you conclude about rigor's
+behaviour from a long-lived venv is a claim about a version strangers may not
 get — re-check in a clean environment before writing it down.
 
 To run the suite the way CI does, with the network physically blocked:
@@ -220,6 +331,22 @@ specified.
    gates is self-refuting.
 7. **End each session green, committed, with this file and PROGRESS.md updated,
    then clear the context.**
+8. **Assume an agent can die mid-task, and make its work salvageable anyway.**
+   Four agents were lost in one window on 2026-08-14 — two stalls, two API
+   failures — after doing substantial correct work. Three had committed nothing.
+   Their output was recovered by reading the uncommitted diffs out of their
+   worktrees, testing it, fixing the lint they had not reached, and committing it
+   as the integrator. That worked, but only because each was in its own worktree.
+   Two things follow: **tell agents to commit early and often rather than once at
+   the end**, and when one dies, *look in its worktree before redoing the task* —
+   `git -C <worktree> status --short` is the whole check, and it took under a
+   minute to recover three tasks' worth of work.
+
+   The corollary is that a dead agent's work is unreviewed by its author. It
+   arrives without the report that would normally explain it, so verify the claims
+   yourself: one of the three had a passing suite and eight lint errors, and
+   another changed the rigor dependency surface without updating the record — both
+   caught by running the checks, not by reading the diff.
 
 One caveat learned late on the previous project, worth carrying: introspecting a
 package tells you what its API *is*. It does not tell you what its documentation

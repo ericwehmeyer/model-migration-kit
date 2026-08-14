@@ -15,15 +15,28 @@ which is the approved plan this build follows and was written before any code.
 | 3 | Faces: `report.py`, `cli.py`, `migkit demo`, README | **complete** |
 | 4 | Release: name check, `__init__.py`, publish workflow, PyPI | in progress — name checked and free, `__init__.py` written, version single-sourced, `CHANGELOG.md` and `publish.yml` in the tree, **nothing published** |
 
-**734 tests collected; 730 passed and 4 xfailed** on
-`pytest -m "not requires_network"`, ruff clean over `src`, `tests` and `scripts`.
-Measured 2026-08-13 against this tree with `.venv\Scripts\python.exe`; the count
-moved twice tonight (the README-scan tests added 58, the console-script fix added
-one), so re-run it rather than quoting this line. The 4 xfails are all in
-`tests/test_release_checks.py` and are deliberate: they pin the README scanner's
-pre-contract behaviour, each has a named fenced replacement beside it, and they
-are marked rather than deleted so a human decides whether the replacement covers
-the original's intent.
+**929 passed, 0 xfailed**, ruff clean over `src`, `tests` and `scripts`, measured
+2026-08-14 at `19c7722`. The count moved seven times in one session, so **re-run
+it rather than quoting this line** — that instruction has now been vindicated
+repeatedly, and every pasted transcript in the README that quoted an older number
+became wrong the same night.
+
+The 4 xfails this section used to describe are retired, with their fenced
+replacements in place.
+
+Two things the suite is now *proved* to be rather than described as:
+
+- **Offline.** CI runs it under `scripts/audit/netguard.py`, which makes every
+  outbound connect, `connect_ex`, `create_connection` and `getaddrinfo` raise,
+  loopback excepted. The old `-m "not requires_network"` deselected **zero** tests
+  — `--strict-markers` validates markers on tests, not a name in a `-m`
+  expression — so the guarantee rested entirely on nobody having written a test
+  that dialled out. A positive control was run first, because a guard that never
+  fires would pass this suite silently.
+- **Order-independent.** `scripts/audit/shuffle_order.py` shuffles the whole
+  collected list, tearing tests out of their file and class groupings; 841 passed
+  at seeds 11 and 99 when it was run. Not wired into CI — that is an audit worth
+  running deliberately, not a per-push cost.
 
 `migkit demo` runs keyless in **a couple of seconds** and returns NO-GO at exit 1,
 with a self-contained 25,760-byte report carrying the red FAKE MODELS band — the
@@ -45,12 +58,38 @@ migration" is the term of art in this niche — but found a better reason: the o
 name gave the verb and omitted the object, colliding with 198 GitHub repositories,
 a taken npm name, and a trademarked commercial product on the exact phrase.
 
-Session 4 still to do: **see a green CI matrix with your own eyes** (see known
-gaps — CI has never been green on this repository), the version bump off
-`0.1.0.dev0`, trusted-publisher registration on both indexes, and the release
-itself. `scripts/verify_release.py` reports the remaining blockers and refuses to
-pass while they stand: **14 passed, 1 failed, 0 flagged, 0 skipped of 15 checks**,
-the single failure being `version-not-dev`, which is the bump and is meant to
+**CI is green** — the thing this section used to say had never happened. All four
+Windows cells had been failing on a test that looked for the console script beside
+`sys.executable`, which holds in a venv and on Ubuntu but not on GitHub's Windows
+toolcache; because `demo` and `build` declare `needs: test`, neither had ever
+executed. Resolved through `sysconfig.get_path("scripts", …)` and watched green on
+the real matrix.
+
+Two CI jobs were added or rewritten on 2026-08-14 and one of them may legitimately
+fail:
+
+- `dependency_surface.py --check` fails the build when `COMPATIBILITY.md`'s table
+  disagrees with the AST. It has already caught two changes it was not written
+  for.
+- The `demo` job now times **`venv` + `pip install` + `migkit demo`** against the
+  120-second definition of done. It used to time only the last step, which
+  measured ~8.6 s of the whole path.
+
+  It **passes at 12 s** on the Ubuntu runner. It measured **127 s and 142 s** on
+  this Windows machine, 83–91 s of that being pip dragging in numpy and scipy.
+  Both numbers are real and they are for the same interval; Ubuntu runners get
+  manylinux wheels and a warm cache, a Windows stranger gets neither. So the green
+  tick establishes the claim for a Linux CI machine and says nothing about the
+  environment where it was falsified. Extending the job to a Windows runner is one
+  matrix entry and is the honest fix; narrowing the published claim to name its
+  environment is the other. **Do not go back to timing a smaller interval.**
+
+Session 4 still to do: the version bump off `0.1.0.dev0`, making the repo public,
+trusted-publisher registration on both indexes, the TestPyPI dry run, and the
+release itself. `scripts/verify_release.py` reports the remaining blockers and
+refuses to pass while they stand: **14 passed, 1 skipped of 15 checks** on
+`--allow-dev-version`, exiting 2 because a skip is not a pass; without that flag
+the `version-not-dev` check fails outright, which is the bump and is meant to
 block until the release act happens.
 
 Session 4 is not in the build plan, which defines three build sessions. It is the
@@ -312,10 +351,13 @@ public without a second thought.
    record it in this file, work around it at the API surface, do not monkey-patch.
 2. **The report renders from the evidence log, not from in-memory state.** A
    crashed run must still produce a partial report from disk.
-3. **The suite is green with no credentials and no network.** The demo path uses
-   `FakeAdapter`; anything needing a key is marked `requires_network`. As of
-   2026-08-13 no test carries that marker — the suite is offline in its entirety,
-   so `-m "not requires_network"` currently deselects nothing.
+3. **The suite is green with no credentials and no network — enforced, not
+   assumed.** The demo path uses `FakeAdapter`. No test carries the
+   `requires_network` marker, so `-m "not requires_network"` deselects nothing and
+   never did; the invariant now rests on `scripts/audit/netguard.py`, which CI
+   runs and which makes every outbound connection and DNS resolution raise. A
+   marker expression is a filter, not a guarantee — that distinction cost this
+   project a false claim in a release contract.
 4. **Two artifacts are comparable only if their `goldenset_hash` and judge-config
    hash both match.** Comparing across either is an `ArtifactError`, not a
    warning.
@@ -330,6 +372,39 @@ public without a second thought.
 
 Recorded entering Session 2 unless noted, and re-checked against the tree on
 2026-08-13.
+
+### Added 2026-08-14, and the two that block a release
+
+- **`COMPATIBILITY.md` records verification against rigor 0.1.0. Users get
+  0.1.1.** The bound `>=0.1.0,<0.2` permits it, so every fresh install has been
+  resolving 0.1.1 while this document — and, until it was upgraded, this repo's
+  own `.venv` — described 0.1.0. This was dispatched to an agent that died before
+  starting; **none of it is done.** It is a release blocker rather than a tidy-up,
+  because 0.1.1's `is_pinned` refuses every current Anthropic model id while
+  accepting one retired in February, and `migkit` calls `require_pinned` before
+  spending a call — so on the version users actually install, the documented
+  real-model path refuses the models they would reach for. Fixed on rigor's
+  `main`, not in 0.1.1. Re-verify against the *published* wheel.
+
+- **The scale fixes were not independently re-measured.** The report cap, judging
+  concurrency and evidence-log streaming all landed and the suite passes, but the
+  agent that made the change was cut off by an API failure before reporting, and
+  its work was recovered from an uncommitted worktree. The before-numbers in
+  `docs/release-evidence.md` are sound; there are no verified after-numbers at
+  those scales. Do not publish a performance claim without measuring.
+
+- **`judge_artifact`'s `concurrency` is new and its determinism guarantee is the
+  load-bearing part.** The artifact must be byte-identical at any setting;
+  `_graded_in_order` is what buys that. If you touch judging, re-prove it with a
+  hash over the records rather than assuming it.
+
+- **The demo report's own filename was tracked in git and shipped in the sdist**
+  for two commits, because `.gitignore` had `*.report.html` and the demo writes
+  `migkit-demo-report.html` — a hyphen apart. Both spellings are ignored now. The
+  general lesson is the reason it is recorded: `git status` was clean throughout,
+  and no test would ever have caught it. **Build the sdist and read it** before a
+  release; that check also caught the sibling shipping its agent worktrees and
+  session-memory directory.
 
 - **CI has never been green on this repository, and the fix is unwatched.** Added
   2026-08-13, and it should have been recorded the day CI was written. All four
