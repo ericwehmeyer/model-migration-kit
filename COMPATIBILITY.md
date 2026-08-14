@@ -13,21 +13,66 @@ the installed package and the output is pasted, not summarised.
 
 | | |
 |---|---|
-| `opik-rigor` | **0.1.0** (installed from PyPI — see provenance below) |
+| `opik-rigor` | **0.1.1** (installed from PyPI — see provenance below) |
 | `jinja2` | **3.1.6** |
 | `rich` | **15.0.0** |
-| Declared bound | `opik-rigor>=0.1.0,<0.2` (`pyproject.toml`) |
+| Declared bound | `opik-rigor>=0.1.1,<0.2` (`pyproject.toml`) |
 | Python used to verify | **3.14.4** (Windows, `.venv`) |
 | Python in CI | **3.10, 3.11, 3.12, 3.13** × `ubuntu-latest`, `windows-latest` (`.github/workflows/ci.yml`) |
 | rigor's `Requires-Python` | `>=3.10` |
 | rigor's runtime deps | `scipy>=1.10` (pulls `numpy`; here 1.18.0 / 2.5.2) |
-| Verified on | 2026-08-13 |
+| Verified on | **2026-08-14** against 0.1.1; first written 2026-08-13 against 0.1.0 |
 | Method | Introspected the installed wheel with `inspect`, `typing.get_protocol_members`, and live calls in `.venv` |
+
+> ### ⚠ Two defects in 0.1.1 make the documented real-model path unusable
+>
+> Verified against **the installed 0.1.1 wheel**, not rigor's source tree. Both are
+> fixed on rigor's `main` and **unreleased**, so they are what a user gets today.
+>
+> **1. `is_pinned` refuses every current frontier model id**, and accepts one
+> retired six months ago. `migkit` calls `require_pinned` at judge-config load,
+> before a single API call is spent, so this is the first thing a user meets:
+>
+> ```
+> is_pinned('claude-opus-5'             ) = False   # current frontier
+> is_pinned('claude-sonnet-5'           ) = False   # current frontier
+> is_pinned('claude-opus-4-8'           ) = False   # current frontier
+> is_pinned('claude-opus-4-6'           ) = False   # current
+> is_pinned('claude-haiku-4-5'          ) = False   # current
+> is_pinned('claude-haiku-4-5-20251001' ) = True    # current, dated
+> is_pinned('claude-3-7-sonnet-20250219') = True    # RETIRED 2026-02-19
+> is_pinned('gpt-4.1'                   ) = True    # OpenAI alias, re-points
+> ```
+>
+> **What a user can do today:** name a *dated* model id — `claude-haiku-4-5-20251001`
+> is both accepted and current. 0.1.1's rule requires a trailing date or explicit
+> version marker, and Anthropic still publishes dated snapshots for some models.
+> There is no route to `claude-opus-5`, which carries no date at all.
+>
+> **2. `AnthropicAdapter` sends `temperature` unconditionally**, and the current
+> generation returns HTTP 400 for it:
+>
+> ```
+> AnthropicAdapter.__init__(self, model_id, *, max_tokens=1024,
+>                           temperature: float = 0.0, timeout=60.0, **forbidden)
+> complete() contains:  temperature=self._temperature,
+> AnthropicAdapter(model_id=..., temperature=None)
+>   -> TypeError: float() argument must be a string or a real number, not 'NoneType'
+> ```
+>
+> **No caller-side escape**: no omit-sentinel, `None` rejected by the constructor,
+> passed on every call. So even a model id that clears defect 1 fails at the API
+> boundary. The two are sequential — the pin rule is the front door locked, this is
+> there being no room behind it.
+>
+> Neither touches the keyless path. `migkit demo`, `--adapter fake` and the whole
+> test suite are unaffected, which is exactly why this repository's CI is green
+> while the documented real-model path is not usable.
 
 ```
 $ .\.venv\Scripts\python.exe -c "import sys, importlib.metadata as md; print(sys.version); [print(d, md.version(d)) for d in ('opik-rigor','jinja2','rich','pytest','scipy','numpy')]"
 3.14.4 (tags/v3.14.4:23116f9, Apr  7 2026, 14:10:54) [MSC v.1944 64 bit (AMD64)]
-opik-rigor 0.1.0
+opik-rigor 0.1.1
 jinja2 3.1.6
 rich 15.0.0
 pytest 9.1.1
@@ -42,14 +87,20 @@ installed from a local path, a VCS URL, or a direct file, and omits it for an
 index install.
 
 ```
-$ cat .venv/Lib/site-packages/opik_rigor-0.1.0.dist-info/INSTALLER
+$ cat .venv/Lib/site-packages/opik_rigor-0.1.1.dist-info/INSTALLER
 pip
-$ ls .venv/Lib/site-packages/opik_rigor-0.1.0.dist-info/
-INSTALLER  METADATA  RECORD  WHEEL  entry_points.txt  licenses
-$ cat .venv/Lib/site-packages/opik_rigor-0.1.0.dist-info/direct_url.json
-cat: ...: No such file or directory
+$ ls .venv/Lib/site-packages/opik_rigor-0.1.1.dist-info/
+INSTALLER  METADATA  RECORD  REQUESTED  WHEEL  entry_points.txt  licenses
+$ cat .venv/Lib/site-packages/opik_rigor-0.1.1.dist-info/direct_url.json
+cat: .venv/Lib/site-packages/opik_rigor-0.1.1.dist-info/direct_url.json: No such file or directory
 (no direct_url.json -> installed from an index, not a path)
 ```
+
+`REQUESTED` is new here and means the same thing in the other direction: pip
+writes it for a distribution the user asked for by name, rather than one pulled in
+as somebody else's dependency. Together with the absent `direct_url.json` that is
+two independent signals that this is the published artifact, fetched from an index
+by name.
 
 **The rule this file exists to honour.** Introspection tells you what an API *is*.
 It does not tell you what its documentation *says*. Those are separate claims
@@ -57,8 +108,16 @@ needing separate evidence — the sibling project learned this by asserting a fa
 in someone else's docs on the strength of one HTML-to-markdown converter, and had
 to retract it (see `opik-rigor/COMPATIBILITY.md`, "A correction to this file, not
 to the docs"). So: every statement below is about **behaviour of the installed
-0.1.0 wheel**, backed by a command. Where this file talks about rigor's *roadmap*
+0.1.1 wheel**, backed by a command. Where this file talks about rigor's *roadmap*
 or its *intentions*, it cites `opik-rigor/PROGRESS.md` and says so.
+
+**A second rule, learned on 2026-08-14:** a statement about rigor's *source tree*
+is not a statement about what users get either. rigor's `main` currently carries a
+rewritten pin rule, an adapter that omits `temperature`, a lazily-imported scipy
+and several tightened gates — **none of it released**. Everything below was run
+against the wheel `pip` resolved, and where a defect is fixed upstream that is
+said explicitly and separately, never merged into the description of what 0.1.1
+does.
 
 ---
 
@@ -137,7 +196,35 @@ load so an unpinned judge model is a `ConfigError` before any judge is
 constructed; `context=` is passed and appears in the message
 (`ModelPinError: judge 'x' in cfg.toml refuses unpinned model id 'gpt-4o'. ...`).
 
-The signatures those names have in 0.1.0:
+**What 0.1.0 → 0.1.1 changed for this consumer: nothing broke, five names
+appeared.** Re-checked mechanically on 2026-08-14, comparing the installed 0.1.1
+against the table below rather than re-reading it:
+
+```
+signatures checked: 7, changed: 0
+attribute-level dependencies -- Run, Verdict, SampleResult, PinnedJudge,
+EvidenceLog: none missing
+__all__: 33 names -> 38
+added: SCORE_MIN, SCORE_MAX, hash_rubric_file, hash_rubric_text, example_rubric_path
+removed: none
+SCORE_MIN = 1.0   SCORE_MAX = 5.0     (unchanged)
+Adapter protocol members: ['complete', 'model_id']   (unchanged)
+pytest11 entry point: rigor = opik_rigor.integrations.pytest_plugin  (unchanged)
+```
+
+That is the whole point of keeping this file: rigor promised 0.1.1 would be
+additive, and this is the check rather than the promise. The four names this
+project had been importing from `opik_rigor.judge` — a violation of its own first
+invariant — are among the five added, which is what let that violation be retired.
+
+**The bound moved to `>=0.1.1,<0.2` for that reason.** Note what the old bound did
+in the meantime: `>=0.1.0,<0.2` let every *fresh* install resolve 0.1.1 while this
+repository's long-lived `.venv` kept 0.1.0, so for a day this document described a
+version strangers were no longer getting, and nothing detected that. A long-lived
+venv stops being evidence about what users get the moment a floor is permissive.
+
+The signatures those names have — recorded against 0.1.0, re-verified unchanged in
+0.1.1:
 
 ```
 $ .\.venv\Scripts\python.exe -c "import inspect, opik_rigor; print(opik_rigor.__all__); ..."
@@ -217,16 +304,38 @@ EvidenceError          in __all__: True  top-level attr: True
 __version__            in __all__: True  top-level attr: True
 ```
 
-These are not private — no leading underscore, and `SCORE_MIN` / `SCORE_MAX` are
-documented in `docs/session-2-contract.md` §0 — but they are the thinnest part of
-the promise under invariant 1 ("model-migration-kit imports opik-rigor's *public* API
-only"). A rigor release could move them without touching `__all__` and be within
-its rights. The exposure is small and bounded: two floats used for imputation and
-range checks, and one sha256 wrapper; any of them could be inlined in an
-afternoon. The honest thing to do is ask rigor to re-export them; the honest thing
-to record is that **in the released 0.1.0 it has not** — the command above is the
-installed wheel talking, not the sibling checkout. rigor's unreleased tree does
-export them; see §5.F for what that does and does not mean here.
+These were the thinnest part of the promise under invariant 1
+("model-migration-kit imports opik-rigor's *public* API only"): not private — no
+leading underscore, and `SCORE_MIN` / `SCORE_MAX` documented in
+`docs/session-2-contract.md` §0 — but reachable only through `opik_rigor.judge`,
+so a rigor release could have moved them without touching `__all__` and been
+within its rights.
+
+**Closed in 0.1.1**, which is the version this file is now verified against:
+
+```
+$ .\.venv\Scripts\python.exe -c "import opik_rigor; [print(...) for n in (...)]"
+SCORE_MIN            in __all__: True  top-level attr: True
+SCORE_MAX            in __all__: True  top-level attr: True
+hash_rubric_file     in __all__: True  top-level attr: True
+hash_rubric_text     in __all__: True  top-level attr: True
+example_rubric_path  in __all__: True  top-level attr: True
+```
+
+Every site in this repository now imports them from the package root, and
+`grep -rn "from opik_rigor\." src` returns nothing. That is checked on every push
+rather than asserted: `scripts/dependency_surface.py --check` derives the table in
+§1 from the AST and fails CI when this document and the tree disagree. It was
+written because this record was wrong three times in a row about how many sites
+existed, always understating — the fix landed with **six**, where the last count
+said three.
+
+One recorded exception, in tests only: `tests/test_stranger_path.py` imports
+`opik_rigor.adapters.{anthropic,openai_compat}` for their `PACKAGE` constants,
+which are not in `__all__`. It exists to detect drift — it asserts the SDK names
+this CLI tells a reader to install are the ones rigor is actually about to import
+— so it is the opposite of a hidden dependency, but it is a dependency and it is
+listed rather than waved through.
 
 ### rigor's pytest plugin autoloads into this suite
 
