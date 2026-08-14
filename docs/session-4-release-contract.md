@@ -743,6 +743,19 @@ Evidence: the pass/skip counts. Record them; the sibling records `514 passed / 1
 skipped` in three separate places and that is how a later reader knows whether
 something silently stopped running.
 
+> **Amendment, 2026-08-14 — `-m "not requires_network"` deselects nothing.** The
+> row implied a suite partitioned into keyless and networked halves, with the skip
+> count as the evidence that the partition held. There is no such partition:
+> `requires_network` was removed from `[tool.pytest.ini_options] markers` and
+> carried by no test, and pytest does not error on an unknown name inside a `-m`
+> expression, so the flag is a no-op that reads as a guarantee. Verified: the run
+> above is `750 passed`, **0 deselected, 0 skipped**. Keylessness is enforced by
+> the two `$env:` assignments on the line before it and by nothing else — which is
+> the real mechanism, and is what both workflows do. The flag is kept in the
+> command only so that re-adding the marker later needs no edit here; the expected
+> evidence is a pass count and **a skip count of zero**, and any other skip count
+> means a test stopped running rather than that the network was avoided.
+
 **2. Lint clean.**
 ```powershell
 .\.venv\Scripts\python.exe -m ruff check src tests
@@ -784,7 +797,7 @@ $code = $LASTEXITCODE; $sw.Stop()
 & "$tmp\Scripts\python.exe" -c "import model_migration_kit,opik_rigor; print(model_migration_kit.__file__); print(opik_rigor.__file__)"
 Pop-Location
 ```
-Evidence: exit code 0; elapsed seconds (the number the README's two-minute claim
+Evidence: **exit code 1**; elapsed seconds (the number the README's two-minute claim
 rests on); `demo.html` exists and is non-trivial in size; **both** `__file__` paths
 under `$tmp\Lib\site-packages` and neither under `C:\Users\ewehm\repos\` — the
 latter is the empirical version of Phase 0's import-name check, and also proves
@@ -795,6 +808,26 @@ Running from `$tmp` rather than the repo matters. A demo that reads
 `.\goldensets\demo.jsonl` relative to the cwd passes from the repo root and fails
 from anywhere else, which is every user.
 
+> **Amendment, 2026-08-14 — two defects, found while auditing §5 for rows that
+> cannot be run as written.**
+>
+> The evidence line said **exit code 0**. It is 1, for exactly the reason the
+> Phase 9 amendment above already gives: the bundled demo exists to show the tool
+> *refusing* an unsafe migration, so a correct run is a NO-GO. Verified — `migkit
+> demo` prints `VERDICT: NO-GO (exit 1)` and exits 1. The Phase 9 amendment was
+> written and never propagated down here, which left the same landmine armed in the
+> checklist a release is actually run from, one row above the exit-code matrix that
+> publishes 1 as NO-GO.
+>
+> `py -3.12` resolves to nothing on the release machine: `py --list` returns
+> `-V:3.14 * Python 3.14.4` and nothing else, so this row, item 7's `$tmp`, and the
+> identical lines in Phases 7 and 9 all fail at their first command. This is left
+> as a flag rather than silently re-pointed at 3.14, because *which* interpreter the
+> definition-of-done test runs on is a decision — 3.12 is mid-range of the supported
+> matrix and 3.14 is above its top classifier — and improvising it here is how a
+> checklist starts describing a different check than the one anybody agreed to.
+> Install 3.12 or take it to the lead; do not edit the number in passing.
+
 **6. The HTML is genuinely self-contained.** Plan §1: it must open in an airgapped
 compliance review.
 ```powershell
@@ -803,16 +836,118 @@ Select-String -Path "$tmp\demo.html" -Pattern 'https?://|src\s*=|<script[^>]+src
 Evidence: no external fetch. Links in prose are fine; anything the browser would
 *load* is not.
 
-**7. Exit-code matrix.** Plan §3, and `PROGRESS.md` invariant 7.
+**7. Exit-code matrix.** Plan §3, and `PROGRESS.md` invariant 7. **Run from the
+repository root**, with `$tmp` still holding item 5's venv. Item 5 ends in
+`Pop-Location`, so the cwd is already right when the rows are run in order; run this
+row on its own from `$tmp` and every path below silently fails to resolve.
+
 ```powershell
-foreach ($f in 'go','nogo','review','error') {
-    & "$tmp\Scripts\migkit.exe" compare --baseline .\tests\fixtures\$f-a.jsonl --candidate .\tests\fixtures\$f-b.jsonl --judges .\tests\fixtures\judges.toml
-    "{0} -> {1}" -f $f, $LASTEXITCODE
+# Exit 3, through the installed console script, keyless. The golden set recorded in
+# `error-a.jsonl` no longer matches the one on disk, and `cli._goldenset_for`
+# refuses the pair before any judge is constructed.
+& "$tmp\Scripts\migkit.exe" compare --baseline tests\fixtures\error-a.jsonl `
+    --candidate tests\fixtures\error-b.jsonl --judges tests\fixtures\judges.toml
+"error -> {0}" -f $LASTEXITCODE
+
+# Exits 0, 1 and 2, through the library seam. Re-derives each verdict with the
+# shipped `JudgeConfig.build`, `judge_artifact` and `compare`, substituting only at
+# rigor's `Adapter`, and asserts the committed fixtures are byte-identical to a
+# rebuild -- so the matrix cannot pass against a fixture that has quietly drifted.
+.\.venv\Scripts\python.exe tests\fixtures\make_fixtures.py --check
+
+# The same three codes as *process* exit statuses out of the installed wheel. Each
+# evidence log the line above wrote goes back through `migkit report`, which rebuilds
+# the verdict off disk via `_render` -- the path `migkit compare` itself returns
+# through, and a different computation from the one `compare()` handed back.
+$ev = Join-Path $env:TEMP 'mk-matrix'
+.\.venv\Scripts\python.exe -c "import sys, pathlib; sys.path.insert(0, 'tests/fixtures'); import make_fixtures as mf; d = pathlib.Path(sys.argv[1]); d.mkdir(parents=True, exist_ok=True); [mf.rederive(c, d) for c in ('go','nogo','review')]" $ev
+foreach ($case in 'go','nogo','review') {
+    & "$tmp\Scripts\migkit.exe" --quiet report "$ev\$case-evidence.jsonl" `
+        --goldenset tests\fixtures\goldenset.jsonl
+    "{0} -> {1}" -f $case, $LASTEXITCODE
 }
+Remove-Item -Recurse -Force $ev
 ```
-Evidence: `go -> 0`, `nogo -> 1`, `review -> 2`, `error -> 3`, matching
-`contracts.Verdict.EXIT_CODES`. Adjust the fixture paths to whatever Session 2/3
-actually built.
+
+Evidence, all four codes matching `contracts.Verdict.EXIT_CODES`: `error -> 3`
+carrying the **golden-set drift** message and not a `no run artifact at ...` one —
+that distinction is the entire difference between this row passing and this row
+having been run from the wrong directory; `11 committed fixture files are
+byte-identical to a rebuild`, then `go -> GO exit 0`, `nogo -> NO-GO exit 1`,
+`review -> REVIEW exit 2`; then `go -> 0`, `nogo -> 1`, `review -> 2`.
+
+> **Amendment, 2026-08-14 — the matrix could not be run as written at all, and the
+> version that can be run is a substitution.**
+>
+> The row said: run `migkit compare` against four fixture pairs, from `$tmp`, using
+> `.\tests\fixtures\` paths, and observe 0, 1, 2 and 3. Every clause of that is
+> wrong, and building the fixtures on the night of 2026-08-13 is what proved it.
+>
+> **`migkit compare` is a credentialed verb by design.** `cli._judge_adapter`
+> refuses `adapter = "fake"` outright and exits 3 saying why: a fake *model* is
+> disclosed by the report's red `FAKE MODELS` band, which reads the run header, but
+> a fake *judge* is disclosed by nothing, so a scripted judge grading real
+> completions would put numbers into a compliance document that nothing marks as
+> invented. The two real judge adapters call `require_env_key` in `__init__`, so
+> keyless they raise `AdapterError` and exit 3, and with a key they spend it. Run as
+> written, offline, the four rows return **3, 3, 3, 3**, and three of those threes
+> are the config loader refusing the judge rather than anything about the pairs. No
+> fixture can change that. The only artifact that could is a judged one committed
+> with `adapter_class: AnthropicAdapter` over scripted grades — a file that lies
+> about its own provenance, in the repository whose product is provenance. The
+> fixture author refused to create it and was right to.
+>
+> **The path clause was wrong too, and wrong in the direction that hides itself.**
+> The row took its working directory from item 5 and then used repository-relative
+> paths. From `$tmp` all four invocations exit 3 with `no run artifact at
+> tests\fixtures\...`, so the `error` case *matches its expected evidence* while
+> proving nothing whatever — a row certifying itself from the wrong directory.
+> Hence "run from the repository root", stated rather than assumed: the golden-set
+> path recorded inside every fixture is repository-relative by necessity, because a
+> fixture carrying `C:\Users\...` is unusable on the Linux half of the CI matrix.
+>
+> **What the row says now.** Exit 3 is verified through the console script, end to
+> end and keyless: `migkit compare` refusing a drifted golden set is the real verb,
+> the real arguments, and the real `main` turning an exception into a process
+> status. Exits 0, 1 and 2 are verified through the library seam with rigor's
+> `Adapter` substituted, and the fixtures are pinned by
+> `tests/fixtures/make_fixtures.py --check`, which rebuilds them into a temporary
+> directory and asserts the committed bytes are identical before it prints a single
+> verdict — a matrix run against a drifted fixture is a matrix about nothing.
+>
+> **Is a row that can only be satisfied by a substitution still doing its job?**
+> Answered rather than hedged: **yes — and only because of the third block.** A
+> substitution keeps a row honest when it is made at a seam the product itself
+> sanctions, when the row says out loud what it did not run, and when everything
+> downstream of the seam is still driven for real. A row that stopped at
+> `make_fixtures.py --check` would fail that third test, so it does not stop there.
+> `cmd_compare` does not return `compare()`'s exit code. It returns `_render(...)`,
+> which discards the `ComparisonReport` just built, reconstructs a `ReportModel`
+> from the evidence log **on disk**, and maps the verdict string it reads back
+> through `Verdict.exit_code`. `--check` asserts the other computation, the
+> in-memory one. A defect in that round trip — a verdict the report model cannot
+> read back, a record written under a key the reader does not look for — would pass
+> the fixture check and exit 3 in production for what should have been a GO. The
+> `migkit report` block closes precisely that: same `_render`, same
+> `Verdict.exit_code`, same `main`, out of the installed wheel, on evidence logs the
+> real `compare()` wrote rather than on a fixture log with its verdict field
+> overwritten, which is all `tests/test_cli.py` can do.
+>
+> **What is still not covered, written down so nobody has to rediscover it.**
+> Nothing here, and nothing in `tests/`, drives `cli.cmd_compare` to 0, 1 or 2. Its
+> prologue — two `RunArtifact.load`s, `_goldenset_for`, `JudgeConfig.load`,
+> `_judge_adapter`, and the order the panel is built in — is exercised for the
+> `error` case only. That is a narrow gap, and it is the gap an exit-code defect
+> would most plausibly live in, so recording it here is not closing it. Two things
+> close it and they are not alternatives. First, a test in `tests/test_cli.py` that
+> substitutes `cli._judge_adapter` and asserts `cli.main(["compare", ...])` returns
+> 0, 1 and 2 against these fixtures: free, offline, and it covers the whole verb.
+> Second, **one** credentialed `migkit compare` against the `go` pair during
+> Phase 7, recorded in the release transcript with what it cost — the only thing
+> that will ever exercise `_judge_adapter`'s provider branches, which are
+> unreachable offline by design and therefore unreachable by any checklist that
+> claims to be keyless. Neither is this document's to write; both belong in
+> `PROGRESS.md` as open gaps until they exist.
 
 **8. Import purity, in a subprocess, from the installed wheel.**
 ```powershell
