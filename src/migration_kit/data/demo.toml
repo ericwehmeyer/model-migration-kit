@@ -1,0 +1,32 @@
+# Thresholds and judges for `migkit demo`.
+#
+# Bundled so the demo also demonstrates the threshold echo: every number here
+# appears in the report beside the verdict it produced. A gate nobody can see
+# loosened is not a gate.
+
+[[judge]]
+name   = "accuracy"
+model  = "fake-judge-v1"
+rubric = "demo_rubric.md"
+
+[thresholds]
+# The bar the candidate's pass rate must clear, as a Wilson lower bound rather
+# than an observed rate -- 19 of 20 observed is not evidence of a 95% model.
+pass_rate_floor = 0.90
+
+# One-sided; an improvement is not a regression.
+alpha = 0.05
+confidence = 0.95
+
+# A judge that cannot parse its own model's answers more than this often
+# invalidates every number downstream of it, so the run aborts instead.
+judge_failure_tolerance = 0.05
+
+# The regression the demo promises to be able to notice: a ten-point drop in
+# pass rate. At 12 items x 5 draws = 60 completions per side this is under the
+# ~108-229 completions the two-proportion approximation asks for, which is
+# exactly why the demo's degradation is large enough to be caught by the
+# regression test rather than resting on the floor gate alone. A demo that
+# reported REVIEW would be honest and would also demonstrate nothing.
+min_detectable_effect = 0.10
+power_target = 0.80
