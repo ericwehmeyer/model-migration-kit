@@ -18,6 +18,12 @@ htmlcov/
 *.jsonl
 !goldensets/**/*.jsonl
 !tests/**/fixtures/*.jsonl
+# The demo's golden set lives inside the package so it ships in the wheel. Two
+# independent reviews found the same trap here: without this line the file is
+# ignored, every local test and the editable-install CI demo job still pass, and
+# the demo breaks only for people who install the wheel -- who are exactly the
+# audience the definition of done is written about.
+!src/migration_kit/data/*.jsonl
 .migkit/
 reports/
 *.report.html

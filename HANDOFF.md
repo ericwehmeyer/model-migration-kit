@@ -27,14 +27,24 @@ imported from it, none reimplemented. Apache-2.0, personal repo.
 
 ## Where the build stands
 
-Session 0 is done: scaffold, Apache-2.0 license, CI, and the frozen contracts.
-**Nothing is committed yet** — `git init` has run and every file is untracked.
-The first commit should be exactly this scaffold, before module work starts.
+Sessions 0 and 1 are done and committed. Session 0 is the scaffold, Apache-2.0
+license, CI, and frozen contracts (`45b6567`). Session 1 is the offline data
+path: `goldenset.py` and `runner.py`, with tests written by agents who did not
+write the modules.
 
-**Next up is Session 1: the offline data path.** Build `goldenset.py` (strict
-loader/validator, JSONL, hash embedded downstream) and `runner.py` (executes a
-golden set against one model via a rigor adapter, n samples per item, resumable).
-Session 1's exit criteria are in the build plan, section 2.
+**Next up is Session 2: judgment and verdict** — `judging.py` and
+`comparison.py`. Its exit criteria are in the build plan, section 2, and its
+module contract was derived and adversarially stress-tested before any code; see
+PROGRESS.md for what was frozen and why.
+
+Sessions 3 and 4 also have frozen contracts now. Session 4 is not in the build
+plan — it is the release phase the plan defers into, specified because the
+sibling project improvised it and paid for that. Two things it established that
+are worth knowing early: `migration-kit`, `migration_kit` and `migkit` were all
+unclaimed on PyPI and TestPyPI when checked on 2026-08-13 (**re-check before
+tagging** — the sibling checked after tagging and ate a 34-file rename), and the
+demo's golden set must live inside the package rather than at the repo root, or
+it ships in nobody's wheel while every test still passes.
 
 ## Environment
 
@@ -82,6 +92,18 @@ specified.
 One caveat learned late on the previous project, worth carrying: introspecting a
 package tells you what its API *is*. It does not tell you what its documentation
 *says*. Those are separate claims needing separate evidence.
+
+Session 1 tested the method itself, and the numbers are worth recording. Writing
+the modules and smoke-testing them found 2 defects. An independent reviewer, given
+the same modules and a checkable brief, found 10 more — including two that would
+have produced wrong verdicts rather than visible errors, and one where the code
+contradicted a docstring in the frozen contracts. The test authors, who never saw
+a passing run of the code, found a third class: a validation branch that could
+never execute, and an over-broad guard I had added *while fixing* a review finding
+— caught because their counting proxy was a legitimate use the guard refused. None
+of the three roles would have found the others' defects. That is the argument for
+the method in one paragraph, and it is why the cost of running it is worth paying
+again in Session 2.
 
 ## Sibling project
 

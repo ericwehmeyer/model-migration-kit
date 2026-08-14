@@ -32,6 +32,13 @@ ARTIFACT_SCHEMA_VERSION = 1
 #: (judge.verdict, sample.completed, assertion.evaluated) appear alongside these;
 #: the `migkit.` prefix keeps the two namespaces legible in one file.
 EVENT_RUN_STARTED = "migkit.run_started"
+#: One record per completion, carrying the model string. Added after the first
+#: conformance review found the runner logging only per-item aggregates, which
+#: the build plan's acceptance contract does not allow: it asks for an "evidence
+#: line per completion with model string present". The distinction matters because
+#: the evidence log, not the artifact, is what the report renders from -- an
+#: aggregate cannot answer "which draw failed, and how long did it take".
+EVENT_COMPLETION = "migkit.completion"
 EVENT_ITEM_COMPLETED = "migkit.item_completed"
 EVENT_RUN_COMPLETED = "migkit.run_completed"
 EVENT_JUDGING_COMPLETED = "migkit.judging_completed"

@@ -66,3 +66,21 @@ class JudgeReliabilityError(MigrationKitError):
 
 class ConfigError(MigrationKitError):
     """Raised when the TOML configuration is invalid or a threshold is nonsense."""
+
+
+class ReportError(MigrationKitError):
+    """Raised when a report cannot be rendered from the evidence it was given.
+
+    Added deliberately after this module was frozen, rather than by reusing the
+    base class, because the CLI maps exception types to exit codes and "the
+    evidence log does not contain a verdict" is a different thing from "the tool
+    broke". The alternative on the table was raising ``MigrationKitError``
+    directly, which would have made every unrelated failure indistinguishable
+    from a report failure at the one place that matters.
+
+    Note what this must never be used for: a report that is *partial* is not a
+    report that failed. A run killed halfway still renders, showing observed
+    counts against expected ones -- that is the whole point of rendering from the
+    evidence log. This is for evidence that cannot be read or does not describe a
+    comparison at all.
+    """
