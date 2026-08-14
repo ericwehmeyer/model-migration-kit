@@ -49,6 +49,7 @@ from opik_rigor.judge import SCORE_MIN, hash_rubric_file
 from .contracts import (
     ARTIFACT_SCHEMA_VERSION,
     EVENT_JUDGING_COMPLETED,
+    artifact_stem,
     canonical_json,
     hash_bytes,
     utc_now,
@@ -490,7 +491,21 @@ class JudgedArtifact:
 
 
 def judged_path_for(artifact: RunArtifact, out_dir: str | Path = ".") -> Path:
-    stem = Path(artifact.path).stem if artifact.path else artifact.header.model_id
+    """Where a judged artifact lands, beside the run artifact it grades.
+
+    The fallback branch slugs, and that is the whole point of it. A model id is an
+    arbitrary provider string, and this branch used it as a filename raw: a
+    ``model_id`` of ``../../../evil`` produced
+    ``out_dir/../../../evil.judged.jsonl`` and wrote outside the directory the
+    caller named. Unreachable from any shipped flow -- ``RunArtifact`` is always
+    constructed with a real path, so the first branch always wins -- but a latent
+    trap for a library caller, and ``artifact_path_for`` has slugged the same
+    string through ``artifact_stem`` all along. The two now agree.
+    """
+    if artifact.path:
+        stem = Path(artifact.path).stem
+    else:
+        stem = artifact_stem(artifact.header.model_id, artifact.header.goldenset_hash)
     return Path(out_dir) / f"{stem}.judged.jsonl"
 
 

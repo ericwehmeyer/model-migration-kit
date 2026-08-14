@@ -45,6 +45,20 @@ appears as an attribute value (a fetch). And jinja2 is configured with
 ``<img src="https://tracker/x.png">`` inside a completion is a real network fetch
 in an unescaped template.
 
+**Reconstruction fetches nothing either.** The paragraph above is about the
+document; this one is about the reader that builds it, and for a long time the two
+disagreed. Sharing an evidence log across machines is the *designed* workflow, so
+the paths inside it are attacker-influenced input that arrives on a reviewer's
+machine -- and they were handed straight to ``open()``. A recorded
+``C:\\Windows\\win.ini`` was read and parsed; a recorded
+``\\\\192.0.2.111\\share\\x.jsonl`` blocked for 21 seconds attempting an outbound
+SMB connection, which on Windows is how an attacker collects an NTLMv2 hash by
+naming a host. A module that works this hard to guarantee the rendered document
+fetches nothing may not fetch during *reconstruction*. :func:`_resolve` now
+confines every recorded path to the evidence log's own directory; ``--artifact-dir``
+and ``--goldenset`` are how the cross-machine case says where the files went, which
+is what those flags were always for.
+
 **The fake-model band derives from the artifacts, never from a flag.**
 ``RunHeader.adapter`` records ``type(adapter).__name__``, so ``is_demo`` is true
 whenever either side's adapter name starts with ``Fake``. The consequence is the
@@ -61,6 +75,7 @@ fourth number derived from them.
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -152,6 +167,22 @@ FETCHING_ATTRS = frozenset(
     }
 )
 
+#: ``<meta http-equiv="refresh" content="0;url=https://evil.example">`` is a
+#: navigation the browser performs on its own, with no element a fetching
+#: attribute belongs to, so the rules above walk straight past it. Nothing in the
+#: template emits one today; the detector's job is to catch the *future template
+#: edit*, and this one would have sailed through ``assert_self_contained``.
+_META_REFRESH_URL_RE = re.compile(r"(^|[;,\s])url\s*=", re.IGNORECASE)
+
+#: Inline event handlers. Forbidden as a class rather than checked for a URL:
+#: ``<script>`` is already banned outright on the argument that "no script at all"
+#: is a property a parser can check in one line, and an ``onload="fetch(...)"`` is
+#: script by another name. Same gap, same reasoning -- unreachable from data
+#: today, reachable from one template edit tomorrow. Anchored rather than a bare
+#: ``startswith("on")`` so that a future ``data-*``-style attribute is judged on
+#: what it is, not on two leading characters.
+_EVENT_HANDLER_RE = re.compile(r"^on[a-z]+$")
+
 #: Any scheme other than ``data:``. Applied to *attribute values only*, which is
 #: the distinction a regex over the raw document cannot make.
 _SCHEME_RE = re.compile(r"^\s*(?!data:)[a-zA-Z][a-zA-Z0-9+.-]*:")
@@ -223,6 +254,11 @@ class _UrlScanner(HTMLParser):
         many places fetch.
         """
         stripped = value.strip()
+        if _EVENT_HANDLER_RE.match(name):
+            return (
+                f"{name} is an inline event handler; it is script, and script may "
+                f"not appear in a self-contained report"
+            )
         if stripped.startswith("//"):
             return "protocol-relative URL; it fetches over whatever scheme the page was opened with"
         if _SCHEME_RE.match(value):
@@ -253,11 +289,40 @@ class _UrlScanner(HTMLParser):
 
     # -- HTMLParser hooks --------------------------------------------------- #
 
+    def _meta_refresh_reason(self, attrs: Sequence[tuple[str, str | None]]) -> str | None:
+        """``<meta http-equiv=refresh content="0;url=...">``, or None.
+
+        Checked on the element rather than the attribute because the fetch is not
+        in any one attribute: ``content`` is inert next to any other
+        ``http-equiv``, and ``http-equiv=refresh`` is inert without a ``url=`` in
+        ``content``. A same-page refresh with no ``url=`` reloads the local file
+        and is left alone -- pointless in a report, but not a fetch, and a
+        detector that reports non-fetches is a detector someone switches off.
+        """
+        values = {name.lower(): (value or "") for name, value in attrs}
+        if values.get("http-equiv", "").strip().lower() != "refresh":
+            return None
+        content = values.get("content", "")
+        if not _META_REFRESH_URL_RE.search(content):
+            return None
+        return (
+            "meta http-equiv=refresh navigates on its own; this one carries a url= "
+            "and the document would fetch it at view time"
+        )
+
     def _handle_tag(self, tag: str, attrs: Sequence[tuple[str, str | None]]) -> None:
         lowered = tag.lower()
         if lowered in FORBIDDEN_TAGS:
             self._add(lowered, "", "", f"<{lowered}> may not appear in a self-contained report")
             return
+        if lowered == "meta":
+            reason = self._meta_refresh_reason(attrs)
+            if reason is not None:
+                content = next(
+                    (value or "" for name, value in attrs if name.lower() == "content"), ""
+                )
+                self._add(lowered, "content", content, reason)
+                return
         for raw_name, raw_value in attrs:
             name = raw_name.lower()
             value = raw_value or ""
@@ -549,7 +614,10 @@ class ReportModel:
                 case where paths written on machine A do not resolve on machine B.
                 The override is printed in the provenance block: a report that
                 quietly read a different file than the one recorded is worse than
-                one that failed.
+                one that failed. Required whenever the recorded path points
+                outside the evidence log's own directory -- see :func:`_resolve`,
+                which is where a shared log stopped being able to name any file it
+                liked on the reviewer's machine.
             artifact_dir: Same, for the run and judged artifacts. Resolved by
                 basename inside this directory.
             max_output_chars: Per output block. Truncation is always marked.
@@ -563,6 +631,11 @@ class ReportModel:
                 ``migkit.comparison`` record, in which case there is nothing to
                 report *on*. Everything else degrades and is named in the
                 completeness strip.
+            ReportError: if the log records an artifact or golden-set path in a
+                form this tool never writes -- a UNC share, a ``\\\\?\\`` device
+                prefix, a ``..`` segment -- and no override was given. That is an
+                edited log rather than a moved one, and nothing is opened before
+                the refusal.
         """
         path = Path(evidence)
         if path.is_dir():
@@ -591,13 +664,20 @@ class ReportModel:
         warnings: list[str] = [str(one) for one in payload.get("warnings", ())]
         missing: list[str] = []
 
-        gs_view = _load_goldenset(payload, goldenset, warnings)
+        # Every path this reconstruction reads out of the log is resolved against
+        # the log's own directory and may not leave it. See :func:`_resolve`.
+        base_dir = path.parent
+        gs_view = _load_goldenset(payload, goldenset, warnings, base_dir)
         latency = payload.get("latency", {}) or {}
 
         base_side = dict(payload.get("baseline", {}) or {})
         cand_side = dict(payload.get("candidate", {}) or {})
-        base_run, base_judged = _load_side(base_side, artifact_dir, "baseline", warnings)
-        cand_run, cand_judged = _load_side(cand_side, artifact_dir, "candidate", warnings)
+        base_run, base_judged = _load_side(
+            base_side, artifact_dir, "baseline", warnings, base_dir
+        )
+        cand_run, cand_judged = _load_side(
+            cand_side, artifact_dir, "candidate", warnings, base_dir
+        )
 
         gs_size = gs_view["size"] if gs_view["available"] else None
         baseline = _run_summary(
@@ -739,17 +819,149 @@ def _tool_version() -> str:
         return "unknown"
 
 
-def _resolve(recorded: str, override: str | Path | None) -> tuple[str, bool]:
-    """Apply a directory override by basename, and say whether it was applied."""
-    if override is None or not recorded:
-        return recorded, False
-    return str(Path(override) / Path(recorded).name), True
+# --------------------------------------------------------------------------- #
+# recorded paths: the one place this module opens a file the evidence named
+# --------------------------------------------------------------------------- #
+
+#: Both separators, always, on both platforms. A recorded path is a *string some
+#: other machine wrote*, so ``pathlib`` is the wrong tool for inspecting it: on
+#: POSIX, ``Path(r"C:\\Windows\\win.ini")`` is a single relative filename with no
+#: separators at all, and every rule below would pass it.
+_SEPARATORS = re.compile(r"[\\/]")
+
+#: ``C:``, ``c:``. Matched textually for the same reason: on POSIX a drive letter
+#: is not a drive letter to ``pathlib``, and this check has to survive a log
+#: written on Windows and read on Linux.
+_DRIVE_RE = re.compile(r"^[a-zA-Z]:")
+
+
+def _segments(recorded: str) -> list[str]:
+    """The recorded path split on either separator, empties dropped."""
+    return [part for part in _SEPARATORS.split(recorded) if part]
+
+
+def _basename(recorded: str) -> str:
+    """The last segment, under either separator.
+
+    ``Path(...).name`` is not used: it answers for the platform doing the reading
+    rather than the platform that did the writing, so a Windows-recorded
+    ``C:\\work\\baseline.jsonl`` read on Linux would come back whole and defeat
+    the ``--artifact-dir`` override -- the one mechanism the cross-machine
+    workflow depends on.
+    """
+    parts = _segments(recorded)
+    return parts[-1] if parts else ""
+
+
+def _tampered_form(recorded: str) -> str | None:
+    """Why this recorded path may not be used verbatim, or None if it may.
+
+    Only forms that ``model_migration_kit`` never writes: this build records the
+    path it just wrote a file to, which is a plain relative or absolute path with
+    no ``..`` in it and no share in front of it. Anything here therefore means the
+    log was edited after the fact.
+    """
+    if recorded.startswith(("\\\\", "//")):
+        # Covers the ``\\?\`` and ``\\.\`` device prefixes as well as a plain
+        # share. Demonstrated: a recorded ``\\192.0.2.111\share\x.jsonl`` blocked
+        # for 21 seconds attempting an SMB connection, and on Windows an SMB
+        # connection to a host an attacker named hands over the reviewer's
+        # NTLMv2 hash.
+        return "it names a UNC share or a device path"
+    if ".." in _segments(recorded):
+        return "it contains a '..' segment"
+    return None
+
+
+def _contained(recorded: str, base_dir: Path) -> bool:
+    """True if an absolute recorded path is inside the evidence log's directory.
+
+    String comparison after ``abspath``/``normcase``, deliberately, and never
+    ``Path.resolve()``: resolving touches the filesystem, and doing I/O to decide
+    whether I/O is allowed is the bug this function exists to prevent.
+    """
+    if not _is_absolute(recorded):
+        return True
+    base = os.path.normcase(os.path.abspath(str(base_dir)))
+    target = os.path.normcase(os.path.abspath(recorded))
+    return target == base or target.startswith(base + os.sep)
+
+
+def _is_absolute(recorded: str) -> bool:
+    return bool(_DRIVE_RE.match(recorded)) or recorded.startswith(("/", "\\"))
+
+
+def _resolve(
+    recorded: str,
+    override: str | Path | None,
+    base_dir: Path,
+    what: str,
+) -> tuple[str, bool, str]:
+    """Where to read ``what`` from: the path, whether an override applied, or a refusal.
+
+    This module spends its whole length guaranteeing that the *document* it
+    produces fetches nothing -- no webfont, no CDN, no ``@import`` -- and then, in
+    its previous form, fetched whatever the evidence log named during
+    *reconstruction*. Sharing an evidence log across machines is the designed
+    workflow (see the module docstring), so the log is attacker-influenced input
+    on the reviewer's machine, and it drove ``open()`` with no constraint at all.
+    Demonstrated on this build: a recorded ``C:\\Windows\\win.ini`` was opened and
+    parsed, and a recorded ``\\\\192.0.2.111\\share\\x.jsonl`` blocked for 21
+    seconds attempting an outbound SMB connection.
+
+    So exactly one directory is reachable from a recorded path: the one the
+    evidence log itself lives in. Everything else needs ``--artifact-dir`` or
+    ``--goldenset``, which is what those flags were already for, and which is
+    already disclosed in the provenance block.
+
+    Returns:
+        ``(path, overridden, refusal)``. A non-empty ``refusal`` means the caller
+        must not open anything and should record the sentence as a warning: an
+        absolute path that no longer resolves is the *ordinary* consequence of
+        moving a log to another machine, and a partial report is this module's
+        answer to missing evidence, not an error.
+
+    Raises:
+        ReportError: if the recorded path has a form this tool never writes -- a
+            UNC share, a device prefix, a ``..`` segment. That is an edited log
+            rather than a moved one, and a change-control tool does not quietly
+            paper over evidence somebody has been editing. An override is still
+            honoured, because it replaces the directory outright and the recorded
+            string is then used for its filename alone.
+    """
+    if not recorded:
+        return "", False, ""
+    if override is not None:
+        return str(Path(override) / _basename(recorded)), True, ""
+    tampered = _tampered_form(recorded)
+    if tampered is not None:
+        raise ReportError(
+            f"the evidence log records {recorded!r} as the {what}, and {tampered}. "
+            f"model-migration-kit never writes a path in that form, so this log has "
+            f"been edited since it was written. Nothing was opened. If the file is "
+            f"genuinely there, name its directory explicitly with --artifact-dir "
+            f"(or --goldenset for the golden set) and the override will be printed "
+            f"in the provenance block."
+        )
+    if not _contained(recorded, base_dir):
+        return (
+            "",
+            False,
+            f"the {what} is recorded as {recorded}, which is outside the directory "
+            f"holding the evidence log; a path recorded on another machine is not "
+            f"followed. Pass --artifact-dir (or --goldenset for the golden set) to "
+            f"say where the file is now.",
+        )
+    if _is_absolute(recorded):
+        return recorded, False, ""
+    return str(base_dir.joinpath(*_segments(recorded))), False, ""
 
 
 def _load_goldenset(
     payload: Mapping[str, Any],
     override: str | Path | None,
     warnings: list[str],
+    base_dir: Path,
 ) -> dict[str, Any]:
     """Load the golden set, but only trust it if it is still the one that was run.
 
@@ -762,7 +974,13 @@ def _load_goldenset(
     """
     recorded_hash = str(payload.get("goldenset_hash", "") or "")
     recorded_path = str(payload.get("goldenset_path", "") or "")
-    used = str(override) if override is not None else recorded_path
+    # The override still names the file directly rather than a directory, which is
+    # what ``--goldenset`` has always meant; only the *recorded* path is
+    # constrained, because only the recorded path came out of the log.
+    if override is not None:
+        used, refusal = str(override), ""
+    else:
+        used, _, refusal = _resolve(recorded_path, None, base_dir, "golden set")
     view: dict[str, Any] = {
         "hash": recorded_hash,
         "path": used,
@@ -780,6 +998,10 @@ def _load_goldenset(
         "by_id": {},
         "order": {},
     }
+    if refusal:
+        view["reason"] = refusal
+        warnings.append(refusal + " Item inputs are not shown.")
+        return view
     if not used:
         view["reason"] = "the evidence log does not record where the golden set lived"
         warnings.append(
@@ -824,14 +1046,31 @@ def _load_side(
     artifact_dir: str | Path | None,
     label: str,
     warnings: list[str],
+    base_dir: Path,
 ) -> tuple[RunArtifact | None, JudgedArtifact | None]:
     """The two artifacts one side named, or None with the reason recorded."""
-    run_path, run_overridden = _resolve(str(side.get("artifact", "") or ""), artifact_dir)
-    judged_path, judged_overridden = _resolve(
-        str(side.get("judged_artifact", "") or ""), artifact_dir
+    run_path, run_overridden, run_refusal = _resolve(
+        str(side.get("artifact", "") or ""), artifact_dir, base_dir, f"{label} run artifact"
     )
-    run = _load_artifact(RunArtifact, run_path, f"{label} run artifact", warnings)
-    judged = _load_artifact(JudgedArtifact, judged_path, f"{label} judged artifact", warnings)
+    judged_path, judged_overridden, judged_refusal = _resolve(
+        str(side.get("judged_artifact", "") or ""),
+        artifact_dir,
+        base_dir,
+        f"{label} judged artifact",
+    )
+    for refusal in (run_refusal, judged_refusal):
+        if refusal:
+            warnings.append(refusal)
+    run = (
+        None
+        if run_refusal
+        else _load_artifact(RunArtifact, run_path, f"{label} run artifact", warnings)
+    )
+    judged = (
+        None
+        if judged_refusal
+        else _load_artifact(JudgedArtifact, judged_path, f"{label} judged artifact", warnings)
+    )
     if run_overridden or judged_overridden:
         warnings.append(
             f"{label} artifacts were read from {artifact_dir} rather than the paths "
@@ -1338,6 +1577,39 @@ _VERDICT_STYLE = {
     Verdict.REVIEW: "yellow",
 }
 
+#: Every C0 control character, plus DEL. Removed from anything the evidence
+#: supplied before it reaches a terminal -- see :func:`_cell`.
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _cell(value: object) -> Text:
+    """Evidence-derived text as a renderable that cannot become anything else.
+
+    Two defects in one function, both demonstrated against this build.
+
+    A bare ``str`` handed to rich is parsed as *console markup*. A recorded
+    ``model_id`` of ``fake-cand-v1[/]`` raised ``rich.errors.MarkupError`` and took
+    the whole ``migkit report`` run down with it: exit 3, and no HTML file written
+    even though ``--html`` was passed, because the terminal render runs first.
+    Well-formed markup is worse than a crash. ``[bold red]FAKE CLEARED[/bold red]``
+    rendered as styled text with the brackets gone, and
+    ``[link=https://evil.example]click[/link]`` became a live hyperlink. This is a
+    tool whose stated claim is that you cannot obtain a clean-looking report from
+    scripted models, so a model id that renders as text of the attacker's choosing
+    is a forgery vector rather than a cosmetic bug. ``_print_changes`` and the
+    warnings loop already wrapped their strings in ``Text``; nothing else did, and
+    the inconsistency was the defect.
+
+    ``Text`` alone is not enough, which is the second half and the reason the
+    already-wrapped sites are routed through here too: ESC passes through ``Text``
+    unchanged -- verified -- so ``\\x1b[2J\\x1b[H`` anywhere in the payload clears
+    the reviewer's screen and scrolls the final ``VERDICT:`` line out of view.
+    Nothing in a model id, an adapter name, a path, a hash or a judge note needs a
+    control character, so each one becomes a space rather than being deleted: the
+    words either side of it stay separate words.
+    """
+    return Text(_CONTROL_RE.sub(" ", str(value)))
+
 
 def render_terminal(model: ReportModel, *, console: Console | None = None) -> None:
     """Write the report to a terminal through one rich Console and nothing else.
@@ -1350,6 +1622,13 @@ def render_terminal(model: ReportModel, *, console: Console | None = None) -> No
     Colour is never the only carrier of a fact. Every verdict, flag and shortfall
     is a word as well as a colour, so a ``no_color`` render and a photocopy both
     still say what happened.
+
+    **No evidence-derived string is ever handed to rich as a ``str``.** Everything
+    that came out of the log, an artifact or a golden set goes through
+    :func:`_cell`, which is where the reasoning lives. The module literals here --
+    row labels, table titles, the closing sentence -- are the only bare strings
+    left, and a future edit that adds a payload value as one is the thing the
+    tests around this function are watching for.
     """
     out = console or Console()
     if model.is_demo:
@@ -1365,15 +1644,15 @@ def render_terminal(model: ReportModel, *, console: Console | None = None) -> No
         )
     verdict = model.verdict_word
     banner = Text.assemble(
-        (f"{verdict}", "bold"),
+        (_CONTROL_RE.sub(" ", verdict), "bold"),
         (f"  (exit {model.exit_code})\n", ""),
-        (model.verdict_reason, ""),
+        (_CONTROL_RE.sub(" ", model.verdict_reason), ""),
     )
     out.print(
         Panel(
             banner,
             title="VERDICT",
-            subtitle=f"decided by {model.decided_by or 'no recorded rule'}",
+            subtitle=_cell(f"decided by {model.decided_by or 'no recorded rule'}"),
             border_style=_VERDICT_STYLE.get(verdict, "white"),
         )
     )
@@ -1382,13 +1661,15 @@ def render_terminal(model: ReportModel, *, console: Console | None = None) -> No
     compared.add_column("")
     compared.add_column("baseline")
     compared.add_column("candidate")
-    compared.add_row("model", model.baseline.model_id, model.candidate.model_id)
+    compared.add_row("model", _cell(model.baseline.model_id), _cell(model.candidate.model_id))
     compared.add_row(
         "adapter",
-        model.baseline.adapter or TERMINAL_DASH,
-        model.candidate.adapter or TERMINAL_DASH,
+        _cell(model.baseline.adapter or TERMINAL_DASH),
+        _cell(model.candidate.adapter or TERMINAL_DASH),
     )
-    compared.add_row("completions", model.baseline.observed, model.candidate.observed)
+    compared.add_row(
+        "completions", _cell(model.baseline.observed), _cell(model.candidate.observed)
+    )
     compared.add_row(
         "failed completions",
         str(model.baseline.failures),
@@ -1408,33 +1689,37 @@ def render_terminal(model: ReportModel, *, console: Console | None = None) -> No
     facts.add_column("")
     facts.add_row(
         "golden set",
-        f"{gs['path'] or TERMINAL_DASH} ({gs['hash'][:16] or TERMINAL_DASH})",
+        _cell(f"{gs['path'] or TERMINAL_DASH} ({gs['hash'][:16] or TERMINAL_DASH})"),
     )
     facts.add_row("golden-set size", str(gs["size"]) if gs["available"] else "not available")
-    facts.add_row("judges hash", model.hashes.get("judges", "")[:16] or TERMINAL_DASH)
+    facts.add_row("judges hash", _cell(model.hashes.get("judges", "")[:16] or TERMINAL_DASH))
     facts.add_row(
         "config",
-        f"{model.config_path or TERMINAL_DASH} "
-        f"({model.hashes.get('config', '')[:16] or TERMINAL_DASH})",
+        _cell(
+            f"{model.config_path or TERMINAL_DASH} "
+            f"({model.hashes.get('config', '')[:16] or TERMINAL_DASH})"
+        ),
     )
     facts.add_row("n per item", str(model.n_per_item or TERMINAL_DASH))
     for name, value in model.thresholds.items():
         facts.add_row(
-            f"threshold {name}",
-            f"{value} ({model.threshold_sources.get(name, THRESHOLD_SOURCE_UNRECORDED)})",
+            _cell(f"threshold {name}"),
+            _cell(f"{value} ({model.threshold_sources.get(name, THRESHOLD_SOURCE_UNRECORDED)})"),
         )
     out.print(facts)
 
     for judge in model.judges:
         table = Table(
-            title=f"judge: {judge.name} ({judge.model_id or 'unknown'})",
+            title=_cell(f"judge: {judge.name} ({judge.model_id or 'unknown'})"),
             show_header=True,
             header_style="bold",
         )
         table.add_column("")
         table.add_column("baseline")
         table.add_column("candidate")
-        table.add_row("passed / observed", judge.baseline.observed, judge.candidate.observed)
+        table.add_row(
+            "passed / observed", _cell(judge.baseline.observed), _cell(judge.candidate.observed)
+        )
         table.add_row(
             "pass rate",
             _pct(judge.baseline.rate, TERMINAL_DASH),
@@ -1460,7 +1745,7 @@ def render_terminal(model: ReportModel, *, console: Console | None = None) -> No
             f"{_num(judge.p_value, 6, TERMINAL_DASH)} ({_num(judge.alpha, 3, TERMINAL_DASH)})",
             "",
         )
-        table.add_row("test that ran", judge.test_ran, "")
+        table.add_row("test that ran", _cell(judge.test_ran), "")
         table.add_row(
             "regressed / floor cleared / underpowered",
             f"{_flag(judge.regressed, TERMINAL_DASH)} / "
@@ -1469,7 +1754,7 @@ def render_terminal(model: ReportModel, *, console: Console | None = None) -> No
             "",
         )
         if judge.note:
-            table.add_row("note", judge.note, "")
+            table.add_row("note", _cell(judge.note), "")
         out.print(table)
 
     _print_changes(out, "Flips (passing -> failing)", model.flips)
@@ -1480,16 +1765,16 @@ def render_terminal(model: ReportModel, *, console: Console | None = None) -> No
         strip = Table(title="Completeness", show_header=False, box=None)
         strip.add_column("")
         for sentence in model.completeness.missing:
-            strip.add_row(Text(sentence))
+            strip.add_row(_cell(sentence))
         strip.add_row(
-            Text(
+            _cell(
                 f"last event: {model.completeness.last_event or 'none'} at "
                 f"{model.completeness.last_ts or 'unknown time'}"
             )
         )
         out.print(strip)
     for warning in model.warnings:
-        out.print(Text(f"warning: {warning}"))
+        out.print(_cell(f"warning: {warning}"))
 
     out.print(
         Text(
@@ -1500,7 +1785,12 @@ def render_terminal(model: ReportModel, *, console: Console | None = None) -> No
     )
     # Always the last line of stdout, including under --quiet: a CI log that
     # scrolls past 200 lines of table still ends with the finding.
-    out.print(Text(f"VERDICT: {verdict} (exit {model.exit_code})", style="bold"))
+    out.print(
+        Text(
+            f"VERDICT: {_CONTROL_RE.sub(' ', verdict)} (exit {model.exit_code})",
+            style="bold",
+        )
+    )
 
 
 def _item_counts(counts: Mapping[str, int], dash: str = EM_DASH) -> str:
@@ -1526,7 +1816,10 @@ def _print_changes(console: Console, title: str, rows: Sequence[FlipRow]) -> Non
         table.add_row(Text("none"), Text(""), Text(""))
     for row in rows:
         margins = ", ".join(row.labels.get(name, "") for name in row.judges)
-        table.add_row(Text(row.item_id), Text(margins), Text(", ".join(row.judges)))
+        # ``Text`` was already here; ``_cell`` adds the control-character strip,
+        # because an item id read out of a golden set is as attacker-influenced as
+        # a model id and ``Text`` does not touch ESC.
+        table.add_row(_cell(row.item_id), _cell(margins), _cell(", ".join(row.judges)))
     console.print(table)
 
 
