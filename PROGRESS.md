@@ -155,6 +155,20 @@ Session 3 delivers `migkit demo`.
   says the demo shows a NO-GO verdict, which is exit 1. The job was written before
   the demo on purpose; Session 3 must amend it to expect the verdict's code, not
   to make the demo exit 0.
+- **Invariant 1 is violated in one declared place, and it was self-inflicted.**
+  `judging.py` imports `SCORE_MIN`, `SCORE_MAX` and `hash_rubric_file` from the
+  `opik_rigor.judge` submodule. None is in rigor's `__all__`; `hash_rubric_file`
+  is undocumented, and `SCORE_MIN` appears only in a CHANGELOG bullet saying the
+  range will change. A mechanical audit found it — nobody reading the code did,
+  including the author of the invariant. It is kept rather than worked around
+  because both alternatives are worse: re-deriving the score range means a
+  hard-coded `1.0` that goes silently wrong the day the scale moves, and hashing
+  a rubric differently from rigor means the two disagree about whether the
+  instrument changed. Recorded as rigor roadmap item 10 (commit `4bb7935`), to be
+  closed by exporting all three from rigor's package root in 0.2. Until then this
+  is a *declared* dependency on unpromised names, not a hidden one — and the
+  reason it matters is that if rigor renames any of them, this project's pinned CI
+  stays green while its users hit the break on upgrade.
 - **`tokens_in`/`tokens_out` are always `None`.** rigor's `Adapter` protocol is
   `model_id` plus `complete(str) -> str` and exposes no usage data, so a cost gate
   cannot be built without reaching past the seam. Recorded as roadmap item 9 in
