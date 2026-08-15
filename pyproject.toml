@@ -27,6 +27,12 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Topic :: Software Development :: Testing",
+  # PyPI facets on classifiers, and the distribution name sits inside an ORM
+  # corpus this project has no hope of outranking -- "model migration" is Django's
+  # phrase for a schema change before it is anyone's phrase for swapping an LLM.
+  # This is the line that files the package under AI rather than leaving the
+  # domain to be inferred from a name that reads two ways.
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
   # The whole point: every statistical primitive is imported, none reimplemented.

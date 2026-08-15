@@ -66,13 +66,13 @@ python -m venv .venv
 ```
 Successfully built model-migration-kit
 Installing collected packages: pygments, numpy, mdurl, MarkupSafe, scipy, markdown-it-py, jinja2, rich, opik-rigor, model-migration-kit
-Successfully installed MarkupSafe-3.0.3 jinja2-3.1.6 markdown-it-py-4.2.0 mdurl-0.1.2 model-migration-kit-0.1.0.dev0 numpy-2.5.2 opik-rigor-0.1.0 pygments-2.20.0 rich-15.0.0 scipy-1.18.0
+Successfully installed MarkupSafe-3.0.3 jinja2-3.1.6 markdown-it-py-4.2.0 mdurl-0.1.2 model-migration-kit-0.1.0 numpy-2.5.2 opik-rigor-0.2.0 pygments-2.20.0 rich-15.0.0 scipy-1.18.0
 ```
 
 Progress goes to stderr:
 
 ```
-migkit: demo: 12 items, no credentials, no network
+migkit: demo: 12 items x n=5, no credentials, no network
 migkit: sampling fake-baseline-v1
 migkit: sampling fake-candidate-v1
 migkit: judging fake-baseline-v1 with accuracy
@@ -161,6 +161,8 @@ The report goes to stdout:
 ├──────┼────────┼────────┤
 │ none │        │        │
 └──────┴────────┴────────┘
+Every one of the 4 changed item(s) carries its full outputs: 5,821 characters 
+of quoted model text against a budget of 10,000,000.
 warning: judge 'accuracy': 60 completions per side cannot detect a 10% drop at 
 80% power; roughly 140 are needed.
 Full outputs, the flip list and the methodology appendix are in the HTML 
@@ -203,7 +205,7 @@ $ python -c "from pathlib import Path; from model_migration_kit.report import ex
 ()
 ```
 
-The file was 25,760 bytes, LF-terminated, with zero `<script>` and zero `<link>`
+The file was 25,931 bytes, LF-terminated, with zero `<script>` and zero `<link>`
 elements. It contains the verdict banner, what was compared, the per-judge tables,
 the flip list with every sampled output behind a `<details>` element, a generated
 methodology appendix, and a provenance footer of hashes.
@@ -590,7 +592,7 @@ was written on (Python 3.14.4, Windows):
 
 ```
 $ python -m pytest
-730 passed, 4 xfailed in 30.90s
+1101 passed in 38.34s
 ```
 
 The CI workflow additionally runs 3.10 through 3.13 on Ubuntu and Windows, builds a
@@ -609,7 +611,7 @@ intervals and the pass-rate gate, Mann-Whitney U for regressions, pinned judges
 with hashed rubrics, and the append-only evidence log that every report is rendered
 from. model-migration-kit consumes the published wheel from PyPI rather than a path
 dependency on a sibling checkout, so "first real consumer" means something — the
-install transcript in the quickstart shows `opik-rigor-0.1.0` arriving from the
+install transcript in the quickstart shows `opik-rigor-0.2.0` arriving from the
 index.
 
 Exactly what is depended on, how each fact about it was verified, and what a rigor
