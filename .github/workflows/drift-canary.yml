@@ -1,14 +1,20 @@
 # Weekly dependency drift canary.
 #
-# CI (ci.yml) tests what users get today: opik-rigor pinned to >=0.1.0,<0.2. This job
+# CI (ci.yml) tests what users get today: opik-rigor pinned to >=0.2,<0.3. This job
 # tests what users will get after the next `pip install --upgrade` -- the latest
 # opik-rigor, ignoring our own upper bound. It exists so that a breaking release is
 # found by us on a Monday, not by a user on a Friday.
 #
+# The bound above is read from pyproject.toml at run time, not from this comment --
+# the mechanism was unaffected when the floor moved from >=0.1.0,<0.2 to >=0.2,<0.3
+# on 2026-08-14. The comment lagged by three days anyway, which is worth noting
+# because this paragraph is the file's orientation for whoever reads it next.
+#
 # Only opik-rigor is tracked here. This project has no Opik dependency of its own --
 # deps are opik-rigor, jinja2, rich and tomli -- so the Opik drift surface belongs
-# entirely to rigor's canary. Installing Opik here would test nothing we ship and
-# could file drift for a package we do not use.
+# entirely to rigor's canary. That canary did not exist when this sentence was
+# written; it does now (opik-rigor/.github/workflows/drift-canary.yml, 2026-08-17),
+# and it watches the rigor->Opik and rigor->migkit edges from the other side.
 #
 # THIS WORKFLOW'S PASS/FAIL MEANS "IS THE CANARY HEALTHY", NOT "IS THERE DRIFT".
 #   green + no issue  -> latest works, nothing to do

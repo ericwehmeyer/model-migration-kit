@@ -719,6 +719,23 @@ class TestConsoleScript:
             [script, "report", str(log)],
             capture_output=True,
             text=True,
+            # Both halves are needed and neither works alone.
+            #
+            # `text=True` on its own decodes with the *locale* codec. This report
+            # prints box-drawing characters and an ellipsis, so on a cp1252 Windows
+            # box the decode raises inside subprocess's reader thread -- which
+            # surfaces as a PytestUnhandledThreadExceptionWarning, not a failure.
+            # The suite stayed green while this test verified nothing, which is a
+            # test that cannot fail on the machine class it exists to cover.
+            #
+            # Setting `encoding="utf-8"` alone just moves the error: the child
+            # still encodes to cp1252 for a pipe, and the parent then chokes on
+            # byte 0x85 (cp1252's ellipsis). Measured -- that was the first fix
+            # attempted here and it failed with a different UnicodeDecodeError.
+            #
+            # So pin both ends: tell the child to emit UTF-8 and read it as UTF-8.
+            encoding="utf-8",
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
             timeout=120,
             check=False,
         )
