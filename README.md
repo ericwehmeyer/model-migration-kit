@@ -257,6 +257,15 @@ produces the verdict its name claims, and none of it was hand-written:
 `comparison.compare` decide, which is how `migkit demo` works and is the only way
 to get a fixture whose verdict is a result rather than an assertion.
 
+**The five commands in this section and the next need the repository.** `tests/`
+is not in the wheel, so `pip install model-migration-kit` does not give you these
+paths; the installed package carries its own demo data
+(`demo_goldenset_path()` and its two siblings) and nothing else. A clone works, and
+so does an unpacked sdist — all twelve files under `tests/fixtures/`, including
+`make_fixtures.py`, ship in the tarball. From a plain wheel install, `migkit demo`
+is the equivalent that runs, and it is what the definition of done is measured
+against.
+
 The four verdicts, re-derived from the committed artifacts, together with the
 check that a rebuild reproduces those artifacts byte for byte:
 
@@ -522,7 +531,7 @@ that hash is embedded in every downstream artifact. Two artifacts are comparable
 only if it matches. Tags feed the distribution the report prints:
 
 ```
-$ python -c "from model_migration_kit.goldenset import GoldenSet; gs = GoldenSet.load('src/model_migration_kit/data/demo_goldenset.jsonl'); print(gs.stats()); print(gs.hash)"
+$ python -c "from model_migration_kit import demo_goldenset_path; from model_migration_kit.goldenset import GoldenSet; gs = GoldenSet.load(demo_goldenset_path()); print(gs.stats()); print(gs.hash)"
 {'size': 12, 'with_reference': 8, 'untagged': 0, 'tags': {'arithmetic': 4, 'extraction': 4, 'multi-value': 2, 'refusal': 4}}
 5fef50364057cad869f16698df32d927b650778c34382f6f68d9fd53ba4e9a04
 ```
