@@ -202,10 +202,49 @@ jobs:
         id: suite
         if: steps.install.outputs.outcome == 'ok'
         continue-on-error: true
-        # Deliberately NOT running `migkit demo`: PROGRESS.md records that the demo job
-        # is knowingly broken until Session 3, so including it would report drift every
-        # week from day one. Add it once the demo exists and its exit code is settled.
-        run: python -m pytest -q
+        # This step used to say the demo was "knowingly broken until Session 3, so
+        # including it would report drift every week from day one." Session 3 shipped
+        # it; the sentence outlived the condition it described. The demo is now the
+        # more valuable of the two signals here, because it is the only thing that
+        # runs a rigor verdict end to end -- `assert_pass_rate` -> NO-GO -> exit 1 --
+        # and rigor's one breaking change to date (0.2.0 refusing `confidence <= 0.5`)
+        # is exactly the shape that reaches a caller through that path rather than
+        # through a unit test's own fixtures.
+        #
+        # Packaging is deliberately NOT tested here: this job installs `-e .`, so the
+        # demo can read its golden set from the repo root. ci.yml's demo job builds a
+        # wheel for that reason and is the one that would catch a data file missing
+        # from the distribution. This job asks one question -- does latest rigor still
+        # produce the same verdict -- and answers it in the cheapest install.
+        run: |
+          set +e
+          python -m pytest -q
+          suite=$?
+          # Exit 1 is the demo PASSING: it exists to show the tool refusing an unsafe
+          # migration. 0=GO 1=NO-GO 2=REVIEW 3=error. Asserted exactly, because a GO
+          # or a REVIEW under latest rigor is precisely the drift this job hunts, and
+          # `|| true` would swallow it along with a crash.
+          migkit demo --out demo-report.html
+          demo=$?
+          set -e
+          echo "pytest exit=$suite   migkit demo exit=$demo (1 = NO-GO = correct)"
+          if [ "$demo" -ne 1 ]; then
+            echo "::error::migkit demo exited $demo; expected 1 (NO-GO)."
+            echo "::error::0=GO 1=NO-GO 2=REVIEW 3=error. Under latest opik-rigor the"
+            echo "::error::bundled demo no longer demonstrates a caught regression."
+          fi
+          # `steps.suite.outcome` is one bit and this step now asks two questions, so
+          # name the failing one for the issue body. Every value interpolated here is
+          # an exit code this job captured, not text from an index.
+          case "$suite:$demo" in
+            0:1) ;;
+            0:*) echo "failed=the bundled demo returned $demo, not 1 (NO-GO)" >> "$GITHUB_OUTPUT" ;;
+            *:1) echo "failed=the offline suite failed" >> "$GITHUB_OUTPUT" ;;
+            *)   echo "failed=the offline suite failed, and the demo returned $demo, not 1 (NO-GO)" >> "$GITHUB_OUTPUT" ;;
+          esac
+          # Both run before either can fail the step, so one broken signal never hides
+          # the other from whoever reads the log.
+          [ "$suite" -eq 0 ] && [ "$demo" -eq 1 ]
 
       - name: Classify
         id: classify
@@ -222,6 +261,7 @@ jobs:
           PYVER: ${{ matrix.python-version }}
           PREFLIGHT: ${{ steps.preflight.outcome }}
           SUITE: ${{ steps.suite.outcome }}
+          SUITE_FAILED: ${{ steps.suite.outputs.failed }}
         run: |
           {
             echo "### Drift canary — py$PYVER"
@@ -240,8 +280,10 @@ jobs:
                 emit drift "installed, but the upgrade did not take or the package is unimportable"
               elif [ "$SUITE" != "success" ]; then
                 # No retry and no heuristics: the suite is offline and key-free by
-                # invariant 3, so a failure here cannot be a flake.
-                emit drift "the offline suite failed on py$PYVER"
+                # invariant 3, so a failure here cannot be a flake. The fallback text
+                # covers the step dying before it could name a signal -- killed by the
+                # job timeout, say -- which leaves `SUITE_FAILED` empty.
+                emit drift "${SUITE_FAILED:-stage 4 failed without naming a signal} on py$PYVER"
               else
                 emit clean ""
               fi ;;
@@ -416,8 +458,9 @@ jobs:
           body=$(cat <<EOF
           $MARKER
 
-          The weekly canary ran the offline suite against the **latest** published
-          opik-rigor instead of our pinned bound, and it did not pass.
+          The weekly canary ran the offline suite and the bundled `migkit demo`
+          against the **latest** published opik-rigor instead of our pinned bound, and
+          it did not pass.
 
           | | |
           |---|---|
