@@ -1325,3 +1325,209 @@ def test_py_typed_in_the_zip_but_not_in_record_is_a_failure(tmp_path):
         },
     )
     assert vr.check_wheel_py_typed(wheel, repo).status == vr.FAIL
+
+
+# ----------------------------------------------------------------------------------
+# README: symbols
+#
+# `docs/readme-scan-contract.md` is frozen and specifies how the README is read as
+# *shell*. A symbol is not shell, so the rule that separates a claim from a mention
+# is stated at `readme_package_symbols`' docstring instead, exactly as opik-rigor
+# states its own. The hand-derived cases below are that rule's acceptance oracle.
+# ----------------------------------------------------------------------------------
+
+
+def test_an_import_inside_a_python_c_string_is_a_claim_about_the_wheel():
+    """This README states almost every one of its API claims inside a
+    `python -c "..."` one-liner, so a rule that only reads imports at the start of
+    a line sees nothing at all in this document and passes vacuously. A check that
+    cannot fail is worse than no check: it occupies the slot where a real one would
+    go and reports PASS while the quickstart rots."""
+    text = (
+        "```\n"
+        '$ python -c "from model_migration_kit.report import external_urls; '
+        "print(external_urls('x'))\"\n"
+        "```\n"
+    )
+    assert vr.readme_package_symbols(text) == ["report.external_urls"]
+
+
+def test_two_imports_separated_by_a_semicolon_are_both_claims():
+    """The golden-set example imports from the package root and from a submodule in
+    one command. Stopping at the first import would let the second name -- the one
+    that actually does the work in the line the reader pastes -- go unchecked."""
+    text = (
+        "```\n"
+        '$ python -c "from model_migration_kit import demo_goldenset_path; '
+        "from model_migration_kit.goldenset import GoldenSet; "
+        "print(GoldenSet.load(demo_goldenset_path()))\"\n"
+        "```\n"
+    )
+    assert vr.readme_package_symbols(text) == [
+        "demo_goldenset_path",
+        "goldenset.GoldenSet",
+    ]
+
+
+def test_an_aliased_import_is_recorded_under_the_name_the_wheel_must_export():
+    """The sample-size example imports `required_sample_size as r`. `r` is the
+    reader's local nickname and exists in no wheel ever built; asking the wheel for
+    `r` would fail every release for a name nobody promised."""
+    text = (
+        "```\n"
+        '$ python -c "from model_migration_kit.comparison import required_sample_size '
+        'as r; print(r(0.9))"\n'
+        "```\n"
+    )
+    assert vr.readme_package_symbols(text) == ["comparison.required_sample_size"]
+
+
+def test_a_dotted_call_anywhere_is_a_claim_but_pasted_output_is_not():
+    """Call syntax identifies itself, so a call in prose counts. A pasted exception
+    line does not: `model_migration_kit.errors.GoldenSetError: bad row` is output
+    the README is showing the reader, not an instruction to run. Reading it as a
+    claim would fail the release over the README's own evidence -- the same trap
+    the frozen contract records for the `migkit:` log prefix, in Python clothing."""
+    text = (
+        "Call `model_migration_kit.demo_rubric_path()` to find it.\n\n"
+        "```\n"
+        "model_migration_kit.errors.GoldenSetError: row 3 has no id\n"
+        "```\n"
+    )
+    assert vr.readme_package_symbols(text) == ["demo_rubric_path"]
+
+
+def test_a_commented_out_import_is_not_a_claim():
+    """A line the reader is being shown *not* to run is not a promise. Counting it
+    would block a release because the README documented a name on purpose as the
+    thing that does not exist."""
+    text = "```\n# from model_migration_kit import Nope\n```\n"
+    assert vr.readme_package_symbols(text) == []
+
+
+def test_the_real_readme_names_exactly_the_five_symbols_it_demonstrates():
+    """The acceptance oracle, hand-derived by reading README.md rather than by
+    running the scanner: four `python -c` examples name five symbols between them.
+    If this list changes, either the README gained an API claim that nothing is
+    checking yet, or the scanner started inventing names -- and a scanner that
+    invents names fails releases over sentences."""
+    readme = Path(__file__).resolve().parent.parent / "README.md"
+    assert vr.readme_package_symbols(readme.read_text(encoding="utf-8")) == [
+        "comparison.required_sample_size",
+        "demo_goldenset_path",
+        "goldenset.GoldenSet",
+        "judging.JudgeConfig",
+        "report.external_urls",
+    ]
+
+
+def test_dependency_paths_keeps_site_packages_and_drops_the_editable_src_entry():
+    """The isolation argument in one assertion. This venv carries
+    `_editable_impl_model_migration_kit.pth`, which puts the repo's own `src/` on
+    `sys.path`; if that entry reached the probe, every symbol the wheel forgot
+    would still be found -- in the working tree -- and the check would certify a
+    broken wheel as good. Third-party directories must survive, because the
+    package's own submodules import `opik_rigor` and jinja2 at module scope."""
+    kept = vr.dependency_paths(
+        [
+            "",
+            r"C:\repo\src",
+            r"C:\repo\.venv\Lib\site-packages",
+            r"C:\repo\.venv\Lib\SITE-PACKAGES",
+            "/usr/lib/python3/dist-packages",
+            r"C:\repo",
+        ]
+    )
+    assert kept == [
+        r"C:\repo\.venv\Lib\site-packages",
+        "/usr/lib/python3/dist-packages",
+    ]
+
+
+# `check_readme_symbols` end to end. The wheels below hold a real importable
+# package, because the whole point of the check is that it *imports* rather than
+# grepping the zip: a name can be present as text in a module and still not be an
+# attribute of it.
+
+
+def _symbols_wheel(tmp_path: Path, init_body: str, name: str = "w.whl") -> Path:
+    wheel = tmp_path / name
+    with zipfile.ZipFile(wheel, "w") as zf:
+        zf.writestr("model_migration_kit/__init__.py", init_body)
+        zf.writestr("model_migration_kit-0.1.0.dist-info/METADATA", METADATA_GOOD)
+    return wheel
+
+
+def test_a_symbol_the_readme_names_and_the_wheel_lacks_fails_the_check(tmp_path):
+    """The defect this check exists to catch, reproduced: the README's quickstart
+    calls a function the published wheel does not export. A reader who follows the
+    front page gets an AttributeError on their first line, and neither
+    `python -m build` nor `twine check` says a word about it."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "README.md").write_text(
+        "```\n"
+        '$ python -c "from model_migration_kit import demo_goldenset_path; '
+        'print(demo_goldenset_path())"\n'
+        "```\n",
+        encoding="utf-8",
+    )
+    wheel = _symbols_wheel(tmp_path, "__all__ = []\n")
+    result = vr.check_readme_symbols(wheel, tmp_path / "work", repo)
+    assert result.status == vr.FAIL
+    assert "demo_goldenset_path" in result.summary
+    assert any("NOT IN THE WHEEL" in line for line in result.evidence)
+
+
+def test_a_symbol_the_readme_names_and_the_wheel_exports_passes_the_check(tmp_path):
+    """The other side of the same assertion. If this failed, the gate would block
+    every release over a README that is telling the truth, and the check would be
+    deleted within a week -- which is how a project loses the one test that would
+    have caught the next broken quickstart."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "README.md").write_text(
+        "```\n"
+        '$ python -c "from model_migration_kit import demo_goldenset_path; '
+        'print(demo_goldenset_path())"\n'
+        "```\n",
+        encoding="utf-8",
+    )
+    wheel = _symbols_wheel(tmp_path, "def demo_goldenset_path():\n    return 'x'\n")
+    result = vr.check_readme_symbols(wheel, tmp_path / "work", repo)
+    assert result.status == vr.PASS
+    assert any("demo_goldenset_path" in line for line in result.evidence)
+
+
+def test_a_readme_that_names_no_symbol_passes_without_claiming_it_checked_one(tmp_path):
+    """A README with no API example is not a failure, but the summary has to say
+    that nothing was verified. A row reading "all 0 symbols exist" is how a check
+    that has quietly stopped seeing its input gets mistaken for a passing one."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "README.md").write_text("Install it and read the docs.\n", encoding="utf-8")
+    result = vr.check_readme_symbols(
+        _symbols_wheel(tmp_path, ""), tmp_path / "work", repo
+    )
+    assert result.status == vr.PASS
+    assert "no" in result.summary
+
+
+def test_the_symbol_probe_reports_which_module_it_actually_imported(tmp_path):
+    """Evidence that the answer came from the wheel and not from the developer's
+    checkout. Without this line in the report, a PASS is indistinguishable from a
+    PASS produced by the editable install silently answering for the artifact, and
+    the reader has no way to tell which one they are looking at."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "README.md").write_text(
+        "Call `model_migration_kit.demo_rubric_path()` first.\n", encoding="utf-8"
+    )
+    wheel = _symbols_wheel(tmp_path, "def demo_rubric_path():\n    return 'x'\n")
+    result = vr.check_readme_symbols(wheel, tmp_path / "work", repo)
+    assert result.status == vr.PASS
+    joined = " ".join(result.evidence)
+    assert "__path__" in joined
+    # The path the probe imported from is inside the directory this call extracted
+    # the wheel into -- not inside the repo, and not inside site-packages.
+    assert str(tmp_path / "work") in joined

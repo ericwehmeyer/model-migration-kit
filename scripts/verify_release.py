@@ -389,6 +389,98 @@ def readme_cli_commands(text: str, prog: str = CONSOLE_SCRIPT) -> list[str]:
     return sorted(found)
 
 
+# --------------------------------------------------------------------------------------
+# README: symbols.
+#
+# `docs/readme-scan-contract.md` is frozen, and it specifies how the README is read
+# as *shell* -- everything from `fenced_code_blocks` down to `readme_cli_commands`.
+# A symbol is not shell, so it is not that document's business; the rule separating a
+# claim from a mention here is stated at `readme_package_symbols` below, and its
+# acceptance oracle lives in `tests/test_release_checks.py`. opik-rigor arranges its
+# own symbol scanner the same way, for the same reason.
+# --------------------------------------------------------------------------------------
+
+
+# A *call*: `model_migration_kit.demo_rubric_path(` -- an attribute chain followed by
+# an opening parenthesis.
+def _symbol_call_pattern(package: str) -> re.Pattern[str]:
+    return re.compile(rf"\b{re.escape(package)}((?:\.[A-Za-z_]\w*)+)\s*\(")
+
+
+# Where a Python statement can begin. opik-rigor anchors this to the start of a line,
+# because its README writes imports on lines of their own; ours almost never does.
+# Every API example in this README is a `python -c "..."` one-liner, so the import
+# that matters sits just after the opening quote or after a `;`, and a line-anchored
+# rule reads this document as containing no API claims whatsoever -- a check that
+# cannot fail, holding the slot where a real one would go.
+#
+# The alternatives are start-of-line (with the prompt and inline-span characters the
+# README actually uses), a `;` statement separator, and the quote or backtick that
+# opens a `-c` string or a code span. `#` is deliberately absent from all of them,
+# which is what keeps a commented-out import out of the results: a line the reader is
+# being shown *not* to run is not a promise.
+_STATEMENT_START = r"(?:^[\s`>$]*|[;\"'`]\s*)"
+
+
+# `from model_migration_kit import a, b` and `from model_migration_kit.judging import
+# c`. The import list ends at a newline, a backtick, a `;` or a quote -- the last two
+# because inside `python -c "from x import y; print(y())"` the statement really does
+# end there, and swallowing the rest leaves one token that survives no filter and so
+# drops the name silently. The parenthesised alternative is tried first so a
+# multi-line import list is captured whole rather than truncated at the newline.
+def _from_import_pattern(package: str) -> re.Pattern[str]:
+    return re.compile(
+        rf"{_STATEMENT_START}from\s+({re.escape(package)}(?:\.[A-Za-z_]\w*)*)\s+import\s+"
+        r"(\([^)]*\)|[^`\n;\"']+)",
+        re.M,
+    )
+
+
+def readme_package_symbols(text: str, package: str = IMPORT_NAME) -> list[str]:
+    """Every name the README claims the package provides, dotted, relative to it.
+
+    `readme_cli_commands` asks this question of the CLI. This asks it of the library,
+    and the rule separating a claim from a mention has to be a different one.
+
+    For shell, only a fenced block is an instruction, because an inline span is
+    usually a remark *about* a command -- the frozen contract's first defect. For
+    Python, **call syntax is self-identifying**: `model_migration_kit.report` in a
+    sentence is a mention of a module, whereas
+    `model_migration_kit.demo_rubric_path()` anywhere -- prose, fence, or the middle
+    of a `python -c` string -- is a claim that the name exists and is callable. So
+    the whole document is scanned, and either a call or an import is required.
+
+    That distinction is what keeps this README's own pasted output out of the
+    results: `model_migration_kit.errors.GoldenSetError: row 3 has no id` is followed
+    by a colon rather than a parenthesis, and is evidence rather than instruction --
+    the same trap the frozen contract records for the `migkit:` log prefix, in Python
+    clothing. An alias is recorded under the name the wheel must export rather than
+    the reader's local one: `required_sample_size as r` asks the wheel for
+    `required_sample_size`, because no wheel ever built exports `r`.
+
+    Over-reporting is otherwise preferred to under-reporting, exactly as the frozen
+    contract's "accepted over-reports" section argues -- a loud false failure naming
+    a symbol is a better outcome than a narrower rule that hides a name the wheel
+    does not have.
+    """
+    prefix = f"{package}."
+    found: list[str] = []
+
+    for match in _symbol_call_pattern(package).finditer(text):
+        found.append(match.group(1).lstrip("."))
+
+    for match in _from_import_pattern(package).finditer(text):
+        module, raw = match.group(1), match.group(2)
+        stem = "" if module == package else module[len(prefix) :] + "."
+        for token in raw.strip().strip("()").split(","):
+            name = token.split(" as ")[0].strip().strip("`").strip()
+            if not name or name == "*" or not re.fullmatch(r"[A-Za-z_]\w*", name):
+                continue
+            found.append(stem + name)
+
+    return sorted(set(found))
+
+
 def contract_declared_requirements(contract_text: str) -> list[str] | None:
     """The dependency list the frozen contract asserts, or None if not found.
 
@@ -450,6 +542,40 @@ def plain_lines(text: str) -> list[str]:
 def tail(text: str, limit: int = 12) -> list[str]:
     lines = [line for line in text.splitlines() if line.strip()]
     return lines[-limit:]
+
+
+def dependency_paths(entries: list[str]) -> list[str]:
+    """The `sys.path` entries an isolated probe may keep, for third-party imports only.
+
+    `check_demo_data_importable` can run on a bare `-S` path because it touches only
+    the package root and its data files. A probe that imports `goldenset`, `judging`,
+    `comparison` or `report` cannot: those import `opik_rigor` -- and through it numpy
+    and scipy -- and jinja2, at module scope.
+
+    Only directories literally named `site-packages` or `dist-packages` survive, which
+    is precisely what excludes this repo's own `src/`, the entry an editable install
+    adds and the one that would answer every question with the working tree instead of
+    the wheel. They are appended *after* the extracted wheel, never before it, and the
+    caller still asserts that the wheel is what answered.
+    """
+    keep: list[str] = []
+    seen: set[str] = set()
+    for entry in entries:
+        if not entry:
+            continue
+        if Path(entry).name not in ("site-packages", "dist-packages"):
+            continue
+        # Normalised through Path only for the duplicate test, so that the same
+        # directory spelled with either separator is not appended twice.
+        marker = str(Path(entry)).lower()
+        if marker in seen:
+            continue
+        seen.add(marker)
+        # Passed through verbatim rather than round-tripped through Path: it goes back
+        # onto a child interpreter's sys.path, and rewriting a POSIX separator into a
+        # backslash on the way would be a silent corruption.
+        keep.append(entry)
+    return keep
 
 
 def dist_info_member(zf: zipfile.ZipFile, suffix: str) -> str | None:
@@ -1255,6 +1381,200 @@ def check_readme_pip_install(repo: Path) -> Result:
     return ok(name, f"all {len(targets)} pip-install target(s) name a real distribution", evidence)
 
 
+SYMBOL_PROBE = r'''
+import json, os, sys
+
+request = json.loads(open(sys.argv[1], encoding="utf-8").read())
+package = request["package"]
+extract = request["extract"]
+
+# The extracted wheel goes FIRST -- ahead of this script's own directory and ahead of
+# the dependency directories appended below -- so that it, and nothing else, answers
+# the import. The parent asserts that it did.
+sys.path.insert(0, extract)
+sys.path.extend(request["deps"])
+
+out = {}
+try:
+    import importlib
+
+    pkg = importlib.import_module(package)
+    out["package_file"] = getattr(pkg, "__file__", None)
+    out["package_path"] = [str(entry) for entry in list(getattr(pkg, "__path__", []))]
+
+    # Which other path entries hold a package of this name. Reported rather than
+    # assumed absent: the developer's venv has an editable install of this project.
+    shadow = []
+    for entry in sys.path[1:]:
+        if os.path.isdir(os.path.join(entry, package)) or os.path.isfile(
+            os.path.join(entry, package + ".py")
+        ):
+            shadow.append(entry)
+    out["shadowing"] = shadow
+
+    symbols = {}
+    for dotted in request.get("symbols", []):
+        obj, trail, found = pkg, package, True
+        for part in dotted.split("."):
+            trail += "." + part
+            # An attribute first, then a submodule. A bare `import model_migration_kit`
+            # deliberately loads no submodule of its own (tests/test_import_purity.py
+            # asserts it), so `report.external_urls` is only reachable by importing
+            # `model_migration_kit.report` on the way past.
+            if hasattr(obj, part):
+                obj = getattr(obj, part)
+                continue
+            try:
+                obj = importlib.import_module(trail)
+            except Exception:
+                found = False
+                break
+        symbols[dotted] = {"found": found, "kind": type(obj).__name__ if found else None}
+    out["symbols"] = symbols
+except Exception as exc:  # noqa: BLE001 - reported verbatim to the parent
+    out["error"] = "%s: %s" % (type(exc).__name__, exc)
+
+print(json.dumps(out))
+'''
+
+
+def check_readme_symbols(wheel: Path, workdir: Path, repo: Path) -> Result:
+    """Every symbol the README shows being called must exist in the built wheel.
+
+    Ported from opik-rigor, which shipped this defect: its README told the reader to
+    call `opik_rigor.example_rubric_path()` and the published 0.1.0 wheel had no such
+    name anywhere in it. A README that names a symbol its own release does not export
+    is a broken quickstart on the project's front page, and neither `python -m build`
+    nor `twine check` can see it.
+
+    Nor can any test in this repository, which is the part worth dwelling on. In a
+    checkout `src/` answers the import, and this venv carries an editable install
+    pointing there, so an assertion written as `import model_migration_kit; hasattr(...)`
+    passes on a wheel that ships none of it. The answer is the one
+    `check_demo_data_importable` already uses and for the same reason: a bare
+    subprocess with `-S`, so no `site-packages` and no `.pth` file is processed, in a
+    temp cwd so the repo root is not on the path either. `-E` is added on top, because
+    a `PYTHONPATH` pointing at `src/` would otherwise walk straight back in.
+
+    `-S` alone would leave the package's own submodules unimportable -- `goldenset`,
+    `judging`, `comparison` and `report` reach `opik_rigor` and jinja2 at module
+    scope -- so `dependency_paths` appends the third-party directories, and only
+    those, after the wheel. The `__path__` assertion below is what makes that safe.
+    """
+    name = "readme-symbols"
+    readme = repo / "README.md"
+    if not readme.is_file():
+        return bad(name, "README.md does not exist", [])
+    symbols = readme_package_symbols(readme.read_text(encoding="utf-8"))
+    if not symbols:
+        return ok(
+            name,
+            f"README.md shows no {IMPORT_NAME}.<name> call or import to get wrong",
+            [f"scanned {readme}"],
+        )
+
+    # Its own extract directory rather than the one `check_demo_data_importable`
+    # makes: that check deletes and rebuilds `wheel-extract` on every run, and a
+    # shared directory would silently couple the two checks' ordering.
+    workdir.mkdir(parents=True, exist_ok=True)
+    extract = workdir / "symbol-extract"
+    if extract.exists():
+        shutil.rmtree(extract)
+    extract.mkdir(parents=True)
+    with zipfile.ZipFile(wheel) as zf:
+        zf.extractall(extract)
+
+    deps = dependency_paths(list(sys.path))
+    request = workdir / "_symbol_request.json"
+    request.write_text(
+        json.dumps(
+            {"package": IMPORT_NAME, "extract": str(extract), "deps": deps, "symbols": symbols}
+        ),
+        encoding="utf-8",
+    )
+    script = workdir / "_symbol_probe.py"
+    script.write_text(SYMBOL_PROBE, encoding="utf-8")
+    proc = run([sys.executable, "-E", "-S", str(script), str(request)], cwd=workdir)
+
+    evidence = [
+        f"probe: {Path(sys.executable).name} -E -S, cwd={workdir}",
+        f"sys.path[0]: {extract}  (the extracted wheel, ahead of everything)",
+        f"dependency entries appended: {deps}",
+    ]
+    if proc.returncode != 0:
+        # A probe that cannot run is a FAIL, not a SKIP: the wheel is right there,
+        # and the reason it could not be imported is itself the answer.
+        return bad(
+            name,
+            "the isolated symbol probe could not import the wheel",
+            evidence + tail(proc.stderr, 6),
+        )
+    try:
+        data = json.loads(proc.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return bad(name, "the symbol probe produced no JSON", evidence + tail(proc.stdout, 6))
+    if "error" in data:
+        return bad(
+            name,
+            "the isolated symbol probe could not import the wheel",
+            evidence + [data["error"]],
+        )
+
+    evidence += [
+        f"{IMPORT_NAME}.__file__ = {data.get('package_file')}",
+        f"{IMPORT_NAME}.__path__ = {data.get('package_path')}",
+        f"other sys.path entries holding a {IMPORT_NAME}: {data.get('shadowing') or 'none'}",
+    ]
+    # Assert on `__path__` rather than `__file__`. This package has an `__init__.py`
+    # today and so is a regular package, but it has been a namespace package before
+    # -- a namespace package has no `__file__` at all and multiplexes its `__path__`
+    # across every directory of that name on the way. `__path__` is the invariant
+    # that stays true either way, and multiplexing is the failure mode that matters.
+    expected = (extract / IMPORT_NAME).resolve()
+    paths = [Path(entry).resolve() for entry in data.get("package_path", [])]
+    if not paths:
+        return bad(
+            name,
+            "the import did not resolve to the wheel, so this proves nothing",
+            evidence + [f"{IMPORT_NAME} has no __path__; it is not the package we extracted"],
+        )
+    leaked = [str(entry) for entry in paths if entry != expected]
+    if leaked or len(paths) > 1:
+        return bad(
+            name,
+            "the import did not resolve to the wheel, so this proves nothing",
+            evidence + [f"__path__ reaches outside the extracted wheel: {leaked or paths}"],
+        )
+
+    answers = data.get("symbols", {})
+    missing = []
+    for symbol in symbols:
+        entry = answers.get(symbol, {})
+        found = bool(entry.get("found"))
+        evidence.append(
+            f"README shows {IMPORT_NAME}.{symbol}  ->  "
+            f"{'in the wheel as ' + str(entry.get('kind')) if found else 'NOT IN THE WHEEL'}"
+        )
+        if not found:
+            missing.append(symbol)
+    if missing:
+        return bad(
+            name,
+            f"the README names {len(missing)} symbol(s) the wheel does not export: {missing}",
+            evidence
+            + [
+                "A reader who installs this and pastes the front page's first example",
+                "gets an ImportError or an AttributeError, not the output shown.",
+                "Fix the wheel or fix the README -- but do not delete this check.",
+            ],
+        )
+    return ok(
+        name,
+        f"all {len(symbols)} symbol(s) the README names exist in {wheel.name}",
+        evidence,
+    )
+
+
 def check_readme_commands(repo: Path) -> Result:
     """Any command the README shows must exist as a real CLI subcommand."""
     name = "readme-commands"
@@ -1388,6 +1708,7 @@ def main(argv: list[str] | None = None) -> int:
                 "console-script",
                 "wheel-py-typed",
                 "twine-check",
+                "readme-symbols",
             ):
                 emit(skipped(pending, reason, [f"see the `{build_result.name}` row above"]))
         else:
@@ -1410,6 +1731,7 @@ def main(argv: list[str] | None = None) -> int:
             emit(check_console_script(wheel))
             emit(check_wheel_py_typed(wheel, repo))
             emit(check_twine(sdist, wheel, repo))
+            emit(check_readme_symbols(wheel, workdir, repo))
 
         emit(check_readme_pip_install(repo))
         emit(check_readme_commands(repo))
