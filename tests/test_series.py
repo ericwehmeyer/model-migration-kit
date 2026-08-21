@@ -1040,17 +1040,25 @@ def test_the_annotations_resolve_to_real_types():
 # not exist in this worktree when these were written and no expected value below
 # was obtained by running it.
 #
-# **What the fixtures are.** `migkit demo --keep` was run into a scratch directory
-# and its `evidence.jsonl` read: 306 records, eleven event types, three
-# `migkit.comparison` records each followed immediately by its `migkit.verdict`,
-# and 120 `judge.verdict` records in between. That log supplied the envelope --
+# **What the fixtures are, and what they are not.** `migkit demo --keep` was run
+# and its `evidence.jsonl` read: eleven event types, and per run exactly one
+# `migkit.comparison`, one `migkit.verdict`, and forty `judge.verdict` records.
+# **One** comparison per run, which is worth stating plainly, because it is the
+# reason nothing below is generated. That log supplied the envelope --
 # `schema_version`, `ts`, `event_type`, `payload`, written by `EvidenceLog.append`
-# with `sort_keys=True` -- and the event-type names, and nothing else. The logs
-# below are built line by line rather than copied, for two reasons:
+# with `sort_keys=True` -- and the event-type names, and nothing else. No test here
+# depends on how many records `migkit demo` writes, and none reads a file it did
+# not itself write under `tmp_path`.
 #
+# The logs are built line by line for three reasons:
+#
+# * `migkit demo` cannot produce a multi-point log at any length, and a multi-point
+#   log is this chunk's whole subject. A fixture generated from one would pass
+#   against a reader that returned only the first point, or only the last -- which
+#   is the reader this chunk exists to replace;
 # * every log this project has ever written puts the verdict on the line after its
-#   comparison, so a fixture copied from one cannot tell "pairs correctly" from
-#   "assumes adjacency", which is the one error the plan's reviewer note names;
+#   comparison, so even a demo log concatenated with itself cannot tell "pairs
+#   correctly" from "assumes adjacency", the one error the reviewer note names;
 # * two of these tests turn on what the timestamps *are*, and `EvidenceLog.append`
 #   stamps its own.
 #
@@ -1684,20 +1692,65 @@ def test_reading_a_series_never_calls_the_whole_log_into_memory(tmp_path: Path):
     assert [point.candidate_model for point in points] == ["first", "second"]
 
 
-def test_the_series_is_read_through_the_reports_own_streaming_reader(tmp_path: Path):
-    """The contract does not merely require streaming, it requires *this* streamer:
-    "do not write a second reader". The tolerance rules -- a torn last line dropped,
-    anything malformed earlier an error, `newline` fixed so a bare carriage return
-    inside a model's output does not split a record in one reader and not the other
-    -- are rigor's, and a second copy of them is how a reader and a writer of the
-    same file drift apart.
+#: Every place in the package a streaming reader could reasonably be bound: the
+#: module that owns it, the module that used to own it, and the module under test.
+#: Which of the three holds the definition is not something this chunk's contract
+#: settles -- it permits promoting `report._stream_records` to a public name, and
+#: C1's contract forbids `series` importing `report` at all -- so the two tests
+#: below look for the reader rather than for a particular home for it.
+_READER_HOMES = (
+    "model_migration_kit.evidence",
+    "model_migration_kit.report",
+    "model_migration_kit.series",
+)
+_READER_NAMES = ("stream_records", "_stream_records")
 
-    Either name satisfies the contract: the plan permits promoting `_stream_records`
-    to a public `stream_records`, and prefers it."""
-    report = importlib.import_module("model_migration_kit.report")
-    names = [name for name in ("stream_records", "_stream_records") if hasattr(report, name)]
-    assert names, "report.py no longer exposes a streaming reader for series to reuse"
 
+def _bound_readers() -> dict[str, object]:
+    """Every binding of a streaming reader the package exposes, by qualified name."""
+    found: dict[str, object] = {}
+    for module_name in _READER_HOMES:
+        try:
+            module = importlib.import_module(module_name)
+        except ModuleNotFoundError:
+            continue
+        for attribute in _READER_NAMES:
+            reader = getattr(module, attribute, None)
+            if reader is not None:
+                found[f"{module_name}.{attribute}"] = reader
+    return found
+
+
+def test_the_whole_tree_holds_exactly_one_streaming_reader():
+    """"Do not write a second reader", asserted as identity rather than as a call.
+
+    The tolerance rules -- a torn last line dropped, anything malformed earlier an
+    error, `newline` fixed so a bare carriage return inside a model's output does
+    not split a record in one reader and not in the other -- are rigor's, and a
+    second copy of them is how a reader and a writer of the same file drift apart:
+    quietly, and always in the reader's favour.
+
+    Where the definition lives is deliberately not asserted. The plan permits
+    promoting `report._stream_records` to a public name, C1's contract forbids
+    `series` importing `report`, and a third module owning the reader while the
+    other two alias it satisfies both. What may not happen is two of these being
+    different functions."""
+    readers = _bound_readers()
+    assert readers, f"no streaming reader found in any of {_READER_HOMES}"
+    distinct = {id(reader) for reader in readers.values()}
+    assert len(distinct) == 1, (
+        "the tree holds more than one streaming reader, so the same log can now be "
+        f"read two ways: {sorted(readers)}"
+    )
+
+
+def test_the_series_is_read_through_that_one_reader_and_reads_only_the_log(tmp_path: Path):
+    """The other half of it: `read_series` has to actually go through the reader.
+
+    Every binding found above is replaced, not just the module that defines it. A
+    module-level `from ... import stream_records` binds the function into the
+    importer's own namespace, and patching the module it came from would then be
+    watching a name that nobody calls."""
     log = _write_log(
         tmp_path / "evidence.jsonl",
         _a_comparison("first"),
@@ -1706,19 +1759,21 @@ def test_the_series_is_read_through_the_reports_own_streaming_reader(tmp_path: P
         _a_verdict("NO-GO"),
     )
     read_series(log)  # let any deferred import happen before the reader is watched
+    readers = _bound_readers()
+    assert readers, f"no streaming reader found in any of {_READER_HOMES}"
     seen: list[Path] = []
     with pytest.MonkeyPatch.context() as patch:
-        for name in names:
-            original = getattr(report, name)
+        for qualified, original in readers.items():
+            module_name, _, attribute = qualified.rpartition(".")
 
             def _spy(path, _original=original):
                 seen.append(Path(path))
                 yield from _original(path)
 
-            patch.setattr(report, name, _spy)
+            patch.setattr(importlib.import_module(module_name), attribute, _spy)
         points = read_series(log)
     assert [point.candidate_model for point in points] == ["first", "second"]
-    assert seen, "read_series did not go through report's streaming reader"
+    assert seen, "read_series read the log without going through the shared reader"
     assert set(seen) == {Path(log)}, seen
 
 
