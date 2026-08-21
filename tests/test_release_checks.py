@@ -1325,3 +1325,131 @@ def test_py_typed_in_the_zip_but_not_in_record_is_a_failure(tmp_path):
         },
     )
     assert vr.check_wheel_py_typed(wheel, repo).status == vr.FAIL
+
+
+# ----------------------------------------------------------------------------------
+# The annotations behind the marker, type-checked as the extracted wheel
+# ----------------------------------------------------------------------------------
+
+
+def _ann_wheel(tmp_path: Path, body: bytes = b"SENTINEL = 1\n") -> Path:
+    """A wheel carrying the marker and one module, so the subject is unambiguous."""
+    path = tmp_path / "model_migration_kit-0.1.0-py3-none-any.whl"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("model_migration_kit/__init__.py", b"")
+        zf.writestr("model_migration_kit/py.typed", b"")
+        zf.writestr("model_migration_kit/sentinel.py", body)
+    return path
+
+
+def _fake_mypy(monkeypatch, returncode: int, stdout: str = "") -> list:
+    """Stand in for the mypy subprocess and record how it was invoked.
+
+    The tests below must run on a machine with no mypy -- which is every machine
+    this repository currently has, `.venv` and CI included -- so the invocation is
+    the thing under test, not mypy's own verdict.
+    """
+    calls = []
+
+    def fake_run(cmd, cwd=None, env=None):
+        calls.append({"cmd": cmd, "cwd": cwd, "env": env})
+        return types.SimpleNamespace(returncode=returncode, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(vr, "run", fake_run)
+    monkeypatch.setattr(vr, "_module_available", lambda module: True)
+    return calls
+
+
+def test_an_absent_mypy_skips_rather_than_passing_the_py_typed_promise(tmp_path, monkeypatch):
+    """The defect class this check exists to avoid. `wheel-py-typed` proves the marker
+    ships; if the tool that reads the marker's meaning is missing and this check
+    returned PASS, the release would record that the annotations were verified when
+    nothing had looked at them. `twine-check` was blind for two releases for the
+    neighbouring reason, so a skip has to stay a skip."""
+    monkeypatch.setattr(vr, "_module_available", lambda module: False)
+    result = vr.check_wheel_annotations(_ann_wheel(tmp_path), tmp_path)
+    assert result.status == vr.SKIP
+    assert any("UNVERIFIED" in line for line in result.evidence)
+
+
+def test_the_ignore_list_names_no_dependency_that_ships_its_own_py_typed():
+    """Copying opik-rigor's tuple wholesale would be the bug. This package imports
+    none of anthropic, openai, opik or scipy -- those names occur in `cli.py` only as
+    adapter strings and in `comparison.py` only in prose -- and jinja2, rich and
+    opik-rigor each ship a py.typed marker, so ignoring their imports would throw
+    away checking that works today."""
+    ignored = set(vr.UNTYPED_OR_OPTIONAL_IMPORTS)
+    assert "tomli" in ignored
+    for typed in ("jinja2", "rich", "opik_rigor", "opik-rigor"):
+        assert typed not in ignored
+    for never_imported in ("anthropic.*", "openai.*", "opik.*", "scipy.*"):
+        assert never_imported not in ignored
+
+
+def test_missing_imports_are_ignored_per_module_and_never_globally(tmp_path, monkeypatch):
+    """`--ignore-missing-imports` as a flag is global, and a global version of it would
+    hide the failure that matters most: a module the wheel forgot to ship reads
+    exactly like a third-party package that is not installed."""
+    calls = _fake_mypy(monkeypatch, returncode=0)
+    vr.check_wheel_annotations(_ann_wheel(tmp_path), tmp_path)
+    cmd = calls[0]["cmd"]
+    assert "--ignore-missing-imports" not in cmd
+    config = Path(cmd[cmd.index("--config-file") + 1])
+    text = config.read_text(encoding="utf-8")
+    assert "strict = True" in text
+    for module in vr.UNTYPED_OR_OPTIONAL_IMPORTS:
+        assert f"[mypy-{module}]" in text
+    # Everything before the first per-module section is the global `[mypy]` block.
+    assert "ignore_missing_imports" not in text.split("[mypy-")[0]
+
+
+def test_mypy_is_pointed_at_the_extracted_wheel_and_not_at_the_source_tree(tmp_path, monkeypatch):
+    """The reason every check here reads the zip. An editable install and the repo's
+    own `src/` both answer questions about the wheel with the source tree, in the
+    direction that hides the defect -- a wheel can ship a stale module while `src/`
+    carries the fixed one, and a check aimed at `src/` would type-check the fix and
+    pass on a wheel that ships the bug."""
+    calls = _fake_mypy(monkeypatch, returncode=0)
+    wheel = _ann_wheel(tmp_path, body=b"SENTINEL_FROM_THE_ZIP = 1\n")
+    vr.check_wheel_annotations(wheel, tmp_path)
+    target = Path(calls[0]["cmd"][-1])
+    assert tmp_path.resolve() in target.resolve().parents
+    assert target.name == vr.IMPORT_NAME
+    assert "SENTINEL_FROM_THE_ZIP" in (target / "sentinel.py").read_text(encoding="utf-8")
+
+
+def test_annotations_mypy_rejects_fail_the_release(tmp_path, monkeypatch):
+    """A wrong annotation behind a py.typed marker is worse than no marker at all: it
+    does not merely fail to help, it fails the build of every downstream project
+    running mypy or pyright in strict mode, and they cannot opt out short of an
+    ignore rule aimed at this package."""
+    calls = _fake_mypy(
+        monkeypatch,
+        returncode=1,
+        stdout='sentinel.py:1: error: Argument 1 to "float" has incompatible type\n',
+    )
+    result = vr.check_wheel_annotations(_ann_wheel(tmp_path), tmp_path)
+    assert calls, "mypy was never invoked"
+    assert result.status == vr.FAIL
+    assert any("incompatible type" in line for line in result.evidence)
+
+
+def test_clean_annotations_pass_and_the_evidence_names_the_wheel(tmp_path, monkeypatch):
+    """The passing row is the one pasted into PROGRESS.md, so it has to say which
+    artifact was checked and under what configuration -- a bare PASS is not evidence."""
+    _fake_mypy(monkeypatch, returncode=0)
+    wheel = _ann_wheel(tmp_path)
+    result = vr.check_wheel_annotations(wheel, tmp_path)
+    assert result.status == vr.PASS
+    assert wheel.name in result.summary
+    assert any("strict = True" in line for line in result.evidence)
+
+
+def test_the_mypy_cache_is_written_into_the_scratch_directory(tmp_path, monkeypatch):
+    """A release check must not leave a `.mypy_cache` inside the tree it is verifying:
+    `wheel-demo-data` compares the wheel against the working tree byte for byte, and
+    it would then be reading a tree this script had just written to."""
+    calls = _fake_mypy(monkeypatch, returncode=0)
+    vr.check_wheel_annotations(_ann_wheel(tmp_path), tmp_path)
+    cache = Path(calls[0]["env"]["MYPY_CACHE_DIR"])
+    assert tmp_path.resolve() in cache.resolve().parents

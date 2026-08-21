@@ -1181,6 +1181,141 @@ def check_wheel_py_typed(wheel: Path, repo: Path) -> Result:
     return ok(name, f"{member} is inside {wheel.name}", evidence)
 
 
+#: Modules a type checker cannot resolve when it meets this package as *installed*,
+#: with the reason each one is unresolvable. There is no `[[tool.mypy.overrides]]`
+#: block in pyproject.toml for this to mirror -- the project has no mypy
+#: configuration at all -- so this tuple is the first written statement of the
+#: list. It is spelled out in the script rather than read from pyproject.toml
+#: because the wheel does not carry pyproject.toml: the check below configures
+#: mypy from scratch against an extracted zip, exactly as a downstream user's
+#: checker would meet the package.
+#:
+#: `tomli`, and only `tomli`. It is a conditional dependency -- `python_version <
+#: '3.11'` -- so on 3.11 and later it is correctly not installed, and the
+#: `except ImportError: import tomli as tomllib` fallback in `cli.py` and
+#: `judging.py` has nothing to resolve to. The import is right and the absence is
+#: right; only the checker needs telling.
+#:
+#: opik-rigor's equivalent tuple ignores `anthropic.*`, `openai.*`, `opik.*` and
+#: `scipy.*`, and not one of the four belongs here -- copying it across was the
+#: obvious move and the wrong one. This package imports no provider SDK: `cli.py`
+#: carries "anthropic" and "openai-compat" as adapter *strings* and defers the
+#: import to opik-rigor, which is why the keyless paths run without either
+#: installed. It imports no scipy either; `comparison.py` names it only in prose,
+#: having chosen `statistics.NormalDist` over it deliberately. Ignoring four
+#: modules nobody imports would be harmless noise, but it would also be a standing
+#: invitation to add a fifth without checking.
+#:
+#: jinja2, rich and opik-rigor are absent from this list for the opposite reason:
+#: each ships a py.typed marker of its own, so their annotations are real and
+#: mypy resolves them. An `ignore_missing_imports` aimed at any of the three would
+#: throw away checking that works today -- the same mistake in miniature that
+#: shipping a wheel without py.typed makes at full size.
+UNTYPED_OR_OPTIONAL_IMPORTS = ("tomli",)
+
+
+def check_wheel_annotations(wheel: Path, workdir: Path) -> Result:
+    """`py.typed` is a promise about the annotations; this is the check that it is true.
+
+    `wheel-py-typed` proves the marker is in the zip. The marker's *meaning* is "a
+    downstream type checker should trust the inline annotations in this package" --
+    and nothing here has ever established that they deserve it. A wrong annotation
+    behind a py.typed marker is worse than no marker at all: it does not merely
+    fail to help, it fails the build of every downstream project running mypy or
+    pyright in strict mode, and they cannot opt out short of an ignore rule aimed
+    at this package.
+
+    The subject is the extracted wheel, never `src/`, for the same reason as every
+    other check here: `packages = [...]`, a build backend change or a stray
+    `.gitignore` rule can make the two differ, and it is the zip that ships.
+
+    Ported from opik-rigor, where running it the first time found three adapter
+    constructors annotating a credential-rejecting catch-all as `**forbidden:
+    object`, which told every checker that a call raising TypeError at runtime was
+    fine. Running it here the first time found six errors of its own, in
+    `runner.py`, `report.py` and `comparison.py`; they are real and they are why
+    this row is a FAIL rather than a PASS on any machine that has mypy.
+    """
+    name = "wheel-annotations"
+    if not _module_available("mypy"):
+        return skipped(
+            name,
+            "mypy is not installed in this interpreter",
+            [
+                f"interpreter: {sys.executable}",
+                "fix: .\\.venv\\Scripts\\python.exe -m pip install --upgrade mypy",
+                "no CI job installs it either, so this row skips everywhere today",
+                "the py.typed promise is therefore UNVERIFIED, not passed",
+            ],
+        )
+
+    # A directory of this check's own. `wheel-demo-data-importable` deletes and
+    # re-extracts its own, and two checks sharing one extraction would couple them
+    # through nothing more visible than the order of the calls in main().
+    extract = workdir / "annotations-extract"
+    if extract.exists():
+        shutil.rmtree(extract)
+    extract.mkdir(parents=True)
+    with zipfile.ZipFile(wheel) as zf:
+        zf.extractall(extract)
+
+    # A config written beside the extraction rather than flags on the command line:
+    # `--ignore-missing-imports` is global, and globally ignoring unresolved imports
+    # in a check whose job is to find broken annotations would hide the one failure
+    # mode that matters most -- a module the wheel forgot to ship, which reads to
+    # mypy exactly like a third-party package that is merely not installed.
+    config = workdir / "wheel-mypy.ini"
+    sections = "\n\n".join(
+        f"[mypy-{module}]\nignore_missing_imports = True" for module in UNTYPED_OR_OPTIONAL_IMPORTS
+    )
+    config.write_text(f"[mypy]\nstrict = True\n\n{sections}\n", encoding="utf-8")
+
+    target = extract / IMPORT_NAME
+    proc = run(
+        [
+            sys.executable,
+            "-m",
+            "mypy",
+            "--config-file",
+            str(config),
+            "--no-incremental",
+            str(target),
+        ],
+        cwd=workdir,
+        env={
+            **os.environ,
+            # NO_COLOR for the same reason twine-check sets it, and plain_lines below
+            # in case a future mypy ignores it: this evidence is pasted into
+            # PROGRESS.md, and escape codes there are unreadable.
+            "NO_COLOR": "1",
+            "FORCE_COLOR": "0",
+            # Inside the scratch dir so a release check never writes a cache into the
+            # tree it is verifying -- `wheel-demo-data` compares the wheel against
+            # that tree byte for byte a few rows earlier.
+            "MYPY_CACHE_DIR": str(workdir / ".mypy_cache"),
+        },
+    )
+    lines = plain_lines(proc.stdout + proc.stderr)
+    ignored = ", ".join(UNTYPED_OR_OPTIONAL_IMPORTS)
+    evidence = [
+        f"subject: {target} (extracted from {wheel.name})",
+        f"config: strict = True; ignore_missing_imports for {ignored}",
+        *tail("\n".join(lines), 20),
+    ]
+    if proc.returncode != 0:
+        return bad(
+            name,
+            f"mypy --strict rejected the wheel's own annotations (exit {proc.returncode})",
+            evidence
+            + [
+                "py.typed tells a downstream checker to trust these annotations.",
+                "Fix the annotations, or remove the marker -- but do not ship both",
+                "a marker and annotations that fail the standard it claims.",
+            ],
+        )
+    return ok(name, f"mypy --strict is clean on {IMPORT_NAME} as shipped in {wheel.name}", evidence)
+
+
 def check_twine(sdist: Path, wheel: Path, repo: Path) -> Result:
     name = "twine-check"
     if not _module_available("twine"):
@@ -1387,6 +1522,7 @@ def main(argv: list[str] | None = None) -> int:
                 "version-not-dev",
                 "console-script",
                 "wheel-py-typed",
+                "wheel-annotations",
                 "twine-check",
             ):
                 emit(skipped(pending, reason, [f"see the `{build_result.name}` row above"]))
@@ -1409,6 +1545,7 @@ def main(argv: list[str] | None = None) -> int:
                 emit(result)
             emit(check_console_script(wheel))
             emit(check_wheel_py_typed(wheel, repo))
+            emit(check_wheel_annotations(wheel, workdir))
             emit(check_twine(sdist, wheel, repo))
 
         emit(check_readme_pip_install(repo))
