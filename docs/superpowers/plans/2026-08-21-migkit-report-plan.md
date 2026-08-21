@@ -362,14 +362,15 @@ class RunPoint:
     config_path: str
     n_per_item: int
     items: int                        # golden-set item count, 0 when unrecorded
-    completions_baseline: int
-    completions_candidate: int
-    failures_baseline: int
-    failures_candidate: int
+    judged_baseline: int              # completions the judge GRADED, not the run produced
+    judged_candidate: int
+    judge_failures_baseline: int      # the JUDGE failed it; not an adapter error
+    judge_failures_candidate: int
     pass_rate: float | None           # candidate side, widest judge
     interval: tuple[float, float] | None
     lower_bound: float | None
     floor: float | None               # the gate's own min_rate, not config
+    floor_source: str                 # "gate" | "thresholds" | "unrecorded" (added by review)
     confidence: float | None
     alpha: float | None
     judge_name: str                   # which judge the four numbers above came from
