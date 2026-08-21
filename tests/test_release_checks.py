@@ -1059,11 +1059,22 @@ def test_a_fenced_install_of_a_declared_dependency_is_allowed(tmp_path):
 _README = Path(__file__).resolve().parent.parent / "README.md"
 
 
-def test_the_real_readme_tells_nobody_to_pip_install_anything():
-    """Contract, "Against the real README": expected `[]`. Read by eye, every fenced
-    `pip install` in README.md targets `.`, `-e ".[dev]"`, or the placeholder
-    `<checkout>`; the only bare-name mention is the prose sentence of P1."""
-    assert vr.readme_pip_install_targets(_README.read_text(encoding="utf-8")) == []
+def test_the_real_readme_installs_the_published_distribution_by_name():
+    """Contract, "Against the real README". This expected `[]` while the package was
+    unpublished, and every fenced `pip install` targeted `.`, `-e ".[dev]"`, or the
+    placeholder `<checkout>`.
+
+    0.1.0 is on PyPI, so a README that still refused to name the distribution would
+    be telling the truth about nothing: the install section it belonged to claimed
+    `pip install model-migration-kit` "does not work today", which was frozen into
+    the long description at upload and read as false on the project page from the
+    moment the upload finished. The value that matters now is not that the README
+    stays silent but that the name it prints is the one on the index -- which is
+    what `check_readme_pip_install` verifies, and why this assertion moved rather
+    than being deleted."""
+    assert vr.readme_pip_install_targets(_README.read_text(encoding="utf-8")) == [
+        "model-migration-kit"
+    ]
 
 
 def test_the_real_readme_types_exactly_four_subcommands():

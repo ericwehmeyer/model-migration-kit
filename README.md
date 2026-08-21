@@ -1,15 +1,10 @@
 # model-migration-kit
 
 [![CI](https://github.com/ericwehmeyer/model-migration-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/ericwehmeyer/model-migration-kit/actions/workflows/ci.yml)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)](pyproject.toml)
-[![License Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)](https://github.com/ericwehmeyer/model-migration-kit/blob/main/pyproject.toml)
+[![License Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-green)](https://github.com/ericwehmeyer/model-migration-kit/blob/main/LICENSE)
 
-<!-- Uncommented at release and not before. shields.io answers 200 for a name nobody
-     has uploaded and renders it as an error badge, so this line published early would
-     be a claim that the package exists. The CI badge above 404s until the repository
-     is created and made public, which is Phase 5 of docs/session-4-release-contract.md.
 [![PyPI](https://img.shields.io/pypi/v/model-migration-kit)](https://pypi.org/project/model-migration-kit/)
--->
 
 Is it safe to move from model A to model B? `migkit` answers with **GO**,
 **NO-GO** or **REVIEW** — decided by Wilson intervals and a Mann-Whitney test over
@@ -553,26 +548,27 @@ exit: 3
 The distribution is named **`model-migration-kit`**, the import package is
 `model_migration_kit`, and the console script is `migkit`.
 
-**It is not published yet.** Checked on 2026-08-13:
+**Published on PyPI.** Verified on 2026-08-21:
 
-```
-$ python -c "import urllib.request; urllib.request.urlopen('https://pypi.org/pypi/model-migration-kit/json')"
-urllib.error.HTTPError: HTTP Error 404: Not Found
+```bash
+python -m pip install model-migration-kit
+migkit demo
 ```
 
 The JSON endpoint 404s for a name nobody has registered *and* for a name someone
-registered without ever uploading to. The PEP 503 index tells those two apart —
-it answers 200 with an empty file list for the second — so that is the check that
-actually settles it, on both indexes:
+registered without ever uploading to. The PEP 503 index tells those two apart --
+it answers 200 with an empty file list for the second -- so that is the check that
+actually settles it:
 
 ```
-404  https://pypi.org/simple/model-migration-kit/
-404  https://test.pypi.org/simple/model-migration-kit/
-404  https://pypi.org/simple/migkit/
+200  https://pypi.org/simple/model-migration-kit/
+200  https://test.pypi.org/simple/model-migration-kit/
+404  https://pypi.org/simple/migkit/            # the console script is not a distribution
 404  https://test.pypi.org/simple/migkit/
 ```
 
-So `pip install model-migration-kit` does not work today. Install from a checkout:
+Installing from a checkout is still the path for the commands further down that
+need the repository:
 
 ```bash
 python -m venv .venv
@@ -625,12 +621,12 @@ index.
 
 Exactly what is depended on, how each fact about it was verified, and what a rigor
 release could change that would break this consumer are recorded in
-[COMPATIBILITY.md](COMPATIBILITY.md) — including a section listing what is *not*
+[COMPATIBILITY.md](https://github.com/ericwehmeyer/model-migration-kit/blob/main/COMPATIBILITY.md) — including a section listing what is *not*
 verified, so that unverified claims do not borrow credibility from the verified
 ones sitting next to them.
 
 Four decisions that are easy to get wrong. The first three were made in
-[docs/build-plan.md](docs/build-plan.md) §6; the fourth is a property of the tool
+[docs/build-plan.md](https://github.com/ericwehmeyer/model-migration-kit/blob/main/docs/build-plan.md) §6; the fourth is a property of the tool
 rather than a recorded decision, and is stated here because it is the one a reader
 is most likely to assume the other way:
 
@@ -657,4 +653,4 @@ dashboard, and no claim about any item outside your golden set.
 
 ## License
 
-Apache-2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+Apache-2.0 — see [LICENSE](https://github.com/ericwehmeyer/model-migration-kit/blob/main/LICENSE) and [NOTICE](https://github.com/ericwehmeyer/model-migration-kit/blob/main/NOTICE).
