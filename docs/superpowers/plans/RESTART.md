@@ -30,36 +30,33 @@ above it in five places.
 
 ## Where things stand
 
+**C1 and C2 are merged to main and green.** 1214 tests, ruff clean, release gate
+16 passed / 0 skipped. `series.py` (`RunPoint`, `run_point`, `read_series`) and
+`evidence.py` (`stream_records`, `resolve_evidence`) are in. The relative
+work-dir fix is merged too.
+
 | Branch | Contains | State |
 |---|---|---|
-| `main` | spec, plan, revisions, both `PROGRESS.md` records | clean, pushed |
-| `chunk/c1-impl` | `series.py` — `RunPoint`, `run_point` | reviewed; fix pass applied |
-| `chunk/c1-test` | 48 blind tests | merged into c1-impl |
-| `chunk/c2-impl` | `read_series` | see the session's last report |
-| `chunk/c2-test` | C2's blind tests | as above |
-| `chunk/c15-impl` | 96-item showcase golden set + generator | reviewed; **blocked, see below** |
-| `chunk/c15-test` | 12 blind tests | merged into c15-impl |
-| `chunk/c12-impl`, `chunk/c12-test` | empty | agents stopped 1 min in; re-dispatch from scratch |
-| `fix/relative-work-dir` | the `.migkit\.migkit` fix, 3 tests, 1110 passing | ready to merge |
+| `main` | spec, plan, revisions, C1, C2, work-dir fix | green, pushed |
+| `chunk/c15-impl` | showcase golden set + generator, 12 blind tests | reviewed, **blocked** |
+| `chunk/c12-impl`, `chunk/c12-test` | empty | stopped 1 min in; re-dispatch fresh |
+| `chunk/c1-*`, `chunk/c2-*`, `fix/relative-work-dir` | merged | can be deleted |
 
-Worktrees live at `C:\Users\ewehm\repos\mk-*`. `git worktree list` from the main
-checkout enumerates them. They persist across sessions; do not recreate them.
+Worktrees are under `repos\mk-*`; `git worktree list` enumerates them. They
+persist across sessions, so do not recreate them.
 
 ## Do these first, in this order
 
-1. **Merge `fix/relative-work-dir`.** Independent, tested, and it fixes a defect
-   reachable with no flags at all: `DEFAULT_DIR` is relative, so a plain
-   `migkit run` followed by `migkit report .migkit` looked in `.migkit\.migkit`.
-2. **Finish C1 and C2** — verify the fix pass, rebase C2 onto it, run both
-   suites, merge to main.
-3. **C15's revision pass — before C16 or C17 run.** The reviewer found five of
+1. **C15's revision pass — before C16 or C17 run.** The reviewer found five of
    sixteen `refusal` items are not refusable (`refuse-04`, `-06`, `-07`, `-14`,
    `-15`), in the dimension the entire showcase narrative collapses. Also: pin
    the content hash (one line, converts ten silent mutations to loud), assert
    the six tag names, and correct `__init__.py`'s claim that the package ships
    three data files — it now ships four. **The sequencing is the point:** today
    an edit is a commit; after C17 it is a full 56-run re-seed.
-4. **Then the critical path**: C3, then C8-C10, then C13-C14.
+2. **Then the critical path**: C3 (its input, C2, is merged), then C8-C10, then
+   C13-C14. C8's contract is superseded by R1 -- build the matrix from
+   `judge.verdict` plus the golden set, not from the judged artifacts.
 
 Off the path, pick up when convenient: C11, C12, C16-C18.
 
