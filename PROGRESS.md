@@ -546,3 +546,121 @@ the section above.
   reading string keys. Known friction, already on rigor's 0.2 roadmap.
   **Still true and still deferred**, which is why `pyproject.toml` keeps the
   `<0.2` upper bound: rigor's 0.2 is where that surface moves.
+
+## Found on 2026-08-21, recorded rather than fixed
+
+0.1.0 and 0.1.1 both shipped today. Everything below was found in the hours after
+the first upload, by eight agents and a second session, and then deliberately
+left alone: the work had become an audit of the release gate on a package with no
+users, and the governing plan wanted the next hour spent elsewhere. Recorded here
+because the reasoning is the perishable part — the branches keep the code.
+
+### The gate's twine row can block a release it should pass
+
+`check_twine` counts lines ending in `PASSED`. twine 7.0.0 has three verdict
+spellings, at `twine/commands/check.py:146-159`: `PASSED`, `PASSED with warnings`
+and `FAILED due to warnings`. Only the first ends in the word, so a long
+description that renders with a docutils warning — exactly what editing the
+README invites — counts zero passes and blocks the release with
+`expected PASSED twice, saw it 0 time(s)`, a diagnosis naming neither the
+artifact nor the warning. Latent today: 0.1.1's README renders clean.
+
+The shape of the fix is to read the verdict token after the final `": "` and
+treat `PASSED`/`PASSED with warnings` as a pass and `FAILED*` as a fail, rather
+than testing the end of the line.
+
+### …and its three tests cannot catch that, which is why it survived
+
+`test_a_colourised_twine_pass_is_still_counted` and its two neighbours call
+`vr.plain_lines(...)` and then **re-implement** the assertion
+(`sum(1 for line in lines if line.strip().endswith("PASSED"))`). None of them
+calls `check_twine`. A morning was spent inside that function fixing the ANSI
+half of the same defect and the wording half went unseen, because the tests
+covering it were testing a helper. A single test that calls `check_twine` with a
+stubbed subprocess would be worth more than all three.
+
+The general lesson, which applies past this row: a test that reimplements the
+logic it is checking passes whenever the two implementations agree, including
+when both are wrong.
+
+### `check_console_script` resolves without comparing
+
+It reads `entry_points.txt` out of the wheel and proves the target module ships,
+which is real. It never compares that target against the one `pyproject.toml`
+declares, so a wheel whose entry point has drifted from the source of truth is
+invisible to it. opik-rigor's `check_entry_points` is the same family and worse —
+it renders the mismatch into its evidence line and then passes.
+
+### Four ported checks, written and shelved
+
+Each is a branch off `a282c7f` with its own worktree; none is merged, and all
+four need a rebase onto `c46dfca`. Each found something while being written,
+which is the part worth keeping:
+
+- `port/readme-paths` (`bef478b`, `mk-wt-readme-paths`) — found five relative
+  links that 404 from the project page, two of them the badges on lines 4-5.
+  Fixed independently in `b82317b` and shipped in 0.1.1. Its author declined to
+  port rigor's third clause (every path-shaped argument must be in the wheel):
+  it fires on 14 of migkit's paths and ~13 are false positives — output files
+  the tool writes, a deliberate `./does-not-exist.jsonl` error demo, `$VAR`
+  paths, and fixtures the README already says in bold need the repository.
+- `port/readme-symbols` (`a56b849`, `mk-wt-readme-symbols`) — rigor anchors
+  `from X import Y` to the start of a line; migkit's README writes every example
+  as a `python -c` one-liner, so a faithful transplant finds zero symbols and
+  reports PASS. A check that cannot fail, occupying the slot where a real one
+  goes.
+- `port/exports-importable` (`26793fc`, `mk-wt-exports`) — rigor's
+  `^__all__\s*=\s*\[` does not match this package's annotated
+  `__all__: list[str] = [`. Ported verbatim it returns `None`, skips its own
+  staleness comparison, and reports a stale wheel as healthy.
+- `port/wheel-annotations` (`350d71e`, `mk-wt-annotations`) — deferred for a
+  reason worth remembering: it returns SKIPPED wherever mypy is absent, mypy is
+  in neither `.venv` nor any workflow, and this gate scores a skip as exit 2.
+  Merging it would block every release until mypy is wired into `publish.yml`.
+
+Two of the four are the same defect in different clothes: a check ported across
+sibling repos can be *syntactically* fine and *semantically* dead, and it reports
+PASS while dead.
+
+### The six mypy errors are all benign
+
+`mypy --strict` against the built wheel reports six, and none is a bug. The three
+`Argument 1 to "float" has incompatible type "float | None"` at
+`comparison.py:1313,1314,1377` all sit behind `_is_number` (`comparison.py:1388`),
+which is stricter than the annotation — it also rejects `bool`, NaN and
+infinities. `None` is unreachable at runtime, verified by calling the wheel's own
+functions, not by reading them. The other three are a lambda with an early-binding
+default that mypy cannot match to a zero-arity signature, and `list` invariance
+over an `Any`. Annotating `_is_number` as `TypeGuard[float]` retires three of the
+six in one line and documents an invariant a future editor of the verdict path
+could otherwise break silently.
+
+### Stale prose inside the gate
+
+`check_demo_data_importable`'s docstring says `model_migration_kit` "has no
+`__init__.py` yet, so it is a namespace package". The file exists now, and its own
+docstring records that it was added to stop the package being a namespace package
+after a near-miss. The isolation the check performs is still right; its stated
+reason is not.
+
+### Two README defects that 0.1.1 did not fix
+
+- The Quickstart at line 62 reads `.venv\Scripts\python.exe -m pip install <checkout>`.
+  The package is on PyPI and the Quickstart still never names it.
+- The transcripts at lines 323 and 336 quote `AdapterError`. That class is not in
+  `model_migration_kit.errors` (which has `ArtifactError`, `ConfigError`,
+  `DependencyContractError`, `GoldenSetError`, `HeaderlessArtifactError`,
+  `JudgeConfigError`, `JudgeReliabilityError`, `MigrationKitError`, `ReportError`).
+  It may be opik-rigor's, since `AnthropicAdapter` lives there — establishing
+  which needs a real reproduction, and guessing would make a README whose opening
+  promise is that every block was executed and pasted less true, not more.
+
+### What the release gate could not see, and a human could
+
+0.1.0's long description told every visitor `**It is not published yet.**` and
+`So pip install model-migration-kit does not work today`, with pasted 404s as
+evidence. Every word was true when written and all of it became false at the
+moment the upload carrying it finished. Sixteen checks passed on that artifact.
+The gate reads the README for commands that exist and paths that resolve; nothing
+reads it for claims that publishing itself falsifies. 0.1.1 exists only to replace
+that page, because a long description is frozen at upload.
