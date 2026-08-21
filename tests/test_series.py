@@ -44,18 +44,22 @@ from __future__ import annotations
 import builtins
 import copy
 import dataclasses
+import importlib
 import io
 import json
 import os
 import subprocess
 import sys
+import tracemalloc
 import typing
 from pathlib import Path
 
 import pytest
+from opik_rigor import EvidenceError, EvidenceLog, EvidenceRecord
 
 from model_migration_kit import series
-from model_migration_kit.series import RunPoint, run_point
+from model_migration_kit.errors import ArtifactError
+from model_migration_kit.series import RunPoint, read_series, run_point
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _SRC = _REPO_ROOT / "src"
@@ -1433,3 +1437,911 @@ def test_the_annotations_resolve_to_real_types():
     tooling."""
     assert typing.get_type_hints(run_point)
     assert typing.get_type_hints(RunPoint)
+
+
+
+# ==================================================================================
+# Chunk C2 -- `series.read_series`
+# ==================================================================================
+#
+# Written from the same plan, chunk C2, and from nothing else. `read_series` did
+# not exist in this worktree when these were written and no expected value below
+# was obtained by running it.
+#
+# **What the fixtures are, and what they are not.** `migkit demo --keep` was run
+# and its `evidence.jsonl` read: eleven event types, and per run exactly one
+# `migkit.comparison`, one `migkit.verdict`, and forty `judge.verdict` records.
+# **One** comparison per run, which is worth stating plainly, because it is the
+# reason nothing below is generated. That log supplied the envelope --
+# `schema_version`, `ts`, `event_type`, `payload`, written by `EvidenceLog.append`
+# with `sort_keys=True` -- and the event-type names, and nothing else. No test here
+# depends on how many records `migkit demo` writes, and none reads a file it did
+# not itself write under `tmp_path`.
+#
+# The logs are built line by line for three reasons:
+#
+# * `migkit demo` cannot produce a multi-point log at any length, and a multi-point
+#   log is this chunk's whole subject. A fixture generated from one would pass
+#   against a reader that returned only the first point, or only the last -- which
+#   is the reader this chunk exists to replace;
+# * every log this project has ever written puts the verdict on the line after its
+#   comparison, so even a demo log concatenated with itself cannot tell "pairs
+#   correctly" from "assumes adjacency", the one error the reviewer note names;
+# * two of these tests turn on what the timestamps *are*, and `EvidenceLog.append`
+#   stamps its own.
+#
+# **A contradiction in the contract, asserted one way.** The prose says a point is
+# closed by "the next `migkit.verdict` record before the next `migkit.comparison`",
+# which on a log reading C, C, V, V closes nothing and leaves both points without a
+# verdict. The edge table's own row for that log says the opposite: "first verdict
+# closes the first point; the second verdict closes the second." The table is what
+# is asserted below, and the reasoning is in the docstring of the test that does it.
+#
+# **On `judge.verdict`.** A reader that matches on the tail of the event type
+# closes the first point with one judge's opinion of one completion, and the
+# timeline then reports a verdict nobody reached.
+
+_COMPARISON = "migkit.comparison"
+_VERDICT = "migkit.verdict"
+
+
+def _ts(second: int) -> str:
+    """An envelope timestamp in the format `EvidenceLog.append` writes."""
+    return f"2026-08-21T22:40:{second:02d}.000000+00:00"
+
+
+def _line(event_type: str, payload: dict, ts: str) -> str:
+    """One line of an evidence log, in rigor's envelope and rigor's key order.
+
+    Serialised the way `EvidenceLog.append` serialises -- the same four keys,
+    `sort_keys=True`, `ensure_ascii=False` -- and built through `EvidenceRecord`,
+    so a change to rigor's schema breaks this fixture rather than quietly leaving
+    it describing a log shape nobody writes.
+    """
+    record = EvidenceRecord(ts=ts, event_type=event_type, payload=dict(payload))
+    return json.dumps(
+        {
+            "schema_version": record.schema_version,
+            "ts": record.ts,
+            "event_type": record.event_type,
+            "payload": record.payload,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    )
+
+
+def _write_log(
+    path: Path,
+    *records: tuple[str, dict],
+    timestamps: list[str] | None = None,
+    torn: str = "",
+    raw: list[str] | None = None,
+) -> Path:
+    """Write an evidence log and return its path.
+
+    `raw` is spliced in as complete lines after the records, for the malformed
+    cases. `torn` is appended with **no trailing newline**, which is what a process
+    killed mid-write leaves behind.
+    """
+    stamps = timestamps if timestamps is not None else [_ts(index) for index in range(len(records))]
+    lines = [
+        _line(event_type, payload, stamp)
+        for (event_type, payload), stamp in zip(records, stamps, strict=True)
+    ]
+    lines.extend(raw or [])
+    text = "".join(line + "\n" for line in lines) + torn
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(text)
+    return path
+
+
+def _a_comparison(model: str, **overrides) -> tuple[str, dict]:
+    """A `migkit.comparison` record whose candidate model names the run."""
+    payload = _comparison(**overrides)
+    payload["candidate"] = dict(payload["candidate"], model_id=model)
+    return (_COMPARISON, payload)
+
+
+def _a_verdict(value: str, **overrides) -> tuple[str, dict]:
+    """A `migkit.verdict` record whose reason names it, so the pairing is visible."""
+    overrides.setdefault("reason", f"reason recorded with {value}")
+    return (_VERDICT, _verdict(verdict=value, **overrides))
+
+
+def _noise() -> list[tuple[str, dict]]:
+    """The records a real log is mostly made of, in the proportions it holds them.
+
+    `judge.verdict` is in here on purpose: it is one judge's opinion of one
+    completion, it carries a `verdict` key of its own, and the demo log holds forty
+    of them for every `migkit.verdict`.
+    """
+    return [
+        ("migkit.run_started", {"model_id": "fake-candidate-v1", "n": 5}),
+        ("migkit.completion", {"item_id": "extract-01", "index": 0}),
+        ("judge.verdict", {"verdict": "pass", "score": 5, "raw": "5 -- exact match"}),
+        ("migkit.item_completed", {"item_id": "extract-01"}),
+        ("migkit.judging_completed", {"judge": "accuracy", "n": 60}),
+        ("assertion.evaluated", {"name": "pass_rate", "passed": False}),
+    ]
+
+
+def _peak_bytes(work) -> int:
+    """Peak allocation during `work`, the shape `tests/test_evidence_scale.py` uses."""
+    tracemalloc.start()
+    try:
+        work()
+        return tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+
+
+# ----------------------------------------------------------------------------------
+# The shape of the call
+# ----------------------------------------------------------------------------------
+
+
+def test_read_series_is_annotated_as_taking_a_path_and_returning_a_tuple_of_points():
+    """The contract's signature. A reader typed against an open file, or against a
+    `ComparisonReport`, cannot be called on the only thing an operator reliably
+    has, which is a path to a log."""
+    hints = typing.get_type_hints(read_series)
+    assert "evidence" in hints, "read_series must annotate its `evidence` parameter"
+    accepted = str(hints["evidence"])
+    assert "Path" in accepted and "str" in accepted, accepted
+    returned = str(hints["return"])
+    assert "RunPoint" in returned, returned
+    assert "tuple" in returned.lower(), returned
+    for forbidden in _FORBIDDEN_TYPES:
+        assert forbidden not in accepted + returned, f"the series seam must not name {forbidden}"
+
+
+def test_a_log_given_as_a_string_reads_the_same_as_one_given_as_a_path(tmp_path: Path):
+    """`str | Path`, both halves of it. The CLI hands this an `argv` string and the
+    report hands it a `Path`; a reader that survives only one of those fails in
+    whichever of the two callers was written second."""
+    log = _write_log(
+        tmp_path / "evidence.jsonl",
+        _a_comparison("first"),
+        _a_verdict("GO"),
+        _a_comparison("second"),
+        _a_verdict("NO-GO"),
+    )
+    from_path = read_series(log)
+    from_string = read_series(str(log))
+    assert [point.candidate_model for point in from_path] == ["first", "second"]
+    assert from_string == from_path
+
+
+def test_the_series_is_a_tuple_and_not_a_list(tmp_path: Path):
+    """`RunPoint` is frozen and hashable so a later chunk can group and de-duplicate
+    points. A mutable series handed to that chunk is a set of points that can change
+    after the chart was drawn from them."""
+    log = _write_log(
+        tmp_path / "evidence.jsonl",
+        _a_comparison("first"),
+        _a_verdict("GO"),
+        _a_comparison("second"),
+        _a_verdict("NO-GO"),
+    )
+    points = read_series(log)
+    assert isinstance(points, tuple), f"read_series returned a {type(points).__name__}"
+    assert [point.candidate_model for point in points] == ["first", "second"]
+    assert all(isinstance(point, RunPoint) for point in points)
+
+
+# ----------------------------------------------------------------------------------
+# Every comparison is a point, in the order the log records them
+# ----------------------------------------------------------------------------------
+
+
+def test_a_log_holding_three_comparisons_yields_three_points_in_the_order_they_were_written(
+    tmp_path: Path,
+):
+    """The contract's named first-failing test, and the whole reason this chunk
+    exists. `from_evidence` keeps the last comparison and discards the rest, so a
+    fortnight of nightly runs renders today as a single point and the trend the
+    report is being rebuilt to show is not in the document at all."""
+    log = _write_log(
+        tmp_path / "evidence.jsonl",
+        _a_comparison("night-one"),
+        _a_verdict("GO"),
+        _a_comparison("night-two"),
+        _a_verdict("NO-GO"),
+        _a_comparison("night-three"),
+        _a_verdict("GO"),
+    )
+    points = read_series(log)
+    assert len(points) == 3, f"three comparisons became {len(points)} point(s)"
+    assert [point.candidate_model for point in points] == [
+        "night-one",
+        "night-two",
+        "night-three",
+    ]
+    assert [point.verdict for point in points] == ["GO", "NO-GO", "GO"]
+
+
+def test_every_point_is_what_run_point_makes_of_the_two_payloads_it_was_paired_from(
+    tmp_path: Path,
+):
+    """The pairing stated as an equality rather than field by field.
+
+    Anything `read_series` reads differently from `run_point` -- a payload it
+    normalised on the way past, a verdict it attached to the neighbouring run --
+    shows up here as a whole wrong point, rather than only in the one field some
+    test happened to look at."""
+    comparisons = [_a_comparison("alpha"), _a_comparison("beta")]
+    verdicts = [_a_verdict("GO"), _a_verdict("NO-GO")]
+    log = _write_log(
+        tmp_path / "evidence.jsonl",
+        comparisons[0],
+        verdicts[0],
+        comparisons[1],
+        verdicts[1],
+    )
+    points = read_series(log)
+    expected = tuple(
+        run_point(comparison[1], verdict[1])
+        for comparison, verdict in zip(comparisons, verdicts, strict=True)
+    )
+    assert points == expected
+
+
+def test_the_records_a_run_writes_around_its_comparison_are_stepped_over(tmp_path: Path):
+    """A real log is three hundred records and three of them are comparisons. A
+    reader that counts anything else as a run reports a hundred and twenty nights
+    that never happened."""
+    log = _write_log(
+        tmp_path / "evidence.jsonl",
+        *_noise(),
+        _a_comparison("the-only-run"),
+        _a_verdict("NO-GO"),
+        *_noise(),
+    )
+    points = read_series(log)
+    assert len(points) == 1, f"a log shaped like a real one gave {len(points)} points"
+    assert points[0].candidate_model == "the-only-run"
+    assert points[0].verdict == "NO-GO"
+
+
+# ----------------------------------------------------------------------------------
+# The edge table, row by row
+# ----------------------------------------------------------------------------------
+
+
+def test_a_log_with_no_comparison_record_is_an_empty_series_and_not_an_error(tmp_path: Path):
+    """Row one. `ReportModel.from_evidence` keeps its own `ArtifactError` for a log
+    with nothing to report on; `read_series` is the layer beneath it, and a caller
+    rendering an empty timeline needs an empty tuple rather than an exception it
+    must catch to discover there were no runs.
+
+    The second half is the half that matters: the emptiness has to be a property of
+    the log. A reader that returns `()` whatever it is handed passes the first
+    assertion and nothing else."""
+    log = _write_log(tmp_path / "evidence.jsonl", *_noise())
+    assert read_series(log) == ()
+
+    _write_log(tmp_path / "evidence.jsonl", *_noise(), _a_comparison("a-real-run"))
+    after = read_series(log)
+    assert len(after) == 1 and after[0].candidate_model == "a-real-run"
+
+
+def test_a_log_with_no_lines_at_all_is_an_empty_series(tmp_path: Path):
+    """The first night of a new pipeline: the log exists because something opened
+    it, and the run died before comparing anything. That is a timeline with no
+    points on it, not a crash on the way to one."""
+    log = tmp_path / "evidence.jsonl"
+    log.write_text("", encoding="utf-8")
+    assert read_series(log) == ()
+
+    _write_log(log, _a_comparison("later-that-night"), _a_verdict("GO"))
+    after = read_series(log)
+    assert [point.candidate_model for point in after] == ["later-that-night"]
+
+
+def test_a_comparison_followed_by_its_verdict_is_one_point_carrying_both(tmp_path: Path):
+    """Row two, which is every log this project has written so far. The verdict and
+    the numbers have to arrive on the same point, or the timeline draws a GO band
+    over a run whose pass rate came from somewhere else."""
+    log = _write_log(
+        tmp_path / "evidence.jsonl",
+        _a_comparison("claude-candidate-v2"),
+        _a_verdict("NO-GO"),
+    )
+    points = read_series(log)
+    assert len(points) == 1
+    assert points[0].verdict == "NO-GO"
+    assert points[0].reason == "reason recorded with NO-GO"
+    assert points[0].candidate_model == "claude-candidate-v2"
+    assert points[0].baseline_model == "gpt-baseline-v1"
+    assert points[0].pass_rate == 0.75
+    assert points[0].floor == 0.85
+
+
+def test_a_comparison_with_no_verdict_after_it_is_still_a_point(tmp_path: Path):
+    """Row three. A run that compared and then died before deciding is a real night
+    with real numbers and an unknown outcome. Dropping it leaves a gap in the trend
+    exactly where the interesting thing happened."""
+    log = _write_log(tmp_path / "evidence.jsonl", _a_comparison("died-before-deciding"))
+    points = read_series(log)
+    assert len(points) == 1, "the comparison was dropped for want of a verdict"
+    assert points[0].verdict is None
+    assert points[0].reason is None
+    assert points[0].candidate_model == "died-before-deciding"
+    assert points[0].pass_rate == 0.75, "the numbers went out with the missing verdict"
+
+
+def test_a_verdict_written_before_any_comparison_belongs_to_no_point(tmp_path: Path):
+    """Row four. The naive reader keeps the last verdict it saw and hands it to the
+    next comparison, which dates a decision to a run that had not started when it
+    was written -- a concatenated log, or a rerun appended to yesterday's file."""
+    log = _write_log(
+        tmp_path / "evidence.jsonl",
+        _a_verdict("GO"),
+        _a_comparison("the-first-real-run"),
+    )
+    points = read_series(log)
+    assert len(points) == 1
+    assert points[0].candidate_model == "the-first-real-run"
+    assert points[0].verdict is None, "a verdict from before the run was attached to it"
+
+
+def test_a_stray_leading_verdict_does_not_displace_the_verdict_that_followed(tmp_path: Path):
+    """The same row, in the case where ignoring the stray record is not enough: it
+    has to be ignored *without* consuming the slot. A reader that pairs by index
+    across two collected lists gives this run yesterday's GO and reports tonight's
+    NO-GO nowhere at all."""
+    log = _write_log(
+        tmp_path / "evidence.jsonl",
+        _a_verdict("GO", reason="left over from yesterday"),
+        _a_comparison("tonight"),
+        _a_verdict("NO-GO", reason="tonight's decision"),
+    )
+    points = read_series(log)
+    assert len(points) == 1
+    assert points[0].verdict == "NO-GO"
+    assert points[0].reason == "tonight's decision"
+
+
+def test_two_comparisons_written_before_either_verdict_pair_first_with_first(tmp_path: Path):
+    """Row five, and the one row a fixture built from a real log cannot reach.
+
+    `compare` writes the verdict on the line after its comparison
+    (`comparison.py:906-908`), so on every log in existence "pairs correctly" and
+    "assumes the next line is the verdict" are the same reader. This log is C, C,
+    V, V, and there the two answers differ.
+
+    **This asserts the contract's edge table against the contract's own prose.**
+    The prose says a point is closed by "the next `migkit.verdict` before the next
+    `migkit.comparison`", which on this log closes nothing and returns two points
+    with no verdicts. The table says "first verdict closes the first point; the
+    second verdict closes the second". The table is asserted, because it is the
+    sentence written about *this* log while the prose was written about the
+    adjacent case, and because the failure the chunk exists to prevent is a verdict
+    landing on the wrong run -- which the prose's reading produces the moment any
+    writer batches.
+
+    What it costs when it is wrong: run three's NO-GO draws on run four's
+    comparison, and the timeline shows a red night on a green one."""
+    log = _write_log(
+        tmp_path / "evidence.jsonl",
+        _a_comparison("run-three"),
+        _a_comparison("run-four"),
+        _a_verdict("GO", reason="run three was fine"),
+        _a_verdict("NO-GO", reason="run four regressed"),
+    )
+    points = read_series(log)
+    assert len(points) == 2, f"C, C, V, V gave {len(points)} point(s)"
+    assert [point.candidate_model for point in points] == ["run-three", "run-four"]
+    assert points[0].verdict == "GO", "the first verdict did not close the first point"
+    assert points[0].reason == "run three was fine"
+    assert points[1].verdict == "NO-GO"
+    assert points[1].reason == "run four regressed"
+
+
+def test_a_verdict_with_no_point_left_open_is_ignored_and_overwrites_nothing(tmp_path: Path):
+    """The tail of row five. Three verdicts against two comparisons is a log that
+    was concatenated, and the extra record has to fall on the floor: a reader that
+    lets it overwrite the last point reports the wrong outcome on the most recent
+    night, which is the one anybody looks at."""
+    log = _write_log(
+        tmp_path / "evidence.jsonl",
+        _a_comparison("run-one"),
+        _a_comparison("run-two"),
+        _a_verdict("GO", reason="one"),
+        _a_verdict("NO-GO", reason="two"),
+        _a_verdict("GO", reason="a third verdict with nothing left to close"),
+    )
+    points = read_series(log)
+    assert len(points) == 2
+    assert [point.reason for point in points] == ["one", "two"]
+
+
+def test_a_record_between_a_comparison_and_its_verdict_does_not_break_the_pairing(tmp_path: Path):
+    """The reviewer's specific ask. `migkit.judging_completed` does not sit there
+    today, but a future writer that logs one more line between the comparison and
+    the decision must not cost the series every one of its verdicts, and a reader
+    that only looks at the following line does exactly that."""
+    log = _write_log(
+        tmp_path / "evidence.jsonl",
+        _a_comparison("tonight"),
+        ("migkit.judging_completed", {"judge": "accuracy", "n": 60}),
+        ("assertion.evaluated", {"name": "no_regression", "passed": False}),
+        _a_verdict("NO-GO"),
+    )
+    points = read_series(log)
+    assert len(points) == 1
+    assert points[0].verdict == "NO-GO"
+
+
+def test_a_judges_verdict_on_one_completion_is_not_the_runs_verdict(tmp_path: Path):
+    """`judge.verdict` and `migkit.verdict` are different events, and the demo log
+    holds forty of the first for every one of the second. A reader that matches on
+    the tail of the event type closes the point with one judge's opinion of one
+    completion, and `RunPoint.verdict` then reads `"pass"` on a night that was a
+    NO-GO."""
+    log = _write_log(
+        tmp_path / "evidence.jsonl",
+        _a_comparison("tonight"),
+        ("judge.verdict", {"verdict": "pass", "score": 5, "item_id": "extract-01"}),
+    )
+    points = read_series(log)
+    assert len(points) == 1
+    assert points[0].verdict is None, "a judge's per-completion verdict closed the run's point"
+
+    log = _write_log(
+        tmp_path / "evidence.jsonl",
+        _a_comparison("tonight"),
+        ("judge.verdict", {"verdict": "pass", "score": 5, "item_id": "extract-01"}),
+        _a_verdict("NO-GO"),
+    )
+    assert read_series(log)[0].verdict == "NO-GO"
+
+
+def test_a_torn_final_line_is_dropped_rather_than_failing_the_whole_read(tmp_path: Path):
+    """Row six, and the signature of a process killed mid-write. The nights that did
+    finish are on disk and readable; refusing to draw any of them because the last
+    one was interrupted loses a fortnight of history to a single `kill -9`."""
+    fragment = _line(_COMPARISON, _comparison(), _ts(9))[:120]
+    log = _write_log(
+        tmp_path / "evidence.jsonl",
+        _a_comparison("finished"),
+        _a_verdict("GO"),
+        torn=fragment,
+    )
+    points = read_series(log)
+    assert len(points) == 1
+    assert points[0].candidate_model == "finished"
+    assert points[0].verdict == "GO"
+
+
+def test_a_verdict_torn_off_mid_write_costs_the_verdict_and_not_the_point(tmp_path: Path):
+    """The same row with the tear in the likelier place: the decision is the last
+    thing written, so an interrupted run loses its verdict and keeps its numbers.
+    The point stays, with `verdict is None`."""
+    fragment = _line(_VERDICT, _verdict(), _ts(9))[:80]
+    log = _write_log(tmp_path / "evidence.jsonl", _a_comparison("interrupted"), torn=fragment)
+    points = read_series(log)
+    assert len(points) == 1
+    assert points[0].candidate_model == "interrupted"
+    assert points[0].verdict is None
+
+
+def test_a_malformed_line_that_is_not_the_last_is_an_error(tmp_path: Path):
+    """Row seven, and the other half of row six. A tear at the end is a process that
+    died; corruption in the middle is a file that has been edited or a disk that is
+    lying, and reading past it silently reports a series with a hole in it that
+    nothing on the page discloses."""
+    log = _write_log(
+        tmp_path / "evidence.jsonl",
+        _a_comparison("before"),
+        _a_verdict("GO"),
+        raw=['{"schema_version": 1, "ts": "2026-08-21T22:40:05', '{"filler": true}'],
+    )
+    with pytest.raises(EvidenceError):
+        read_series(log)
+
+
+def test_a_blank_line_in_the_middle_of_the_log_is_an_error_too(tmp_path: Path):
+    """Row seven again, spelled the way `_stream_records` spells it. It is here to
+    pin that the tolerance rules are rigor's rather than a second set written from
+    memory: a reader and a writer of the same file that disagree about what a valid
+    line is drift apart quietly, and always in the reader's favour."""
+    log = _write_log(
+        tmp_path / "evidence.jsonl",
+        _a_comparison("before"),
+        _a_verdict("GO"),
+        raw=["", '{"filler": true}'],
+    )
+    with pytest.raises(EvidenceError):
+        read_series(log)
+
+
+def test_a_directory_is_read_as_the_evidence_log_inside_it(tmp_path: Path):
+    """Row eight. `from_evidence` takes either, and the CLI passes a work directory;
+    a reader that takes only the file hands an operator who typed the argument that
+    works everywhere else an `IsADirectoryError` from three frames down."""
+    directory = tmp_path / "nightly"
+    directory.mkdir()
+    _write_log(
+        directory / "evidence.jsonl",
+        _a_comparison("first"),
+        _a_verdict("GO"),
+        _a_comparison("second"),
+        _a_verdict("NO-GO"),
+    )
+    points = read_series(directory)
+    assert [point.candidate_model for point in points] == ["first", "second"]
+    assert points == read_series(directory / "evidence.jsonl")
+
+
+def test_a_directory_holding_no_evidence_log_is_an_error(tmp_path: Path):
+    """Row eight resolving into row nine. An empty work directory is a mistyped path
+    like any other, and the whole reason row nine is an error is that a mistyped
+    path must not render as a valid report of a run that never happened."""
+    directory = tmp_path / "empty"
+    directory.mkdir()
+    with pytest.raises(ArtifactError):
+        read_series(directory)
+
+
+def test_a_path_that_does_not_exist_is_an_error_and_never_an_empty_series(tmp_path: Path):
+    """Row nine, and the contract supplies the reasoning: rigor reads a missing log
+    as an empty one. So the one thing this must not do is what row one does. An
+    operator who typed `evidence.json` gets a refusal that names the path, not a
+    timeline of a fortnight in which nothing regressed."""
+    missing = tmp_path / "evidence.json"
+    with pytest.raises(ArtifactError) as raised:
+        read_series(missing)
+    assert str(missing) in str(raised.value), (
+        f"the refusal has to name the path that was not there: {raised.value}"
+    )
+
+
+def test_a_path_that_does_not_exist_beside_one_that_does_is_still_an_error(tmp_path: Path):
+    """The same row with a readable log one character away. A reader that falls back
+    to a default location, or that resolves a near miss, turns a typo into a
+    confident report of the wrong pipeline."""
+    _write_log(tmp_path / "evidence.jsonl", _a_comparison("real"), _a_verdict("GO"))
+    with pytest.raises(ArtifactError):
+        read_series(tmp_path / "evidence.jsonl.bak")
+
+
+# ----------------------------------------------------------------------------------
+# The four "must not"s
+# ----------------------------------------------------------------------------------
+
+
+def test_the_points_come_back_in_file_order_even_when_their_dates_do_not(tmp_path: Path):
+    """"Must not sort." The log is the record of what happened in the order it was
+    written, and a reader that improves on it has decided by itself that a clock
+    skew or a concatenated file is something it may silently reorder. Â§4.2 puts the
+    date on the x-axis, but that is a decision for the layer that draws, and that
+    layer needs the file order underneath it to say which run was appended when.
+
+    The envelope timestamps and the payload's own `created` are both out of order
+    here, and out of order the same way, so a sort on either key is visible."""
+    created = [
+        "2026-08-21T23:00:00.000000+00:00",
+        "2026-08-19T09:00:00.000000+00:00",
+        "2026-08-20T12:00:00.000000+00:00",
+    ]
+    log = _write_log(
+        tmp_path / "evidence.jsonl",
+        _a_comparison("written-first", created=created[0]),
+        _a_comparison("written-second", created=created[1]),
+        _a_comparison("written-third", created=created[2]),
+        timestamps=created,
+    )
+    points = read_series(log)
+    assert [point.candidate_model for point in points] == [
+        "written-first",
+        "written-second",
+        "written-third",
+    ]
+    assert [point.created for point in points] == created
+    assert created != sorted(created), "the fixture is useless if its dates are already in order"
+
+
+def test_a_point_whose_date_will_not_parse_keeps_its_place_in_the_series(tmp_path: Path):
+    """The same rule, where sorting would have to invent something. Â§4.2 says a run
+    whose `created` will not parse is a point with a known verdict and an unknown
+    date, excluded from the timeline and *named beneath it* -- and it cannot be
+    named if the reader has already moved it to the front or dropped it."""
+    log = _write_log(
+        tmp_path / "evidence.jsonl",
+        _a_comparison("before"),
+        _a_comparison("undateable", created="the fourteenth of never"),
+        _a_comparison("after"),
+    )
+    points = read_series(log)
+    assert [point.candidate_model for point in points] == ["before", "undateable", "after"]
+
+
+def test_two_identical_comparisons_are_two_points_and_not_one(tmp_path: Path):
+    """"Must not deduplicate." A nightly job re-run against an unchanged golden set
+    writes a byte-identical comparison, and those two nights are the evidence that
+    the result is stable. Folding them reports one run and hides the repeat."""
+    twice = _a_comparison("unchanged")
+    log = _write_log(
+        tmp_path / "evidence.jsonl",
+        twice,
+        _a_verdict("NO-GO"),
+        (twice[0], copy.deepcopy(twice[1])),
+        _a_verdict("NO-GO"),
+    )
+    points = read_series(log)
+    assert len(points) == 2, "two identical runs were folded into one"
+    assert points[0] == points[1]
+
+
+def test_reading_a_series_never_calls_the_whole_log_into_memory(tmp_path: Path):
+    """"Must not hold the whole log." `EvidenceLog.read()` is the call this reader
+    exists to avoid: measured at 5.0 to 5.8 times the log's own bytes resident, an
+    extra 502 MB on an 86 MB log, because rigor's `judge.verdict` record embeds the
+    input, the output and the judge's raw reply for every completion. It is banned
+    rather than merely discouraged, so here it is made to raise."""
+
+    def _refuse(*args, **kwargs):
+        raise AssertionError("read_series called EvidenceLog.read() and held the whole log")
+
+    log = _write_log(
+        tmp_path / "evidence.jsonl",
+        *_noise(),
+        _a_comparison("first"),
+        _a_verdict("GO"),
+        _a_comparison("second"),
+        _a_verdict("NO-GO"),
+    )
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(EvidenceLog, "read", _refuse)
+        points = read_series(log)
+    assert [point.candidate_model for point in points] == ["first", "second"]
+
+
+#: Every place in the package a streaming reader could reasonably be bound: the
+#: module that owns it, the module that used to own it, and the module under test.
+#: Which of the three holds the definition is not something this chunk's contract
+#: settles -- it permits promoting `report._stream_records` to a public name, and
+#: C1's contract forbids `series` importing `report` at all -- so the two tests
+#: below look for the reader rather than for a particular home for it.
+_READER_HOMES = (
+    "model_migration_kit.evidence",
+    "model_migration_kit.report",
+    "model_migration_kit.series",
+)
+_READER_NAMES = ("stream_records", "_stream_records")
+
+
+def _bound_readers() -> dict[str, object]:
+    """Every binding of a streaming reader the package exposes, by qualified name."""
+    found: dict[str, object] = {}
+    for module_name in _READER_HOMES:
+        try:
+            module = importlib.import_module(module_name)
+        except ModuleNotFoundError:
+            continue
+        for attribute in _READER_NAMES:
+            reader = getattr(module, attribute, None)
+            if reader is not None:
+                found[f"{module_name}.{attribute}"] = reader
+    return found
+
+
+def test_the_whole_tree_holds_exactly_one_streaming_reader():
+    """"Do not write a second reader", asserted as identity rather than as a call.
+
+    The tolerance rules -- a torn last line dropped, anything malformed earlier an
+    error, `newline` fixed so a bare carriage return inside a model's output does
+    not split a record in one reader and not in the other -- are rigor's, and a
+    second copy of them is how a reader and a writer of the same file drift apart:
+    quietly, and always in the reader's favour.
+
+    Where the definition lives is deliberately not asserted. The plan permits
+    promoting `report._stream_records` to a public name, C1's contract forbids
+    `series` importing `report`, and a third module owning the reader while the
+    other two alias it satisfies both. What may not happen is two of these being
+    different functions."""
+    readers = _bound_readers()
+    assert readers, f"no streaming reader found in any of {_READER_HOMES}"
+    distinct = {id(reader) for reader in readers.values()}
+    assert len(distinct) == 1, (
+        "the tree holds more than one streaming reader, so the same log can now be "
+        f"read two ways: {sorted(readers)}"
+    )
+
+
+def test_the_series_is_read_through_that_one_reader_and_reads_only_the_log(tmp_path: Path):
+    """The other half of it: `read_series` has to actually go through the reader.
+
+    Every binding found above is replaced, not just the module that defines it. A
+    module-level `from ... import stream_records` binds the function into the
+    importer's own namespace, and patching the module it came from would then be
+    watching a name that nobody calls."""
+    log = _write_log(
+        tmp_path / "evidence.jsonl",
+        _a_comparison("first"),
+        _a_verdict("GO"),
+        _a_comparison("second"),
+        _a_verdict("NO-GO"),
+    )
+    read_series(log)  # let any deferred import happen before the reader is watched
+    readers = _bound_readers()
+    assert readers, f"no streaming reader found in any of {_READER_HOMES}"
+    seen: list[Path] = []
+    with pytest.MonkeyPatch.context() as patch:
+        for qualified, original in readers.items():
+            module_name, _, attribute = qualified.rpartition(".")
+
+            def _spy(path, _original=original):
+                seen.append(Path(path))
+                yield from _original(path)
+
+            patch.setattr(importlib.import_module(module_name), attribute, _spy)
+        points = read_series(log)
+    assert [point.candidate_model for point in points] == ["first", "second"]
+    assert seen, "read_series read the log without going through the shared reader"
+    assert set(seen) == {Path(log)}, seen
+
+
+def test_the_evidence_log_is_opened_once_and_read_once(tmp_path: Path):
+    """One streaming pass, in the contract's words. Two passes is not a style
+    preference either: the evidence log is the largest artifact the pipeline writes
+    -- 86 MB at 1000 items and n=50, against 45 MB of run plus judged -- and reading
+    it twice reads those bytes twice on the machine that was already the one to run
+    out."""
+    log = _write_log(
+        tmp_path / "evidence.jsonl",
+        *_noise(),
+        _a_comparison("first"),
+        _a_verdict("GO"),
+        _a_comparison("second"),
+        _a_verdict("NO-GO"),
+    )
+    read_series(log)  # the count below is of one call, not of one call plus its imports
+    opened: list[str] = []
+    real_open = builtins.open
+
+    def _counting(file, *args, **kwargs):
+        opened.append(str(file))
+        return real_open(file, *args, **kwargs)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(builtins, "open", _counting)
+        patch.setattr(io, "open", _counting)
+        points = read_series(log)
+    assert [point.candidate_model for point in points] == ["first", "second"]
+    assert opened == [str(log)], f"the log was opened {len(opened)} time(s): {opened}"
+
+
+def test_reading_a_series_opens_the_log_and_nothing_the_log_names(tmp_path: Path):
+    """"Must not reach outside the given path." The comparison payload records a
+    golden-set path and a config path, and `from_evidence` opens both -- resolved,
+    refused if they leave the log's own directory, and disclosed in the provenance
+    block. None of that machinery exists at this layer, so this layer opens nothing
+    but the log it was handed. Both baits below are real files, so a reader that
+    resolved them would succeed and say nothing."""
+    goldenset_bait = tmp_path / "goldenset.jsonl"
+    goldenset_bait.write_text('{"id": "bait"}\n', encoding="utf-8")
+    config_bait = tmp_path / "nightly.toml"
+    config_bait.write_text("[thresholds]\n", encoding="utf-8")
+
+    log = _write_log(
+        tmp_path / "evidence.jsonl",
+        _a_comparison(
+            "tonight",
+            goldenset_path=str(goldenset_bait),
+            config_path=str(config_bait),
+        ),
+        _a_verdict("NO-GO"),
+    )
+    read_series(log)  # warm any deferred import
+    opened: list[str] = []
+    real_open = builtins.open
+
+    def _recording(file, *args, **kwargs):
+        opened.append(str(file))
+        return real_open(file, *args, **kwargs)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(builtins, "open", _recording)
+        patch.setattr(io, "open", _recording)
+        points = read_series(log)
+    assert points[0].config_path == str(config_bait)
+    assert set(opened) == {str(log)}, f"read_series opened more than the log: {opened}"
+
+
+def test_the_cost_of_reading_stays_flat_as_the_log_grows_around_a_fixed_series(tmp_path: Path):
+    """The amplification itself, asserted as a slope rather than a ceiling, for the
+    reason `tests/test_evidence_scale.py` gives: a ceiling passes on a reader that
+    has gone back to holding a fifth of the file.
+
+    Both logs hold the same two comparisons, so the series is the same size in both
+    and everything the peak does is the log. The padding is `judge.verdict` records,
+    which is what a real log is mostly made of and what makes it the largest
+    artifact this pipeline writes."""
+    sizes: list[int] = []
+    peaks: list[int] = []
+    lengths: list[int] = []
+    for index, padding in enumerate((1_500, 6_000)):
+        log = tmp_path / f"grown-{index}.jsonl"
+        _write_log(
+            log,
+            _a_comparison("first"),
+            _a_verdict("GO"),
+            *[
+                ("judge.verdict", {"item_id": f"item-{n:05d}", "score": 4, "raw": "x" * 1500})
+                for n in range(padding)
+            ],
+            _a_comparison("second"),
+            _a_verdict("NO-GO"),
+            timestamps=[_ts(n % 60) for n in range(padding + 4)],
+        )
+        sizes.append(log.stat().st_size)
+        captured: list[tuple] = []
+        peaks.append(_peak_bytes(lambda log=log, into=captured: into.append(read_series(log))))
+        lengths.append(len(captured[0]))
+
+    assert lengths == [2, 2], f"the two reads did not return the same series: {lengths}"
+    assert sizes[1] > sizes[0] * 3
+    assert peaks[1] < peaks[0] * 1.5, (
+        f"peak allocation went {peaks[0]} -> {peaks[1]} bytes while the log went "
+        f"{sizes[0]} -> {sizes[1]}; the cost of reading is supposed to be one line "
+        f"and the points, not a share of the file"
+    )
+
+
+# ----------------------------------------------------------------------------------
+# What the envelope is for, and what an unusable number is not
+# ----------------------------------------------------------------------------------
+
+
+def test_a_comparison_that_recorded_no_date_falls_back_to_the_line_it_was_written_on(
+    tmp_path: Path,
+):
+    """Â§4.1's fallback, which only this function can supply: `run_point` takes
+    `envelope_ts` by keyword, and `read_series` is the only caller that has the
+    envelope to pass. C2's own edge table does not mention it, so this is the
+    reading of Â§4.1 -- "falling back to the envelope `ts` when it is absent or
+    unparseable" -- and not of C2's table.
+
+    Without it, a payload from a future writer that drops `created` sorts as the
+    epoch and puts that run at the far left of the timeline, years before the
+    pipeline existed."""
+    payload = _comparison()
+    del payload["created"]
+    log = _write_log(
+        tmp_path / "evidence.jsonl",
+        (_COMPARISON, payload),
+        _a_verdict("GO"),
+        timestamps=[_ts(31), _ts(32)],
+    )
+    points = read_series(log)
+    assert len(points) == 1
+    assert points[0].created == _ts(31)
+    assert points[0].created_source == "envelope"
+
+
+def test_a_number_the_reader_cannot_use_is_not_a_malformed_line(tmp_path: Path):
+    """`json.loads` accepts a bare `NaN`, so a payload can hold a float that no
+    arithmetic survives while the *line* is perfectly well formed. The two failures
+    have to stay different: a malformed line is an `EvidenceError` and stops the
+    read, whereas an unusable number is one field of one point, and C1's contract
+    already says an `n_per_item` that will not coerce reads as 0.
+
+    Conflating them means one strange float in a year-long log costs the whole
+    report."""
+    poisoned = (
+        '{"schema_version": 1, "ts": "' + _ts(40) + '", "event_type": "' + _COMPARISON + '", '
+        '"payload": {"n_per_item": NaN, "candidate": {"model_id": "odd"}}}'
+    )
+    log = _write_log(
+        tmp_path / "evidence.jsonl",
+        _a_comparison("before"),
+        _a_verdict("GO"),
+        raw=[poisoned],
+    )
+    points = read_series(log)
+    assert [point.candidate_model for point in points] == ["before", "odd"]
+    assert points[1].n_per_item == 0
