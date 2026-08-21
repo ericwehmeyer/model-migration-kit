@@ -598,6 +598,31 @@ def check_wheel_demo_data(wheel: Path, source_data_dir: Path) -> Result:
     return ok(name, f"all {len(DEMO_DATA)} demo files present inside {wheel.name}", evidence)
 
 
+def _extract_wheel(wheel: Path, workdir: Path) -> Path:
+    """Unzip the wheel into the scratch directory, once per run, and say where.
+
+    A wheel install is an unzipped one -- `pip install` does not leave a zip on
+    `sys.path` -- so a probe importing out of this directory is importing what a
+    user would actually get. It is shared by every check that runs an isolated
+    probe: two checks extracting the same artifact into two directories can end up
+    reporting on different bytes, which is the kind of disagreement that costs an
+    afternoon. The marker file makes the reuse safe rather than merely convenient;
+    a second wheel in the same scratch directory re-extracts instead of being
+    quietly answered by the first.
+    """
+    extract = workdir / "wheel-extract"
+    marker = workdir / "wheel-extract.source"
+    if extract.is_dir() and marker.is_file() and marker.read_text(encoding="utf-8") == str(wheel):
+        return extract
+    if extract.exists():
+        shutil.rmtree(extract)
+    extract.mkdir(parents=True)
+    with zipfile.ZipFile(wheel) as zf:
+        zf.extractall(extract)
+    marker.write_text(str(wheel), encoding="utf-8")
+    return extract
+
+
 RESOURCE_PROBE = '''
 import json, sys
 
@@ -633,12 +658,7 @@ def check_demo_data_importable(wheel: Path, workdir: Path) -> Result:
     masks a missing package resource.
     """
     name = "wheel-demo-data-importable"
-    extract = workdir / "wheel-extract"
-    if extract.exists():
-        shutil.rmtree(extract)
-    extract.mkdir(parents=True)
-    with zipfile.ZipFile(wheel) as zf:
-        zf.extractall(extract)
+    extract = _extract_wheel(wheel, workdir)
 
     probe = workdir / "_resource_probe.py"
     probe.write_text(RESOURCE_PROBE, encoding="utf-8")
@@ -1181,6 +1201,182 @@ def check_wheel_py_typed(wheel: Path, repo: Path) -> Result:
     return ok(name, f"{member} is inside {wheel.name}", evidence)
 
 
+EXPORTS_PROBE = """
+import importlib, json, sys
+
+target = sys.argv[1]
+sys.path.insert(0, target)
+out = {}
+try:
+    import model_migration_kit as pkg
+    out["paths"] = [str(p) for p in list(pkg.__path__)]
+    out["all"] = list(getattr(pkg, "__all__", []))
+    symbols = {}
+    for name in out["all"]:
+        try:
+            value = getattr(pkg, name)
+        except AttributeError:
+            # `from pkg import name` also reaches a submodule that nothing has
+            # imported yet, which getattr on its own does not. Try that before
+            # calling the name absent, or a shipped submodule reads as missing.
+            try:
+                value = importlib.import_module("model_migration_kit." + name)
+            except Exception:
+                symbols[name] = {"found": False, "kind": "missing"}
+                continue
+        symbols[name] = {"found": True, "kind": type(value).__name__}
+    out["symbols"] = symbols
+except Exception as exc:  # noqa: BLE001 - reported verbatim to the parent
+    out["error"] = "%s: %s" % (type(exc).__name__, exc)
+print(json.dumps(out))
+"""
+
+
+def check_exports_importable(wheel: Path, workdir: Path, repo: Path) -> Result:
+    """Every name in `__all__` must be importable from the package root of the wheel.
+
+    This is `console-script` for the library half of the package. The console script
+    check exists because a `migkit` command pointing at a module the wheel omitted
+    fails on first use; `__all__` is the same promise in the same artifact -- the
+    list this package tells the world is its public surface -- and a name in it that
+    an installed copy cannot supply is the same defect with a quieter symptom.
+
+    The surface is small on purpose: `__init__.py` declines a library API for v0.1
+    and exports three accessors, `demo_goldenset_path`, `demo_rubric_path` and
+    `demo_config_path`. They are the fix for a documented incident -- the README
+    told readers to open
+    `GoldenSet.load('src/model_migration_kit/data/demo_goldenset.jsonl')`, a path
+    that exists in a checkout and in no install -- so a build that loses one of them
+    reopens exactly the gap they were added to close, and reopens it silently: the
+    README's corrected example still works for everyone who has the repo.
+
+    Checked against the *wheel*, in a subprocess with `-S` and a temp cwd, because
+    `from model_migration_kit import demo_rubric_path` in this repository's own
+    interpreter is answered by the editable install's `src/` and would pass whatever
+    the wheel contained. `__init__.py` already removed the worse version of that
+    hazard -- while it was absent the package was a namespace package, whose
+    `__path__` multiplexes, so `src/` silently supplied files the wheel had dropped
+    -- but a check run in-process would hand the hazard straight back.
+
+    The tree's `__all__` is compared with the wheel's first, so a stale artifact is
+    reported as a stale artifact rather than as a missing name. Ported from
+    opik-rigor, where the same check guards a much larger curated surface.
+    """
+    name = "wheel-exports-importable"
+    extract = _extract_wheel(wheel, workdir)
+    probe = workdir / "_exports_probe.py"
+    probe.write_text(EXPORTS_PROBE, encoding="utf-8")
+    proc = run([sys.executable, "-S", str(probe), str(extract)], cwd=workdir)
+    if proc.returncode != 0:
+        return bad(
+            name,
+            f"the isolated export probe exited {proc.returncode}",
+            [f"cwd: {workdir}", f"sys.path[0]: {extract}", *tail(proc.stderr)],
+        )
+    try:
+        data = json.loads(proc.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return bad(name, "the export probe produced no JSON", tail(proc.stdout + proc.stderr))
+
+    evidence = [
+        f"probe ran with -S, cwd={workdir}, sys.path[0]={extract}",
+        f"{IMPORT_NAME}.__path__ = {data.get('paths')}",
+    ]
+    if "error" in data:
+        return bad(
+            name,
+            f"the wheel's {IMPORT_NAME} could not be imported at all",
+            evidence
+            + [
+                data["error"],
+                "every name below is unreachable as a consequence; this is the wheel",
+                "failing to be a package, not one export going missing.",
+            ],
+        )
+
+    expected_path = (extract / IMPORT_NAME).resolve()
+    leaked = [p for p in data.get("paths", []) if Path(p).resolve() != expected_path]
+    if leaked:
+        return bad(
+            name,
+            "the import resolved outside the extracted wheel, so this proves nothing",
+            evidence + [f"unexpected path entries: {leaked}"],
+        )
+
+    exported = sorted(data.get("all", []))
+    if not exported:
+        return bad(
+            name,
+            f"the wheel's {IMPORT_NAME} declares no __all__",
+            evidence
+            + [
+                "v0.1 exports three accessors deliberately -- see the module docstring --",
+                "so an empty list means the build lost them, and a row reporting PASS",
+                "on nothing would be worse than no row at all.",
+            ],
+        )
+
+    tree_all = _source_dunder_all(repo / "src" / IMPORT_NAME / "__init__.py")
+    if tree_all is not None and sorted(tree_all) != exported:
+        return bad(
+            name,
+            "the wheel's __all__ differs from the source tree's -- the artifact is stale",
+            evidence
+            + [
+                f"only in the wheel: {sorted(set(exported) - set(tree_all))}",
+                f"only in the tree:  {sorted(set(tree_all) - set(exported))}",
+                "rebuild before reading anything else on this row; the wheel predates",
+                "the last edit to __init__.py and no export has been proved missing.",
+            ],
+        )
+
+    answers = data.get("symbols", {})
+    missing = sorted(n for n in exported if not answers.get(n, {}).get("found"))
+    kinds: dict[str, int] = {}
+    for entry in answers.values():
+        if entry.get("found"):
+            kinds[entry["kind"]] = kinds.get(entry["kind"], 0) + 1
+    evidence += [
+        f"__all__ in the wheel ({len(exported)} names): {exported}",
+        f"resolved from the wheel by kind: {dict(sorted(kinds.items()))}",
+    ]
+    if missing:
+        return bad(
+            name,
+            f"{len(missing)} name(s) in __all__ cannot be imported from the wheel: {missing}",
+            evidence
+            + [
+                f"`from {IMPORT_NAME} import <name>` raises ImportError for these after a",
+                "real `pip install`, while passing in this checkout, because the checkout",
+                "has src/ on sys.path and an install has only what the wheel shipped.",
+            ],
+        )
+    return ok(name, f"all {len(exported)} names in __all__ import from {wheel.name}", evidence)
+
+
+def _source_dunder_all(init_file: Path) -> list[str] | None:
+    """`__all__` read as text from the tree, for the stale-artifact comparison only.
+
+    Text rather than an import, for the reason the probe exists at all: importing
+    `__init__.py` here would be answered by the tree, and the tree is the thing the
+    wheel is being compared against.
+
+    The optional annotation in the pattern is not tidiness. `__init__.py` writes
+    `__all__: list[str] = [...]`, and a pattern matching only a bare `__all__ = [`
+    finds nothing, returns None, and None means "no comparison possible" -- so a
+    stale wheel would sail past the staleness branch and be judged on its own
+    outdated list. The names come back sorted because `__all__` has no meaningful
+    order and every caller compares sets.
+    """
+    if not init_file.is_file():
+        return None
+    text = init_file.read_text(encoding="utf-8")
+    match = re.search(r"^__all__\s*(?::[^=]+)?=\s*\[(.*?)\]", text, re.M | re.S)
+    if not match:
+        return None
+    return sorted(re.findall(r"['\"]([^'\"]+)['\"]", match.group(1)))
+
+
 def check_twine(sdist: Path, wheel: Path, repo: Path) -> Result:
     name = "twine-check"
     if not _module_available("twine"):
@@ -1387,6 +1583,7 @@ def main(argv: list[str] | None = None) -> int:
                 "version-not-dev",
                 "console-script",
                 "wheel-py-typed",
+                "wheel-exports-importable",
                 "twine-check",
             ):
                 emit(skipped(pending, reason, [f"see the `{build_result.name}` row above"]))
@@ -1409,6 +1606,7 @@ def main(argv: list[str] | None = None) -> int:
                 emit(result)
             emit(check_console_script(wheel))
             emit(check_wheel_py_typed(wheel, repo))
+            emit(check_exports_importable(wheel, workdir, repo))
             emit(check_twine(sdist, wheel, repo))
 
         emit(check_readme_pip_install(repo))

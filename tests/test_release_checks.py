@@ -1325,3 +1325,185 @@ def test_py_typed_in_the_zip_but_not_in_record_is_a_failure(tmp_path):
         },
     )
     assert vr.check_wheel_py_typed(wheel, repo).status == vr.FAIL
+
+
+# ----------------------------------------------------------------------------------
+# `__all__`, resolved against the wheel rather than against this checkout
+# ----------------------------------------------------------------------------------
+
+# The three names the package actually exports. Spelled out here rather than
+# imported so that a test asserting the wheel supplies them cannot be satisfied by
+# the same import it is meant to be checking.
+REAL_EXPORTS = ("demo_config_path", "demo_goldenset_path", "demo_rubric_path")
+
+
+def _init_source(exports, defined=None) -> str:
+    """An `__init__.py` that declares `exports` and defines `defined` (default: all)."""
+    defined = exports if defined is None else defined
+    body = "".join(f"\n\ndef {name}():\n    return {name!r}\n" for name in defined)
+    annotated = ", ".join(repr(n) for n in exports)
+    return f'"""doc."""\n\n__all__: list[str] = [{annotated}]\n{body}'
+
+
+def _ex_wheel(tmp_path: Path, init_source: str | None, extra: dict | None = None) -> Path:
+    path = tmp_path / "model_migration_kit-0.1.0-py3-none-any.whl"
+    with zipfile.ZipFile(path, "w") as zf:
+        if init_source is not None:
+            zf.writestr("model_migration_kit/__init__.py", init_source)
+        for member, payload in (extra or {}).items():
+            zf.writestr(member, payload)
+        zf.writestr("model_migration_kit-0.1.0.dist-info/METADATA", METADATA_GOOD)
+    return path
+
+
+def _ex_repo(tmp_path: Path, exports=REAL_EXPORTS) -> Path:
+    """A source tree whose `__all__` agrees with the wheel, so that the wheel is the
+    only variable in every test that is not about staleness."""
+    repo = tmp_path / "repo"
+    package = repo / "src" / "model_migration_kit"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text(_init_source(exports), encoding="utf-8")
+    return repo
+
+
+def _ex_workdir(tmp_path: Path) -> Path:
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    return workdir
+
+
+def test_a_name_in_all_that_the_wheel_cannot_supply_fails(tmp_path):
+    """The user-visible defect: `pip install model-migration-kit` followed by
+    `from model_migration_kit import demo_rubric_path` raises ImportError, because
+    the build shipped an `__init__.py` promising a name it does not define. Nothing
+    in this repository notices, since every import here is answered by `src/`."""
+    wheel = _ex_wheel(
+        tmp_path,
+        _init_source(REAL_EXPORTS, defined=("demo_config_path", "demo_goldenset_path")),
+    )
+    result = vr.check_exports_importable(wheel, _ex_workdir(tmp_path), _ex_repo(tmp_path))
+    assert result.status == vr.FAIL
+    assert "demo_rubric_path" in result.summary
+
+
+def test_a_wheel_whose_whole_all_resolves_passes(tmp_path):
+    """The healthy case: every name the wheel advertises is reachable from the
+    wheel alone, which is all an installed copy has."""
+    wheel = _ex_wheel(tmp_path, _init_source(REAL_EXPORTS))
+    result = vr.check_exports_importable(wheel, _ex_workdir(tmp_path), _ex_repo(tmp_path))
+    assert result.status == vr.PASS
+    assert all(name in " ".join(result.evidence) for name in REAL_EXPORTS)
+
+
+def test_a_wheel_declaring_no_all_is_a_failure_rather_than_a_vacuous_pass(tmp_path):
+    """A package that declares no surface cannot have its surface verified, and a
+    check that reports PASS on nothing is worse than no check: a green row saying a
+    promise was kept when no promise was made."""
+    wheel = _ex_wheel(tmp_path, '"""doc."""\n\n__version__ = "0.1.0"\n')
+    result = vr.check_exports_importable(wheel, _ex_workdir(tmp_path), _ex_repo(tmp_path))
+    assert result.status == vr.FAIL
+    assert "__all__" in result.summary
+
+
+def test_the_checkouts_own_src_cannot_answer_for_the_wheel(tmp_path):
+    """The reason this runs in a subprocess with `-S` and a temp cwd. `__init__.py`
+    exists precisely so that `model_migration_kit` is a regular rather than a
+    namespace package, but the checkout still has `src/` on `sys.path` through the
+    editable install, so an in-process `from model_migration_kit import X` would
+    pass whatever the wheel contains. The evidence must show the import resolving
+    inside the extracted wheel and nowhere else."""
+    wheel = _ex_wheel(tmp_path, _init_source(REAL_EXPORTS))
+    workdir = _ex_workdir(tmp_path)
+    result = vr.check_exports_importable(wheel, workdir, _ex_repo(tmp_path))
+    assert result.status == vr.PASS
+    joined = " ".join(result.evidence)
+    assert "wheel-extract" in joined
+    assert "-S" in joined
+    # The real checkout must appear nowhere in the resolved package path.
+    assert str(Path(vr.__file__).resolve().parent.parent / "src") not in joined
+
+
+def test_a_stray_package_beside_the_probe_does_not_answer_for_the_wheel(tmp_path):
+    """A second `model_migration_kit` reachable from the probe's own directory must
+    lose to the extracted wheel. If it did not, this check would report on whatever
+    happened to be nearest on `sys.path` -- which is the failure mode it exists to
+    rule out."""
+    wheel = _ex_wheel(
+        tmp_path,
+        _init_source(REAL_EXPORTS, defined=("demo_config_path", "demo_goldenset_path")),
+    )
+    workdir = _ex_workdir(tmp_path)
+    decoy = workdir / "model_migration_kit"
+    decoy.mkdir()
+    (decoy / "__init__.py").write_text(_init_source(REAL_EXPORTS), encoding="utf-8")
+    result = vr.check_exports_importable(wheel, workdir, _ex_repo(tmp_path))
+    assert result.status == vr.FAIL
+    assert "demo_rubric_path" in result.summary
+
+
+def test_an_exported_submodule_resolves_the_way_a_from_import_would(tmp_path):
+    """`from pkg import sub` reaches a submodule that `getattr(pkg, "sub")` cannot,
+    because the attribute exists only once the submodule has been imported. A check
+    built on `getattr` alone would report a shipped submodule as missing."""
+    wheel = _ex_wheel(
+        tmp_path,
+        '"""doc."""\n\n__all__: list[str] = ["demo"]\n',
+        extra={"model_migration_kit/demo.py": "VALUE = 1\n"},
+    )
+    result = vr.check_exports_importable(
+        wheel, _ex_workdir(tmp_path), _ex_repo(tmp_path, exports=("demo",))
+    )
+    assert result.status == vr.PASS
+
+
+def test_a_wheel_whose_all_disagrees_with_the_tree_is_reported_as_stale(tmp_path):
+    """A wheel built before the last edit to `__init__.py` is a stale artifact, and
+    saying so is more useful than reporting the symptom -- a name the tree exports
+    and the wheel has never heard of -- as a missing export."""
+    wheel = _ex_wheel(tmp_path, _init_source(("demo_config_path", "demo_goldenset_path")))
+    result = vr.check_exports_importable(wheel, _ex_workdir(tmp_path), _ex_repo(tmp_path))
+    assert result.status == vr.FAIL
+    assert "stale" in result.summary
+    assert "demo_rubric_path" in " ".join(result.evidence)
+
+
+def test_the_source_trees_all_is_read_through_its_type_annotation(tmp_path):
+    """`__init__.py` spells it `__all__: list[str] = [...]`. A reader expecting a
+    bare `__all__ = [` finds nothing, silently skips the staleness comparison and
+    reports a stale wheel as a healthy one."""
+    init = tmp_path / "__init__.py"
+    init.write_text(_init_source(REAL_EXPORTS), encoding="utf-8")
+    assert vr._source_dunder_all(init) == sorted(REAL_EXPORTS)
+
+
+def test_an_unannotated_all_is_read_too(tmp_path):
+    """Most packages, this one's own submodules included, write it without the
+    annotation; the reader must not depend on the style one file happens to use."""
+    init = tmp_path / "__init__.py"
+    init.write_text('"""doc."""\n\n__all__ = [\n    "a",\n    "b",\n]\n', encoding="utf-8")
+    assert vr._source_dunder_all(init) == ["a", "b"]
+
+
+def test_a_tree_with_no_all_yields_none_so_staleness_is_skipped_not_guessed(tmp_path):
+    """An absent `__all__` in the tree is not evidence that the wheel's is wrong."""
+    assert vr._source_dunder_all(tmp_path / "nothing.py") is None
+    (tmp_path / "__init__.py").write_text("# nothing yet\n", encoding="utf-8")
+    assert vr._source_dunder_all(tmp_path / "__init__.py") is None
+
+
+def test_the_real_packages_all_is_exactly_the_three_demo_accessors():
+    """The surface this check guards. If a fourth name is added to `__init__.py`
+    without a thought, this test is where the thought happens."""
+    real_init = Path(vr.__file__).resolve().parent.parent / "src" / vr.IMPORT_NAME / "__init__.py"
+    assert vr._source_dunder_all(real_init) == sorted(REAL_EXPORTS)
+
+
+def test_no_wheel_means_this_check_is_skipped_rather_than_silently_absent(tmp_path, capsys):
+    """Every wheel-derived check has to appear in the roster even when the build
+    produced nothing, or a failed build quietly shrinks the gate: fewer rows, no
+    failures, and nobody counting."""
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    vr.main(["--no-build", "--repo", str(empty), "--dist-dir", str(empty)])
+    out = capsys.readouterr().out
+    assert any("wheel-exports-importable" in line and vr.SKIP in line for line in out.splitlines())
