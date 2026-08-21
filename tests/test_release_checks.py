@@ -1325,3 +1325,181 @@ def test_py_typed_in_the_zip_but_not_in_record_is_a_failure(tmp_path):
         },
     )
     assert vr.check_wheel_py_typed(wheel, repo).status == vr.FAIL
+
+
+# ----------------------------------------------------------------------------------
+# Addresses the README hands the reader
+# ----------------------------------------------------------------------------------
+
+
+def test_a_badge_link_wrapping_an_absolute_image_still_reports_its_relative_target():
+    """This README's first two lines are badges, and both of their link targets are
+    repo-relative. A link pattern that stops at the *inner* `]` matches the badge
+    image's absolute https target instead and reports nothing, so it would call this
+    README clean while the two most prominent links on the project page were dead."""
+    text = "[![License Apache-2.0](https://img.shields.io/badge/x-y-green)](LICENSE)\n"
+    assert vr.readme_relative_links(text) == ["LICENSE"]
+
+
+def test_an_absolute_target_is_not_reported_because_it_resolves_from_anywhere():
+    """The fix for every finding here is to write the full URL. If the rule then
+    reported the fix, nobody could ever make the check pass."""
+    text = (
+        "[docs](https://github.com/ericwehmeyer/migration-kit/blob/main/docs/x.md)\n"
+        "[mail](mailto:nobody@example.com)\n"
+        "[scheme-relative](//example.com/x.md)\n"
+    )
+    assert vr.readme_relative_links(text) == []
+
+
+def test_a_bare_fragment_is_not_an_address_that_can_be_missing():
+    """`[the four codes](#the-four-codes)` points inside the rendered document, and
+    PyPI renders the whole long description on one page. Reporting it would send the
+    author chasing a link that already works."""
+    assert vr.readme_relative_links("[the four codes](#the-four-codes)\n") == []
+
+
+def test_a_fragment_after_a_path_is_stripped_so_one_file_is_one_address():
+    """`docs/build-plan.md#6` is an address to `docs/build-plan.md`; the heading is
+    not a file that can be missing. Left on, the target would never match anything
+    on disk and the evidence line would tell the reader the wrong thing is absent."""
+    assert vr.readme_relative_links("[plan](docs/build-plan.md#6)\n") == ["docs/build-plan.md"]
+
+
+def test_a_reference_style_definition_is_a_link_target_too():
+    """`[plan]: docs/build-plan.md` renders as a link and 404s exactly the same way.
+    Reading only inline links would let an author move a dead link out of reach of
+    the check by rewriting it in reference style."""
+    assert vr.readme_relative_links("[plan]: docs/build-plan.md\n") == ["docs/build-plan.md"]
+
+
+def test_a_python_dash_m_naming_this_package_is_collected():
+    """`python -m model_migration_kit.demo` is a claim about what the *wheel* ships.
+    If it is not collected it is not checked, and the claim ships unverified."""
+    text = "```\n$ python -m model_migration_kit.demo\n```\n"
+    assert vr.readme_module_targets(text) == ["model_migration_kit.demo"]
+
+
+def test_python_dash_m_pytest_is_not_this_projects_module_to_guarantee():
+    """The README runs `python -m pytest tests/test_cli.py`. pytest is not in this
+    wheel and never will be; demanding that it were would block every release."""
+    text = "```\n$ python -m pytest tests/test_cli.py -k TestExitCodeContract\n```\n"
+    assert vr.readme_module_targets(text) == []
+
+
+def test_a_module_whose_name_merely_starts_with_ours_is_not_beneath_it():
+    """`model_migration_kit_extras` is somebody else's distribution. A prefix match
+    would make this gate fail over a package this project does not build."""
+    text = "```\n$ python -m model_migration_kit_extras.thing\n```\n"
+    assert vr.readme_module_targets(text) == []
+
+
+def test_a_python_dash_m_target_in_prose_is_a_mention_rather_than_an_instruction():
+    """Contract rule 1. The README discusses module names in sentences, and reading
+    a sentence as shell is the mistake `fenced_code_blocks` exists to stop."""
+    assert vr.readme_module_targets("Run `python -m model_migration_kit.demo` later.\n") == []
+
+
+def _rp_wheel(tmp_path: Path, members: dict) -> Path:
+    path = tmp_path / "model_migration_kit-0.1.0-py3-none-any.whl"
+    with zipfile.ZipFile(path, "w") as zf:
+        for member, payload in members.items():
+            zf.writestr(member, payload)
+    return path
+
+
+def _rp_repo(tmp_path: Path, readme: str) -> Path:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "README.md").write_text(readme, encoding="utf-8")
+    return repo
+
+
+def test_a_repo_relative_link_fails_even_though_the_file_is_in_the_tree(tmp_path):
+    """The whole point. `COMPATIBILITY.md` sits next to the README in a checkout, so
+    every local preview renders it as a working link, and the reader who clicks it on
+    the project page gets a 404 -- PyPI renders the long description with no
+    repository, no branch and no directory behind it."""
+    repo = _rp_repo(tmp_path, "See [what is not supported](COMPATIBILITY.md).\n")
+    (repo / "COMPATIBILITY.md").write_text("x", encoding="utf-8")
+    wheel = _rp_wheel(tmp_path, {"model_migration_kit/__init__.py": b""})
+    result = vr.check_readme_paths(wheel, repo)
+    assert result.status == vr.FAIL
+    assert "COMPATIBILITY.md" in " ".join(result.evidence)
+    assert any("in the source tree=True" in line for line in result.evidence)
+
+
+def test_a_link_to_the_licence_fails_even_though_the_wheel_carries_it(tmp_path):
+    """Reachable and addressable are different claims. `LICENSE` really does ship,
+    under `.dist-info/licenses/`, and the link in the README still 404s for the
+    reader who clicks it. Accepting it on the grounds that the file is in the wheel
+    would leave the dead link on the page it is dead on."""
+    repo = _rp_repo(tmp_path, "Apache-2.0 -- see [LICENSE](LICENSE) and [NOTICE](NOTICE).\n")
+    wheel = _rp_wheel(
+        tmp_path,
+        {
+            "model_migration_kit/__init__.py": b"",
+            "model_migration_kit-0.1.0.dist-info/licenses/LICENSE": b"Apache-2.0",
+            "model_migration_kit-0.1.0.dist-info/licenses/NOTICE": b"notice",
+        },
+    )
+    result = vr.check_readme_paths(wheel, repo)
+    assert result.status == vr.FAIL
+    assert "2 address" in result.summary
+
+
+def test_a_readme_whose_every_address_is_absolute_passes(tmp_path):
+    """The state this check is asking the README to reach: the reader on the project
+    page and the reader on an install can both follow everything it points at."""
+    repo = _rp_repo(
+        tmp_path,
+        "See [COMPATIBILITY.md](https://github.com/ericwehmeyer/migration-kit/blob/"
+        "main/COMPATIBILITY.md) and [the codes](#the-four-codes).\n"
+        "```\n$ python -m model_migration_kit.demo\n```\n",
+    )
+    wheel = _rp_wheel(
+        tmp_path,
+        {
+            "model_migration_kit/__init__.py": b"",
+            "model_migration_kit/demo.py": b"",
+        },
+    )
+    result = vr.check_readme_paths(wheel, repo)
+    assert result.status == vr.PASS
+
+
+def test_a_python_dash_m_target_the_wheel_does_not_ship_fails(tmp_path):
+    """A module that exists in `src/` and not in the wheel is the sibling's defect
+    exactly: true of the source tree, false of the artifact, and invisible to every
+    test that imports through `src/`. The reader who followed the install line above
+    it gets `No module named ...`."""
+    repo = _rp_repo(tmp_path, "```\n$ python -m model_migration_kit.demo\n```\n")
+    wheel = _rp_wheel(tmp_path, {"model_migration_kit/__init__.py": b""})
+    result = vr.check_readme_paths(wheel, repo)
+    assert result.status == vr.FAIL
+    assert "model_migration_kit.demo" in " ".join(result.evidence + [result.summary])
+
+
+def test_a_module_shipped_as_a_package_directory_counts_as_present(tmp_path):
+    """`python -m model_migration_kit.demo` runs against `demo/__init__.py` just as
+    happily as against `demo.py`. Insisting on the single-file spelling would fail a
+    release over a package layout that works."""
+    repo = _rp_repo(tmp_path, "```\n$ python -m model_migration_kit.demo\n```\n")
+    wheel = _rp_wheel(
+        tmp_path,
+        {
+            "model_migration_kit/__init__.py": b"",
+            "model_migration_kit/demo/__init__.py": b"",
+        },
+    )
+    assert vr.check_readme_paths(wheel, repo).status == vr.PASS
+
+
+def test_a_missing_readme_is_reported_rather_than_passing_vacuously(tmp_path):
+    """Every other README check in this file says the same thing. A gate that reads
+    an absent file as "nothing wrong" is the failure mode the whole script exists to
+    avoid."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    wheel = _rp_wheel(tmp_path, {"model_migration_kit/__init__.py": b""})
+    assert vr.check_readme_paths(wheel, repo).status == vr.FAIL

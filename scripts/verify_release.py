@@ -389,6 +389,93 @@ def readme_cli_commands(text: str, prog: str = CONSOLE_SCRIPT) -> list[str]:
     return sorted(found)
 
 
+# The two helpers below are newer than `docs/readme-scan-contract.md` and are not in
+# it. They read the README for *addresses* rather than for commands, so contract rule
+# 1 applies to one of them and not to the other; each states its own rule in its
+# docstring, and neither amends the frozen document.
+#
+# A markdown inline link, `[text](target)`. The link text is allowed to contain one
+# level of brackets, which is not pedantry: this README opens with two badges written
+# `[![License Apache-2.0](https://img.shields.io/...)](LICENSE)`, and a flat `[^\]]*`
+# stops at the *inner* `]`, matches the badge image's absolute https target, and
+# reports nothing. Two of this README's five dead links are badges, so the flat form
+# would have missed a pair of them while looking like it worked. The two alternatives
+# start with disjoint characters, so there is no backtracking to worry about.
+_MD_INLINE_LINK = re.compile(r"!?\[(?:[^\[\]]|\[[^\]]*\])*\]\(\s*<?([^)<>\s]+)>?[^)]*\)")
+
+# A reference definition: `[label]: target`, up to three leading spaces per CommonMark.
+_MD_REFERENCE_DEF = re.compile(r"^ {0,3}\[[^\]]+\]:\s*<?(\S+?)>?\s*$", re.M)
+
+# An address that already resolves from anywhere: any scheme (`https:`, `mailto:`) or
+# a protocol-relative `//host/path`.
+_ABSOLUTE_TARGET = re.compile(r"^(?:[A-Za-z][A-Za-z0-9+.\-]*:|//)")
+
+
+def readme_relative_links(text: str) -> list[str]:
+    """Every markdown link target in `text` that resolves only inside a checkout.
+
+    Rule: a link is *relative* when it carries no scheme, is not protocol-relative,
+    and is not a bare `#fragment` pointing at this same document. Those are the ones
+    that 404 from the project page, because PyPI renders the long description
+    standing on nothing -- there is no repository, no branch and no directory behind
+    it. The reader clicking them is not in a checkout and never was.
+
+    A trailing `#fragment` is stripped: `docs/build-plan.md#6` is an address to
+    `docs/build-plan.md`, and the heading is not a file that can be missing.
+
+    The whole document is scanned, fences included, and that is a deliberate
+    over-report in the spirit of the frozen contract's accepted over-reports: a
+    markdown link inside a code fence does not render as a link, but writing one is
+    already a mistake, and a loud false failure naming a target beats a quiet rule
+    that lets a real one through.
+    """
+    found: list[str] = []
+    for pattern in (_MD_INLINE_LINK, _MD_REFERENCE_DEF):
+        for match in pattern.finditer(text):
+            target = match.group(1).strip()
+            if not target or target.startswith("#"):
+                continue
+            if _ABSOLUTE_TARGET.match(target):
+                continue
+            target = target.split("#", 1)[0]
+            if target:
+                found.append(target)
+    return sorted(set(found))
+
+
+# `[<path/to/>]python[.exe] -m <module>`. The path prefix is already stripped by
+# `command_segments`, so only the `.exe` suffix has to be tolerated here.
+_PYTHON_DASH_M = re.compile(r"^(?:python3?|py)(?:\.exe)?\s+-m\s+([A-Za-z_][\w.]*)")
+
+
+def readme_module_targets(text: str, package: str = IMPORT_NAME) -> list[str]:
+    """Every `python -m <module>` in the README that names a module of this package.
+
+    Contract rule 1 applies: fenced blocks only, at command position only. A module
+    name in a sentence is a mention.
+
+    This is the address that survives an install. `python tests/fixtures/x.py` is a
+    claim about a checkout; `python -m model_migration_kit.demo` is a claim about
+    what the wheel contains, and it is checked as such -- which is the whole reason
+    to prefer the second spelling when a command is meant for an installed reader.
+
+    `python -m pytest`, `-m build` and `-m venv` are other people's modules and are
+    not this project's to guarantee, so only targets equal to the package or beneath
+    it are returned. `model_migration_kit_extras.thing` is a different distribution
+    and is not beneath `model_migration_kit` -- the dot is required, not merely a
+    prefix match.
+    """
+    prefix = f"{package}."
+    found: list[str] = []
+    for block in fenced_code_blocks(text):
+        for line in block.splitlines():
+            for segment in command_segments(line):
+                match = _PYTHON_DASH_M.match(segment)
+                if match and (match.group(1) == package or match.group(1).startswith(prefix)):
+                    found.append(match.group(1))
+    return sorted(set(found))
+
+
 def contract_declared_requirements(contract_text: str) -> list[str] | None:
     """The dependency list the frozen contract asserts, or None if not found.
 
@@ -1315,6 +1402,114 @@ def check_readme_commands(repo: Path) -> Result:
     return ok(name, f"all {len(commands)} README command(s) exist in the CLI", evidence)
 
 
+def _module_members(module: str) -> tuple[str, str]:
+    """The two wheel members either of which would make `module` importable."""
+    stem = module.replace(".", "/")
+    return f"{stem}.py", f"{stem}/__init__.py"
+
+
+def check_readme_paths(wheel: Path, repo: Path) -> Result:
+    """Every address the README hands a reader must resolve from where they stand.
+
+    A reader stands on the project page and then on an install. Neither is a
+    checkout, and this is the check that says so:
+
+    * a **relative link** is dead on PyPI, which renders the long description with
+      no repository, no branch and no directory behind it;
+    * a **`python -m` target** under this package must be a module the wheel ships.
+
+    Each finding prints whether the address exists *in the source tree*, because that
+    is the shape of every instance of this fault: true of the tree, false of the
+    artifact. An address wrong in both places is a different and much louder bug; an
+    address right in the tree and absent from the artifact is this one, and it is
+    invisible to `python -m build`, to `twine check`, and to every test in this
+    repository that imports through `src/`.
+
+    One thing this check deliberately does *not* do is accept a relative link on the
+    grounds that the file is in the wheel. `LICENSE` and `NOTICE` really are in the
+    wheel, under `.dist-info/licenses/`, and the links still 404 for the reader who
+    clicks them. Reachable and addressable are different claims.
+
+    Ported from opik-rigor, whose version has a third rule: every path-shaped
+    argument in a code block must be inside the wheel. That rule is deliberately not
+    here. It assumes a README in which every command is meant for an installed
+    reader, which is true of the sibling's and false of this one -- this README is a
+    tutorial whose code blocks also carry files the tool *writes* (`.migkit/old.jsonl`),
+    a deliberately absent path in an error demo (`./does-not-exist.jsonl`), addresses
+    parameterised by a shell variable (`tests/fixtures/$f-a.jsonl`), and the
+    `tests/fixtures/` corpus, which the section introducing it already says in bold
+    needs the repository and names `migkit demo` as the installed equivalent. All
+    fourteen would be reported and none is the fault. A check that has to be ignored
+    is worse than no check, so the rule that does not hold here is left out rather
+    than watered down until it passes.
+    """
+    name = "readme-paths"
+    readme = repo / "README.md"
+    if not readme.is_file():
+        return bad(name, "README.md does not exist", [])
+    text = readme.read_text(encoding="utf-8")
+
+    with zipfile.ZipFile(wheel) as zf:
+        members = set(zf.namelist())
+
+    evidence = [
+        f"scanned: {readme}",
+        f"top-level entries in {wheel.name}: {sorted({m.split('/', 1)[0] for m in members})}",
+    ]
+    problems: list[str] = []
+
+    links = readme_relative_links(text)
+    evidence.append(f"repo-relative markdown links ({len(links)}): {links or 'none'}")
+    for target in links:
+        evidence.append(
+            f"link -> {target}: in the source tree={(repo / target).exists()}, "
+            f"resolvable from the PyPI project page=False"
+        )
+        problems.append(
+            f"[...]({target}) is repo-relative and 404s from the project page; "
+            f"use the full https://github.com/... URL"
+        )
+
+    modules = readme_module_targets(text)
+    evidence.append(
+        f"`python -m` targets under {IMPORT_NAME} ({len(modules)}): {modules or 'none'}"
+    )
+    for module in modules:
+        candidates = _module_members(module)
+        present = [c for c in candidates if c in members]
+        in_tree = any((repo / "src" / c).exists() for c in candidates)
+        evidence.append(
+            f"module -> {module}: in tree={in_tree}, "
+            f"in wheel={present[0] if present else 'ABSENT'}"
+        )
+        if not present:
+            problems.append(
+                f"the README says `python -m {module}` and the wheel ships neither "
+                f"{candidates[0]} nor {candidates[1]}; the reader who followed the "
+                f"install line above it gets `No module named {module}`"
+            )
+
+    if problems:
+        return bad(
+            name,
+            f"the README gives {len(problems)} address(es) a reader cannot reach",
+            evidence
+            + problems
+            + [
+                "One fault in every case: a claim true of the source tree and false of",
+                "what the reader is standing on. Fix the address or ship the file --",
+                "and note that a README correction reaches PyPI only on the next",
+                "upload, because a long description is frozen at upload time.",
+            ],
+        )
+    total = len(links) + len(modules)
+    return ok(
+        name,
+        f"every address the README gives resolves ({total} checked, 0 repo-relative links)",
+        evidence,
+    )
+
+
 # --------------------------------------------------------------------------------------
 # Driver
 # --------------------------------------------------------------------------------------
@@ -1388,6 +1583,7 @@ def main(argv: list[str] | None = None) -> int:
                 "console-script",
                 "wheel-py-typed",
                 "twine-check",
+                "readme-paths",
             ):
                 emit(skipped(pending, reason, [f"see the `{build_result.name}` row above"]))
         else:
@@ -1410,6 +1606,7 @@ def main(argv: list[str] | None = None) -> int:
             emit(check_console_script(wheel))
             emit(check_wheel_py_typed(wheel, repo))
             emit(check_twine(sdist, wheel, repo))
+            emit(check_readme_paths(wheel, repo))
 
         emit(check_readme_pip_install(repo))
         emit(check_readme_commands(repo))
