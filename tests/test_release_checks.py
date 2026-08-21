@@ -1198,3 +1198,41 @@ def test_a_quoted_command_alone_on_a_line_is_still_in_command_position():
     `& "path\\to\\thing" arg`. Unlike P6 there is no `echo` in front to disqualify
     it. If this is judged wrong, the contract is what has to change."""
     assert vr.readme_pip_install_targets(_fenced('"pip install nonsense"')) == ["nonsense"]
+
+
+# ----------------------------------------------------------------------------------
+# twine's verdict, read through rich's colouring
+# ----------------------------------------------------------------------------------
+
+
+def test_twine_verdicts_are_counted_when_the_output_is_plain():
+    """The local case: no terminal, so rich emits no escapes and the verdict is the
+    last word on the line."""
+    plain = (
+        "Checking dist/pkg-0.1.0-py3-none-any.whl: PASSED\n"
+        "Checking dist/pkg-0.1.0.tar.gz: PASSED\n"
+    )
+    assert vr.twine_passed_count(plain) == 2
+
+
+def test_twine_verdicts_are_counted_through_ansi_colour():
+    """The CI case, and the one that blocked a release. twine renders through rich,
+    which colourises when it believes it is on a terminal -- GitHub Actions is one
+    such environment. The line then ends with an ANSI reset rather than with the
+    word, so a bare `endswith("PASSED")` sees nothing and the gate fails a release
+    that twine itself passed."""
+    coloured = (
+        "Checking dist/pkg-0.1.0-py3-none-any.whl: \x1b[32mPASSED\x1b[0m\n"
+        "Checking dist/pkg-0.1.0.tar.gz: \x1b[32mPASSED\x1b[0m\n"
+    )
+    assert vr.twine_passed_count(coloured) == 2
+
+
+def test_a_failed_twine_verdict_is_not_counted_as_a_pass():
+    """Stripping colour must not turn FAILED into a pass: the count is of verdicts
+    that say PASSED, not of lines twine printed."""
+    mixed = (
+        "Checking dist/pkg-0.1.0-py3-none-any.whl: \x1b[32mPASSED\x1b[0m\n"
+        "Checking dist/pkg-0.1.0.tar.gz: \x1b[31mFAILED\x1b[0m\n"
+    )
+    assert vr.twine_passed_count(mixed) == 1

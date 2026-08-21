@@ -1125,6 +1125,21 @@ def check_console_script(wheel: Path) -> Result:
     return ok(name, f"`{CONSOLE_SCRIPT}` points at a module the wheel ships", evidence)
 
 
+# twine renders through rich, which colourises when it believes it is writing to a
+# terminal. GitHub Actions is such an environment even though the output is a pipe,
+# so in CI the verdict arrives as `...whl: \x1b[32mPASSED\x1b[0m` -- the line ends
+# with the reset, not with the word. Locally there are no escapes, which is why
+# matching on the raw text passed every local run and then failed the first real
+# one, blocking a release twine itself had passed.
+_ANSI_SGR = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def twine_passed_count(output: str) -> int:
+    """How many artifacts twine reported as PASSED, colour or no colour."""
+    plain = _ANSI_SGR.sub("", output)
+    return sum(1 for line in plain.splitlines() if line.strip().endswith("PASSED"))
+
+
 def check_twine(sdist: Path, wheel: Path, repo: Path) -> Result:
     name = "twine-check"
     if not _module_available("twine"):
@@ -1138,8 +1153,11 @@ def check_twine(sdist: Path, wheel: Path, repo: Path) -> Result:
             ],
         )
     proc = run([sys.executable, "-m", "twine", "check", str(sdist), str(wheel)], cwd=repo)
-    lines = [line for line in (proc.stdout + proc.stderr).splitlines() if line.strip()]
-    passed = sum(1 for line in lines if line.strip().endswith("PASSED"))
+    output = proc.stdout + proc.stderr
+    passed = twine_passed_count(output)
+    # Evidence is stripped too: an escape sequence pasted into a log reads as
+    # mojibake, and the reader needs to see what was matched, not what was printed.
+    lines = [line for line in _ANSI_SGR.sub("", output).splitlines() if line.strip()]
     evidence = [f"checked: {sdist.name}, {wheel.name}", *lines]
     if proc.returncode != 0:
         return bad(name, f"twine check exited {proc.returncode}", evidence)
