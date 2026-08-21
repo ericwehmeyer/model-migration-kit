@@ -1073,3 +1073,130 @@ class TestDemo:
         _strip_keys(monkeypatch, mode="absent")
         _run_demo(tmp_path, monkeypatch, "env")
         assert not [name for name in KEY_VARIABLES if os.environ.get(name)]
+
+
+# --------------------------------------------------------------------------- #
+# A relative --work-dir
+# --------------------------------------------------------------------------- #
+
+
+def _recorded_artifact_paths(records) -> dict[str, str]:
+    """Every file path the comparison record names, keyed by what it is.
+
+    Read out of the log rather than composed here, because the point of these
+    tests is that the strings the log actually carries can be followed by the
+    reader that consumes them.
+    """
+    payload = _payload(records, EVENT_COMPARISON)
+    found = {"golden set": str(payload.get("goldenset_path", "") or "")}
+    for side in ("baseline", "candidate"):
+        block = dict(payload.get(side, {}) or {})
+        found[f"{side} run artifact"] = str(block.get("artifact", "") or "")
+        found[f"{side} judged artifact"] = str(block.get("judged_artifact", "") or "")
+    return {what: recorded for what, recorded in found.items() if recorded}
+
+
+class TestARelativeWorkDirectory:
+    """``migkit demo --work-dir ./somewhere``, which is what a reader types.
+
+    A relative path is the ordinary form -- nobody types their home directory --
+    and until this was fixed it produced a report whose every exhibit was replaced
+    by a "could not be read" warning, from a work directory where all six files
+    were sitting in plain sight. The mechanism was a mismatch of frames: the run
+    recorded ``somewhere\\baseline.jsonl``, meaning *relative to the shell's
+    working directory*, and :func:`report._resolve` reads a recorded relative path
+    as meaning *relative to the evidence log's own directory*, which is
+    ``somewhere``. The two frames agree only when they are the same directory, so
+    an absolute ``--work-dir`` worked and the natural one did not.
+
+    Both tests below run the demo from a directory that is not the work directory,
+    which is the condition the defect needs; ``_run_demo`` above happens to pass an
+    absolute path and so never met it.
+    """
+
+    def test_a_relative_work_dir_produces_a_report_with_no_unreadable_artifacts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """What the reader loses: the showcase, on the first command they run.
+
+        The verdict line still says NO-GO, so a pipeline sees nothing wrong, while
+        the document underneath it has no golden set, no completions and no quoted
+        model text -- a report that describes its own failure to read files that
+        are present. Session-3 §5.2 makes ``--work-dir`` a directory the operator
+        names; it does not make it a directory they must spell absolutely.
+        """
+        _strip_keys(monkeypatch, mode="absent")
+        monkeypatch.chdir(tmp_path)
+        code = cli.main(
+            ["demo", "--out", "relative.html", "--work-dir", "./relative-work", "--keep"]
+        )
+        captured = capsys.readouterr()
+        assert code == FROZEN_EXIT_CODES[DEMO_VERDICT]
+        unreadable = [line for line in captured.out.splitlines() if "could not be read" in line]
+        assert not unreadable, unreadable
+
+    def test_a_relative_work_dir_records_paths_the_report_can_follow(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The invariant underneath the symptom, asserted through the real reader.
+
+        Resolution is not re-implemented here: the recorded string is handed to
+        the same :func:`report._resolve` the renderer uses, so this stays true
+        however the frames are made to agree -- by recording absolutes, or by
+        recording relative to the log -- and stays false if the guard that keeps
+        ``_resolve`` inside the log's directory is loosened to paper over it.
+        """
+        from model_migration_kit.report import _resolve
+
+        _strip_keys(monkeypatch, mode="absent")
+        monkeypatch.chdir(tmp_path)
+        code = cli.main(["demo", "--out", "invariant.html", "--work-dir", "./rel-work", "--keep"])
+        assert code == FROZEN_EXIT_CODES[DEMO_VERDICT]
+
+        work = tmp_path / "rel-work"
+        records = _demo_evidence(work)
+        recorded_paths = _recorded_artifact_paths(records)
+        assert len(recorded_paths) == 5, recorded_paths
+
+        log = work / "evidence.jsonl"
+        assert log.is_file(), sorted(one.name for one in work.iterdir())
+        for what, recorded in recorded_paths.items():
+            used, _overridden, refusal = _resolve(recorded, None, log.parent, what)
+            assert not refusal, f"{what}: {refusal}"
+            assert Path(used).is_file(), f"{what}: recorded {recorded!r}, looked in {used!r}"
+
+    def test_a_relative_out_dir_records_a_run_artifact_the_report_can_follow(
+        self, runnable_goldenset: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The same frame mismatch reached ``migkit run`` through ``--out-dir``.
+
+        It is reached by the default as well: ``DEFAULT_DIR`` is the relative
+        ``.migkit``, so a plain ``migkit run`` followed by ``migkit report .migkit``
+        looked for its artifact in ``.migkit\\.migkit``. What the operator loses is
+        the same thing -- a report that cannot quote the outputs it is reporting on
+        -- reached without typing any path at all.
+        """
+        from model_migration_kit.report import _resolve
+
+        monkeypatch.chdir(tmp_path)
+        code = cli.main(
+            [
+                *_run_argv(runnable_goldenset),
+                "--n", "2",
+                "--out-dir", "./artifacts",
+                "--evidence", "./artifacts/evidence.jsonl",
+            ]
+        )
+        assert code == FROZEN_EXIT_CODES["GO"]
+
+        log = tmp_path / "artifacts" / "evidence.jsonl"
+        recorded = ""
+        for record in EvidenceLog(log).read():
+            candidate = str(dict(record.payload).get("artifact", "") or "")
+            if candidate:
+                recorded = candidate
+        assert recorded, "the run recorded no artifact path"
+
+        used, _overridden, refusal = _resolve(recorded, None, log.parent, "run artifact")
+        assert not refusal, refusal
+        assert Path(used).is_file(), f"recorded {recorded!r}, looked in {used!r}"

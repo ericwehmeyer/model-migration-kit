@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import importlib.util
+import os
 import shutil
 import sys
 import tempfile
@@ -448,7 +449,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     settings = load_settings(args.config)
     say = _progress(args)
     goldenset = GoldenSet.load(args.goldenset)
-    out_dir = Path(args.out_dir) if args.out_dir else DEFAULT_DIR
+    out_dir = _recorded_path(args.out_dir or DEFAULT_DIR)
     evidence = EvidenceLog(Path(args.evidence) if args.evidence else DEFAULT_EVIDENCE)
     adapter = _model_adapter(args.adapter, args.model)
     # Precedence is CLI flag > config file > built-in default, and n carries its
@@ -484,7 +485,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         goldenset,
         adapter,
         out_dir=out_dir,
-        artifact=args.artifact,
+        artifact=_recorded_path(args.artifact) if args.artifact else None,
         n=n,
         concurrency=concurrency,
         timeout=timeout,
@@ -579,7 +580,12 @@ def cmd_demo(args: argparse.Namespace) -> int:
     # A directory the operator named is never deleted, --keep or not: removing a
     # path someone typed is a different act from cleaning up one we invented.
     keep = bool(args.keep) or named
-    work_dir = Path(args.work_dir) if named else Path(tempfile.mkdtemp(prefix="migkit-demo-"))
+    # Absolute either way: see _recorded_path. mkdtemp already returns one.
+    work_dir = (
+        _recorded_path(args.work_dir)
+        if named
+        else Path(tempfile.mkdtemp(prefix="migkit-demo-"))
+    )
     try:
         result = demo_module.run_demo(
             work_dir, goldenset=args.goldenset, n=args.n, progress=say
@@ -619,6 +625,36 @@ def _goldenset_for(run: RunArtifact) -> GoldenSet:
             f"questions nobody asked."
         )
     return goldenset
+
+
+def _recorded_path(value: str | Path) -> Path:
+    """A path argument made absolute, before anything records it in the evidence log.
+
+    ``migkit demo --work-dir ./demo1`` -- a relative path, which is what a reader
+    following the README types -- used to render a report in which every exhibit
+    had been replaced by a "could not be read" warning, from a work directory
+    where all six files were sitting in plain sight. Two frames disagreed. The run
+    recorded ``demo1\\baseline.jsonl``, meaning *relative to the shell's working
+    directory*, and :func:`report._resolve` reads a recorded relative path as
+    meaning *relative to the evidence log's own directory*, which is ``demo1``, so
+    it looked in ``demo1\\demo1``. The frames coincide only when the log happens to
+    sit in the shell's working directory, which is why an absolute ``--work-dir``
+    worked and the natural form did not. The same disagreement reached ``migkit
+    run`` through ``--out-dir``, including its ``.migkit`` default.
+
+    Absolutised here, at the boundary where a typed string still means "relative
+    to the shell I am standing in", and not in ``report.py``: ``_resolve``'s
+    refusal to follow a recorded path out of the log's own directory is what makes
+    an evidence log carried to another machine decline rather than open a
+    stranger's file, and widening it far enough to accept the doubled path would
+    trade a first-run defect for a worse one.
+
+    ``os.path.abspath`` rather than ``Path.resolve``, matching ``report.py``'s own
+    choice: the directory need not exist yet, this does no filesystem I/O, and a
+    symlink the operator deliberately typed through is theirs to keep rather than
+    ours to rewrite inside an audit record.
+    """
+    return Path(os.path.abspath(str(value)))
 
 
 def _evidence_path(value: str | Path) -> Path:
