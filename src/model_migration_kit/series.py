@@ -22,24 +22,43 @@ lifted out of the gate dict the verdict was measured against, verbatim. A point
 that re-derived a number could disagree with the banner printed beside it, and a
 timeline that contradicts its own verdicts is worse than no timeline.
 
-**Two numbers that look interchangeable are not.** ``floor``, ``confidence`` and
-``alpha`` come from the *gate that was applied* -- the candidate side of the
-widest judge -- and only fall back to ``comparison["thresholds"]``, which is what
-was *configured*. On a run where the two differ the gate is the truth, and the
+**Two numbers that look interchangeable are not.** ``floor`` and ``confidence``
+come from the *gate that was applied* -- the candidate side of the widest judge.
+``alpha`` comes from that same judge, but from the judge mapping itself: the gate
+dicts carry ``min_rate`` and ``confidence`` and no ``alpha`` at all, so an
+``alpha`` read from the candidate side would be a read that could never succeed.
+All three fall back to ``comparison["thresholds"]``, which is what was
+*configured*. On a run where the two differ the gate is the truth, and the
 failure this ordering prevents is a timeline drawing a 0.90 floor rule across a
 night that was gated at 0.85, which misattributes every verdict on the chart.
 Where neither records the number it stays ``None``: a substituted default is the
-same lie with nothing left to show that it was substituted.
+same lie with nothing left to show that it was substituted. For ``floor``, which
+of the two supplied the number travels beside it in ``floor_source``, because the
+fallback is permitted and a later chunk still has to know that it happened.
+
+**Nothing here raises.** A payload is other people's JSON, read long after the
+process that wrote it exited. Every coercion below has an absent value to fall
+to, and the module's one hard rule is that a single unreadable record costs that
+record and not the report.
 """
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
 __all__ = ["RunPoint", "run_point"]
+
+#: ``floor_source``'s three values. The word "unrecorded" is
+#: ``report.THRESHOLD_SOURCE_UNRECORDED``'s, deliberately: the report already has
+#: a vocabulary for "the evidence does not say", and a second one would make two
+#: parts of the same page describe the same absence in different words.
+_FLOOR_FROM_GATE = "gate"
+_FLOOR_FROM_THRESHOLDS = "thresholds"
+_FLOOR_UNRECORDED = "unrecorded"
 
 
 @dataclass(frozen=True)
@@ -72,10 +91,21 @@ class RunPoint:
     n_per_item: int
     #: Golden-set items the widest judge covered, ``0`` when unrecorded.
     items: int
-    completions_baseline: int
-    completions_candidate: int
-    failures_baseline: int
-    failures_candidate: int
+    #: Completions the widest judge *graded*, per side -- the gate's own ``n``.
+    #: Not the number of completions the run produced: a completion whose judge
+    #: reply would not parse is produced and never graded, so a side that sampled
+    #: 60 and lost 3 to parse failures records 60 completions and 57 judged. The
+    #: report's "completions" row counts the first of those; this counts the
+    #: second, and on any run with a parse failure they are different numbers.
+    judged_baseline: int
+    judged_candidate: int
+    #: Completions the judge graded and *failed*, per side -- the gate's own
+    #: ``failures``, which is ``n - successes``. Not adapter errors: the report's
+    #: "failed completions" row counts completions the adapter never returned, and
+    #: on the demo run the two readings are 15 and 0. Naming these plain
+    #: ``failures`` invited a later chunk to render one row from the other.
+    judge_failures_baseline: int
+    judge_failures_candidate: int
     #: Candidate side of the widest judge. ``None`` -- never ``0.0`` -- when
     #: nothing was measured.
     pass_rate: float | None
@@ -83,6 +113,13 @@ class RunPoint:
     lower_bound: float | None
     #: The gate's own ``min_rate``, not the configured threshold.
     floor: float | None
+    #: ``"gate"``, ``"thresholds"`` or ``"unrecorded"`` -- where ``floor`` came
+    #: from, on the pattern ``created``/``created_source`` sets two fields above.
+    #: The contract permits the fallback to ``comparison["thresholds"]`` and
+    #: requires it not to be silent: the number the run was *held to* and the
+    #: number that was *configured* are the same float and different claims, and
+    #: this is the only field that tells a later chunk which one it has.
+    floor_source: str
     confidence: float | None
     alpha: float | None
     #: Which judge the numbers above came from, so a two-judge row can be read
@@ -134,6 +171,7 @@ def run_point(
     decision = _mapping(verdict)
     created, created_source = _created(comparison.get("created"), envelope_ts)
     rate, interval, lower_bound = _candidate_rate(candidate_gate)
+    floor, floor_source = _gated(candidate_gate.get("min_rate"), thresholds.get("pass_rate_floor"))
 
     return RunPoint(
         created=created,
@@ -150,16 +188,17 @@ def run_point(
         config_path=_text(comparison.get("config_path")),
         n_per_item=_count(comparison.get("n_per_item")),
         items=_count(_mapping(judge.get("item_counts")).get("items")),
-        completions_baseline=_count(baseline_gate.get("n")),
-        completions_candidate=_count(candidate_gate.get("n")),
-        failures_baseline=_count(baseline_gate.get("failures")),
-        failures_candidate=_count(candidate_gate.get("failures")),
+        judged_baseline=_count(baseline_gate.get("n")),
+        judged_candidate=_count(candidate_gate.get("n")),
+        judge_failures_baseline=_count(baseline_gate.get("failures")),
+        judge_failures_candidate=_count(candidate_gate.get("failures")),
         pass_rate=rate,
         interval=interval,
         lower_bound=lower_bound,
-        floor=_gated(candidate_gate.get("min_rate"), thresholds.get("pass_rate_floor")),
-        confidence=_gated(candidate_gate.get("confidence"), thresholds.get("confidence")),
-        alpha=_gated(judge.get("alpha"), thresholds.get("alpha")),
+        floor=floor,
+        floor_source=floor_source,
+        confidence=_gated(candidate_gate.get("confidence"), thresholds.get("confidence"))[0],
+        alpha=_gated(judge.get("alpha"), thresholds.get("alpha"))[0],
         judge_name=_text(judge.get("name")),
         judge_model_id=_text(judge.get("model_id")),
         rubric_hashes=tuple(sorted(_text(one.get("rubric_hash")) for one in judges)),
@@ -167,7 +206,7 @@ def run_point(
         latency_median_candidate=_number(latency.get("median")),
         runs_needed=_count_or_none(judge.get("runs_needed")),
         n_required=_count_or_none(power.get("n_required")),
-        warnings=tuple(_text(one) for one in comparison.get("warnings") or ()),
+        warnings=_warnings(comparison.get("warnings")),
     )
 
 
@@ -227,8 +266,8 @@ def _candidate_rate(
     return _number(gate.get("pass_rate")), interval, _number(gate.get("lower_bound"))
 
 
-def _gated(applied: Any, configured: Any) -> float | None:
-    """The number the gate used, else the one that was configured, else nothing.
+def _gated(applied: Any, configured: Any) -> tuple[float | None, str]:
+    """The number the gate used, else the one configured, else nothing -- and which.
 
     The order is the whole point of the function. ``comparison["thresholds"]`` is
     what the config asked for; the gate dict is what rigor was actually called
@@ -237,9 +276,21 @@ def _gated(applied: Any, configured: Any) -> float | None:
     mapping, and it stops at ``None``: where neither recorded the number, a point
     records nothing rather than a plausible default, because a default drawn as a
     rule across a chart is indistinguishable from a measurement.
+
+    The source is returned alongside because the fallback is permitted and must
+    not be silent -- a floor that came from the configuration is a weaker claim
+    than one that came from the gate, and by the time a renderer holds the bare
+    float the difference is unrecoverable. Only ``floor`` keeps its source today;
+    the tuple is returned for all three so that keeping a second is an edit to one
+    caller rather than to this function.
     """
     lifted = _number(applied)
-    return lifted if lifted is not None else _number(configured)
+    if lifted is not None:
+        return lifted, _FLOOR_FROM_GATE
+    fallback = _number(configured)
+    if fallback is not None:
+        return fallback, _FLOOR_FROM_THRESHOLDS
+    return None, _FLOOR_UNRECORDED
 
 
 # --------------------------------------------------------------------------- #
@@ -320,32 +371,90 @@ def _text_or_none(value: Any) -> str | None:
 
 
 def _number(value: Any) -> float | None:
-    """A float, or ``None`` for anything that is not one.
+    """A *finite* float, or ``None`` -- and a numeric string is not one.
 
-    ``bool`` is excluded explicitly: ``True`` is an ``int`` to Python, and a flag
-    that leaked into a numeric field would otherwise be plotted as a rate of 1.0.
+    Three exclusions, each with a failure behind it.
+
+    ``bool`` is excluded because ``True`` is an ``int`` to Python, and a flag that
+    leaked into a numeric field would otherwise be plotted as a rate of 1.0.
+
+    ``NaN`` and the infinities are excluded because they arrive: ``json.loads``
+    accepts bare ``NaN`` and ``Infinity`` by default, and ``comparison.py`` keeps
+    its own note about a degenerate test handing back ``NaN``. Neither is a
+    quantity a chart can draw, and a ``NaN`` floor is worse than undrawable --
+    every comparison against it is ``False``, so a run would silently fail a gate
+    it was never really held to.
+
+    A numeric string is excluded to match ``report._number``, which refuses one
+    too, and the agreement is the point rather than a coincidence: these two
+    readers render into the same document. On a log with a quoted ``pass_rate`` a
+    string-tolerant series would draw 0.75 on the timeline while the table beside
+    it printed an em-dash for the same number, and "a timeline that contradicts
+    its own verdicts" is the failure this module exists to prevent. The place to
+    repair a quoted rate is the writer, not one of its two readers. Counts are the
+    deliberate exception, for the reason given in :func:`_count`.
     """
     if value is None or isinstance(value, bool):
         return None
-    if isinstance(value, (int, float)):
+    if isinstance(value, (int, float)) and math.isfinite(value):
         return float(value)
+    return None
+
+
+def _numeric(value: Any) -> float | None:
+    """:func:`_number`, extended to a string that spells a finite number.
+
+    Used only by the count coercions below. Kept separate so that widening it
+    cannot widen ``pass_rate``, ``floor`` or ``p_value`` by accident.
+    """
     if isinstance(value, str):
         try:
-            return float(value)
+            return _number(float(value))
         except ValueError:
             return None
-    return None
+    return _number(value)
+
+
+def _warnings(value: Any) -> tuple[str, ...]:
+    """The run's warnings -- and never the letters of one.
+
+    A ``str`` is iterable, so the obvious comprehension turns a payload that
+    recorded ``"careful"`` into seven one-character warnings: seven rows of noise
+    in the one place a reader looks to find out why a difference should not be
+    trusted. A writer that recorded a single warning as a bare string meant one
+    warning, so it becomes one. Dropping it instead would be silent evidence loss,
+    which is the same failure from the other side. Anything that is neither a
+    string nor a sequence yields nothing, because iterating a mapping would list
+    its keys as though they were warnings.
+    """
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, (list, tuple)):
+        return tuple(_text(one) for one in value)
+    return ()
 
 
 def _count(value: Any) -> int:
     """A count, ``0`` for anything that will not coerce.
 
-    ``"5"`` becomes ``5``: a writer that quoted its integers is a real thing to
-    survive, and reading a quoted ``n_per_item`` as zero would render a complete
-    run as an empty one. Anything genuinely uninterpretable becomes ``0``, the
-    same value an absent key gives, because both are the same statement.
+    ``"5"`` becomes ``5``, and this is the only place a numeric string is read.
+    A writer that quoted its integers is a real thing to survive, and reading a
+    quoted ``n_per_item`` as zero would split one series into two on the grouping
+    key of section 4.4 -- two short lines on the chart where there was one long
+    one. What makes the string safe here and not in :func:`_number` is the type:
+    these fields are ``int``, not ``int | None``, so a count has no way to say
+    "unavailable" the way a rate does. Its only alternative to reading the string
+    is ``0``, which is a claim about the run rather than an admission about the
+    record.
+
+    Anything genuinely uninterpretable becomes ``0``, the same value an absent key
+    gives, because both are the same statement. ``NaN`` and infinity are
+    uninterpretable in exactly this way, and they are why this goes through
+    :func:`_numeric` rather than calling ``int`` on whatever it was handed:
+    ``int(float("nan"))`` raises ``ValueError`` and ``int(float("inf"))`` raises
+    ``OverflowError``, out of a function whose entire contract is not raising.
     """
-    number = _number(value)
+    number = _numeric(value)
     return 0 if number is None else int(number)
 
 
@@ -354,7 +463,8 @@ def _count_or_none(value: Any) -> int | None:
 
     ``runs_needed`` and ``power.n_required`` are ``null`` whenever the sizing
     could not be computed, which is not the statement "zero further runs are
-    needed" that a coerced ``0`` would make.
+    needed" that a coerced ``0`` would make. A non-finite value is ``None`` here
+    for the same reason it is ``0`` in :func:`_count`: unreadable, not zero.
     """
-    number = _number(value)
+    number = _numeric(value)
     return None if number is None else int(number)
