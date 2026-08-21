@@ -1833,3 +1833,120 @@ Three things, in this order, before any chunk is dispatched:
 3. **Dispatch C1 and C15 in parallel.** C1 is the critical path's head; C15 is
    the only chunk a human will want to read by eye and should not block on
    anything.
+
+---
+
+## Revisions, 2026-08-21, after the pilot and the two de-risk checks
+
+These supersede the chunk contracts above where they conflict. Each is recorded
+with the evidence that produced it, because the reason is what a later reader
+needs and it is the part that evaporates.
+
+### R1 — C8 does not need the judged artifacts, and should not use them
+
+**The contract for C8 is wrong.** §7 argued that because `judge.verdict` records
+carry no `item_id`, the per-tag matrix must come from the judged artifacts, which
+`_resolve` refuses on a cross-machine render. The premise is true and the
+conclusion is false.
+
+`judge.verdict.input` is the verbatim golden-set input — `judging.py:744` passes
+`item_input` straight through — so a verdict joins to an item by its input text.
+Verified on a real 300-record demo log: 120 of 120 verdicts joined, and the
+resulting matrix was checked cell-for-cell against the judged artifacts at
+**24/24 identical, zero mismatches**. The side comes from the append-only
+ordering: verdicts accumulate until the next `migkit.judging_completed`, whose
+`model_id` names the side, and `cli.py:521` iterates the two runs strictly
+sequentially, so the ordering is structural rather than incidental.
+
+Build the matrix from **`judge.verdict` + the golden set**. This collapses the
+two independent decline reasons to one, and it makes the matrix survive the
+cross-machine re-render that `report.py`'s own module docstring calls the
+designed workflow.
+
+Three guards the join needs, each detectable from the log:
+
+- **Duplicate inputs.** `goldenset.py:113-125` enforces unique `id` but not
+  unique `input`. Two items sharing an input cannot be told apart, so refuse the
+  matrix loudly rather than attributing a verdict to the wrong item.
+- **Imputed rows.** A failed completion never reaches `evaluate()` and writes no
+  verdict. Recover it from `migkit.completion` where `ok=false`, which carries
+  both `item_id` and the sampled `model_id`.
+- **Resumed judging.** `judging.py:612-620` skips already-graded records.
+  `migkit.judging_completed` carries `graded`/`judged`/`imputed`/`parse_failures`,
+  so a shortfall is detectable; decline rather than under-count.
+
+Parse failures correctly write no verdict and are already excluded from pass
+rates, so they need no special handling.
+
+### R2 — the showcase does not ship the judged artifacts
+
+The question "must the showcase ship artifacts" was based on a wrong model of how
+the showcase is made. `migkit-demo-report.html` is not tracked; it is rendered by
+whoever runs the demo, and `cli.py:573-596` renders it *before* tearing down the
+work directory, for exactly this reason. The showcase is a self-contained page
+produced where every file still exists, and the stranger who reads it never
+re-renders. A matrix computed at render time is simply in it.
+
+R1 makes this moot anyway, but for the record: all four artifacts are 65,847
+bytes raw, ~5.9 KB gzipped, against an evidence log of 143,558 bytes.
+
+### R3 — a per-dimension cell counts completions, not items
+
+C15 flagged this as a decision C9 must make and C15 must match, and left it open.
+It is settled: **completions**, with `MIN_N_FOR_A_VERDICT = 20` completions.
+
+Three-way agreement made this cheap to ratify — the plan recommended it, C15's
+implementer was briefed to it, and C15's tester asserted it. It also matches every
+other rate in the document. Under item-level counting the set would need 25 items
+per tag rather than 16, and both of C15's headline tests would be wrong.
+
+### R4 — the definition-of-done commands do not work from a worktree
+
+Every chunk's **Done** block says `.venv/Scripts/python -m pytest tests/...`.
+Run from a worktree that is what happens:
+
+```
+E   ModuleNotFoundError: No module named 'model_migration_kit.series'
+```
+
+The editable install resolves `model_migration_kit` to the main checkout, so a
+new module in a worktree is invisible and an edited one is silently the wrong
+copy. This bit the C1 merge, and it is the third distinct encounter with the same
+hazard in one session — one agent reported a false green from it earlier, and
+C15's tester designed around it unprompted by resolving from `__file__` rather
+than `importlib.resources`.
+
+The working form, and what every chunk's Done block should say:
+
+```
+PYTHONPATH=<worktree>\src <main-checkout>\.venv\Scripts\python.exe -m pytest <worktree>\tests\... -q
+```
+
+Verify rather than trust: print `module.__file__` and confirm the path is inside
+the worktree. A green suite that imported the main checkout has tested nothing.
+
+### R5 — two defects in shipped code, found while de-risking
+
+Neither is part of this plan. Both are in 0.1.1 today and are recorded here so
+they are not lost.
+
+**The degraded render is wrong, not merely incomplete.** When artifacts cannot be
+resolved the document still prints "5 draws per item over **0 items**",
+"completions observed / expected: **baseline 0 / ?**" directly above a table
+reading 55/60, and "Every one of the 4 changed item(s) carries its full outputs:
+**0 characters** of quoted model text" — a completeness claim made while showing
+nothing. The partial banner also names the wrong reason; the real one appears
+some 200 lines further down. Missing data stated as zero is worse than missing
+data stated as missing.
+
+**`migkit demo --work-dir ./relative` renders a self-degraded report.** Paths
+resolve to `demo1\demo1\...`, every artifact fails to load, and the run produces
+the degraded output above from a directory where the files are sitting in plain
+sight. Absolute paths work. A reader following the README with a relative path
+gets a broken showcase on their first attempt.
+
+Also worth naming: report degradation never affects the exit code, because
+`cli.py:435` derives it from the verdict alone. A completely stripped render and
+a complete one are indistinguishable to a pipeline. Elsewhere in this codebase a
+SKIPPED release check is exit 2 precisely so a gate cannot mistake absence for
+success; the report does not hold that line.
