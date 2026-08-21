@@ -68,6 +68,7 @@ ENTRY_POINT_MODULE = "model_migration_kit.cli"
 # Session 3 contract §5.1. These must be *inside the wheel*, not merely on disk.
 DEMO_DATA = ("demo_goldenset.jsonl", "demo_rubric.md", "demo.toml")
 DATA_SUBDIR = "data"
+PY_TYPED = "py.typed"
 
 # Phase 1 exit criterion 3: Apache-2.0 §4(d) makes NOTICE load-bearing.
 LICENSE_FILES = ("LICENSE", "NOTICE")
@@ -1136,6 +1137,50 @@ def check_console_script(wheel: Path) -> Result:
     return ok(name, f"`{CONSOLE_SCRIPT}` points at a module the wheel ships", evidence)
 
 
+def check_wheel_py_typed(wheel: Path, repo: Path) -> Result:
+    """PEP 561's marker must be in the wheel, not merely in the tree.
+
+    The marker arrived in 30efded and nothing has watched it since. The tree can
+    carry the file and the wheel still drop it -- what ships is decided by the
+    build backend's package configuration, and a `.gitignore` rule or a backend
+    change can silently split the two. A test that reads
+    `Path(model_migration_kit.__file__).parent / "py.typed"` cannot tell the
+    difference, because in a dev checkout that path *is* the source tree.
+
+    Ported from opik-rigor, which shipped a 0.1.0 wheel without it and had every
+    annotation in the library discarded by type checkers in installed copies.
+    """
+    name = "wheel-py-typed"
+    member = f"{IMPORT_NAME}/{PY_TYPED}"
+    with zipfile.ZipFile(wheel) as zf:
+        names = set(zf.namelist())
+        record_member = dist_info_member(zf, "RECORD")
+        record = zf.read(record_member).decode("utf-8") if record_member else ""
+        size = zf.getinfo(member).file_size if member in names else None
+
+    on_disk = repo / "src" / IMPORT_NAME / PY_TYPED
+    evidence = [
+        f"looked for: {member}",
+        f"source tree: {on_disk} exists={on_disk.is_file()}",
+        f"listed in RECORD: {member in record}",
+    ]
+    if size is None:
+        return bad(
+            name,
+            f"{member} is not in the wheel; the library's annotations are dead on arrival",
+            evidence
+            + [
+                "PEP 561: a type checker must ignore annotations in an installed package",
+                "with no marker, however complete those annotations are.",
+                "An empty file is the whole fix -- but it has to be in `packages`.",
+            ],
+        )
+    evidence.append(f"in wheel: {member} ({size:,} bytes; empty is correct)")
+    if member not in record:
+        return bad(name, f"{member} is in the zip but absent from RECORD", evidence)
+    return ok(name, f"{member} is inside {wheel.name}", evidence)
+
+
 def check_twine(sdist: Path, wheel: Path, repo: Path) -> Result:
     name = "twine-check"
     if not _module_available("twine"):
@@ -1341,6 +1386,7 @@ def main(argv: list[str] | None = None) -> int:
                 "version-coherence",
                 "version-not-dev",
                 "console-script",
+                "wheel-py-typed",
                 "twine-check",
             ):
                 emit(skipped(pending, reason, [f"see the `{build_result.name}` row above"]))
@@ -1362,6 +1408,7 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 emit(result)
             emit(check_console_script(wheel))
+            emit(check_wheel_py_typed(wheel, repo))
             emit(check_twine(sdist, wheel, repo))
 
         emit(check_readme_pip_install(repo))

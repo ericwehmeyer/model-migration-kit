@@ -1245,3 +1245,83 @@ def test_a_failure_is_not_turned_into_a_pass_by_stripping():
     lines = vr.plain_lines(captured)
     assert sum(1 for line in lines if line.strip().endswith("PASSED")) == 0
     assert lines[0].endswith("FAILED")
+
+
+# ----------------------------------------------------------------------------------
+# PEP 561's marker, in the wheel rather than in the tree
+# ----------------------------------------------------------------------------------
+
+
+def _pt_wheel(tmp_path: Path, members: dict) -> Path:
+    path = tmp_path / "model_migration_kit-0.1.0-py3-none-any.whl"
+    with zipfile.ZipFile(path, "w") as zf:
+        for member, payload in members.items():
+            zf.writestr(member, payload)
+    return path
+
+
+def _pt_repo(tmp_path: Path) -> Path:
+    """A source tree that *does* carry the marker, so the wheel is the only variable."""
+    repo = tmp_path / "repo"
+    package = repo / "src" / "model_migration_kit"
+    package.mkdir(parents=True)
+    (package / "py.typed").write_bytes(b"")
+    return repo
+
+
+def _pt_record(members: list) -> bytes:
+    return "\n".join(f"{m},," for m in members).encode()
+
+
+def test_py_typed_in_the_tree_does_not_make_it_present_in_the_wheel(tmp_path):
+    """The whole reason this check reads the zip. The tree below carries `py.typed`
+    and the wheel does not, which is what an assertion written as
+    `Path(model_migration_kit.__file__).parent / "py.typed"` cannot see: in a
+    checkout that path *is* the source tree, so it passes while installed copies
+    get nothing."""
+    repo = _pt_repo(tmp_path)
+    wheel = _pt_wheel(
+        tmp_path,
+        {
+            "model_migration_kit/__init__.py": b"",
+            "model_migration_kit-0.1.0.dist-info/RECORD": _pt_record(
+                ["model_migration_kit/__init__.py"]
+            ),
+        },
+    )
+    result = vr.check_wheel_py_typed(wheel, repo)
+    assert result.status == vr.FAIL
+    assert "not in the wheel" in result.summary
+    assert any("exists=True" in line for line in result.evidence)
+
+
+def test_py_typed_present_in_the_wheel_passes_even_though_it_is_empty(tmp_path):
+    """PEP 561's marker is meant to be empty; an emptiness check would be wrong."""
+    repo = _pt_repo(tmp_path)
+    members = ["model_migration_kit/__init__.py", "model_migration_kit/py.typed"]
+    wheel = _pt_wheel(
+        tmp_path,
+        {
+            "model_migration_kit/__init__.py": b"",
+            "model_migration_kit/py.typed": b"",
+            "model_migration_kit-0.1.0.dist-info/RECORD": _pt_record(members),
+        },
+    )
+    assert vr.check_wheel_py_typed(wheel, repo).status == vr.PASS
+
+
+def test_py_typed_in_the_zip_but_not_in_record_is_a_failure(tmp_path):
+    """RECORD is what an installer copies from. A file in the zip and absent from
+    RECORD is in the artifact and not in the install."""
+    repo = _pt_repo(tmp_path)
+    wheel = _pt_wheel(
+        tmp_path,
+        {
+            "model_migration_kit/__init__.py": b"",
+            "model_migration_kit/py.typed": b"",
+            "model_migration_kit-0.1.0.dist-info/RECORD": _pt_record(
+                ["model_migration_kit/__init__.py"]
+            ),
+        },
+    )
+    assert vr.check_wheel_py_typed(wheel, repo).status == vr.FAIL
