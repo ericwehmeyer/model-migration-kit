@@ -5,6 +5,46 @@ All notable changes to this project are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-08-21
+
+Documentation only. No source file changed between 0.1.0 and 0.1.1; the two
+distributions differ in their version and in their long description, and in
+nothing else.
+
+0.1.0's README was written while the package did not exist on any index, and it
+said so plainly and with evidence — a quoted `HTTPError: HTTP Error 404` against
+`pypi.org/pypi/model-migration-kit/json`, two `404` lines for the `/simple/`
+endpoints, the sentence "So `pip install model-migration-kit` does not work
+today", and instructions to install from a checkout instead. Every word of that
+was true when it was written, and all of it became false at 20:53 UTC on
+2026-08-21, when the upload that carried it finished.
+
+A long description is frozen at upload. The project page for 0.1.0 therefore
+tells every visitor who reaches it — from PyPI, having found the package on PyPI
+— that the package is not on PyPI. There is no way to edit that page; the only
+way to replace it is to publish again. That is the whole reason this release
+exists.
+
+### Fixed
+
+- The install section now names the published distribution and shows
+  `python -m pip install model-migration-kit`, rather than asserting that the
+  command does not work.
+- The PyPI version badge is uncommented. It sat behind a comment reading
+  "Uncommented at release and not before", and the release passed without
+  anyone uncommenting it, so the one badge that would have shown the package
+  exists was the one badge that did not render.
+- Five relative links — `pyproject.toml`, `LICENSE`, `NOTICE`,
+  `COMPATIBILITY.md` and `docs/build-plan.md` — now point at absolute
+  `github.com` URLs. A relative link resolves against a checkout and 404s from a
+  project page, and two of the five were the badges on the first two lines.
+
+### Note for anyone reading 0.1.0's page
+
+The code in 0.1.0 is sound; `pip install model-migration-kit==0.1.0` installs a
+working `migkit`. Only its description is wrong about the world it was published
+into.
+
 ## [0.1.0] - 2026-08-14
 
 First release. `migkit` takes a golden set, runs two models against it *n* times

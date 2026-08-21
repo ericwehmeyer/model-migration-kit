@@ -143,4 +143,4 @@ def demo_config_path() -> Path:
 #: Bumping is one edit to this line, in its own commit, with the ``CHANGELOG.md``
 #: section for that version in the same commit -- never in the release commit,
 #: never after the tag.
-__version__ = "0.1.0"
+__version__ = "0.1.1"
