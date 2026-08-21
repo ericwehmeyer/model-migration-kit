@@ -1201,38 +1201,47 @@ def test_a_quoted_command_alone_on_a_line_is_still_in_command_position():
 
 
 # ----------------------------------------------------------------------------------
-# twine's verdict, read through rich's colouring
+# Reading another tool's human-facing output
 # ----------------------------------------------------------------------------------
 
 
-def test_twine_verdicts_are_counted_when_the_output_is_plain():
-    """The local case: no terminal, so rich emits no escapes and the verdict is the
-    last word on the line."""
-    plain = (
-        "Checking dist/pkg-0.1.0-py3-none-any.whl: PASSED\n"
-        "Checking dist/pkg-0.1.0.tar.gz: PASSED\n"
+def test_a_colourised_twine_pass_is_still_counted():
+    r"""The exact bytes GitHub Actions produced, which the check read as zero passes.
+
+    `check_twine` counts lines ending in `PASSED`. `twine check` prints a bare
+    `PASSED` on a Windows dev shell and a colour-wrapped one on CI, so the line
+    ends in `\x1b[0m` there and the count came out 0 -- a FAIL on a build that was
+    fine. It passed on every machine it was written on and failed the first time it
+    ran where it counts, blocking the 0.1.0 release. Note the wrapped first line:
+    twine breaks the path across lines too, so the word is not on the line that
+    starts with `Checking`.
+    """
+    captured = (
+        "Checking \n"
+        "/home/runner/work/model-migration-kit/model-migration-kit/dist/"
+        "model_migration_kit-0.1.0-py3-none-any.whl: \x1b[32mPASSED\x1b[0m\n"
+        "Checking /home/runner/work/model-migration-kit/model-migration-kit/dist/"
+        "model_migration_kit-0.1.0.tar.gz: \x1b[32mPASSED\x1b[0m\n"
     )
-    assert vr.twine_passed_count(plain) == 2
+    lines = vr.plain_lines(captured)
+    assert sum(1 for line in lines if line.strip().endswith("PASSED")) == 2
+    assert "\x1b" not in "".join(lines)
 
 
-def test_twine_verdicts_are_counted_through_ansi_colour():
-    """The CI case, and the one that blocked a release. twine renders through rich,
-    which colourises when it believes it is on a terminal -- GitHub Actions is one
-    such environment. The line then ends with an ANSI reset rather than with the
-    word, so a bare `endswith("PASSED")` sees nothing and the gate fails a release
-    that twine itself passed."""
-    coloured = (
-        "Checking dist/pkg-0.1.0-py3-none-any.whl: \x1b[32mPASSED\x1b[0m\n"
-        "Checking dist/pkg-0.1.0.tar.gz: \x1b[32mPASSED\x1b[0m\n"
-    )
-    assert vr.twine_passed_count(coloured) == 2
+def test_a_plain_twine_pass_is_unchanged():
+    """The uncoloured form still has to count, or the strip fixed CI and broke every
+    developer machine instead."""
+    captured = "Checking dist/model_migration_kit-0.1.0-py3-none-any.whl: PASSED\n"
+    assert vr.plain_lines(captured) == [
+        "Checking dist/model_migration_kit-0.1.0-py3-none-any.whl: PASSED"
+    ]
 
 
-def test_a_failed_twine_verdict_is_not_counted_as_a_pass():
-    """Stripping colour must not turn FAILED into a pass: the count is of verdicts
-    that say PASSED, not of lines twine printed."""
-    mixed = (
-        "Checking dist/pkg-0.1.0-py3-none-any.whl: \x1b[32mPASSED\x1b[0m\n"
-        "Checking dist/pkg-0.1.0.tar.gz: \x1b[31mFAILED\x1b[0m\n"
-    )
-    assert vr.twine_passed_count(mixed) == 1
+def test_a_failure_is_not_turned_into_a_pass_by_stripping():
+    """`FAILED` must survive the same treatment. A strip that ate the distinction
+    would make this check report success on a broken artifact, which is worse than
+    the defect it was written to fix."""
+    captured = "Checking dist/x.whl: \x1b[31mFAILED\x1b[0m\n  `long_description` is missing\n"
+    lines = vr.plain_lines(captured)
+    assert sum(1 for line in lines if line.strip().endswith("PASSED")) == 0
+    assert lines[0].endswith("FAILED")

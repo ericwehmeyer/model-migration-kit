@@ -424,7 +424,9 @@ def wheel_version_from_filename(filename: str) -> str:
 # --------------------------------------------------------------------------------------
 
 
-def run(cmd: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+def run(
+    cmd: list[str], cwd: Path | None = None, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(  # noqa: S603 - fixed argv, no shell
         cmd,
         cwd=str(cwd) if cwd else None,
@@ -432,7 +434,16 @@ def run(cmd: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[
         text=True,
         encoding="utf-8",
         errors="replace",
+        env=env,
     )
+
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def plain_lines(text: str) -> list[str]:
+    """Non-empty lines with any terminal colouring removed."""
+    return [_ANSI_RE.sub("", line) for line in text.splitlines() if line.strip()]
 
 
 def tail(text: str, limit: int = 12) -> list[str]:
@@ -1125,21 +1136,6 @@ def check_console_script(wheel: Path) -> Result:
     return ok(name, f"`{CONSOLE_SCRIPT}` points at a module the wheel ships", evidence)
 
 
-# twine renders through rich, which colourises when it believes it is writing to a
-# terminal. GitHub Actions is such an environment even though the output is a pipe,
-# so in CI the verdict arrives as `...whl: \x1b[32mPASSED\x1b[0m` -- the line ends
-# with the reset, not with the word. Locally there are no escapes, which is why
-# matching on the raw text passed every local run and then failed the first real
-# one, blocking a release twine itself had passed.
-_ANSI_SGR = re.compile(r"\x1b\[[0-9;]*m")
-
-
-def twine_passed_count(output: str) -> int:
-    """How many artifacts twine reported as PASSED, colour or no colour."""
-    plain = _ANSI_SGR.sub("", output)
-    return sum(1 for line in plain.splitlines() if line.strip().endswith("PASSED"))
-
-
 def check_twine(sdist: Path, wheel: Path, repo: Path) -> Result:
     name = "twine-check"
     if not _module_available("twine"):
@@ -1152,12 +1148,20 @@ def check_twine(sdist: Path, wheel: Path, repo: Path) -> Result:
                 "PyPI's own rendering check is therefore UNVERIFIED, not passed",
             ],
         )
-    proc = run([sys.executable, "-m", "twine", "check", str(sdist), str(wheel)], cwd=repo)
-    output = proc.stdout + proc.stderr
-    passed = twine_passed_count(output)
-    # Evidence is stripped too: an escape sequence pasted into a log reads as
-    # mojibake, and the reader needs to see what was matched, not what was printed.
-    lines = [line for line in _ANSI_SGR.sub("", output).splitlines() if line.strip()]
+    # NO_COLOR so twine emits the plain word, and the ANSI strip below in case a
+    # future twine ignores it. Belt and braces on purpose: this check reads
+    # another tool's human-facing output, which is not an interface anybody
+    # promised to keep stable, and its whole value is that it fails loudly rather
+    # than counting wrong. The sibling repository learned this the same way --
+    # green on every developer machine, zero passes counted the first time it ran
+    # in CI, on a build twine had just passed.
+    proc = run(
+        [sys.executable, "-m", "twine", "check", str(sdist), str(wheel)],
+        cwd=repo,
+        env={**os.environ, "NO_COLOR": "1", "FORCE_COLOR": "0"},
+    )
+    lines = plain_lines(proc.stdout + proc.stderr)
+    passed = sum(1 for line in lines if line.strip().endswith("PASSED"))
     evidence = [f"checked: {sdist.name}, {wheel.name}", *lines]
     if proc.returncode != 0:
         return bad(name, f"twine check exited {proc.returncode}", evidence)
