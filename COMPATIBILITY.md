@@ -173,8 +173,9 @@ table — so the completeness claim is checkable rather than asserted.
 | `src/model_migration_kit/cli.py` | `Adapter`, `AdapterError`, `AnthropicAdapter`, `EvidenceLog`, `FakeAdapter`, `OpenAICompatAdapter`, `RigorError`, `SampleTimeout`, `__version__` |
 | `src/model_migration_kit/comparison.py` | `EvidenceLog`, `PassRateError`, `RegressionError`, `SCORE_MAX`, `SCORE_MIN`, `assert_no_regression`, `assert_pass_rate`, `wilson_interval` |
 | `src/model_migration_kit/demo.py` | `AdapterError`, `EvidenceLog`, `FakeAdapter` |
+| `src/model_migration_kit/evidence.py` | `EvidenceError`, `EvidenceRecord` |
 | `src/model_migration_kit/judging.py` | `Adapter`, `EvidenceLog`, `JudgeOutputError`, `ModelPinError`, `PinnedJudge`, `SCORE_MIN`, `hash_rubric_file`, `require_pinned` |
-| `src/model_migration_kit/report.py` | `EvidenceError`, `EvidenceRecord` -- **plus** the module itself (`import opik_rigor`), read for `__version__` |
+| `src/model_migration_kit/report.py` | **the module itself (`import opik_rigor`), read for `__version__`** |
 | `src/model_migration_kit/runner.py` | `Adapter`, `EvidenceLog`, `sample` |
 | `tests/fixtures/make_fixtures.py` | `EvidenceLog`, `FakeAdapter` |
 | `tests/test_cli.py` | `AdapterError`, `EvidenceError`, `EvidenceLog`, `FakeAdapter`, `JudgeOutputError`, `ModelPinError`, `PassRateError`, `RegressionError`, `RigorError`, `RubricDriftError`, `SampleTimeout` |

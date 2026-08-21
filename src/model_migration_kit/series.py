@@ -17,6 +17,12 @@ process, frequently on another machine, and a path that only runs after a crash
 is a path that has never run when you need it. Taking mappings means every green
 run exercises the reconstruction.
 
+:func:`read_series` is the one function here that names a file, and it obeys the
+same rule from the other side: it takes a *path* and nothing else, and the reader
+it reads through is ``evidence.stream_records`` -- the log reader ``report`` uses,
+which moved one module down rather than being copied, because two readers of one
+format is how a reader and a writer drift apart.
+
 **Nothing here computes a statistic.** Every rate, bound, interval and p-value is
 lifted out of the gate dict the verdict was measured against, verbatim. A point
 that re-derived a number could disagree with the banner printed beside it, and a
@@ -45,12 +51,17 @@ record and not the report.
 from __future__ import annotations
 
 import math
+from collections import deque
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
-__all__ = ["RunPoint", "run_point"]
+from .contracts import EVENT_COMPARISON, EVENT_VERDICT
+from .evidence import resolve_evidence, stream_records
+
+__all__ = ["RunPoint", "read_series", "run_point"]
 
 #: ``floor_source``'s three values. The word "unrecorded" is
 #: ``report.THRESHOLD_SOURCE_UNRECORDED``'s, deliberately: the report already has
@@ -208,6 +219,125 @@ def run_point(
         n_required=_count_or_none(power.get("n_required")),
         warnings=_warnings(comparison.get("warnings")),
     )
+
+
+# --------------------------------------------------------------------------- #
+# a log, read as a series
+# --------------------------------------------------------------------------- #
+
+
+def read_series(evidence: str | Path) -> tuple[RunPoint, ...]:
+    """Every comparison in one evidence log, in the order it was written.
+
+    One streaming pass, through the same reader the renderer uses. What this
+    replaces is not another function but a habit: the report has always kept the
+    *last* comparison in a log and discarded the rest, so fourteen nightly runs
+    appended to one file rendered as one verdict.
+
+    **Pairing is first-in, first-out, and that is the whole of the difficulty.**
+    A comparison record opens a point; a verdict record closes the *oldest* point
+    still open. ``compare`` writes the two adjacent (``comparison.py:906-908``),
+    which makes almost every rule agree on almost every log, and the rule chosen
+    here is the one that survives a log where they are not. Two implementations
+    that pass the adjacent case and fail this one are worth naming, because both
+    are the obvious thing to write: keeping a single "last comparison" and
+    abandoning it unclosed when the next one arrives pairs C1-C2-V1-V2 as
+    ``(C1, none)`` and ``(C2, V1)``, which attaches one run's verdict to another
+    run's numbers -- a NO-GO drawn on a green night, which is the exact failure
+    this module exists to prevent. Collecting comparisons and verdicts into two
+    lists and zipping them pairs correctly here and silently misaligns the moment
+    a log holds a verdict that opened no point.
+
+    A verdict arriving with no point open is dropped: it belongs to a comparison
+    this log does not contain, which is what the tail of a log rotated mid-run
+    looks like. Records between a comparison and its verdict -- rigor's own
+    ``judge.verdict`` lines, a ``migkit.judging_completed`` -- are passed over
+    without closing anything, so a future writer that interleaves more than
+    ``compare`` does today still reads correctly.
+
+    A record whose payload is not a JSON object still opens or closes a point,
+    with the payload read as empty. ``EvidenceRecord.from_json`` checks the
+    envelope and not the payload, so this is reachable, and the choice is between
+    a point that says nothing and a series shorter than the log it was read from.
+    A blank row can be seen and asked about; a missing run cannot.
+
+    Nothing is sorted and nothing is de-duplicated. File order *is* the series
+    order: the timestamps are written by whichever machine ran each night, a
+    sorted series would silently reorder a log whose clock stepped backwards over
+    a daylight-saving boundary, and two runs of the same config are two runs
+    rather than one measurement recorded twice. First-in-first-out closing is
+    also what makes the returned order free -- the oldest open point is always
+    the one that closes next, so points are appended in the order their
+    comparisons appeared and never need sorting back into it.
+
+    Args:
+        evidence: The log, or a directory holding ``evidence.jsonl``. Resolved by
+            :func:`~model_migration_kit.evidence.resolve_evidence`, so a
+            directory and a missing path mean here exactly what they mean to
+            ``ReportModel.from_evidence``.
+
+    Returns:
+        One :class:`RunPoint` per ``migkit.comparison`` record, in log order. A
+        comparison with no verdict after it yields a point with ``verdict is
+        None`` rather than being dropped -- a run that died between the two
+        records happened, and a timeline that omits it is a timeline that
+        under-reports crashes.
+
+        A log with no comparison at all yields ``()``. That is deliberately not
+        an error at this layer: ``ReportModel.from_evidence`` refuses such a log
+        because a *report* needs something to report on, while a series of zero
+        runs is a legible answer to "what has run so far".
+
+    Raises:
+        ArtifactError: if the path names no file. rigor reads a missing log as an
+            empty one, so a typo would otherwise be indistinguishable from an
+            empty series and would render as a valid report of a run that never
+            happened.
+        EvidenceError: if the log is malformed anywhere but its final line. A
+            torn last line is dropped -- see
+            :func:`~model_migration_kit.evidence.stream_records`.
+
+    **A point is built when its comparison is read, not when its verdict is.**
+    The queue therefore holds row numbers rather than payloads, and the reader
+    never has more than one payload alive at a time. The obvious alternative --
+    hold each comparison payload until its verdict turns up, then build the point
+    once from both -- is a payload queue, and on a log of 5,000 comparisons whose
+    verdicts all arrive at the end it peaked at 114 MB against a 31 MB log, where
+    the points alone cost 17 MB. That is the same amplification
+    :func:`~model_migration_kit.evidence.stream_records` exists to remove,
+    reintroduced one layer up. It also removes an argument: because a point takes
+    its place in the list the moment its comparison is read, the returned order is
+    the comparisons' order by construction rather than by reasoning about when
+    each one closed.
+    """
+    points: list[RunPoint] = []
+    unclosed: deque[int] = deque()
+    for record in stream_records(resolve_evidence(evidence)):
+        if record.event_type == EVENT_COMPARISON:
+            unclosed.append(len(points))
+            points.append(run_point(_mapping(record.payload), None, envelope_ts=_text(record.ts)))
+        elif record.event_type == EVENT_VERDICT and unclosed:
+            row = unclosed.popleft()
+            points[row] = _closed(points[row], _mapping(record.payload))
+    return tuple(points)
+
+
+def _closed(point: RunPoint, verdict: Mapping[str, Any]) -> RunPoint:
+    """``point``, with the verdict record's two fields filled in.
+
+    A verdict payload feeds exactly two fields of a point and nothing else reads
+    it, so closing a point is a substitution rather than a rebuild -- which is
+    what lets :func:`read_series` build points eagerly and hold no payloads.
+
+    The two values are lifted from a throwaway point rather than read out of the
+    mapping here, so that this function knows *which* fields the verdict feeds and
+    :func:`run_point` remains the only code that knows *how* to read them. An
+    absent key, an empty string and a non-mapping payload are then decided in one
+    place, and a change to that decision cannot land in the report while leaving
+    the series behind.
+    """
+    decided = run_point({}, verdict)
+    return replace(point, verdict=decided.verdict, reason=decided.reason)
 
 
 # --------------------------------------------------------------------------- #

@@ -96,10 +96,9 @@ fourth number derived from them.
 
 from __future__ import annotations
 
-import json
 import os
 import re
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
@@ -107,7 +106,6 @@ from typing import Any
 
 import opik_rigor
 from jinja2 import DictLoader, Environment, StrictUndefined, select_autoescape
-from opik_rigor import EvidenceError, EvidenceRecord
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -115,6 +113,7 @@ from rich.text import Text
 
 from .contracts import EVENT_COMPARISON, EVENT_VERDICT, Verdict, hash_file, utc_now
 from .errors import ArtifactError, GoldenSetError, ReportError
+from .evidence import resolve_evidence, stream_records
 from .goldenset import GoldenSet
 from .judging import JudgedArtifact
 from .runner import RunArtifact
@@ -787,20 +786,12 @@ class ReportModel:
                 edited log rather than a moved one, and nothing is opened before
                 the refusal.
         """
-        path = Path(evidence)
-        if path.is_dir():
-            path = path / "evidence.jsonl"
-        if not path.is_file():
-            raise ArtifactError(
-                f"no evidence log at {path}. opik-rigor reads a missing log as an "
-                f"empty one, so this is checked here: a mistyped path would "
-                f"otherwise render as a valid report of a run that never happened."
-            )
+        path = resolve_evidence(evidence)
 
         # One streaming pass, keeping three records and never the log. See
-        # :func:`_stream_records`: the list-returning read this replaced cost 5.0
-        # to 5.8 times the log's own bytes, and the evidence log is the largest
-        # artifact the pipeline writes.
+        # :func:`~model_migration_kit.evidence.stream_records`: the list-returning
+        # read this replaced cost 5.0 to 5.8 times the log's own bytes, and the
+        # evidence log is the largest artifact the pipeline writes.
         comparison = None
         verdict_record = None
         last = None
@@ -968,48 +959,13 @@ class ReportModel:
 # --------------------------------------------------------------------------- #
 
 
-def _stream_records(path: Path) -> Iterator[EvidenceRecord]:
-    """Every record in the evidence log, one at a time, holding none of them.
-
-    This exists because of a measured amplification, not a style preference.
-    ``EvidenceLog.read()`` reads the whole file as text and returns a list of
-    parsed records; reconstruction needs exactly three of them -- the last
-    ``migkit.comparison``, the last ``migkit.verdict``, and the final record for
-    the completeness strip's "last event" -- and paid for all of them. Measured at
-    5.0 to 5.8 times the log's own bytes resident: an 86 MB log cost an extra
-    502 MB, and the evidence log is the *largest* artifact this pipeline produces,
-    because rigor's ``judge.verdict`` record embeds the input, the output and the
-    judge's raw reply for every completion. That is what runs out of memory first.
-    Streaming holds one line.
-
-    The parsing rules are rigor's, deliberately: ``EvidenceRecord.from_json`` does
-    the decoding, and a torn final line -- the signature of a process killed
-    mid-write -- is dropped while anything malformed earlier is an error, which is
-    exactly what ``read()`` does. Re-deriving those rules rather than reusing them
-    is how a reader and a writer of the same file drift apart.
-
-    ``newline="\\n"`` is not decoration. ``read()`` splits on ``"\\n"`` and nothing
-    else, while Python's default text iteration also breaks lines on a lone
-    ``\\r``; without it a model output containing a bare carriage return would be
-    two lines here and one line there, and this reader would call a valid log
-    malformed.
-    """
-    with open(path, encoding="utf-8", newline="\n") as handle:
-        for index, line in enumerate(handle):
-            complete = line.endswith("\n")
-            text = line[:-1] if complete else line
-            if not text.strip():
-                if not complete:
-                    continue  # torn write at the end of the file
-                raise EvidenceError(f"blank line at position {index} in {path}")
-            try:
-                yield EvidenceRecord.from_json(text)
-            except (json.JSONDecodeError, EvidenceError):
-                if not complete:
-                    continue  # torn write at the end of the file
-                raise EvidenceError(
-                    f"malformed evidence at line {index + 1} of {path}: {text[:120]!r}"
-                ) from None
+#: The reader now lives in :mod:`model_migration_kit.evidence`, one module below
+#: this one, so that ``series`` can read a log without importing the renderer --
+#: which it cannot do, since this module imports ``series``. The private name
+#: stays because ``tests/test_evidence_scale.py`` measures the memory claim
+#: through it, and renaming the thing a guard points at is how a guard quietly
+#: stops guarding.
+_stream_records = stream_records
 
 
 def _tool_version() -> str:
