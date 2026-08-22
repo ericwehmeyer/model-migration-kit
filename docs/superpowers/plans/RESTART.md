@@ -25,65 +25,73 @@ it without reading the implementation.
 than the chunk is worth. `grep -n '^#### C' <plan>` gives the line numbers.
 
 **Read the `Revisions, 2026-08-21` section at the end of the plan before
-anything else.** It is the delta, it is short, and it supersedes the contracts
-above it in seven places -- R8 is the eighth entry and is an open question, not a
-ruling.
+anything else.** It is the delta and it supersedes the contracts above it in
+eleven places. R8 is closed by C19. R9 through R11 are the newest and the least
+settled: R9's arithmetic has already needed correcting twice, both times by an
+agent that checked rather than assumed, so treat that one as suspect.
 
 ## Where things stand
 
-**C1, C2 and C15 are merged to main and green.** 1228 tests, ruff clean.
-`series.py` (`RunPoint`, `run_point`, `read_series`), `evidence.py`
-(`stream_records`, `resolve_evidence`), the relative work-dir fix, and the
+**C1, C2, C3, C13 and C15 are merged to main and green.** 1274 tests, ruff clean,
+`main` at `647efcf`. `series.py` (`RunPoint`, `run_point`, `read_series`,
+`SeriesBuilder`, `parse_created`), `evidence.py` (`stream_records`,
+`resolve_evidence`), the timeline chart, the relative work-dir fix, and the
 96-item synthetic showcase golden set with its generator are all in.
 
-C15 merged after its revision pass, which is worth knowing about because the
-finding generalises: five of its sixteen `refusal` items **could not be refused**.
-Each referred to something the prompt never supplied — a support thread, a rubric
-"you were given", tokens "shown in this conversation", "this set", a medical
-reason stated elsewhere. The correct single-turn answer to all five is "you have
-not given me that", which a refusal rubric scores as a *failure to refuse*. The
-rule now written into the generator: the thing being asked for must be present in
-the item, and the whole of the requested output must be the harm. An item that can
-be half-answered grades as partial credit, and the dimension the showcase
-collapses on cannot be built out of partial credit.
-
-The set is now pinned by content hash, verified by mutation: changing `SYN-1204`
-to `SYN-1205`, one character, leaves all thirteen property tests green and fails
-the pin alone. **Re-pin deliberately, never to make the suite green** — after C17
-an edit here is a 56-run re-seed, not a commit.
+**Four chunks are written, merged onto their own branches, green, and in
+review.** None has landed on main yet.
 
 | Branch | Contains | State |
 |---|---|---|
-| `main` | spec, plan, R1-R8, C1, C2, C15, work-dir fix | green, pushed |
-| `chunk/c3-impl` | C3 implementation (`b90db16`) | done, awaiting its tests |
-| `chunk/c3-test` | C3's blind tests | in flight |
-| `chunk/c12-impl`, `chunk/c12-test` | the interval bar | in flight |
-| `chunk/c13-impl`, `chunk/c13-test` | the timeline | in flight |
-| `chunk/c1-*`, `chunk/c2-*`, `chunk/c15-*`, `fix/relative-work-dir` | merged | can be deleted |
+| `main` | spec, plan, R1-R11, C1, C2, C3, C13, C15 | green, 1274 passed |
+| `chunk/c8-impl` | per-tag counts, both halves, 41 passed | in review |
+| `chunk/c9-impl` | the cell and its two floors, both halves, 40 passed | in review |
+| `chunk/c19-impl` | verdict pairing, both halves, 1265 passed | in review |
+| `chunk/c20-impl` | the scanner narrowing, both halves, 1315 passed | in review |
+| `chunk/c12-impl` | the interval bar, 238 passed | mutation re-verification |
+| `fix/isolate-release-probe` | `-E` plus a corrected docstring, and the conftest | in flight |
+
+C15 merged after its revision pass, which is worth knowing about because the
+finding generalises: five of its sixteen `refusal` items **could not be refused**.
+Each referred to something the prompt never supplied. The rule now written into
+the generator: the thing being asked for must be present in the item, and the
+whole of the requested output must be the harm.
+
+The set is pinned by content hash, verified by mutation. **Re-pin deliberately,
+never to make the suite green** -- after C17 an edit here is a 56-run re-seed.
 
 Worktrees are under `repos\mk-*`; `git worktree list` enumerates them. They
-persist across sessions, so do not recreate them — reset an idle one to `main`
-instead.
+persist across sessions, so do not recreate them -- reset an idle one instead.
 
 ## Do these next, in this order
 
-1. **Land C3, C12 and C13**: merge each tester's file onto its implementer's
-   branch, run it yourself, then dispatch a reviewer that sees both and is asked
-   for mutation testing. C12 and C13 both touch `report.py` and
-   `tests/test_report.py`; they were given disjoint insertion points (C12 before
-   `_TEMPLATE_NAME`, C13 at EOF) so the merge is mechanical, but both testers
-   append to the same test file and that conflict is real, trivial, and yours.
-2. **Settle R8 at C3's review.** The headline verdict and `series[-1].verdict`
-   disagree on a `C1 C2 V1` log. It is unreachable today and the edge table asks
-   for agreement anyway. Decide, and if the answer is "documented limitation", put
-   it in `report.py`'s docstring where a person debugging a disagreeing banner
-   will find it.
-3. **Then C8-C10, then C14.** C8's contract is superseded by R1 — build the matrix
-   from `judge.verdict` plus the golden set, not from the judged artifacts. C10
-   wires the matrix into `ReportModel` and therefore **cannot** run beside C3; see
-   below.
+1. **Land the four reviews.** Each reviewer sees both halves and was asked for
+   mutation testing. C8's was additionally asked to rule on **seven ambiguities**
+   its tester enumerated, because three of them decide things C10 will be written
+   against. C9's was asked to rule on whether `needed`/`needed_unit` should become
+   `needed_items`/`needed_completions` -- a change that is cheap now and expensive
+   after C10 and C14 exist.
+2. **Merge C8, C9, C19, C20**, in that order. C8 and C9 share one new module,
+   `dimensions.py`, split top and bottom. **Check `__all__` by hand** -- see R11.5,
+   the one collision in that arrangement that produces no conflict marker.
+3. **Then C10, then C14.** C10 wires the matrix into `ReportModel` and therefore
+   cannot run beside anything editing `report.py`. Its contract is amended -- see
+   `### C10 (amended)` -- because R1 deleted one of its two decline reasons, and
+   its named test must now assert the *opposite* of what the original says.
 
-Off the path, pick up when convenient: C11, C16-C18.
+Off the path, pick up when convenient: C4-C7, C11, C16-C18.
+
+**Two shipped defects are recorded in R5 and still unfixed in 0.1.1**: the
+degraded render that prints "0 items" beside a table reading 55/60, and report
+degradation never reaching the exit code, so a stripped render and a complete one
+are indistinguishable to a pipeline. Both live in `report.py`, so they wait for it
+to go quiet.
+
+**One pre-existing hole, found by both C20 agents**: `_URL_FN_RE` matches only
+`url(`, so `src()` and `image-set()` fetch remotely and score zero violations, in
+a `<style>` block and in a `style=` attribute alike. Verified pre-existing at
+`559e521`. Worth a chunk; note that CSS is the one place C20's "no script runs"
+argument does not help.
 
 ## The dispatch pattern
 
