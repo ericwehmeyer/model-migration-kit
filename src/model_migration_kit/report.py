@@ -1092,6 +1092,20 @@ class ReportModel:
         )
 
         thresholds = dict(payload.get("thresholds", {}) or {})
+        # A SECOND STREAM OVER THE LOG, and C3 forbids one. Recorded here rather
+        # than fixed here, because nothing this chunk is allowed to touch can fix
+        # it. The matrix joins a verdict to an item by input text, so it needs the
+        # golden set; the golden set's path and hash live in the migkit.comparison
+        # payload; that record is written *after* judging and so is only in hand
+        # once the loop above has run to the end. Holding the verdicts instead is
+        # the other road and it is closed too -- tests/test_evidence_scale.py
+        # asserts peak allocation is flat in the size of the log, and a verdict
+        # carries the input.
+        #
+        # Both roads open again the moment ``dimension_counts`` can be fed in two
+        # phases -- collect without the golden set, join once it is known -- or
+        # the golden set can be resolved before the loop. Either is a change to a
+        # merged module and therefore a different chunk.
         dimensions = _dimension_matrix(
             _stream_records(path),
             gs_view,
