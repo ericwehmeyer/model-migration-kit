@@ -20,8 +20,9 @@ Design rules, in order of importance:
 3. **The wheel is the subject.** Local files, editable installs and the repo's own
    `sys.path` all lie in the same direction: they make a wheel that is missing the
    demo data look fine. The resource check therefore runs in a subprocess with
-   `-S`, with only the *extracted wheel* on `sys.path`, and asserts that
-   `model_migration_kit.__path__` contains nothing else.
+   `-S -E` -- `-S` drops site-packages and `.pth` files, `-E` drops `PYTHONPATH`,
+   and neither does the other's job -- with only the *extracted wheel* on
+   `sys.path`, and asserts that `model_migration_kit.__path__` contains nothing else.
 
 Exit codes:
 
@@ -624,13 +625,40 @@ print(json.dumps(out))
 def check_demo_data_importable(wheel: Path, workdir: Path) -> Result:
     """Reach the demo data the way `migkit demo` does: `importlib.resources`.
 
-    Run with `-S` (no site-packages, no .pth files) so an editable install of the
-    repo cannot serve the file the wheel forgot. Without that isolation this check
-    is worthless: `model_migration_kit` has no `__init__.py` yet, so it is a namespace
-    package, and a namespace package *multiplexes* -- the repo's `src/` directory
-    silently supplies anything the wheel is missing. The cwd is a temp directory
-    for the same reason the contract runs the demo from `$tmp`: a repo-root cwd
-    masks a missing package resource.
+    No single flag makes this check trustworthy. Three things do, in this order:
+
+    1. The probe runs `sys.path.insert(0, extract)`, so the extracted wheel is the
+       first entry searched. `model_migration_kit` ships an `__init__.py`, so it is a
+       *regular* package: the first hit on `sys.path` wins outright and nothing behind
+       it is ever consulted.
+    2. The probe reports `model_migration_kit.__path__` and this function asserts it
+       holds the extracted wheel and nothing else. That assertion, not the flags, is
+       what actually closes the door -- and when it fires it says plainly that the
+       run is void: "the import resolved outside the extracted wheel, so this proves
+       nothing". A check that cannot report that it proved nothing is worse than no
+       check, which is design rule 1 restated for this function.
+    3. `-S` (no site-packages, no `.pth` files) and `-E` (ignore `PYTHON*` environment
+       variables) keep the door shut in the first place, so (2) stays a backstop
+       rather than the daily mechanism.
+
+    `-S` alone is not sufficient, and the reason is easy to miss: `-S` suppresses
+    site-packages and `.pth` files, but it does *not* ignore `PYTHONPATH`. A developer
+    or CI job whose `PYTHONPATH` points at a source tree still puts that tree on the
+    child's `sys.path`. That is what `-E` is for.
+
+    Historical note, kept because the paragraph this replaces was well argued, false,
+    and acted on. It held that `-S` was load-bearing because `model_migration_kit` had
+    no `__init__.py`, was therefore a namespace package, and that a namespace package
+    *multiplexes* -- so the repo's `src/` would silently supply whatever the wheel
+    forgot. The mechanism was described correctly and, in a namespace layout, still
+    behaves exactly that way: measured, `-S` alone with `PYTHONPATH` set does let a
+    source tree serve a demo file the wheel is missing. What no longer holds is the
+    premise. The package now ships `src/model_migration_kit/__init__.py`, so it does
+    not multiplex and (1) closes that path before (3) is needed. The reasoning stays
+    written down rather than deleted because an `__init__.py` can be removed again.
+
+    The cwd is a temp directory for the same reason the contract runs the demo from
+    `$tmp`: a repo-root cwd masks a missing package resource.
     """
     name = "wheel-demo-data-importable"
     extract = workdir / "wheel-extract"
@@ -642,7 +670,7 @@ def check_demo_data_importable(wheel: Path, workdir: Path) -> Result:
 
     probe = workdir / "_resource_probe.py"
     probe.write_text(RESOURCE_PROBE, encoding="utf-8")
-    proc = run([sys.executable, "-S", str(probe), str(extract), *DEMO_DATA], cwd=workdir)
+    proc = run([sys.executable, "-S", "-E", str(probe), str(extract), *DEMO_DATA], cwd=workdir)
     if proc.returncode != 0:
         return bad(
             name,
@@ -662,7 +690,7 @@ def check_demo_data_importable(wheel: Path, workdir: Path) -> Result:
         )
 
     evidence = [
-        f"probe ran with -S, cwd={workdir}, sys.path[0]={extract}",
+        f"probe ran with -S -E, cwd={workdir}, sys.path[0]={extract}",
         f"anchor: {data.get('anchor')}",
         f"model_migration_kit.__path__ = {data.get('paths')}",
     ]
