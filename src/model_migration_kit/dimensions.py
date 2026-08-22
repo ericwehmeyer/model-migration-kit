@@ -54,11 +54,13 @@ from opik_rigor.distribution import DEFAULT_CONFIDENCE
 # fix: at ``n_per_item=10`` the same four questions would clear a floor of forty
 # just as easily.
 #
-# Ten items rather than some other number, and the reason is statable rather than
-# aesthetic: below ten, a single item is worth more than a tenth of the
-# dimension's verdict, and one badly written golden-set item should not be able to
-# move a published claim by that much. It refuses the spec's four-item example and
-# the showcase tag clears it at sixteen items and eighty completions.
+# Ten is a judgement, not a derivation, and it is worth saying so plainly. The
+# two constraints that are forced -- refuse the spec's four-item example, clear
+# the showcase at sixteen -- narrow the number to the band 5-16 and no further.
+# Ten is a choice inside that band, and the choice is a leverage tolerance: no
+# single golden-set item should move a published dimension claim by more than a
+# tenth. Argue with the tolerance and you have argued with the constant, which is
+# the right way round.
 #
 # The floors are independent on purpose. Neither subsumes the other -- twelve
 # items at one draw each clears the item floor and fails the completions floor --
@@ -80,9 +82,19 @@ class DimensionCell:
     interval; what it does not do is colour it.
 
     ``needed`` and ``needed_unit`` travel as a pair and answer "what would make
-    this cell answerable", in the unit that actually binds. ``needed_unit`` is
-    ``""`` exactly when ``needed`` is ``None``, which is exactly when the cell is
-    not refused.
+    this cell answerable", in the one unit the reader can act on. They are
+    ``None`` and ``""`` together, never one without the other, and they are empty
+    in two different situations: the cell is not refused, or nothing was measured
+    at all and there is no shortfall to quantify.
+
+    ``note`` is the cell's disclosure line rather than only its refusal sentence.
+    It carries whichever of these apply: that nothing was measured, that a floor
+    is unmet, that a *second* floor is also unmet, and that no confidence level
+    was supplied so rigor's default stands behind the printed interval.
+
+    ``floor`` is echoed from the input on every cell, including one where nothing
+    was measured. It is not a derived field and the ``n == 0`` rule does not
+    reach it.
     """
 
     tag: str
@@ -124,12 +136,19 @@ def dimension_cell(
     the differentiator this whole document is built on, and a rule a narrow
     interval can talk out of refusing does not decline.
 
-    **When both floors bind the note names items**, which is not a style
+    **When both floors bind, ``needed`` names items**, which is not a style
     preference. It is the only one of the two a reader can act on. "You need more
     completions" sends someone to raise ``n_per_item``, and raising ``n_per_item``
-    cannot fix an item shortfall -- it multiplies the same few questions. Advice
-    that does not work is worse than no advice, so the item floor is named
-    whenever it binds and the completions floor is named only when it binds alone.
+    cannot fix an item shortfall -- it multiplies the same few questions. So the
+    actionable floor is the one the pair reports.
+
+    **The note still names the other floor when it also binds**, because the pair
+    cannot and someone has to. A reader at four items and four completions who is
+    told only "six more items" adds six items at one draw each, arrives at ten
+    items and ten completions, and is refused a second time on a floor nobody
+    mentioned -- having done exactly what the note asked. For a tool whose whole
+    claim is that it declines honestly, that is the worst available second
+    impression.
 
     **``n == 0`` is a rendering state, not a computation.** ``wilson_interval(0,
     0)`` raises ``ValueError("a rate over zero runs is not a rate")``, which is
@@ -138,16 +157,16 @@ def dimension_cell(
     zero case calls nothing and every derived field is ``None``.
 
     **``floor`` is carried, not consulted.** It arrives from the run's gate for
-    the renderer's benefit; nothing in this function compares an interval to it,
-    which is the cheapest way to guarantee that no refused cell is quietly judged
-    against it.
+    the renderer's benefit and is echoed on every cell including the empty one;
+    nothing in this function compares an interval to it, which is the cheapest way
+    to guarantee that no refused cell is quietly judged against it.
 
-    ``note`` is documented as the refusal sentence and ``""`` otherwise, but a
-    defaulted confidence has to be stated somewhere and this is the only field
-    that can state it. So an unrefused cell whose confidence was defaulted does
-    carry a note. Given the choice between an empty string and a printed interval
-    whose confidence level the reader cannot know, the interval is the one that
-    misleads.
+    **A defaulted confidence is disclosed whether or not the cell is refused**,
+    because the alternative is a printed interval whose confidence level the
+    reader cannot know, and that misleads in a way an extra sentence does not. It
+    is disclosed only where an interval was actually computed: at ``n == 0``
+    nothing consumed the default, and claiming otherwise would be a disclosure of
+    something that did not happen.
 
     Args:
         confidence: ``None`` falls back to rigor's ``DEFAULT_CONFIDENCE``, and the
@@ -184,20 +203,31 @@ def dimension_cell(
     short_n = n < min_n
 
     needed: int | None
-    if short_items:
+    refusals: list[str] = []
+    if n == 0:
+        # No shortfall to quantify. "Six more items" implies you have some, and at
+        # zero the honest statement is different in kind -- so the note says
+        # nothing was measured and neither floor is named as a shortfall.
+        needed, needed_unit = None, ""
+    elif short_items:
         needed, needed_unit = min_items - items, "items"
-        refusal = f"{min_items} items needed for a verdict here; you have {items}."
+        refusals.append(f"{min_items} items needed for a verdict here; you have {items}.")
+        if short_n:
+            # The floor that is not actionable is still named, because a reader
+            # who is told only about items adds six single-draw items, lands at
+            # ten items and ten completions, and is refused a second time on a
+            # floor nobody mentioned -- after doing exactly what the note asked.
+            refusals.append(f"The {min_n}-completion floor is also unmet: you have {n}.")
     elif short_n:
         needed, needed_unit = min_n - n, "completions"
-        refusal = f"{min_n} completions needed for a verdict here; you have {n}."
+        refusals.append(f"{min_n} completions needed for a verdict here; you have {n}.")
     else:
-        needed, needed_unit, refusal = None, "", ""
+        needed, needed_unit = None, ""
 
     sentences: list[str] = []
     if n == 0:
         sentences.append(f"Nothing was measured for {tag}.")
-    if refusal:
-        sentences.append(refusal)
+    sentences.extend(refusals)
     if confidence is None and interval is not None:
         sentences.append(
             f"No confidence level was given, so rigor's default of {level:.0%} was used."
