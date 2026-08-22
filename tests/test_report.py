@@ -5655,6 +5655,16 @@ def test_the_dimension_matrix_carries_every_field_the_contract_names(tmp_path: P
     )
     assert isinstance(_get(matrix, "baseline"), Mapping)
     assert isinstance(_get(matrix, "candidates"), Mapping)
+    # Asserted against a scenario that *has* a matrix, so this cannot pass as a
+    # roll-call of eight fields on an object that never carries anything. An
+    # inert `available=False` stub with no cells passed the roll-call alone.
+    assert _get(matrix, "available") is True, _get(matrix, "reason")
+    assert _get(matrix, "reason") == ""
+    assert len(_get(matrix, "tags")) == 3
+    assert len(_get(matrix, "baseline")) == 3
+    assert len(_get(matrix, "candidates")) == 1
+    assert _get(matrix, "judge") == J
+    assert (_get(matrix, "min_n"), _get(matrix, "min_items")) == (20, 10)
 
 
 def test_the_dimension_matrix_names_the_judge_whose_verdicts_it_counted(
@@ -6051,11 +6061,20 @@ def test_a_dimension_cell_echoes_the_runs_own_pass_rate_floor(tmp_path: Path) ->
     scenario = _dim_scenario_with_silent_baseline(tmp_path / "floor-echo")
     matrix = _dim_matrix(_from_evidence(scenario))
 
+    checked = 0
     for tag in _get(matrix, "tags"):
         for side in ("baseline", "candidate"):
             assert _get(_dim_cell(matrix, side, tag), "floor") == THRESHOLDS[
                 "pass_rate_floor"
             ], f"the {side} {tag!r} cell does not echo the floor this run was gated at"
+            checked += 1
+    # Counted, because a loop over an empty `tags` asserts nothing at all and
+    # passes -- which is exactly what this test did against an inert stub.
+    assert checked == 6, f"three tags on two sides is six cells; checked {checked}"
+    assert _get(_dim_cell(matrix, "baseline", _DIM_ZETA), "n") == 0, (
+        "the side that measured nothing is in that count, because `floor` is not "
+        "a derived field and the n == 0 rule does not reach it"
+    )
 
 
 def test_a_dimension_cells_interval_is_rigors_and_its_rate_is_the_counted_one(
