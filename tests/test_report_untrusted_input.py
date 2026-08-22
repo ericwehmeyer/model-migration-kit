@@ -1048,11 +1048,12 @@ def test_the_reason_says_which_rule_fired_not_merely_that_one_did() -> None:
 
     Every other assertion in this section compares ``(tag, attribute)`` pairs,
     which is deliberate -- a count is satisfied by the wrong violation. But it
-    leaves the rule *attribution* untested, and attribution is exactly what this
-    chunk changed: it moved ``href`` and friends from "caught by shape" to
-    "caught by name" for a whole class of values. A reader debugging a false
-    positive reads this string, and a mutant that turns the exemption off
-    entirely still produces the right count with the wrong sentence.
+    leaves the rule *attribution* untested, and attribution is the only thing the
+    exemption changes on a name that is also in ``FETCHING_ATTRS``: the violation
+    is emitted either way, and only this string says which rule emitted it. That
+    makes ``reason`` the one observable difference between the exemption as
+    written and an exemption widened to swallow ``href``. It is also what a
+    reader debugging a false positive actually reads.
     """
     (shape,) = external_urls('<p title="//evil.example/x">y</p>')
     assert "protocol-relative" in shape.reason
