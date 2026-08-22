@@ -210,6 +210,9 @@ def test_four_out_of_four_passing_is_still_refused_not_answered() -> None:
     """
     cell = _cell(passes=4, n=4, items=4, floor=0.10)
     assert cell.verdict_refused is True
+    assert cell.rate == pytest.approx(1.0)
+    assert cell.interval == pytest.approx(wilson_interval(4, 4, 0.95))
+    assert cell.interval[0] > 0.10
 
 
 def test_a_cell_that_clears_both_floors_is_not_refused_even_when_it_misses_its_floor_badly() -> None:
@@ -264,6 +267,7 @@ def test_an_unrefused_cell_carries_no_refusal_sentence() -> None:
     confidence-is-None case requires has no reason to appear either.
     """
     cell = _cell(passes=64, n=80, items=16, confidence=0.95)
+    assert cell.verdict_refused is False
     assert cell.note == ""
 
 
@@ -292,6 +296,7 @@ def test_a_tag_with_nothing_measured_does_not_raise() -> None:
     assert cell.rate is None
     assert cell.interval is None
     assert cell.verdict_refused is True
+    assert cell.note != ""
 
 
 def test_a_tag_with_nothing_measured_says_so_rather_than_reporting_a_rate() -> None:
@@ -408,5 +413,12 @@ def test_lowering_the_completions_floor_alone_lets_the_twelve_completion_tag_thr
 
 def test_lowering_one_floor_does_not_lower_the_other() -> None:
     """min_items=0 must not excuse a completions shortfall, and vice versa."""
-    assert _cell(passes=9, n=12, items=12, min_items=0).verdict_refused is True
-    assert _cell(passes=15, n=20, items=4, min_n=0).verdict_refused is True
+    only_completions_left = _cell(passes=9, n=12, items=12, min_items=0)
+    assert only_completions_left.verdict_refused is True
+    assert only_completions_left.needed_unit == "completions"
+    assert only_completions_left.needed == 8
+
+    only_items_left = _cell(passes=15, n=20, items=4, min_n=0)
+    assert only_items_left.verdict_refused is True
+    assert only_items_left.needed_unit == "items"
+    assert only_items_left.needed == 6
