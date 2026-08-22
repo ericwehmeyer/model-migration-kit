@@ -469,7 +469,16 @@ class DimensionTally:
         payload = record.payload if isinstance(record.payload, Mapping) else {}
 
         if record.event_type == EVENT_COMPARISON:
-            self._closed_run, self._run = self._run, _Run()
+            # A comparison closes a run only if there was a run under it. An empty
+            # stretch between two comparisons is not a night that judged nothing;
+            # it is the tail of the night before, and treating it as a run of its
+            # own would let a `migkit.comparison` appended to a log erase a matrix
+            # that is still the right one -- which is the same field-invariance
+            # `test_prepending_an_earlier_run_changes_no_field_but_the_series`
+            # asserts for every other field on the model.
+            if self._run.closes or self._run.verdicts or self._run.failed:
+                self._closed_run = self._run
+            self._run = _Run()
             return
 
         run = self._run
