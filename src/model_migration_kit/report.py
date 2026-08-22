@@ -2817,7 +2817,10 @@ def timeline_svg(
     Args:
         points: The series, in any order -- they are sorted here by parsed
             timestamp, because a chart whose x-axis is time may not take its
-            ordering from the order records happened to be appended in.
+            ordering from the order records happened to be appended in. The sort
+            is stable, so runs recorded at one identical instant keep the order
+            the log appended them in: when the clock cannot separate two runs the
+            only ordering evidence left is the order they were written down.
         width: viewBox width in user units. The element is drawn to scale.
         height: viewBox height in user units.
 
@@ -2836,10 +2839,20 @@ def timeline_svg(
     undated = len(points) - len(placed)
 
     if not placed:
-        # Also the all-undated case, which says the same thing in the same words:
-        # what the reader needs to know is that nothing below is plotted.
-        empty = _svg_text(float(width) / 2, float(height) / 2, "No dated runs to plot", "middle")
-        return Timeline(_svg_frame(width, height, [empty]), runs_without_floor, runs_without_rate)
+        # Also the all-undated case, which says the same thing and then says how
+        # many. "Nothing was plotted" and "four runs carried a date this package
+        # cannot read" are different facts, and the second one is a defect in the
+        # log rather than an empty series; the docstring above promises the
+        # picture says how many, and this is the branch that has to keep it.
+        said = "No dated runs to plot"
+        if undated:
+            said += f": {undated} run(s) with no usable date"
+        empty = _svg_text(float(width) / 2, float(height) / 2, said, "middle")
+        return Timeline(
+            _svg_frame(width, height, [_svg_name(said), empty]),
+            runs_without_floor,
+            runs_without_rate,
+        )
 
     span = (placed[-1][0] - placed[0][0]).total_seconds()
     xs = _timeline_x(placed, left, right)
@@ -2943,6 +2956,11 @@ def _floor_marks(
     floor was one number on the day of one run and another on the day of the next,
     and says nothing whatever about the days in between. Reaching half-way is also
     what makes a group of one visible at all.
+
+    Each horizontal rule carries ``data-rule``: the floor as recorded, never the
+    ``y`` it was mapped to. A reader who wants the number back should not have to
+    invert the projection to get it, and a pixel written into a ``data-`` value is
+    a pixel a later chunk reads as a rate.
     """
     marks: list[str] = []
     groups = _floor_groups(points)
@@ -3013,6 +3031,19 @@ def _svg_marker(x: float, y: float, point: RunPoint) -> str:
     )
 
 
+def _svg_name(text: str) -> str:
+    """A ``<title>``, which is the accessible name of the element that holds it.
+
+    Every branch of this chart emits one, the empty one included. An
+    ``<svg role="img">`` carrying no title is an image with no name: it is
+    announced as "image" and nothing else, so the reader who cannot see the
+    picture is told strictly less than the picture says. In a document whose
+    subject is what the evidence does and does not contain, that is the same
+    defect as an uncounted absence.
+    """
+    return f"<title>{_svg_attr(text)}</title>"
+
+
 def _svg_title(runs: int, span: float) -> str:
     """The chart's accessible name, and the disclosure the zero-span case owes."""
     text = f"Candidate pass rate over {runs} run(s); the horizontal axis is time."
@@ -3021,7 +3052,7 @@ def _svg_title(runs: int, span: float) -> str:
             f" All {runs} runs share a timestamp, so the markers are spaced evenly"
             " rather than by elapsed time."
         )
-    return f"<title>{_svg_attr(text)}</title>"
+    return _svg_name(text)
 
 
 def _svg_text(x: float, y: float, text: str, anchor: str) -> str:

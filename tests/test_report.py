@@ -2754,8 +2754,8 @@ def _geometry(root: Any) -> list[tuple[Any, tuple[float, float, float, float]]]:
     return drawn
 
 
-def _floor_segments(root: Any) -> list[tuple[float, float, float, float]]:
-    """The segments of the floor rule.
+def _floor_drawn(root: Any) -> list[tuple[Any, tuple[float, float, float, float]]]:
+    """The floor rule's segments, each paired with the element that drew it.
 
     The contract requires a step function and names no element for it, so the
     handle used here is the one thing a drawn-and-styled rule must carry: a class
@@ -2764,7 +2764,7 @@ def _floor_segments(root: Any) -> list[tuple[float, float, float, float]]:
     is.
     """
     drawn = [
-        segment
+        (element, segment)
         for element, segment in _geometry(root)
         if any("floor" in one.lower() for one in _classes(element))
     ]
@@ -2775,6 +2775,24 @@ def _floor_segments(root: Any) -> list[tuple[float, float, float, float]]:
             "told from a single rule. The document holds: " + ", ".join(present)
         )
     return drawn
+
+
+def _floor_segments(root: Any) -> list[tuple[float, float, float, float]]:
+    return [segment for _, segment in _floor_drawn(root)]
+
+
+def _length(segment: tuple[float, float, float, float]) -> float:
+    """How long a segment is. Zero is a finding, not a segment.
+
+    A zero-length segment satisfies both :func:`_horizontal` and :func:`_vertical`
+    and draws nothing at all, so anything that classifies segments has to be able
+    to say that one is degenerate rather than quietly counting it as both.
+    Measured along the axes rather than as a hypotenuse, so this section adds no
+    import to the top of a file two chunks are appending to at once; the two agree
+    on the only question asked of them, which is whether the length is zero.
+    """
+    x1, y1, x2, y2 = segment
+    return abs(x2 - x1) + abs(y2 - y1)
 
 
 def _horizontal(
@@ -2852,6 +2870,15 @@ def test_a_timeline_of_no_points_is_a_single_text_and_not_an_empty_string() -> N
     )
     assert not _markers(root), "an empty series draws no marker"
     assert (without_floor, without_rate) == (0, 0)
+
+    # An `<svg role="img">` with no `<title>` is an image with no name: a screen
+    # reader announces "image" and stops, so the one fact this branch exists to
+    # deliver is the one fact it does not deliver. Every other branch names itself.
+    titles = [_svg_text(one) for one in root.iter() if _svg_tag(one) == "title"]
+    assert any(one.strip() for one in titles), (
+        "the empty chart carries no <title>, so it has no accessible name at all; the "
+        f"document holds {titles}"
+    )
 
 
 def test_a_single_run_is_drawn_at_the_horizontal_centre_and_nothing_is_interpolated() -> None:
@@ -2941,8 +2968,11 @@ def test_runs_that_all_share_one_timestamp_are_evenly_spaced_and_the_chart_says_
     four markers stacked on one x.
     """
     stamp = _timeline_day(9)
-    points = [_point(stamp, pass_rate=rate) for rate in (0.71, 0.72, 0.73, 0.74)]
-    svg, _, _ = _timeline_parts(points)
+    width = 720
+    pad = float(_get(_module(), "TIMELINE_PAD"))
+    arrived = (0.74, 0.71, 0.73, 0.72)
+    points = [_point(stamp, pass_rate=rate) for rate in arrived]
+    svg, _, _ = _timeline_parts(points, width=width)
 
     root = _svg_root(svg)
     markers = _markers(root)
@@ -2952,6 +2982,29 @@ def test_runs_that_all_share_one_timestamp_are_evenly_spaced_and_the_chart_says_
     gaps = [second - first for first, second in zip(xs, xs[1:], strict=False)]
     assert min(gaps) > 0, f"a zero span stacked the markers on one x: {xs}"
     assert max(gaps) - min(gaps) <= ONE_PIXEL, f"markers are not evenly spaced: {xs}"
+
+    # Even spacing is half the requirement; the other half is that the spacing
+    # fills the axis the mapping would have used. Dividing the width by the number
+    # of runs rather than by the number of gaps keeps every gap equal and leaves
+    # the last run short of the right-hand edge, which reads as a series that
+    # stopped early -- a claim about elapsed time, from the one chart that has
+    # none to make.
+    assert abs(xs[0] - pad) <= ONE_PIXEL, f"the first marker sits at x={xs[0]}, not {pad}"
+    assert abs(xs[-1] - (width - pad)) <= ONE_PIXEL, (
+        f"the last of four evenly spaced markers sits at x={xs[-1]}, not the right edge "
+        f"{width - pad}: the spacing is even but it does not fill the axis"
+    )
+
+    # Which run is where. The clock cannot separate these four, so the only
+    # ordering evidence is the order the log recorded them in, and left-to-right
+    # must be that order -- not the order of any *value* on the point. Re-sorting
+    # ties by pass rate draws a series that climbs, from a series that did not.
+    drawn = [float(str(one.get("data-rate"))) for one in markers]
+    assert drawn == pytest.approx(list(arrived)), (
+        f"runs sharing one timestamp are drawn left to right as {drawn}, not in the order "
+        f"they were recorded, {list(arrived)}: the tie was broken by something other than "
+        "the log"
+    )
 
     titles = [_svg_text(one).lower() for one in root.iter() if _svg_tag(one) == "title"]
     assert any("timestamp" in one for one in titles), (
@@ -3008,24 +3061,54 @@ def test_a_series_whose_floor_changed_draws_a_step_and_not_one_rule() -> None:
 
     xs = [_marker_x(one) for one in _markers(root)]
     step_x = [one[0] for one in steps]
-    assert any(xs[1] - ONE_PIXEL <= one <= xs[2] + ONE_PIXEL for one in step_x), (
-        f"the step sits at x={step_x}, outside the interval between the last run held to "
-        f"0.90 (x={xs[1]:.2f}) and the first held to 0.80 (x={xs[2]:.2f})"
+    # Half way between the two runs, and not at either of them. The evidence says
+    # the floor was 0.90 on the day of one run and 0.80 on the day of the next,
+    # and says nothing whatever about the days between; a step drawn *at* the
+    # earlier marker claims the floor moved on that run's own day, and one drawn
+    # at the later marker claims it held until that day. Both are dates the log
+    # does not contain. Anywhere inside the interval passes a test that only
+    # brackets it, which is the whole interval a wrong answer lives in.
+    changed = (xs[1] + xs[2]) / 2
+    assert any(abs(one - changed) <= ONE_PIXEL for one in step_x), (
+        f"the step sits at x={step_x}, not half way between the last run held to 0.90 "
+        f"(x={xs[1]:.2f}) and the first held to 0.80 (x={xs[2]:.2f}), which is x={changed:.2f}"
     )
 
     flats = _horizontal(segments)
     assert any(
         abs(one[1] - heights[0]) <= FLAT
-        and min(one[0], one[2]) <= xs[0] + ONE_PIXEL
-        and max(one[0], one[2]) >= xs[1] - ONE_PIXEL
+        and abs(min(one[0], one[2]) - xs[0]) <= ONE_PIXEL
+        and abs(max(one[0], one[2]) - changed) <= ONE_PIXEL
         for one in flats
-    ), f"the higher floor does not run across the two runs held to it: {flats}"
+    ), (
+        f"the higher floor does not run from the first run held to it (x={xs[0]:.2f}) to the "
+        f"step (x={changed:.2f}): {flats}"
+    )
     assert any(
         abs(one[1] - heights[1]) <= FLAT
-        and min(one[0], one[2]) <= xs[2] + ONE_PIXEL
-        and max(one[0], one[2]) >= xs[3] - ONE_PIXEL
+        and abs(min(one[0], one[2]) - changed) <= ONE_PIXEL
+        and abs(max(one[0], one[2]) - xs[3]) <= ONE_PIXEL
         for one in flats
-    ), f"the lower floor does not run across the two runs held to it: {flats}"
+    ), (
+        f"the lower floor does not run from the step (x={changed:.2f}) to the last run held "
+        f"to it (x={xs[3]:.2f}): {flats}"
+    )
+
+    # The rule says which floor it is drawing, and says it as the recorded number.
+    # A `data-` value carrying the mapped y instead is a pixel that reads as a
+    # rate, and it is wrong in a way no picture shows: the chart looks right.
+    ruled = sorted(
+        float(str(element.get("data-rule")))
+        for element, _ in _floor_drawn(root)
+        if element.get("data-rule") is not None
+    )
+    assert ruled, (
+        "no floor segment records the floor it draws; the number is recoverable only by "
+        "inverting the projection"
+    )
+    assert ruled == pytest.approx([0.80, 0.90]), (
+        f"the floor rule reports the floors as {ruled}, not the recorded 0.80 and 0.90"
+    )
 
 
 def test_the_floor_rule_and_the_markers_are_drawn_on_one_vertical_scale() -> None:
@@ -3072,7 +3155,18 @@ def test_a_run_with_no_recorded_floor_leaves_a_gap_in_the_rule_and_is_counted() 
     assert len(markers) == 5, "a missing floor does not remove the run's own marker"
     gap_x = _marker_x(markers[2])
 
-    flats = _horizontal(_floor_segments(root))
+    segments = _floor_segments(root)
+    # A segment of zero length is not a segment: it draws nothing, and it answers
+    # yes to both "is this horizontal" and "is this vertical", so a step emitted
+    # across the gap between two runs held to the *same* floor slips through every
+    # shape assertion below while sitting exactly on the run that recorded none.
+    degenerate = [one for one in segments if _length(one) <= FLAT]
+    assert not degenerate, (
+        f"the floor rule contains {len(degenerate)} zero-length segment(s) {degenerate}: a "
+        f"step drawn where the rule is supposed to break, at the run that recorded no floor"
+    )
+
+    flats = _horizontal(segments)
     spanning = [
         one for one in flats if min(one[0], one[2]) + FLAT < gap_x < max(one[0], one[2]) - FLAT
     ]
@@ -3208,16 +3302,26 @@ def test_the_timeline_draws_nothing_outside_the_box_it_was_given() -> None:
     Run at neither default, so a projection that hard-coded 900x260 puts markers
     off the right-hand edge rather than merely being wrong by a scale factor.
 
+    **The points arrive out of chronological order**, and that is what makes this
+    a bounds test rather than a restatement of the projection. A mapping that
+    spans "the first record to the last record" instead of "the earliest instant
+    to the latest" is correct on sorted input and unbounded on unsorted input: the
+    day-13 run divided by a two-day span lands at x=2312 in a chart 400 wide,
+    twenty times off the right edge and invisible. Every other test in this
+    section reads relative order, which such a mapping preserves, so this is the
+    one that has to see the absolute number.
+
     The count is asserted before the bounds are: a document that drew nothing
     satisfies every bound there is, and against an inert stub that is exactly
     what this test passed on before the count was added.
     """
     width, height = 400, 180
-    points = [_point(_timeline_day(one), pass_rate=rate) for one, rate in ((0, 0.02), (13, 0.99))]
+    arrived = ((0, 0.02), (13, 0.99), (2, 0.51))
+    points = [_point(_timeline_day(one), pass_rate=rate) for one, rate in arrived]
     svg, _, _ = _timeline_parts(points, width=width, height=height)
 
     markers = _markers(_svg_root(svg))
-    assert len(markers) == 2, f"two points must draw two markers, not {len(markers)}"
+    assert len(markers) == 3, f"three points must draw three markers, not {len(markers)}"
     for marker in markers:
         at_x, at_y = _marker_x(marker), _marker_y(marker)
         assert 0 <= at_x <= width, f"a marker sits at x={at_x} in a chart {width} wide"
@@ -3248,3 +3352,445 @@ def test_the_timeline_emits_no_script_element() -> None:
     # declaration a standalone SVG needs.
     fetched = [one for one in _urls(svg) if not str(_get(one, "attribute")).startswith("xmlns")]
     assert not fetched, f"the timeline fetches {fetched}"
+
+
+# --------------------------------------------------------------------------- #
+# 16b. What the section above computes correctly and did not yet pin.
+#
+# Added after a mutation run over the timeline: 29 of 61 mutants survived, and
+# every one of them was a hole in this suite rather than a defect in the module.
+# The tests below are those survivors written down. Each names the wrong picture
+# it exists to reject, because "this assertion kills a mutant" is a fact about a
+# tool that will not be in the room, and the wrong picture is a fact about the
+# report.
+# --------------------------------------------------------------------------- #
+
+
+def test_a_lone_run_still_draws_a_floor_rule_across_itself() -> None:
+    """One run is where "no rule drawn" and "no floor recorded" collide.
+
+    A group of one begins and ends at the same marker, so the arithmetically
+    honest width of its rule is zero -- and a zero-width rule is invisible, which
+    is precisely what a run whose floor was never recorded looks like. Those are
+    two different facts about a run, the chart returns a separate count for one of
+    them, and the picture may not render them identically. So the rule for a lone
+    run is drawn *across* it: beginning to its left and ending to its right.
+
+    No other test in this section calls the floor helpers on a one-run series, and
+    a one-run series is not a curiosity -- it is what the first night of a
+    migration produces.
+    """
+    svg, without_floor, _ = _timeline_parts([_point(_timeline_day(5), floor=0.88)])
+    assert without_floor == 0, "the one run in this series records a floor"
+
+    root = _svg_root(svg)
+    markers = _markers(root)
+    assert len(markers) == 1, f"one point must draw one marker, not {len(markers)}"
+    at = _marker_x(markers[0])
+
+    segments = _floor_segments(root)
+    assert all(_length(one) > FLAT for one in segments), (
+        f"the lone run's floor rule is drawn as a point of zero length: {segments}. "
+        "Invisible is what 'this run recorded no floor' looks like, and this run recorded "
+        "one -- the count above says so."
+    )
+    flats = _horizontal(segments)
+    assert any(min(one[0], one[2]) < at < max(one[0], one[2]) for one in flats), (
+        f"no floor segment runs across the single run at x={at:.2f}: {flats}"
+    )
+
+
+def test_a_floor_rule_reaches_half_way_to_the_run_on_either_side() -> None:
+    """Where the rule ends and where the step stands, as numbers.
+
+    The step test above asserts that the rule is a step and not a ramp, which is
+    the failure the contract names. It does not say *where*. A rule that stops at
+    its own outermost marker, or reaches a quarter of the way to the next run
+    instead of half, or a step drawn at one of the two runs rather than between
+    them, all draw a step function -- a wrong one. The last of those is a claim
+    about a date: a step at the earlier marker says the floor moved on that run's
+    own day, and the evidence names no day at all. Half way claims nothing, and it
+    is the only position symmetric between the two runs whose floors differ.
+
+    Three floors and three runs, so the middle group is bounded by a midpoint on
+    *both* sides -- the case no other fixture in this section contains. The days
+    are uneven so that no midpoint can coincide with a marker.
+    """
+    floors = (0.90, 0.85, 0.80)
+    points = [
+        _point(_timeline_day(day), floor=floor, pass_rate=0.95)
+        for day, floor in zip((0, 4, 10), floors, strict=True)
+    ]
+    svg, _, _ = _timeline_parts(points)
+
+    root = _svg_root(svg)
+    xs = [_marker_x(one) for one in _markers(root)]
+    assert len(xs) == 3, f"three points must draw three markers, not {len(xs)}"
+    first_change, second_change = (xs[0] + xs[1]) / 2, (xs[1] + xs[2]) / 2
+
+    segments = _floor_segments(root)
+    heights = _levels(segments)
+    assert len(heights) == 3, (
+        f"three distinct floors must be drawn at three heights, not {len(heights)}: {heights}"
+    )
+
+    # `_levels` sorts by y and y grows downward, so the highest floor comes first.
+    # Pairing them this way asserts the vertical order too: a rule that drew 0.80
+    # above 0.90 would land these spans on the wrong heights.
+    spans = ((xs[0], first_change), (first_change, second_change), (second_change, xs[2]))
+    flats = _horizontal(segments)
+    for floor, height, (start, end) in zip(floors, heights, spans, strict=True):
+        matched = [
+            one
+            for one in flats
+            if abs(one[1] - height) <= FLAT
+            and abs(min(one[0], one[2]) - start) <= ONE_PIXEL
+            and abs(max(one[0], one[2]) - end) <= ONE_PIXEL
+        ]
+        assert matched, (
+            f"the rule for floor {floor} is not drawn from x={start:.2f} to x={end:.2f} at "
+            f"y={height:.2f}. A rule reaches half way to the run on each side, so that a "
+            f"group of one is visible and so that neither neighbour's day is claimed. The "
+            f"horizontal segments are {flats}"
+        )
+
+    steps = [one[0] for one in _vertical(segments) if _length(one) > FLAT]
+    for change in (first_change, second_change):
+        assert any(abs(one - change) <= ONE_PIXEL for one in steps), (
+            f"no vertical step stands at x={change:.2f}, half way between the two runs whose "
+            f"floors differ; the steps are at {steps}"
+        )
+
+
+def test_a_run_that_recorded_no_interval_carries_no_whisker() -> None:
+    """An interval nothing measured may not be drawn.
+
+    `interval` is `None` on any run whose evidence recorded no bounds, and a
+    whisker invented for it -- from zero to the rate, from the floor to the rate,
+    from anywhere to anywhere -- is a confidence interval this document made up.
+    It is the most quotable object on the chart and the least checkable: a reader
+    sees an error bar and believes a measurement was taken.
+
+    Every other whisker test hands in runs that all recorded one, so an invented
+    whisker is invisible to them.
+    """
+    points = [_point(_timeline_day(one), interval=None) for one in (0, 6)]
+    svg, _, _ = _timeline_parts(points)
+
+    root = _svg_root(svg)
+    markers = _markers(root)
+    assert len(markers) == 2, f"two points must draw two markers, not {len(markers)}"
+    for marker in markers:
+        at = _marker_x(marker)
+        uprights = [
+            one
+            for _, one in _geometry(root)
+            if abs(one[0] - one[2]) <= FLAT
+            and abs(one[0] - at) <= ONE_PIXEL
+            and _length(one) > FLAT
+        ]
+        assert not uprights, (
+            f"the run at x={at:.2f} recorded no interval and was given a whisker anyway: "
+            f"{uprights}. An error bar is read as a measurement."
+        )
+
+
+def test_a_whisker_reaches_both_ends_of_the_recorded_interval() -> None:
+    """Not merely taller than its neighbour, and not merely bracketing its marker.
+
+    A whisker drawn from the interval's lower bound up to the *rate* -- half the
+    interval -- is taller when the interval is wider and does bracket the marker
+    it belongs to, so the comparison above passes on it. It also understates the
+    uncertainty of every run on the chart, in the direction that makes a
+    borderline candidate look decided.
+
+    Asserted without knowing the projection, by giving two other runs the rates at
+    the two ends of the interval: the whisker's ends must land on their markers.
+    """
+    lower, upper, measured = 0.30, 0.94, 0.62
+    low_run, wide_run, high_run = _timeline_day(0), _timeline_day(3), _timeline_day(6)
+    points = [
+        _point(low_run, pass_rate=lower),
+        _point(wide_run, pass_rate=measured, interval=(lower, upper)),
+        _point(high_run, pass_rate=upper),
+    ]
+    svg, _, _ = _timeline_parts(points)
+
+    root = _svg_root(svg)
+    drawn = _by_created(root)
+    assert set(drawn) == {low_run, wide_run, high_run}
+    bottom_of_interval = _marker_y(drawn[low_run])
+    top_of_interval = _marker_y(drawn[high_run])
+    at = _marker_x(drawn[wide_run])
+
+    uprights = [
+        one
+        for _, one in _geometry(root)
+        if abs(one[0] - one[2]) <= FLAT and abs(one[0] - at) <= ONE_PIXEL and _length(one) > FLAT
+    ]
+    assert uprights, f"the run at x={at:.2f} recorded an interval and carries no whisker"
+    tallest = max(uprights, key=lambda one: abs(one[1] - one[3]))
+
+    assert abs(max(tallest[1], tallest[3]) - bottom_of_interval) <= ONE_PIXEL, (
+        f"the whisker's lower end is at y={max(tallest[1], tallest[3]):.2f}; the run whose "
+        f"rate is {lower} is drawn at y={bottom_of_interval:.2f}"
+    )
+    assert abs(min(tallest[1], tallest[3]) - top_of_interval) <= ONE_PIXEL, (
+        f"the whisker's upper end is at y={min(tallest[1], tallest[3]):.2f}; the run whose "
+        f"rate is {upper} is drawn at y={top_of_interval:.2f}. A whisker that stops at the "
+        "measured rate draws half an interval and understates every run on the chart."
+    )
+
+
+def test_a_rate_the_axis_cannot_hold_is_clamped_to_it_and_still_reported() -> None:
+    """`series` refuses a NaN and an infinity, and accepts a 1.5.
+
+    `pass_rate` is a fraction, and a corrupt log carrying 1.5 is a log this
+    package builds a `RunPoint` from without complaint. The axis is fixed at 0 to
+    1 -- deliberately, so that height can be read as rate -- so an unclamped 1.5
+    draws the marker above the plot area: over the chart's own text, or off the
+    top of the viewBox entirely, where the run is not mispositioned but missing.
+
+    The number is not the picture's to correct, though. `data-rate` reports what
+    was recorded, so a reader can see that the chart and the log disagree instead
+    of being shown a tidy 1.0 that no evidence contains.
+    """
+    pad = float(_get(_module(), "TIMELINE_PAD"))
+    width, height = 720, 240
+    corrupt = (1.5, -0.25)
+    points = [
+        _point(_timeline_day(index * 4), pass_rate=rate) for index, rate in enumerate(corrupt)
+    ]
+    svg, _, without_rate = _timeline_parts(points, width=width, height=height)
+
+    assert without_rate == 0, "a rate outside 0 to 1 is a recorded rate, not a missing one"
+    markers = _markers(_svg_root(svg))
+    assert len(markers) == 2, f"two points must draw two markers, not {len(markers)}"
+    for marker, rate in zip(markers, corrupt, strict=True):
+        at_y = _marker_y(marker)
+        assert pad - ONE_PIXEL <= at_y <= height - pad + ONE_PIXEL, (
+            f"a recorded rate of {rate} is drawn at y={at_y:.2f}, outside the plot area "
+            f"{pad} to {height - pad}: the marker is off the chart rather than at its edge"
+        )
+        assert float(str(marker.get("data-rate"))) == pytest.approx(rate), (
+            f"the marker reports data-rate={marker.get('data-rate')!r}; the log recorded "
+            f"{rate}, and the projection is the picture's business alone"
+        )
+
+
+def test_both_counts_count_points_and_not_what_the_chart_managed_to_draw() -> None:
+    """R6: both counts are counts of *points*, never of segments or of markers.
+
+    The sentence beneath the chart is the only place a reader learns what the
+    picture could not show, so it has to count the runs the picture dropped for a
+    second reason as well. A run with an unreadable date and no recorded floor is
+    still a run whose floor is unknown; counting only the runs that reached the
+    axis would hide it behind the undated note and undercount the very thing the
+    fallback exists to disclose.
+
+    Every other fixture in this section varies one absence at a time, so no
+    existing test can tell "points" from "points that were drawn".
+    """
+    points = [
+        _point(_timeline_day(0)),
+        _point("not a timestamp at all", floor=None, pass_rate=None, verdict=None),
+        _point(_timeline_day(3), floor=None),
+        _point(_timeline_day(5), pass_rate=None, verdict=None),
+    ]
+    svg, without_floor, without_rate = _timeline_parts(points)
+
+    assert without_floor == 2, (
+        f"two of four points record no floor -- one of them undated -- and the count says "
+        f"{without_floor}"
+    )
+    assert without_rate == 2, (
+        f"two of four points record no rate -- one of them undated -- and the count says "
+        f"{without_rate}"
+    )
+    assert len(_markers(_svg_root(svg))) == 2, "only the two dated runs with a rate are drawn"
+
+
+def test_a_run_whose_date_will_not_parse_is_left_off_and_the_picture_says_how_many() -> None:
+    """An axis that is time has no position for a run that carries no instant.
+
+    The contract does not name this case and the blind suite deliberately left it
+    alone rather than pin a guess. It is no longer a guess: the module's docstring
+    records the decision -- left off, "and the picture says how many were" -- and
+    an undrawn run the picture does not mention is the uncounted absence this
+    whole document is built against. Both alternatives are worse and both are
+    reachable by accident: placing it at a fixed instant puts an invented date on
+    the axis, and dropping it in silence loses a defect in the log.
+
+    The `<title>` counts what was drawn, for the same reason. It is the chart's
+    accessible name, and "over 3 runs" spoken over a picture of two is the version
+    of this failure that only a screen-reader user meets.
+    """
+    dated = (_timeline_day(0), _timeline_day(8))
+    points = [_point(dated[0]), _point("2026-07-99T99:99:99+00:00"), _point(dated[1])]
+    svg, _, _ = _timeline_parts(points)
+
+    root = _svg_root(svg)
+    drawn = _by_created(root)
+    assert set(drawn) == set(dated), (
+        f"the markers are dated {sorted(drawn)}; a run whose date will not parse was given "
+        "a position on an axis that is time"
+    )
+
+    notes = [_svg_text(one).lower() for one in root.iter() if _svg_tag(one) == "text"]
+    assert any("1" in one and "date" in one for one in notes), (
+        f"the chart never says that one run was left off for want of a usable date: {notes}"
+    )
+
+    titles = [_svg_text(one).lower() for one in root.iter() if _svg_tag(one) == "title"]
+    assert any("2 run" in one for one in titles), (
+        f"the chart names itself as covering a number of runs it did not draw: {titles}"
+    )
+
+
+def test_a_series_of_nothing_but_unparseable_dates_says_how_many_it_dropped() -> None:
+    """The all-undated chart is not the empty chart and may not say the same thing.
+
+    "No dated runs to plot" over an empty series is a complete statement: there
+    were none. Over four runs whose timestamps this package could not read it is
+    an omission that reads as reassurance -- the reader is told the series was
+    empty when what happened is that every record in it was malformed.
+    """
+    points = [_point("no date here") for _ in range(4)]
+    svg, without_floor, without_rate = _timeline_parts(points)
+
+    root = _svg_root(svg)
+    assert not _markers(root), "an undated run cannot be placed on an axis that is time"
+    said = " ".join(_svg_text(one).lower() for one in root.iter() if _svg_tag(one) == "text")
+    assert "4" in said, (
+        f"four runs were dropped for want of a usable date and the picture says {said!r}, "
+        "which a reader takes to mean the series was empty"
+    )
+    assert (without_floor, without_rate) == (0, 0), "every point here records both"
+
+
+def test_the_charts_own_styles_cannot_escape_the_chart() -> None:
+    """A `<style>` inside inline SVG is not scoped: it styles the whole page.
+
+    The chart carries its own stylesheet because an SVG `<line>` with no `stroke`
+    is invisible rather than black, so a timeline that inherited its colours from
+    the report would render as an empty rectangle on the offline machine this
+    project promises the document still works on. The price of carrying one is
+    that every rule in it is a rule about the *report*: an unprefixed `text{...}`
+    restyles every paragraph around the chart, and `rect{...}` reaches into the
+    other SVG this module draws.
+
+    Both halves are asserted, because they fail in opposite directions and neither
+    failure raises anything. Unprefix the rules and the chart's colours leak
+    outward; drop the class from the root and every rule selects nothing, so the
+    chart loses the colours it inlined a stylesheet to keep.
+
+    An at-rule is reported as unscoped too. That is not an oversight: rules nested
+    inside one need the same prefix, and this check cannot see into it.
+    """
+    points = [_point(_timeline_day(one)) for one in (0, 3, 9)]
+    svg, _, _ = _timeline_parts(points)
+    root = _svg_root(svg)
+
+    scopes = _classes(root)
+    assert scopes, (
+        "the root <svg> carries no class, so nothing in the document can be selected as "
+        "'this chart' and every scoped rule in its stylesheet matches nothing"
+    )
+
+    sheets = [one for one in root.iter() if _svg_tag(one) == "style"]
+    assert sheets, "the timeline inlines no <style>, so its lines inherit no stroke at all"
+
+    selectors: list[str] = []
+    for sheet in sheets:
+        for rule in "".join(sheet.itertext()).split("}"):
+            head = rule.split("{")[0].strip()
+            selectors.extend(one.strip() for one in head.split(",") if one.strip())
+    assert selectors, f"the <style> declares no rule: {[_svg_text(one) for one in sheets]}"
+
+    leaking = [
+        one
+        for one in selectors
+        if not any(one.startswith(f".{scope}") for scope in scopes)
+    ]
+    assert not leaking, (
+        f"{len(leaking)} of {len(selectors)} rules are not scoped to the chart: {leaking}. "
+        f"The root carries {scopes}, and an inline SVG stylesheet applies to the whole "
+        "document, so these restyle the report around the chart."
+    )
+
+
+def test_recorded_text_is_escaped_before_it_becomes_markup() -> None:
+    """This module's posture is that everything that came off disk is hostile.
+
+    Nothing on this chart can reach the escaper with a quote *today*. A marker is
+    drawn only for a `created` that parsed as a timestamp, and a verdict travels
+    verbatim only when it is one this report already knows; both filters happen to
+    exclude a `"`, and neither exists for that reason -- one is a date parser and
+    the other is a class-name whitelist. So the escape is unreachable, every other
+    test in this section passes without it, and the day either filter is loosened
+    it is the only thing standing between an evidence log and the markup of a
+    document somebody signs off on.
+    """
+    escape = _get(_module(), "_svg_attr")
+
+    written = escape('x" onload="alert(1)')
+    assert '"' not in written, (
+        f"a recorded quote survives into an attribute value as {written!r}: the attribute "
+        "closes there and the rest of the record becomes markup"
+    )
+    assert escape("<b>&") == "&lt;b&gt;&amp;", (
+        f"recorded angle brackets and ampersands are written straight through: {escape('<b>&')!r}"
+    )
+
+
+def test_parse_created_is_the_packages_one_timestamp_reader() -> None:
+    """`parse_created` is public, exported, and had no test of its own.
+
+    It is public because the timeline needs the parsed instant rather than a
+    predicate -- an axis that is time has to subtract two of these -- so the chunk
+    that made it public is the chunk that owes it a test. Two of its decisions are
+    invisible from the chart and are recorded here rather than only in its
+    docstring: a trailing `Z` means UTC, and a timestamp carrying no offset is
+    *read* as UTC rather than left naive.
+
+    The offsetless case is not a nicety. Python refuses to compare a naive
+    datetime with an aware one, so one offsetless record in a log full of `+00:00`
+    ones raises `TypeError` out of the sort the timeline performs before it draws
+    anything: the whole chart, lost to one malformed field.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from model_migration_kit import series
+
+    assert "parse_created" in series.__all__, (
+        f"parse_created is the only timestamp parser in this package and is not exported: "
+        f"{series.__all__}"
+    )
+
+    noon = datetime(2026, 7, 1, 12, 0, 0, tzinfo=timezone.utc)
+    assert series.parse_created("2026-07-01T12:00:00+00:00") == noon
+    assert series.parse_created("2026-07-01T12:00:00.000000+00:00") == noon
+
+    zulu = series.parse_created("2026-07-01T12:00:00Z")
+    assert zulu is not None and zulu.utcoffset() == timedelta(0), (
+        f"a trailing Z is UTC and nothing else; this one parsed as {zulu!r}"
+    )
+    assert zulu == noon, f"the Z form and the +00:00 form name different instants: {zulu!r}"
+
+    naive = series.parse_created("2026-07-01T12:00:00")
+    assert naive is not None, "an offsetless timestamp is still a timestamp"
+    assert naive.tzinfo is not None, (
+        f"an offsetless timestamp was left naive as {naive!r}; sorting it beside an aware "
+        "one raises TypeError, which loses the chart rather than misplacing one marker"
+    )
+    assert naive == noon, f"an offsetless timestamp is read as UTC; this one read as {naive!r}"
+    assert sorted([naive, noon]) == [naive, noon], "two parsed instants must be comparable"
+
+    east = series.parse_created("2026-07-01T14:00:00+02:00")
+    assert east == noon, f"a recorded offset is not applied: {east!r}"
+
+    for refused in ("", "not a timestamp", "2026-07-99T12:00:00+00:00", "2026-07-01 noon"):
+        assert series.parse_created(refused) is None, (
+            f"{refused!r} was read as an instant, so a malformed record becomes a marker at "
+            "a date on which nothing ran"
+        )
