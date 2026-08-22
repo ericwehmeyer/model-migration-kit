@@ -3137,21 +3137,25 @@ def test_every_marker_carries_the_four_data_attributes_and_a_verdict_class() -> 
     The data attributes are what makes the projection assertable at all, and the
     class is what makes the verdict readable without colour.
     """
-    verdicts = ("go", "nogo", "review", None)
+    # The contract names the *class* tokens go/nogo/review/none; the values a
+    # `RunPoint.verdict` actually carries are `Verdict`'s, which is a different
+    # vocabulary -- `NO-GO` is classed `nogo`. Seeding this with the class names
+    # would test a verdict string no evidence log contains.
+    cases = ((Verdict.GO, "go"), (Verdict.NO_GO, "nogo"), (Verdict.REVIEW, "review"), (None, "none"))
     points = [
-        _point(_timeline_day(index * 2), verdict=verdict) for index, verdict in enumerate(verdicts)
+        _point(_timeline_day(index * 2), verdict=verdict)
+        for index, (verdict, _class) in enumerate(cases)
     ]
     svg, _, _ = _timeline_parts(points)
 
     markers = _markers(_svg_root(svg))
-    assert len(markers) == len(verdicts)
-    for marker, verdict in zip(markers, verdicts, strict=True):
+    assert len(markers) == len(cases)
+    for marker, (verdict, expected) in zip(markers, cases, strict=True):
         named = VERDICT_CLASSES.intersection(one.lower() for one in _classes(marker))
         assert named, (
             f"the marker for verdict {verdict!r} carries classes {_classes(marker)}, none of "
             f"which names a verdict out of {sorted(VERDICT_CLASSES)}"
         )
-        expected = "none" if verdict is None else verdict
         assert expected in named, f"the marker for verdict {verdict!r} is classed {sorted(named)}"
         assert float(str(marker.get("data-rate"))) == pytest.approx(0.82)
         assert float(str(marker.get("data-floor"))) == pytest.approx(0.80)

@@ -2989,6 +2989,16 @@ def _svg_marker(x: float, y: float, point: RunPoint) -> str:
     ``data-rate`` and ``data-floor`` are empty exactly when the number is missing.
     An absent floor is the reason the rule beneath this run has a gap in it, and
     writing ``0`` there instead is the one thing this document may never do.
+
+    **The square is placed by its corner, not centred by a ``transform``.** Both
+    draw the same picture; they differ in what a reader of the markup has to do to
+    recover the run's position. With the corner form it is ``x + width/2``, which
+    is what every SVG reader already assumes of a ``<rect>``. With a translate it
+    is ``x`` composed with a transform, and anything that reads ``x`` alone --
+    a test, a later chunk, a person -- is wrong by half a side and has no way to
+    see that it is. The contract asks for the position to be assertable from
+    ``data-created`` and ``x``; the convention that needs no transform is the one
+    that keeps that true.
     """
     half = _MARKER_SIDE / 2
     rate = "" if point.pass_rate is None else _svg_number(point.pass_rate, 6)
@@ -2996,9 +3006,8 @@ def _svg_marker(x: float, y: float, point: RunPoint) -> str:
     verdict = point.verdict if point.verdict in _VERDICT_CLASS else ""
     return (
         f'<rect class="{_VERDICT_CLASS.get(point.verdict, "none")}"'
-        f' x="{_svg_number(x)}" y="{_svg_number(y)}"'
+        f' x="{_svg_number(x - half)}" y="{_svg_number(y - half)}"'
         f' width="{_svg_number(_MARKER_SIDE)}" height="{_svg_number(_MARKER_SIDE)}"'
-        f' transform="translate({_svg_number(-half)} {_svg_number(-half)})"'
         f' data-created="{_svg_attr(point.created)}" data-rate="{rate}"'
         f' data-verdict="{_svg_attr(verdict)}" data-floor="{floor}"/>'
     )
