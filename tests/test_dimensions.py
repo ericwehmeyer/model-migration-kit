@@ -1983,7 +1983,6 @@ def test_the_deferred_phase_holds_a_digest_of_the_input_and_never_the_input():
     this is the test that says what it files under instead: not the input, and
     not a projection of the record that quietly contains it.
     """
-    items = _by_id(_item("a", "alpha", ("t",)), _item("b", "bravo", ("t",)))
     held: list[weakref.ref] = []
     tally = dimensions.DimensionTally()
 
