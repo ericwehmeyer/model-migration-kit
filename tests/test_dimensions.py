@@ -136,12 +136,10 @@ def test_twelve_items_drawn_once_each_is_refused_on_completions_not_on_items() -
     assert cell.needed_unit == "completions"
 
 
-def test_the_completions_refusal_sentence_names_completions_and_both_of_its_numbers() -> None:
+def test_the_completions_refusal_sentence_is_the_items_one_with_the_unit_swapped() -> None:
+    """Verbatim per R10.3. One sentence: the item floor is not also unmet here."""
     cell = _cell(passes=9, n=12, items=12)
-    assert "completions" in cell.note
-    assert "items" not in cell.note
-    assert "20" in cell.note
-    assert "12" in cell.note
+    assert cell.note == "20 completions needed for a verdict here; you have 12."
 
 
 # --------------------------------------------------------------------------- #
@@ -188,6 +186,43 @@ def test_when_both_floors_bind_the_shortfall_is_reported_in_items() -> None:
     assert cell.verdict_refused is True
     assert cell.needed_unit == "items"
     assert cell.needed == 6
+
+
+def test_a_note_naming_only_the_item_floor_would_walk_the_reader_into_a_second_refusal() -> None:
+    """R10.5. The bad second impression, written down as the thing that must not happen.
+
+    Told only "10 items needed; you have 4", the honest reader adds six
+    single-draw items. That lands them at 10 items and 10 completions -- refused
+    again, on a floor nobody mentioned, having done exactly what they were asked.
+    So the note names the completions floor as well, even though ``needed``
+    reports the item shortfall because that is the one they must act on first.
+    """
+    cell = _cell(passes=1, n=4, items=4)
+    assert cell.needed == 6
+    assert cell.needed_unit == "items"
+    assert cell.note == (
+        "10 items needed for a verdict here; you have 4. "
+        "The 20-completion floor is also unmet: you have 4."
+    )
+
+    followed_the_advice = _cell(passes=1, n=10, items=10)
+    assert followed_the_advice.verdict_refused is True
+    assert followed_the_advice.needed_unit == "completions"
+
+
+def test_the_second_sentence_appears_only_when_the_second_floor_actually_binds() -> None:
+    """Twenty completions from four items clears the completions floor exactly.
+
+    There is no second floor to warn about, so warning about one would be noise
+    -- and worse, would tell the reader to raise a number that is already fine.
+    """
+    cell = _cell(passes=15, n=20, items=4)
+    assert cell.note == "10 items needed for a verdict here; you have 4."
+    assert "completion" not in cell.note
+
+    only_completions = _cell(passes=9, n=12, items=12)
+    assert only_completions.note == "20 completions needed for a verdict here; you have 12."
+    assert "item" not in only_completions.note
 
 
 def test_a_refused_cell_still_computes_and_carries_its_interval() -> None:
@@ -292,11 +327,12 @@ def test_a_tag_with_nothing_measured_does_not_raise() -> None:
     >= 1, got 0; a rate over zero runs is not a rate")``. If the cell had passed
     the zero through, this test would fail with that error rather than pass.
     """
-    cell = _cell(passes=0, n=0, items=0)
+    cell = _cell(passes=0, n=0, items=0, floor=0.60)
     assert cell.rate is None
     assert cell.interval is None
     assert cell.verdict_refused is True
     assert cell.note != ""
+    assert cell.floor == pytest.approx(0.60)
 
 
 def test_a_tag_with_nothing_measured_says_so_rather_than_reporting_a_rate() -> None:
@@ -304,6 +340,23 @@ def test_a_tag_with_nothing_measured_says_so_rather_than_reporting_a_rate() -> N
     assert cell.note != ""
     assert "0.0" not in cell.note
     assert "0%" not in cell.note
+
+
+def test_a_tag_with_nothing_measured_quotes_no_shortfall_because_a_shortfall_implies_a_start() -> None:
+    """R10.2. "You need 6 more items" implies you have some; at zero you have none.
+
+    Nothing was measured is different in kind from not enough was measured, and
+    the two states are not told apart by a number that is merely larger.
+    """
+    cell = _cell(passes=0, n=0, items=0)
+    assert cell.needed is None
+    assert cell.needed_unit == ""
+
+
+def test_the_floor_is_echoed_even_where_there_is_no_interval_to_compare_it_to() -> None:
+    """R10.4: ``floor`` is an input the cell carries, not a field it derives."""
+    for f in (None, 0.0, 0.60, 1.0):
+        assert _cell(passes=0, n=0, items=0, floor=f).floor == f
 
 
 # --------------------------------------------------------------------------- #
@@ -333,8 +386,22 @@ def test_the_fallback_confidence_is_disclosed_and_never_taken_silently() -> None
     the back of a refusal sentence that would have been printed anyway.
     """
     cell = _cell(passes=64, n=80, items=16, confidence=None)
-    assert cell.note != ""
+    assert cell.verdict_refused is False
+    assert cell.note != "", "a cell that renders still owes the reader this"
     assert re.search(r"0\.95|95\s*%|\b95\b", cell.note), cell.note
+
+
+def test_the_disclosure_is_the_only_thing_that_puts_a_note_on_a_rendering_cell() -> None:
+    """R10.1 resolved the contract against itself: "never silently" beats the
+    field comment that called ``note`` the refusal sentence and nothing else.
+
+    Both cells here render. The only difference is who chose the confidence.
+    """
+    told = _cell(passes=64, n=80, items=16, confidence=None)
+    asked = _cell(passes=64, n=80, items=16, confidence=0.95)
+    assert told.interval == pytest.approx(asked.interval)
+    assert asked.note == ""
+    assert told.note != ""
 
 
 def test_a_refused_cell_that_defaults_its_confidence_still_says_why_it_refused() -> None:
