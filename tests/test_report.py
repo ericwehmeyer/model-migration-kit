@@ -3224,3 +3224,476 @@ def test_the_log_is_read_once_for_both_the_headline_and_the_series(
         f"the evidence log was read {len(opened)} times in text mode; C3 requires "
         f"one pass that accumulates the points and keeps the last two records"
     )
+
+
+# --------------------------------------------------------------------------- #
+# 17. C19: the verdict belongs to the comparison before it.
+#
+#     Two rules that are one rule. In the series, every ``migkit.verdict`` record
+#     updates the most recently opened point. In the headline, ``from_evidence``
+#     clears the verdict it is holding on every ``migkit.comparison`` record, so
+#     a verdict only ever describes the comparison it followed.
+#
+#     Shipping either alone leaves the banner and the timeline free to disagree
+#     about which night a NO-GO belongs to, so the assertion that matters in
+#     every test below is that the two **agree**. Each half can be individually
+#     plausible and still disagree -- that is the whole defect -- and a test that
+#     reads only the banner, or only the last point, cannot see it. Every shape
+#     therefore goes through :func:`_agreed_verdict`, which asserts the pair
+#     before any test is allowed to look at either half of it.
+# --------------------------------------------------------------------------- #
+
+
+#: Reason sentences for two verdict records in one log. Two records carrying the
+#: same word prove nothing about *which* of them a field was read from, so the
+#: reason is what tells them apart in an assertion.
+FIRST_VERDICT_REASON = "C19-REASON-FIRST: the first verdict record written to this log."
+SECOND_VERDICT_REASON = "C19-REASON-SECOND: the last verdict record written to this log."
+
+#: A distinct envelope stamp for the second of two verdicts on one run, so that
+#: nothing in this section depends on two records sharing a timestamp.
+TS_VERDICT_AGAIN = "2026-08-13T08:59:59.500000+00:00"
+
+
+def _log_of(scenario: Scenario, name: str, *records: Mapping[str, Any]) -> Path:
+    """Exactly these records, in this order, beside ``scenario``'s own log.
+
+    Unlike :func:`_log_with_history` this appends nothing of its own. The shapes
+    in this section are entirely about which record follows which, so the log has
+    to be spelled out rather than assembled around a fixed headline run.
+    """
+    return _write_evidence(scenario.root / name, list(records))
+
+
+def _headline_comparison(scenario: Scenario) -> dict[str, Any]:
+    """``scenario``'s own comparison: the run every shape below reports on."""
+    return _record(EVENT_COMPARISON, scenario.comparison, TS_COMPARISON)
+
+
+def _headline_verdict(
+    scenario: Scenario, verdict: str, *, reason: str, ts: str = TS_VERDICT
+) -> dict[str, Any]:
+    """A ``migkit.verdict`` for the headline run, named by its own reason string."""
+    assert scenario.verdict is not None, "this section builds its logs from the payloads"
+    return _record(
+        EVENT_VERDICT,
+        dict(
+            scenario.verdict,
+            verdict=verdict,
+            exit_code=Verdict.exit_code(verdict),
+            reason=reason,
+        ),
+        ts,
+    )
+
+
+def _older_comparison(scenario: Scenario, *, tag: str = "old") -> dict[str, Any]:
+    """An earlier night's comparison, contradicted in every field. See section 16."""
+    return _record(
+        EVENT_COMPARISON, _earlier_comparison(scenario, tag=tag), EARLIER_TS_COMPARISON
+    )
+
+
+def _older_verdict(*, tag: str = "old", verdict: str = Verdict.GO) -> dict[str, Any]:
+    """An earlier night's verdict, whose reason names the night it belongs to."""
+    return _record(EVENT_VERDICT, _earlier_verdict(tag, verdict), EARLIER_TS_VERDICT)
+
+
+def _older_reason(tag: str) -> str:
+    """The sentence :func:`_earlier_verdict` writes, so a test can name one night."""
+    return _earlier_verdict(tag, Verdict.GO)["reason"]
+
+
+def _missing_verdict_sentence(model: Any) -> str | None:
+    """The completeness sentence that names the absent ``migkit.verdict`` record.
+
+    Matched on the event type rather than on the wording, because the sentence is
+    prose that may be reworded and the record name is the fact the Edges row
+    requires the strip to name.
+    """
+    for sentence in _get(_get(model, "completeness"), "missing"):
+        if EVENT_VERDICT in str(sentence):
+            return str(sentence)
+    return None
+
+
+def _agreed_verdict(model: Any) -> tuple[Any, Any]:
+    """The banner's verdict and reason, and the last point's -- asserted equal, once.
+
+    Returns the pair only after asserting the two *are* one pair, so that no test
+    in this section can accidentally check one half of the thing the chunk is
+    about. The reason travels beside the verdict because a document can carry the
+    right word next to the wrong sentence: ``from_evidence`` reads both out of one
+    record, and a timeline that agrees on GO while disagreeing about which night
+    said GO is the same defect one field over.
+
+    The candidate model is checked first. "The banner and the last point agree" is
+    worth nothing unless the last point is the run the banner is about, and on a
+    series that was sorted, or short a point, it would not be.
+    """
+    series = _series(model)
+    assert series, "a report was built, so the log held a comparison, and yet no point"
+    point = series[-1]
+    headline_model = _get(_get(model, "candidate"), "model_id")
+    assert point.candidate_model == headline_model, (
+        f"series[-1] describes {point.candidate_model!r} and the headline describes "
+        f"{headline_model!r}; two things that disagree about the run cannot be "
+        f"checked for agreement about its verdict"
+    )
+    headline = (_get(model, "verdict"), _get(model, "reason"))
+    assert headline == (point.verdict, point.reason), (
+        f"the banner says {headline!r} and the last point of the timeline says "
+        f"{(point.verdict, point.reason)!r}, about the same run of the same log"
+    )
+    return headline
+
+
+#: The agreement table, transcribed. ``shape`` is the log in the contract's own
+#: notation; ``build`` writes it; ``verdict`` and ``reason`` are what both halves
+#: must report; ``points`` is every point's verdict, in log order, which is what
+#: separates "the last one happens to be right" from "the rule is right".
+_AGREEMENT_TABLE = (
+    (
+        "C V",
+        lambda s: [
+            _headline_comparison(s),
+            _headline_verdict(s, Verdict.NO_GO, reason=SECOND_VERDICT_REASON),
+        ],
+        Verdict.NO_GO,
+        SECOND_VERDICT_REASON,
+        [Verdict.NO_GO],
+    ),
+    (
+        "C1 V1 C2 V2",
+        lambda s: [
+            _older_comparison(s),
+            _older_verdict(verdict=Verdict.GO),
+            _headline_comparison(s),
+            _headline_verdict(s, Verdict.NO_GO, reason=SECOND_VERDICT_REASON),
+        ],
+        Verdict.NO_GO,
+        SECOND_VERDICT_REASON,
+        [Verdict.GO, Verdict.NO_GO],
+    ),
+    (
+        "C",
+        lambda s: [_headline_comparison(s)],
+        None,
+        None,
+        [None],
+    ),
+    (
+        "V C",
+        lambda s: [
+            _older_verdict(tag="stray", verdict=Verdict.GO),
+            _headline_comparison(s),
+        ],
+        None,
+        None,
+        [None],
+    ),
+    (
+        "C1 C2 V",
+        lambda s: [
+            _older_comparison(s),
+            _headline_comparison(s),
+            _headline_verdict(s, Verdict.NO_GO, reason=SECOND_VERDICT_REASON),
+        ],
+        Verdict.NO_GO,
+        SECOND_VERDICT_REASON,
+        [None, Verdict.NO_GO],
+    ),
+    (
+        "C1 V1 C2",
+        lambda s: [
+            _older_comparison(s),
+            _older_verdict(verdict=Verdict.GO),
+            _headline_comparison(s),
+        ],
+        None,
+        None,
+        [Verdict.GO, None],
+    ),
+    (
+        "C1 C2 V1 V2",
+        lambda s: [
+            _older_comparison(s),
+            _headline_comparison(s),
+            _headline_verdict(s, Verdict.GO, reason=FIRST_VERDICT_REASON),
+            _headline_verdict(
+                s, Verdict.NO_GO, reason=SECOND_VERDICT_REASON, ts=TS_VERDICT_AGAIN
+            ),
+        ],
+        Verdict.NO_GO,
+        SECOND_VERDICT_REASON,
+        [None, Verdict.NO_GO],
+    ),
+    (
+        "C V1 V2",
+        lambda s: [
+            _headline_comparison(s),
+            _headline_verdict(s, Verdict.GO, reason=FIRST_VERDICT_REASON),
+            _headline_verdict(
+                s, Verdict.NO_GO, reason=SECOND_VERDICT_REASON, ts=TS_VERDICT_AGAIN
+            ),
+        ],
+        Verdict.NO_GO,
+        SECOND_VERDICT_REASON,
+        [Verdict.NO_GO],
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("shape", "build", "verdict", "reason", "points"),
+    _AGREEMENT_TABLE,
+    ids=[row[0].replace(" ", "-") for row in _AGREEMENT_TABLE],
+)
+def test_the_banner_and_the_last_point_agree_on_every_shape_the_table_names(
+    tmp_path: Path,
+    shape: str,
+    build: Any,
+    verdict: str | None,
+    reason: str | None,
+    points: list[str | None],
+) -> None:
+    """C19's agreement table, all eight rows, asserted as agreement rather than as
+    two separately right answers.
+
+    Three of these rows read the same under C2's rule and are here as the "must
+    not" the chunk carries: a complete log renders exactly what it rendered
+    before, and only a log holding a crashed run may change. The other five are
+    the chunk. ``points`` is asserted in full rather than only at its last entry
+    because on ``C1 C2 V1 V2`` the last point is right under either rule and the
+    *first* is not, and a run whose verdict silently moved to another night is the
+    failure whether or not it moved to the last one.
+
+    When the headline has no verdict the exit code and the completeness strip are
+    checked too: ``cli.py:435`` derives the exit code from the verdict alone, so a
+    banner reading "no verdict" over an exit code of 0 is a pipeline seeing green.
+    """
+    slug = shape.replace(" ", "-")
+    scenario = _scenario(tmp_path / f"shape-{slug}", verdict=Verdict.NO_GO)
+    log = _log_of(scenario, "evidence-shape.jsonl", *build(scenario))
+    model = _model_from(log)
+
+    assert _agreed_verdict(model) == (verdict, reason)
+    assert [point.verdict for point in _series(model)] == points, (
+        f"log {shape} put the verdicts on the wrong nights"
+    )
+    if verdict is None:
+        assert int(_get(model, "exit_code")) == Verdict.exit_code(Verdict.ERROR) == 3
+        assert _get(_get(model, "completeness"), "complete") is False
+        assert _missing_verdict_sentence(model) is not None, (
+            f"log {shape} produced no verdict and the completeness strip does not "
+            f"name the missing {EVENT_VERDICT} record"
+        )
+
+
+def test_a_run_that_died_before_deciding_is_not_reported_as_last_nights_verdict(
+    tmp_path: Path,
+) -> None:
+    """C19's named first failure, and the defect shipped in 0.1.1.
+
+    The log is ``C V C``: last night compared and decided, tonight compared and
+    the process died before the verdict record was written. ``from_evidence``
+    keeps the last comparison and the last verdict in two *independent* last-wins
+    variables, so tonight's comparison arrives beside last night's GO and the two
+    are printed as one run. The document renders a clean GO, exit code 0, and
+    ``completeness.complete is True`` -- a run that decided nothing, reported as a
+    decision, to a pipeline that reads only the exit status.
+
+    The fix is one line of reduction: clear the held verdict on every comparison
+    record, so a verdict can only ever describe the comparison it followed.
+    """
+    scenario = _scenario(tmp_path / "died-before-deciding", verdict=Verdict.NO_GO)
+    log = _log_of(
+        scenario,
+        "evidence-cvc.jsonl",
+        _older_comparison(scenario, tag="last-night"),
+        _older_verdict(tag="last-night", verdict=Verdict.GO),
+        _headline_comparison(scenario),
+    )
+    model = _model_from(log)
+
+    assert _get(model, "verdict") is None, (
+        "last night's verdict was reported as tonight's, for a run that decided "
+        "nothing at all"
+    )
+    assert _get(model, "reason") is None
+    assert _get(model, "decided_by") is None
+    assert int(_get(model, "exit_code")) == Verdict.exit_code(Verdict.ERROR) == 3, (
+        "cli.py:435 derives the exit code from the verdict alone, so a pipeline "
+        "reads this run as green"
+    )
+    assert _get(_get(model, "completeness"), "complete") is False
+    assert _missing_verdict_sentence(model) is not None, (
+        f"the completeness strip does not name the absent {EVENT_VERDICT} record, "
+        f"so the one place the document could disclose this says nothing"
+    )
+    assert _agreed_verdict(model) == (None, None)
+    assert [point.verdict for point in _series(model)] == [Verdict.GO, None]
+
+    html = _html(model)
+    assert "NO VERDICT" in _parse(html).text
+    assert _older_reason("last-night") not in html, (
+        "last night's decision sentence is in tonight's document"
+    )
+
+
+def test_a_run_decided_twice_is_reported_as_the_decision_the_log_ends_on(
+    tmp_path: Path,
+) -> None:
+    """Row eight, the row that says "updates" and not "closes the most recent open".
+
+    A close-once rule is the tempting middle position: it fixes the crashed night
+    and looks conservative. It is not conservative here. On ``C V1 V2`` it drops
+    V2 and leaves the point reading GO, while the headline reduction takes the
+    last verdict record unconditionally and prints NO-GO -- so the banner and the
+    right-hand end of the timeline contradict each other about tonight, which is
+    the failure the chunk exists to make impossible.
+
+    A suite that cannot separate the two rules has not tested what was decided, so
+    this asserts the second verdict on the point *and* the first one nowhere in
+    the document.
+    """
+    scenario = _scenario(tmp_path / "decided-twice", verdict=Verdict.NO_GO)
+    log = _log_of(
+        scenario,
+        "evidence-cv1v2.jsonl",
+        _headline_comparison(scenario),
+        _headline_verdict(scenario, Verdict.GO, reason=FIRST_VERDICT_REASON),
+        _headline_verdict(
+            scenario, Verdict.NO_GO, reason=SECOND_VERDICT_REASON, ts=TS_VERDICT_AGAIN
+        ),
+    )
+    model = _model_from(log)
+    series = _series(model)
+
+    assert len(series) == 1, f"one comparison, {len(series)} point(s): a verdict opened one"
+    assert series[0].verdict == Verdict.NO_GO, (
+        "the point kept the first of the two verdicts, which is what a close-once "
+        "rule does and what the headline never does"
+    )
+    assert _agreed_verdict(model) == (Verdict.NO_GO, SECOND_VERDICT_REASON)
+    assert FIRST_VERDICT_REASON not in _html(model)
+
+
+def test_one_crashed_night_in_the_middle_of_a_log_moves_no_later_verdict(
+    tmp_path: Path,
+) -> None:
+    """The Edges row, through the report rather than through ``read_series``.
+
+    Four nights, the second of them crashed between its comparison and its
+    verdict. Under first-in-first-out night two takes night three's NO-GO, night
+    three takes night four's REVIEW, and night four -- the run the banner reports
+    on -- is left with nothing, so the banner and the timeline disagree about
+    tonight *and* two earlier nights are relabelled. The shift is cumulative and
+    the log only ever grows, so it is permanent; a two-night log moves one verdict
+    and reads as a mispairing rather than as a drift.
+    """
+    scenario = _scenario(tmp_path / "crashed-midlog", verdict=Verdict.REVIEW)
+    log = _log_of(
+        scenario,
+        "evidence-midlog.jsonl",
+        _older_comparison(scenario, tag="one"),
+        _older_verdict(tag="one", verdict=Verdict.GO),
+        _older_comparison(scenario, tag="two"),
+        _older_comparison(scenario, tag="three"),
+        _older_verdict(tag="three", verdict=Verdict.NO_GO),
+        _headline_comparison(scenario),
+        _headline_verdict(scenario, Verdict.REVIEW, reason=SECOND_VERDICT_REASON),
+    )
+    model = _model_from(log)
+    series = _series(model)
+
+    assert [point.candidate_model for point in series] == [
+        f"{EARLIER_CANDIDATE_MODEL}-one",
+        f"{EARLIER_CANDIDATE_MODEL}-two",
+        f"{EARLIER_CANDIDATE_MODEL}-three",
+        CANDIDATE_MODEL,
+    ]
+    assert [point.verdict for point in series] == [
+        Verdict.GO,
+        None,
+        Verdict.NO_GO,
+        Verdict.REVIEW,
+    ]
+    assert [point.reason for point in series] == [
+        _older_reason("one"),
+        None,
+        _older_reason("three"),
+        SECOND_VERDICT_REASON,
+    ]
+    assert _agreed_verdict(model) == (Verdict.REVIEW, SECOND_VERDICT_REASON)
+
+
+# -- the headline half of ``is_demo``, which the series cannot reach ---------- #
+
+
+def _log_calling_a_scripted_run_real(scenario: Scenario, side: str, real: str) -> Path:
+    """``scenario``'s log with one side's *payload* adapter rewritten to a real name.
+
+    The run artifact on disk is untouched and still records ``Fake*``. This is the
+    one shape that separates the two readings of "was this run scripted":
+    :func:`_run_summary` prefers ``run.header.adapter`` off the artifact, while a
+    ``RunPoint`` reads the payload and nothing else.
+    """
+    payload = json.loads(json.dumps(scenario.comparison))
+    payload[side]["adapter"] = real
+    payload[side]["adapters"] = [real]
+    return _write_evidence(
+        scenario.root / f"evidence-scripted-{side}.jsonl",
+        [
+            _record(EVENT_COMPARISON, payload, TS_COMPARISON),
+            _record(EVENT_VERDICT, scenario.verdict or {}, TS_VERDICT),
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    ("side", "real"),
+    [("baseline", "AnthropicAdapter"), ("candidate", "OpenAICompatAdapter")],
+)
+def test_a_payload_that_calls_a_scripted_run_real_is_still_banded(
+    tmp_path: Path, side: str, real: str
+) -> None:
+    """The two disjuncts of ``is_demo`` that no other test in this file can reach.
+
+    ``series[-1]`` *is* the headline run on every log ``from_evidence`` produces,
+    so on every fixture in this file the first two terms of ``is_demo`` are
+    redundant with the third and a reader that dropped them stays green. They are
+    not redundant in the case they exist for. The two halves read different files:
+    ``_run_summary`` prefers ``run.header.adapter`` from the artifact on disk,
+    while the series reads the comparison payload and never opens an artifact. A
+    payload that records a real adapter over an artifact that records
+    ``FakeScriptedAdapter`` is caught by the headline and invisible to the series.
+
+    Which is not a hypothetical shape: it is a hand-edited log, a payload written
+    by an older writer, or a run wired up by hand -- and §5.3's whole claim is
+    that a clean-looking report cannot be obtained from scripted models. A mutant
+    spelling ``is_fake`` as ``self.adapter == _FAKE_PREFIX`` survived C3's entire
+    suite for want of this test.
+    """
+    scenario = _scenario(
+        tmp_path / f"scripted-{side}", **{f"{side}_adapter": "FakeScriptedAdapter"}
+    )
+    model = _model_from(_log_calling_a_scripted_run_real(scenario, side, real))
+
+    for point in _series(model):
+        assert not point.adapter_baseline.startswith("Fake"), point.adapter_baseline
+        assert not point.adapter_candidate.startswith("Fake"), point.adapter_candidate
+    assert _get(_get(model, side), "is_fake") is True, (
+        f"the {side} summary read its adapter from the payload, which is the one "
+        f"place this run does not say it was scripted"
+    )
+    assert _get(model, "is_demo") is True, (
+        "every point of the series names a real adapter, so this report is banded "
+        "by the headline's own sides or it is not banded at all"
+    )
+    document = _parse(_html(model))
+    for marker in FAKE_BAND_MARKERS:
+        assert marker.lower() in document.text.lower(), (
+            f"band marker {marker!r} is missing from a document whose {side} run "
+            f"was produced by a scripted adapter"
+        )
