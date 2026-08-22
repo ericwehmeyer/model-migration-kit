@@ -154,6 +154,10 @@ def test_exactly_twenty_completions_from_exactly_ten_items_clears_both_floors() 
     assert cell.verdict_refused is False
     assert cell.needed is None
     assert cell.needed_unit == ""
+    # Also pins that a cell was computed rather than waved through: an
+    # implementation that refuses nothing satisfies the three lines above.
+    assert cell.rate == pytest.approx(0.75)
+    assert cell.interval == pytest.approx(wilson_interval(15, 20, 0.95))
 
 
 def test_one_completion_short_of_the_completions_floor_is_refused_in_completions() -> None:
@@ -258,6 +262,8 @@ def test_a_cell_that_clears_both_floors_is_not_refused_even_when_it_misses_its_f
     """
     cell = _cell(passes=0, n=80, items=16, floor=0.90)
     assert cell.verdict_refused is False
+    assert cell.rate == pytest.approx(0.0)
+    assert cell.interval == pytest.approx(wilson_interval(0, 80, 0.95))
 
 
 def test_a_cell_that_clears_both_floors_is_not_refused_even_when_it_clears_its_floor_outright() -> None:
@@ -304,6 +310,8 @@ def test_an_unrefused_cell_carries_no_refusal_sentence() -> None:
     cell = _cell(passes=64, n=80, items=16, confidence=0.95)
     assert cell.verdict_refused is False
     assert cell.note == ""
+    assert cell.rate == pytest.approx(0.80)
+    assert cell.interval == pytest.approx(wilson_interval(64, 80, 0.95))
 
 
 def test_the_cell_echoes_the_inputs_it_was_given() -> None:
@@ -421,19 +429,19 @@ def test_a_refused_cell_that_defaults_its_confidence_still_says_why_it_refused()
 
 
 def test_more_passes_than_completions_raises_rather_than_rendering() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="more passes than completions"):
         _cell(passes=21, n=20, items=10)
 
 
 def test_more_distinct_items_than_completions_raises_because_the_caller_mispaired_two_numbers() -> None:
     """items > n is not a small sample, it is an impossible one."""
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="more items than completions"):
         _cell(passes=0, n=5, items=6)
 
 
 def test_the_impossible_pairing_is_caught_before_the_floors_get_a_chance_to_refuse() -> None:
     """n=5, items=6 would refuse on both floors. A refusal would hide the bug."""
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="more items than completions"):
         _cell(passes=5, n=5, items=6)
 
 
@@ -493,3 +501,113 @@ def test_lowering_one_floor_does_not_lower_the_other() -> None:
     assert only_items_left.verdict_refused is True
     assert only_items_left.needed_unit == "items"
     assert only_items_left.needed == 6
+
+
+# --------------------------------------------------------------------------- #
+# 13. Added in review. Each of these was written against a mutant that survived
+#     the 40 tests above -- the implementation was already right in every case
+#     but one, and the suite was permitting the wrong one.
+# --------------------------------------------------------------------------- #
+
+
+def test_a_corrupt_pass_count_is_refused_here_and_not_by_rigor_two_calls_later() -> None:
+    """The ``passes > n`` guard, pinned by *this* module's message.
+
+    The original test asserted a bare ``ValueError`` on ``passes=21, n=20``, and
+    that ValueError arrives whether or not this module checks anything: rigor's
+    ``_validate_counts`` rejects 21 successes in 20 runs on its own. So deleting
+    the guard entirely left all forty tests green -- the test passed for a reason
+    that had nothing to do with the code it was aiming at.
+
+    It matters, because the one input where rigor never gets a look is exactly
+    the one that renders: ``passes=5, n=0`` skips the interval branch, and an
+    unguarded cell comes back saying "Nothing was measured" while carrying five
+    passes. A corrupt count must not render, and at n == 0 nothing downstream
+    will stop it.
+    """
+    with pytest.raises(ValueError, match="more passes than completions"):
+        _cell(passes=21, n=20, items=10)
+
+    with pytest.raises(ValueError, match="more passes than completions"):
+        _cell(passes=5, n=0, items=0)
+
+
+def test_a_negative_count_raises_rather_than_quietly_inflating_a_shortfall() -> None:
+    """``items`` is validated nowhere else; rigor never sees it.
+
+    A negative item count would sail past both other guards -- it is not greater
+    than ``n`` and it is not a pass count -- and would come out the far side as a
+    shortfall of eleven items, which is a number, and wrong.
+    """
+    with pytest.raises(ValueError, match="cannot be negative"):
+        _cell(passes=0, n=20, items=-1)
+    with pytest.raises(ValueError, match="cannot be negative"):
+        _cell(passes=0, n=-1, items=0)
+
+
+def test_the_refusal_sentences_quote_the_floors_they_were_given_not_the_ones_they_default_to() -> None:
+    """Every number in both sentences is interpolated, and this is what proves it.
+
+    The suite above pins all three sentences only at ``min_items=10`` and
+    ``min_n=20``, where an implementation that typed "10" and "20" as literals is
+    indistinguishable from one that reads its arguments. A caller passing
+    ``min_n=30`` would then be told about a 20-completion floor that does not
+    exist -- a sentence that is not merely unhelpful but false, and false about
+    the one number the reader is being asked to act on.
+
+    R10.5's second sentence is the worst of the three to get wrong, because it is
+    the one that exists specifically to stop a reader being refused twice.
+    """
+    both = _cell(passes=1, n=5, items=5, min_items=12, min_n=30)
+    assert both.needed == 7
+    assert both.needed_unit == "items"
+    assert both.note == (
+        "12 items needed for a verdict here; you have 5. "
+        "The 30-completion floor is also unmet: you have 5."
+    )
+
+    completions_only = _cell(passes=20, n=25, items=15, min_items=12, min_n=30)
+    assert completions_only.needed == 5
+    assert completions_only.needed_unit == "completions"
+    assert completions_only.note == "30 completions needed for a verdict here; you have 25."
+
+    items_only = _cell(passes=20, n=40, items=5, min_items=12, min_n=30)
+    assert items_only.needed == 7
+    assert items_only.needed_unit == "items"
+    assert items_only.note == "12 items needed for a verdict here; you have 5."
+
+
+def test_the_confidence_disclosure_trails_the_refusal_rather_than_leading_it() -> None:
+    """Ruled in review: the disclosure is always the last sentence of ``note``.
+
+    Nothing in C9 or R10 said where it sits, and the tests above used ``in``, so
+    a note that opened with the disclosure passed. It should not: ``note`` is
+    read top-down by someone who has just been declined, the refusal is what they
+    are owed first, and R10.5's two sentences are an ordered pair -- what to do,
+    then what will still be wrong when they have done it. A footnote about which
+    confidence level was assumed belongs after both, not wedged between them and
+    not ahead of them.
+
+    Pinned as an exact string rather than a prefix check, because "it starts with
+    the refusal" is also true of an order that puts the disclosure in the middle.
+    """
+    cell = _cell(passes=1, n=4, items=4, confidence=None)
+    assert cell.note == (
+        "10 items needed for a verdict here; you have 4. "
+        "The 20-completion floor is also unmet: you have 4. "
+        "No confidence level was given, so rigor's default of 95% was used."
+    )
+
+
+def test_nothing_measured_discloses_no_confidence_it_never_consumed() -> None:
+    """The one place "never silently" does not reach, ruled in review as correct.
+
+    R10.1 says a defaulted confidence is disclosed whether or not the cell is
+    refused. At ``n == 0`` there is no interval, nothing consumed the default,
+    and disclosing it would describe a computation that did not happen. R10.2
+    already establishes that nothing-measured is different in kind from
+    not-enough-measured; this is the same seam. Pinned so the behaviour is a
+    decision rather than a side effect of the branch it happens to sit in.
+    """
+    cell = _cell(passes=0, n=0, items=0, confidence=None)
+    assert cell.note == "Nothing was measured for refusal."
