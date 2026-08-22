@@ -2444,3 +2444,798 @@ def test_an_overridden_goldenset_path_is_used_and_disclosed(tmp_path: Path) -> N
     row = next(iter(_get(model, "flips")))
     assert _get(row, "input") == "INPUT-TEXT for item-03"
     assert str(moved) in _html(model), "the override must be printed in the provenance block"
+
+
+# --------------------------------------------------------------------------- #
+# 16. The timeline. Plan C13: `timeline_svg`, whose x-axis is time.
+#
+# Written from the C13 contract (plan lines 1220-1287) and its Edges table,
+# never from the module: when these were written `report.timeline_svg` did not
+# exist in this worktree at all. Three of the test names below are the
+# contract's own words and are not this file's to choose.
+#
+# The return type is an orchestrator ruling, not an invention here. The contract
+# gives the signature as `-> str` while its prose requires a count of runs with
+# no floor, and its Edges table a second count for points with no `pass_rate`.
+# The resolution is `Timeline(svg, runs_without_floor, runs_without_rate)`, and
+# both fields are counts of *points*, never of segments.
+#
+# Two failure modes are what most of this section is aimed at, because they are
+# the ones that ship:
+#
+#   * The floor drawn as one `<polyline>` through the floor values. That renders
+#     a diagonal ramp between two different floors, and a floor that ramps is a
+#     floor that never existed. So the step test asserts every floor segment is
+#     axis-aligned and that the rule touches exactly two heights -- not merely
+#     that both floors appear somewhere, which a ramp also satisfies.
+#   * The zero-span division by zero. It is not a curiosity: a seed generator
+#     that patches `utc_now` to a constant produces runs sharing a timestamp to
+#     the microsecond, which is how the showcase series is built.
+#
+# An unparseable `created` is deliberately *not* tested. The contract does not
+# cover it, and a test written against a guess pins the guess rather than the
+# contract.
+#
+# The SVG is parsed with stdlib :mod:`xml.etree.ElementTree` rather than matched
+# with a pattern, because an assertion on a parsed attribute survives a
+# whitespace or attribute-order change that a regular expression does not.
+# --------------------------------------------------------------------------- #
+
+
+#: The contract's own tolerance, in the words of its first named test: "within a
+#: pixel".
+ONE_PIXEL = 1.0
+
+#: Two coordinates this close are the same coordinate. Nothing asserted here is
+#: a near miss -- a ramp between floors 0.10 of rate apart is tens of pixels.
+FLAT = 0.5
+
+#: Every marker carries all four, per the contract. Requiring all four is what
+#: separates a marker from the whisker or the floor segment beside it.
+MARKER_ATTRS = ("data-created", "data-rate", "data-verdict", "data-floor")
+
+#: The contract names these four verdict classes and no others.
+VERDICT_CLASSES = frozenset({"go", "nogo", "review", "none"})
+
+_NUMBER_RE = re.compile(r"-?\d*\.?\d+(?:[eE][-+]?\d+)?")
+_PATH_RE = re.compile(r"([A-Za-z])|(-?\d*\.?\d+(?:[eE][-+]?\d+)?)")
+_TRANSLATE_RE = re.compile(r"translate\(\s*(-?[\d.]+)[\s,]+(-?[\d.]+)")
+
+
+def _timeline_day(offset: int, *, hour: int = 12) -> str:
+    """A `created` `offset` days after 2026-07-01, shaped as `series` records it.
+
+    July has 31 days, so every offset used here lands inside one month and the
+    arithmetic a reader must do to check a fixture is subtraction.
+    """
+    return f"2026-07-{1 + offset:02d}T{hour:02d}:00:00.000000+00:00"
+
+
+def _point(
+    created: str,
+    *,
+    pass_rate: float | None = 0.82,
+    floor: float | None = 0.80,
+    verdict: str | None = "go",
+    interval: tuple[float, float] | None = None,
+) -> Any:
+    """One :class:`series.RunPoint`, varying only what a timeline reads.
+
+    Imported inside the function so this section adds no import to the top of a
+    file two chunks are appending to at once.
+    """
+    from model_migration_kit.series import RunPoint
+
+    return RunPoint(
+        created=created,
+        created_source="payload",
+        verdict=verdict,
+        reason=None if verdict is None else f"reason for {verdict}",
+        baseline_model=BASELINE_MODEL,
+        candidate_model=CANDIDATE_MODEL,
+        adapter_baseline="AnthropicAdapter",
+        adapter_candidate="AnthropicAdapter",
+        goldenset_hash="a" * 64,
+        judges_hash=JUDGES_HASH,
+        config_hash=CONFIG_HASH,
+        config_path="migkit.toml",
+        n_per_item=N_PER_ITEM,
+        items=len(ITEM_IDS),
+        judged_baseline=ODD_N,
+        judged_candidate=ODD_N,
+        judge_failures_baseline=1,
+        judge_failures_candidate=2,
+        pass_rate=pass_rate,
+        interval=interval,
+        lower_bound=None if pass_rate is None else ODD_LOWER_BOUND,
+        floor=floor,
+        floor_source="unrecorded" if floor is None else "gate",
+        confidence=THRESHOLDS["confidence"],
+        alpha=THRESHOLDS["alpha"],
+        judge_name=J,
+        judge_model_id=JUDGE_MODEL,
+        rubric_hashes=(RUBRIC_HASH,),
+        p_value=ODD_P_VALUE,
+        latency_median_candidate=0.2345,
+        runs_needed=None,
+        n_required=None,
+        warnings=(),
+    )
+
+
+def _timeline(points: Sequence[Any], **kwargs: Any) -> Any:
+    return _get(_module(), "timeline_svg")(tuple(points), **kwargs)
+
+
+def _timeline_parts(points: Sequence[Any], **kwargs: Any) -> tuple[str, int, int]:
+    """The ruled return, read by name so a bare `str` fails loudly and early."""
+    result = _timeline(points, **kwargs)
+    return (
+        _get(result, "svg"),
+        _get(result, "runs_without_floor"),
+        _get(result, "runs_without_rate"),
+    )
+
+
+def _svg_tag(element: Any) -> str:
+    """The local name, with any `{http://www.w3.org/2000/svg}` prefix removed."""
+    return str(element.tag).rsplit("}", 1)[-1]
+
+
+def _svg_root(svg: Any) -> Any:
+    import xml.etree.ElementTree as ElementTree
+
+    assert isinstance(svg, str), f"the svg field is a {type(svg).__name__}, not a string"
+    assert svg.strip(), "timeline_svg returned an empty document; the contract forbids it"
+    try:
+        root = ElementTree.fromstring(svg)
+    except ElementTree.ParseError as exc:
+        raise AssertionError(
+            f"timeline_svg returned XML that will not parse ({exc}): {svg[:300]!r}"
+        ) from exc
+    assert _svg_tag(root) == "svg", f"the root element is <{_svg_tag(root)}>, not <svg>"
+    return root
+
+
+def _svg_text(element: Any) -> str:
+    return _squeeze("".join(element.itertext()))
+
+
+def _numbers(text: str) -> list[float]:
+    return [float(one) for one in _NUMBER_RE.findall(text)]
+
+
+def _classes(element: Any) -> list[str]:
+    return str(element.get("class") or "").split()
+
+
+def _is_marker(element: Any) -> bool:
+    return all(name in element.attrib for name in MARKER_ATTRS)
+
+
+def _marker_x(element: Any) -> float:
+    if "cx" in element.attrib:
+        return float(element.attrib["cx"])
+    if "x" in element.attrib:
+        left = float(element.attrib["x"])
+        if _svg_tag(element) == "rect":
+            return left + float(element.get("width") or 0.0) / 2
+        return left
+    match = _TRANSLATE_RE.search(str(element.get("transform") or ""))
+    if match:
+        return float(match.group(1))
+    raise AssertionError(
+        "the Edges table requires a marker's horizontal position to be readable from "
+        f"the document; <{_svg_tag(element)}> carries none of cx, x or a translate: "
+        f"{sorted(element.attrib)}"
+    )
+
+
+def _marker_y(element: Any) -> float:
+    if "cy" in element.attrib:
+        return float(element.attrib["cy"])
+    if "y" in element.attrib:
+        top = float(element.attrib["y"])
+        if _svg_tag(element) == "rect":
+            return top + float(element.get("height") or 0.0) / 2
+        return top
+    match = _TRANSLATE_RE.search(str(element.get("transform") or ""))
+    if match:
+        return float(match.group(2))
+    raise AssertionError(
+        f"<{_svg_tag(element)}> carries none of cy, y or a translate: {sorted(element.attrib)}"
+    )
+
+
+def _markers(root: Any) -> list[Any]:
+    """Every marker, left to right.
+
+    Identified by the four data attributes the contract requires on each one,
+    because the contract names no element for a marker.
+    """
+    found = [element for element in root.iter() if _is_marker(element)]
+    return sorted(found, key=_marker_x)
+
+
+def _path_segments(data: str) -> list[tuple[float, float, float, float]]:
+    """The straight runs of a path. A curve command is itself a finding.
+
+    M/L/H/V/Z in both cases is every command a step function needs. Anything
+    else raises rather than being silently skipped: a floor rule containing a
+    bezier is the diagonal ramp this section exists to catch, and skipping the
+    command it was drawn with would let it through.
+    """
+    tokens = [letter or number for letter, number in _PATH_RE.findall(data)]
+    segments: list[tuple[float, float, float, float]] = []
+    x = y = 0.0
+    start = (0.0, 0.0)
+    command = ""
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token.isalpha():
+            command = token
+            index += 1
+            if command in {"Z", "z"}:
+                segments.append((x, y, start[0], start[1]))
+                x, y = start
+            continue
+        assert command, f"path data begins with a number: {data!r}"
+        upper = command.upper()
+        relative = command.islower()
+        if upper in {"M", "L"}:
+            first, second = float(tokens[index]), float(tokens[index + 1])
+            index += 2
+            new = (x + first, y + second) if relative else (first, second)
+        elif upper == "H":
+            first = float(tokens[index])
+            index += 1
+            new = (x + first if relative else first, y)
+        elif upper == "V":
+            first = float(tokens[index])
+            index += 1
+            new = (x, y + first if relative else first)
+        else:
+            raise AssertionError(
+                f"the path uses command {command!r}. A step function is made of "
+                f"horizontal and vertical runs only: {data!r}"
+            )
+        if upper == "M":
+            start = new
+            command = "l" if relative else "L"
+        else:
+            segments.append((x, y, new[0], new[1]))
+        x, y = new
+    return segments
+
+
+def _element_segments(element: Any) -> list[tuple[float, float, float, float]]:
+    """Every straight run this element draws, as (x1, y1, x2, y2)."""
+    tag = _svg_tag(element)
+    if tag == "line":
+        return [
+            (
+                float(element.get("x1") or 0.0),
+                float(element.get("y1") or 0.0),
+                float(element.get("x2") or 0.0),
+                float(element.get("y2") or 0.0),
+            )
+        ]
+    if tag in {"polyline", "polygon"}:
+        flat = _numbers(str(element.get("points") or ""))
+        pairs = list(zip(flat[0::2], flat[1::2], strict=False))
+        return [(a[0], a[1], b[0], b[1]) for a, b in zip(pairs, pairs[1:], strict=False)]
+    if tag == "path":
+        return _path_segments(str(element.get("d") or ""))
+    if tag == "rect":
+        left = float(element.get("x") or 0.0)
+        top = float(element.get("y") or 0.0)
+        wide = float(element.get("width") or 0.0)
+        tall = float(element.get("height") or 0.0)
+        if wide >= tall:  # a bar's centre line runs along its longer axis
+            middle = top + tall / 2
+            return [(left, middle, left + wide, middle)]
+        middle = left + wide / 2
+        return [(middle, top, middle, top + tall)]
+    return []
+
+
+def _geometry(root: Any) -> list[tuple[Any, tuple[float, float, float, float]]]:
+    """Every drawn straight run, paired with the element that drew it.
+
+    Markers are excluded: a marker is a position, not a segment, and a square one
+    would otherwise contribute a spurious centre line.
+    """
+    drawn: list[tuple[Any, tuple[float, float, float, float]]] = []
+    for element in root.iter():
+        if _is_marker(element):
+            continue
+        drawn.extend((element, segment) for segment in _element_segments(element))
+    return drawn
+
+
+def _floor_segments(root: Any) -> list[tuple[float, float, float, float]]:
+    """The segments of the floor rule.
+
+    The contract requires a step function and names no element for it, so the
+    handle used here is the one thing a drawn-and-styled rule must carry: a class
+    naming it. When nothing matches, every tag and class in the document is
+    listed, so the failure says what is missing rather than merely that something
+    is.
+    """
+    drawn = [
+        segment
+        for element, segment in _geometry(root)
+        if any("floor" in one.lower() for one in _classes(element))
+    ]
+    if not drawn:
+        present = sorted({f"<{_svg_tag(one)} class={one.get('class')!r}>" for one in root.iter()})
+        raise AssertionError(
+            "no element of the timeline is classed as the floor rule, so a step cannot be "
+            "told from a single rule. The document holds: " + ", ".join(present)
+        )
+    return drawn
+
+
+def _horizontal(
+    segments: Sequence[tuple[float, float, float, float]],
+) -> list[tuple[float, float, float, float]]:
+    return [one for one in segments if abs(one[1] - one[3]) <= FLAT]
+
+
+def _vertical(
+    segments: Sequence[tuple[float, float, float, float]],
+) -> list[tuple[float, float, float, float]]:
+    return [one for one in segments if abs(one[0] - one[2]) <= FLAT]
+
+
+def _levels(segments: Sequence[tuple[float, float, float, float]]) -> list[float]:
+    """The distinct heights the segments touch, clustered at half a pixel."""
+    found: list[float] = []
+    for value in sorted(y for one in segments for y in (one[1], one[3])):
+        if not found or abs(value - found[-1]) > FLAT:
+            found.append(value)
+    return found
+
+
+def _instant(created: str) -> float:
+    """`data-created` as seconds, read back out of the document itself."""
+    from datetime import datetime
+
+    return datetime.fromisoformat(created).timestamp()
+
+
+def _by_created(root: Any) -> dict[str, Any]:
+    found: dict[str, Any] = {}
+    for marker in _markers(root):
+        key = str(marker.get("data-created"))
+        assert key not in found, f"two markers share data-created={key!r}"
+        found[key] = marker
+    return found
+
+
+# --------------------------------------------------------------------------- #
+
+
+def test_the_timeline_returns_an_svg_and_a_count_of_each_kind_of_missing_run() -> None:
+    """The shape ruled over the contract's contradictory `-> str`.
+
+    The prose requires that "the count of such runs is returned to the caller for
+    a sentence beneath the chart"; the Edges table requires a second count for
+    points with no `pass_rate`. A bare string can carry neither.
+    """
+    points = [
+        _point(_timeline_day(0)),
+        _point(_timeline_day(1), floor=None),
+        _point(_timeline_day(2), pass_rate=None),
+    ]
+    svg, without_floor, without_rate = _timeline_parts(points)
+
+    assert isinstance(svg, str)
+    assert without_floor == 1, "one point of three has floor=None"
+    assert without_rate == 1, "one point of three has pass_rate=None"
+    assert isinstance(without_floor, int) and not isinstance(without_floor, bool)
+    assert isinstance(without_rate, int) and not isinstance(without_rate, bool)
+
+
+def test_a_timeline_of_no_points_is_a_single_text_and_not_an_empty_string() -> None:
+    """Edges row 1, quoting the spec: "a single point and no candidate table,
+    rather than an empty chart or a crash"."""
+    svg, without_floor, without_rate = _timeline_parts([])
+
+    root = _svg_root(svg)
+    texts = [one for one in root.iter() if _svg_tag(one) == "text"]
+    assert len(texts) == 1, f"expected exactly one <text>, found {len(texts)}"
+    said = _svg_text(texts[0]).lower()
+    assert re.search(r"\bno\b", said) and "run" in said, (
+        f"the empty timeline must say there are no dated runs; it says {said!r}"
+    )
+    assert not _markers(root), "an empty series draws no marker"
+    assert (without_floor, without_rate) == (0, 0)
+
+
+def test_a_single_run_is_drawn_at_the_horizontal_centre_and_nothing_is_interpolated() -> None:
+    """Edges row 2: "one marker, drawn at the horizontal centre; no interpolation".
+
+    Asserted at two widths, because a centre that is only ever right at the
+    default width is a hard-coded 450.
+    """
+    for width in (900, 640):
+        svg, _, _ = _timeline_parts([_point(_timeline_day(3))], width=width)
+        root = _svg_root(svg)
+        markers = _markers(root)
+        assert len(markers) == 1, f"one point must draw one marker, not {len(markers)}"
+        placed = _marker_x(markers[0])
+        assert abs(placed - width / 2) <= ONE_PIXEL, (
+            f"at width={width} the single marker sits at x={placed}, not the centre {width / 2}"
+        )
+
+
+def test_two_runs_three_weeks_apart_are_drawn_three_weeks_apart() -> None:
+    """The contract's "test that fails first", verbatim: three points at day 0,
+    day 1 and day 22, and the second gap is 21 times the first, within a pixel.
+
+    This is the whole reason the x-axis is time. Evenly spaced dots put the two
+    gaps at 1:1 and hide a three-week CI outage, and the ratio is the only
+    assertion that tells the two renderings apart.
+
+    The expectation is derived from `data-created` as the document reports it
+    rather than from the fixture, so the mapping is checked against what the
+    chart claims about itself.
+    """
+    days = (0, 1, 22)
+    points = [_point(_timeline_day(one)) for one in days]
+    svg, _, _ = _timeline_parts(points)
+
+    root = _svg_root(svg)
+    markers = _markers(root)
+    assert len(markers) == 3, f"three points must draw three markers, not {len(markers)}"
+
+    placed = sorted((_instant(str(one.get("data-created"))), _marker_x(one)) for one in markers)
+    first_gap = placed[1][1] - placed[0][1]
+    second_gap = placed[2][1] - placed[1][1]
+    assert first_gap > 0, f"the day-0 and day-1 runs were drawn at one x: {placed}"
+
+    elapsed_first = placed[1][0] - placed[0][0]
+    elapsed_second = placed[2][0] - placed[1][0]
+    assert abs(elapsed_second / elapsed_first - 21) < 1e-6, (
+        f"the fixture is wrong, not the code: data-created reports a ratio of "
+        f"{elapsed_second / elapsed_first}"
+    )
+    assert abs(second_gap - 21 * first_gap) <= ONE_PIXEL, (
+        f"a 21-day gap is drawn {second_gap:.2f}px wide and a 1-day gap {first_gap:.2f}px: "
+        f"a ratio of {second_gap / first_gap:.2f}, not 21. Evenly spaced dots hide the outage."
+    )
+
+
+def test_the_earliest_and_latest_runs_anchor_the_time_axis_at_the_padding() -> None:
+    """"Map parsed `created` linearly from the earliest to the latest across
+    `points`" -- so the two ends of the series are the two ends of the plot area.
+
+    `TIMELINE_PAD` is read from the module rather than written down here. A test
+    that hard-codes the constant it is checking cannot tell a changed constant
+    from a broken projection.
+    """
+    pad = float(_get(_module(), "TIMELINE_PAD"))
+    width = 720
+    points = [_point(_timeline_day(one)) for one in (0, 4, 17)]
+    svg, _, _ = _timeline_parts(points, width=width)
+
+    markers = _markers(_svg_root(svg))
+    assert len(markers) == 3
+    assert abs(_marker_x(markers[0]) - pad) <= ONE_PIXEL, (
+        f"the earliest run sits at x={_marker_x(markers[0])}, not the left edge {pad}"
+    )
+    assert abs(_marker_x(markers[-1]) - (width - pad)) <= ONE_PIXEL, (
+        f"the latest run sits at x={_marker_x(markers[-1])}, not the right edge {width - pad}"
+    )
+
+
+def test_runs_that_all_share_one_timestamp_are_evenly_spaced_and_the_chart_says_so() -> None:
+    """Edges row 3, and the reviewer's division by zero.
+
+    Reachable rather than theoretical: a seed generator that patches `utc_now` to
+    a constant writes every run at the same microsecond, and that is how the
+    showcase series is built. The required rendering is evenly spaced markers
+    plus a `<title>` saying the runs share a timestamp -- not a crash, and not
+    four markers stacked on one x.
+    """
+    stamp = _timeline_day(9)
+    points = [_point(stamp, pass_rate=rate) for rate in (0.71, 0.72, 0.73, 0.74)]
+    svg, _, _ = _timeline_parts(points)
+
+    root = _svg_root(svg)
+    markers = _markers(root)
+    assert len(markers) == 4, f"four points must draw four markers, not {len(markers)}"
+
+    xs = [_marker_x(one) for one in markers]
+    gaps = [second - first for first, second in zip(xs, xs[1:], strict=False)]
+    assert min(gaps) > 0, f"a zero span stacked the markers on one x: {xs}"
+    assert max(gaps) - min(gaps) <= ONE_PIXEL, f"markers are not evenly spaced: {xs}"
+
+    titles = [_svg_text(one).lower() for one in root.iter() if _svg_tag(one) == "title"]
+    assert any("timestamp" in one for one in titles), (
+        "a zero-span chart must carry a <title> saying the runs share a timestamp; its "
+        f"titles are {titles}"
+    )
+    assert any(
+        "timestamp" in one and any(word in one for word in ("share", "same", "identical"))
+        for one in titles
+    ), f"the <title> must say the runs *share* the timestamp; it says {titles}"
+
+
+def test_a_series_whose_floor_changed_draws_a_step_and_not_one_rule() -> None:
+    """The contract's second named test, and its reviewer's warning.
+
+    The easy implementation is a `<polyline>` through the floor values, which
+    draws a diagonal ramp from 0.90 down to 0.80 between two runs. A floor that
+    ramps is a floor that never existed: there is no date on which this series
+    was held to 0.85. So the assertion is not that both floors appear somewhere
+    -- a ramp satisfies that -- but that every floor segment is axis-aligned and
+    that the rule touches exactly two heights.
+    """
+    floors = (0.90, 0.90, 0.80, 0.80)
+    points = [
+        _point(_timeline_day(index * 3), floor=floor, pass_rate=floor)
+        for index, floor in enumerate(floors)
+    ]
+    svg, without_floor, _ = _timeline_parts(points)
+    assert without_floor == 0, "every point here records a floor"
+
+    root = _svg_root(svg)
+    segments = _floor_segments(root)
+
+    for x1, y1, x2, y2 in segments:
+        assert abs(x1 - x2) <= FLAT or abs(y1 - y2) <= FLAT, (
+            f"the floor rule contains the diagonal ({x1:.2f},{y1:.2f})-({x2:.2f},{y2:.2f}). "
+            "A floor that ramps between two floors is a floor that never existed."
+        )
+
+    heights = _levels(segments)
+    assert len(heights) == 2, (
+        "a floor that moved from 0.90 to 0.80 must be drawn at exactly two heights; the "
+        f"rule touches {len(heights)}: {heights}. One height is the single rule the "
+        "contract calls a lie; three or more is a ramp."
+    )
+
+    steps = _vertical(segments)
+    assert steps, f"a floor change must be a vertical step; the rule has none: {segments}"
+    assert any(
+        abs(min(one[1], one[3]) - heights[0]) <= FLAT
+        and abs(max(one[1], one[3]) - heights[1]) <= FLAT
+        for one in steps
+    ), f"no vertical segment joins the two floor heights {heights}: {steps}"
+
+    xs = [_marker_x(one) for one in _markers(root)]
+    step_x = [one[0] for one in steps]
+    assert any(xs[1] - ONE_PIXEL <= one <= xs[2] + ONE_PIXEL for one in step_x), (
+        f"the step sits at x={step_x}, outside the interval between the last run held to "
+        f"0.90 (x={xs[1]:.2f}) and the first held to 0.80 (x={xs[2]:.2f})"
+    )
+
+    flats = _horizontal(segments)
+    assert any(
+        abs(one[1] - heights[0]) <= FLAT
+        and min(one[0], one[2]) <= xs[0] + ONE_PIXEL
+        and max(one[0], one[2]) >= xs[1] - ONE_PIXEL
+        for one in flats
+    ), f"the higher floor does not run across the two runs held to it: {flats}"
+    assert any(
+        abs(one[1] - heights[1]) <= FLAT
+        and min(one[0], one[2]) <= xs[2] + ONE_PIXEL
+        and max(one[0], one[2]) >= xs[3] - ONE_PIXEL
+        for one in flats
+    ), f"the lower floor does not run across the two runs held to it: {flats}"
+
+
+def test_the_floor_rule_and_the_markers_are_drawn_on_one_vertical_scale() -> None:
+    """A rule at a height the rate axis does not agree with cannot be read.
+
+    The point of a floor drawn through a series of rates is that a reader can see
+    which runs cleared it. Asserted without knowing the projection: a run whose
+    `pass_rate` is exactly the floor must have its marker on the rule.
+    """
+    points = [_point(_timeline_day(one), pass_rate=0.90, floor=0.90) for one in (0, 6)]
+    svg, _, _ = _timeline_parts(points)
+
+    root = _svg_root(svg)
+    heights = _levels(_floor_segments(root))
+    assert len(heights) == 1, f"an unchanged floor is drawn at one height, not {heights}"
+    for marker in _markers(root):
+        assert abs(_marker_y(marker) - heights[0]) <= ONE_PIXEL, (
+            f"a run whose rate is 0.90 is drawn at y={_marker_y(marker)} while the 0.90 "
+            f"floor is drawn at y={heights[0]}: the rule and the markers use two scales"
+        )
+
+
+def test_a_run_with_no_recorded_floor_leaves_a_gap_in_the_rule_and_is_counted() -> None:
+    """The contract's third named test, and Edges row 5: "the rule breaks and
+    resumes".
+
+    This is where the spec's fallback survives. A run whose evidence never
+    recorded the floor it was held to must not be covered by its neighbours'
+    floor -- drawing 0.90 across it asserts a number the log does not contain --
+    and the count of such runs is returned so the caller can say so in prose.
+    """
+    floors = (0.90, 0.90, None, 0.90, 0.90)
+    points = [
+        _point(_timeline_day(index * 2), floor=floor, pass_rate=0.93)
+        for index, floor in enumerate(floors)
+    ]
+    svg, without_floor, without_rate = _timeline_parts(points)
+
+    assert without_floor == 1, f"one of five runs has no floor; the count says {without_floor}"
+    assert without_rate == 0, "every point here records a rate"
+
+    root = _svg_root(svg)
+    markers = _markers(root)
+    assert len(markers) == 5, "a missing floor does not remove the run's own marker"
+    gap_x = _marker_x(markers[2])
+
+    flats = _horizontal(_floor_segments(root))
+    spanning = [
+        one for one in flats if min(one[0], one[2]) + FLAT < gap_x < max(one[0], one[2]) - FLAT
+    ]
+    assert not spanning, (
+        f"a floor segment runs straight across the run at x={gap_x:.2f} that recorded no "
+        f"floor: {spanning}. The rule must break there rather than bridge the neighbours."
+    )
+    assert any(max(one[0], one[2]) <= gap_x + FLAT for one in flats), (
+        f"nothing is drawn to the left of the gap at x={gap_x:.2f}: {flats}"
+    )
+    assert any(min(one[0], one[2]) >= gap_x - FLAT for one in flats), (
+        f"the rule does not resume to the right of the gap at x={gap_x:.2f}: {flats}"
+    )
+
+
+def test_a_run_with_no_pass_rate_is_not_drawn_and_is_counted() -> None:
+    """Edges row 6: "no marker; counted and reported".
+
+    A point with no rate has no height, and inventing one -- a zero, a carried
+    neighbour -- draws a value nothing measured.
+    """
+    dated = [_timeline_day(one) for one in (0, 5, 11)]
+    points = [
+        _point(dated[0]),
+        _point(dated[1], pass_rate=None, verdict=None),
+        _point(dated[2]),
+    ]
+    svg, without_floor, without_rate = _timeline_parts(points)
+
+    assert without_rate == 1, f"one of three points has no rate; the count says {without_rate}"
+    assert without_floor == 0, "every point here records a floor"
+
+    root = _svg_root(svg)
+    drawn = _by_created(root)
+    assert dated[1] not in drawn, "the run with no rate was given a marker anyway"
+    assert set(drawn) == {dated[0], dated[2]}, (
+        f"the markers are dated {sorted(drawn)}; expected only {[dated[0], dated[2]]}"
+    )
+
+
+def test_the_position_of_a_marker_is_its_date_and_not_its_place_in_the_sequence() -> None:
+    """"Must not: sort by index."
+
+    The points arrive out of chronological order, which is what a log stitched
+    from two machines looks like. Position must come from `created` either way.
+    """
+    early, late, middle = _timeline_day(0), _timeline_day(22), _timeline_day(1)
+    svg, _, _ = _timeline_parts([_point(early), _point(late), _point(middle)])
+
+    drawn = _by_created(_svg_root(svg))
+    assert set(drawn) == {early, late, middle}
+    placed = {key: _marker_x(value) for key, value in drawn.items()}
+    assert placed[early] < placed[middle] < placed[late], (
+        f"the markers are laid out in the order the points arrived, not by date: {placed}"
+    )
+
+
+def test_every_marker_carries_the_four_data_attributes_and_a_verdict_class() -> None:
+    """"Each marker carries `data-created`, `data-rate`, `data-verdict`,
+    `data-floor`", and "a `class` naming the verdict (go/nogo/review/none)".
+
+    The data attributes are what makes the projection assertable at all, and the
+    class is what makes the verdict readable without colour.
+    """
+    verdicts = ("go", "nogo", "review", None)
+    points = [
+        _point(_timeline_day(index * 2), verdict=verdict) for index, verdict in enumerate(verdicts)
+    ]
+    svg, _, _ = _timeline_parts(points)
+
+    markers = _markers(_svg_root(svg))
+    assert len(markers) == len(verdicts)
+    for marker, verdict in zip(markers, verdicts, strict=True):
+        named = VERDICT_CLASSES.intersection(one.lower() for one in _classes(marker))
+        assert named, (
+            f"the marker for verdict {verdict!r} carries classes {_classes(marker)}, none of "
+            f"which names a verdict out of {sorted(VERDICT_CLASSES)}"
+        )
+        expected = "none" if verdict is None else verdict
+        assert expected in named, f"the marker for verdict {verdict!r} is classed {sorted(named)}"
+        assert float(str(marker.get("data-rate"))) == pytest.approx(0.82)
+        assert float(str(marker.get("data-floor"))) == pytest.approx(0.80)
+
+
+def test_a_marker_whisker_spans_the_recorded_interval() -> None:
+    """"a vertical whisker spanning the mapped `interval`".
+
+    Asserted as a comparison rather than against a projection this file does not
+    know: the run with the wider interval must carry the taller whisker, and each
+    whisker must bracket its own marker. A whisker of constant height is a
+    decoration, not an interval.
+    """
+    wide, narrow = _timeline_day(0), _timeline_day(4)
+    points = [
+        _point(wide, pass_rate=0.62, interval=(0.30, 0.94)),
+        _point(narrow, pass_rate=0.62, interval=(0.60, 0.64)),
+    ]
+    svg, _, _ = _timeline_parts(points)
+
+    root = _svg_root(svg)
+    heights: dict[str, float] = {}
+    for created, marker in _by_created(root).items():
+        at = _marker_x(marker)
+        uprights = [
+            one
+            for _, one in _geometry(root)
+            if abs(one[0] - one[2]) <= FLAT and abs(one[0] - at) <= ONE_PIXEL
+        ]
+        assert uprights, f"the run at {created} carries no vertical whisker at x={at:.2f}"
+        tallest = max(uprights, key=lambda one: abs(one[1] - one[3]))
+        assert min(tallest[1], tallest[3]) <= _marker_y(marker) + ONE_PIXEL
+        assert max(tallest[1], tallest[3]) >= _marker_y(marker) - ONE_PIXEL
+        heights[created] = abs(tallest[1] - tallest[3])
+
+    assert heights[wide] > heights[narrow] + ONE_PIXEL, (
+        f"an interval 0.64 wide is drawn {heights[wide]:.2f}px tall and one 0.04 wide "
+        f"{heights[narrow]:.2f}px: the whisker does not span the interval"
+    )
+
+
+def test_the_timeline_draws_nothing_outside_the_box_it_was_given() -> None:
+    """`width` and `height` are the caller's, and the chart is embedded in a page.
+
+    Run at neither default, so a projection that hard-coded 900x260 puts markers
+    off the right-hand edge rather than merely being wrong by a scale factor.
+
+    The count is asserted before the bounds are: a document that drew nothing
+    satisfies every bound there is, and against an inert stub that is exactly
+    what this test passed on before the count was added.
+    """
+    width, height = 400, 180
+    points = [_point(_timeline_day(one), pass_rate=rate) for one, rate in ((0, 0.02), (13, 0.99))]
+    svg, _, _ = _timeline_parts(points, width=width, height=height)
+
+    markers = _markers(_svg_root(svg))
+    assert len(markers) == 2, f"two points must draw two markers, not {len(markers)}"
+    for marker in markers:
+        at_x, at_y = _marker_x(marker), _marker_y(marker)
+        assert 0 <= at_x <= width, f"a marker sits at x={at_x} in a chart {width} wide"
+        assert 0 <= at_y <= height, f"a marker sits at y={at_y} in a chart {height} tall"
+
+
+def test_the_timeline_emits_no_script_element() -> None:
+    """"Must not: emit `<script>`."
+
+    The document this is embedded in is asserted self-contained elsewhere; the
+    timeline must not be the thing that breaks it.
+
+    Every assertion here is an absence, so the presence of the three markers is
+    asserted first. An empty `<svg/>` emits no script either, and against an
+    inert stub that is what this test passed on before the count was added.
+    """
+    points = [_point(_timeline_day(one)) for one in (0, 2, 9)]
+    svg, _, _ = _timeline_parts(points)
+
+    root = _svg_root(svg)
+    assert len(_markers(root)) == 3, "three points must be drawn before absence means anything"
+    forbidden = [_svg_tag(one) for one in root.iter() if _svg_tag(one) in FORBIDDEN_ELEMENTS]
+    assert not forbidden, f"the timeline emits {forbidden}, which self-containment forbids"
+
+    # `xmlns` is a namespace name, not a fetch: no browser requests it. The
+    # report's own `external_urls` was written for HTML and does not know that,
+    # so it is excluded here rather than the timeline being forbidden the
+    # declaration a standalone SVG needs.
+    fetched = [one for one in _urls(svg) if not str(_get(one, "attribute")).startswith("xmlns")]
+    assert not fetched, f"the timeline fetches {fetched}"
