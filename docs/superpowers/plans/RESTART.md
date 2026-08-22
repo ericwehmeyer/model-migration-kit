@@ -141,6 +141,34 @@ picked a different reading and neither would have been wrong. R6 and R7 are what
 that looks like written down: decide, put it in *both* briefs verbatim, and
 record it as a revision.
 
+### Time-bounding the agents
+
+Two agents once sat dead for 5.5 hours and were only found by going to look. Two
+things fix that, and they catch different failures.
+
+**A watchdog on the right signal.** Poll the mtime of
+`~/.claude/projects/<cwd>/<session>/subagents/agent-<id>.jsonl` -- the live
+transcript, which grows on every tool round. The `.meta.json` beside it carries
+the agent's description, so an alert can name it rather than print a hex id. Two
+tiers, 20 minutes quiet to look and 45 to stop and salvage, each firing once per
+agent, plus a warm-up pass that marks everything already stale at startup in
+**every** tier and announces none of it. Marking only the lower tier lets a
+finished agent cross the upper line later and announce itself as newly stalled.
+
+Do **not** watch `tasks/<id>.output`. Those are zero-length placeholders and
+their mtime does not track tool activity: one agent was demonstrably working at
+04:23 with an `.output` untouched since 04:02. A watchdog on that signal reports
+health it cannot see, which is worse than no watchdog.
+
+**A self-imposed bound in every brief.** "If one problem resists three genuine
+attempts, commit what you have, write down the blocker, and return." The watchdog
+catches agents that hang; this catches agents that grind, and grinding is the
+more common and more expensive failure.
+
+And say **commit early and commit often** in every brief. Three agents were lost
+in one session with uncommitted work. An interrupted agent with commits is a
+five-minute salvage; without them it is a total loss.
+
 ## The preamble every agent brief needs
 
 These traps have each bitten more than once. Paste them in rather than letting
@@ -183,6 +211,16 @@ merges.
   wide. All three verdicts come from one parameter set with only the candidate's
   script differing, so the comparability guard is never approached. Avoid k=180
   exactly (`runs_needed` returns `None` there). Rule 4 is a trap for a timeline.
+- **The release gate is not vulnerable to `PYTHONPATH`, and this was checked
+  properly.** `check_demo_data_importable` runs its probe with `-S`, which does
+  not ignore `PYTHONPATH`, and `run()` inherits the environment, so it looks
+  exposed. It is not: the package ships an `__init__.py`, so it is a regular
+  package rather than a namespace one, the first `sys.path` hit wins, and the
+  probe's own `sys.path.insert(0, extract)` guarantees that hit is the wheel. A
+  `__path__` assertion catches any leak independently and fails with an accurate
+  message. Verified against a doctored wheel across a 2x2 matrix. **The docstring
+  arguing for `-S` is stale** -- it says the package is a namespace package, which
+  it no longer is -- and that stale paragraph is what made this look like a hole.
 - **Thresholds and identities are recorded**, twice over, including at the point
   of measurement — the historical floor can be drawn from the gate that applied it.
 
@@ -192,11 +230,15 @@ merges.
 unit argument is decisive: C8 returns judge verdict records, one per completion,
 so a `min_n` in items would compare against a number that is not in items.
 
-**Caveat found late and not yet fixed:** the plan's justification for that rule is
-arithmetically false. It says "a 4-item tag at 20 completions is not cleared" —
-4 x 5 is exactly 20, and `20 < 20` is `False`, so it clears. The effective floor
-is four items. Either raise `MIN_N_FOR_A_VERDICT` or fix the sentence; do not
-ship the justification as written.
+**That caveat is now settled by R9, and the answer was neither of the two options
+this file used to offer.** The justification was arithmetically false: 4 x 5 is
+exactly 20 and `20 < 20` is `False`, so a 4-item tag clears. Raising the
+completions number does not fix it either -- at `n_per_item=10` a 4-item tag
+clears a floor of 40 just as easily, because five draws of one item are five
+readings of one question. R9 adds a **second, independent floor in items**
+(`MIN_ITEMS_FOR_A_VERDICT = 10`) and leaves R3's completions floor intact. R11.6
+then corrects R9 in turn: the completions floor can only bind at one draw per
+item, so the two do not do comparable work.
 
 **`RunPoint` field names** were changed after review: `completions_*` became
 `judged_*`, `failures_*` became `judge_failures_*`, and `floor_source` was added.
