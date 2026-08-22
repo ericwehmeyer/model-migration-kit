@@ -116,11 +116,15 @@ class DimensionCell:
     One correction to the ground this was argued on: the both-bind case is not
     rare. It was said to be reachable only at one draw per item or on a ragged
     tag, and that is the region where the *completions* floor binds **alone**.
-    Both floors bind together across 33 uniform (items, draws) pairs -- every
+    Both floors bind together across 50 uniform (items, draws) pairs -- every
     tag with nine or fewer items and fewer than twenty completions, so four items
-    at three draws each lands there. That is the ordinary shape of a young golden
-    set, which cuts toward this shape rather than away from it: a decision taken
-    on most refused cells is worth taking once, correctly, inside the module.
+    at three draws each lands there. (Fifty, enumerated over the whole grid; an
+    earlier pass through this docstring said 33, which was this reviewer making
+    the same class of error it had just corrected in R11.6.)
+
+    That is the ordinary shape of a young golden set, which cuts toward this
+    shape rather than away from it: a decision taken on most refused cells is
+    worth taking once, correctly, inside the module.
 
     ``note`` is the cell's disclosure line rather than only its refusal sentence.
     It carries whichever of these apply: that nothing was measured, that a floor
