@@ -7,7 +7,6 @@ disjoint on purpose so the merge between them is mechanical.
 
 from __future__ import annotations
 
-
 # =========================================================================== #
 # C9 (amended by R9) -- the cell, the refusal, and the two floors.
 #
@@ -17,7 +16,6 @@ from __future__ import annotations
 # Every assertion below traces to the amended C9 section of the build plan, not
 # to the superseded C9 at line 923. Where the two disagree, the amended one wins.
 # =========================================================================== #
-
 import dataclasses
 import re
 
@@ -60,11 +58,11 @@ def _cell(**overrides: object) -> DimensionCell:
 # --------------------------------------------------------------------------- #
 
 
-def test_the_completions_floor_is_still_twenty_because_r9_amended_r3_rather_than_reversing_it() -> None:
+def test_the_completions_floor_is_still_twenty_because_r9_amended_r3_not_reversed_it() -> None:
     assert MIN_N_FOR_A_VERDICT == 20
 
 
-def test_the_item_floor_is_ten_so_no_single_golden_item_is_worth_more_than_a_tenth_of_a_verdict() -> None:
+def test_the_item_floor_is_ten_so_no_golden_item_is_worth_more_than_a_tenth() -> None:
     """R9's stated reason for ten, pinned as a number so a drift is visible.
 
     Below ten items one badly written golden-set item moves a published claim by
@@ -167,7 +165,7 @@ def test_one_completion_short_of_the_completions_floor_is_refused_in_completions
     assert cell.needed_unit == "completions"
 
 
-def test_one_item_short_of_the_item_floor_is_refused_in_items_even_with_completions_to_spare() -> None:
+def test_one_item_short_of_the_item_floor_is_refused_with_completions_to_spare() -> None:
     """Nine items at 80 completions: the completions floor is cleared eightfold."""
     cell = _cell(passes=64, n=80, items=9)
     assert cell.verdict_refused is True
@@ -254,7 +252,7 @@ def test_four_out_of_four_passing_is_still_refused_not_answered() -> None:
     assert cell.interval[0] > 0.10
 
 
-def test_a_cell_that_clears_both_floors_is_not_refused_even_when_it_misses_its_floor_badly() -> None:
+def test_a_cell_clearing_both_floors_is_not_refused_when_it_misses_its_floor_badly() -> None:
     """``verdict_refused`` is not "did it pass". It is "may we say".
 
     Zero of eighty against a floor of 0.90 is a resounding failure, and a
@@ -266,16 +264,17 @@ def test_a_cell_that_clears_both_floors_is_not_refused_even_when_it_misses_its_f
     assert cell.interval == pytest.approx(wilson_interval(0, 80, 0.95))
 
 
-def test_a_cell_that_clears_both_floors_is_not_refused_even_when_it_clears_its_floor_outright() -> None:
+def test_a_cell_clearing_both_floors_is_not_refused_when_it_clears_its_floor() -> None:
     cell = _cell(passes=80, n=80, items=16, floor=0.10)
     assert cell.verdict_refused is False
 
 
 def test_the_floor_never_moves_the_refusal_in_either_direction() -> None:
     """Neither sample-size floor depends on the pass-rate floor. Sweep it and see."""
-    refused = {_cell(passes=15, n=20, items=4, floor=f).verdict_refused for f in (None, 0.0, 0.5, 1.0)}
+    floors = (None, 0.0, 0.5, 1.0)
+    refused = {_cell(passes=15, n=20, items=4, floor=f).verdict_refused for f in floors}
     assert refused == {True}
-    allowed = {_cell(passes=64, n=80, items=16, floor=f).verdict_refused for f in (None, 0.0, 0.5, 1.0)}
+    allowed = {_cell(passes=64, n=80, items=16, floor=f).verdict_refused for f in floors}
     assert allowed == {False}
 
 
@@ -350,7 +349,7 @@ def test_a_tag_with_nothing_measured_says_so_rather_than_reporting_a_rate() -> N
     assert "0%" not in cell.note
 
 
-def test_a_tag_with_nothing_measured_quotes_no_shortfall_because_a_shortfall_implies_a_start() -> None:
+def test_nothing_measured_quotes_no_shortfall_because_a_shortfall_implies_a_start() -> None:
     """R10.2. "You need 6 more items" implies you have some; at zero you have none.
 
     Nothing was measured is different in kind from not enough was measured, and
@@ -433,7 +432,7 @@ def test_more_passes_than_completions_raises_rather_than_rendering() -> None:
         _cell(passes=21, n=20, items=10)
 
 
-def test_more_distinct_items_than_completions_raises_because_the_caller_mispaired_two_numbers() -> None:
+def test_more_distinct_items_than_completions_raises_a_mispaired_two_numbers() -> None:
     """items > n is not a small sample, it is an impossible one."""
     with pytest.raises(ValueError, match="more items than completions"):
         _cell(passes=0, n=5, items=6)
@@ -545,7 +544,7 @@ def test_a_negative_count_raises_rather_than_quietly_inflating_a_shortfall() -> 
         _cell(passes=0, n=-1, items=0)
 
 
-def test_the_refusal_sentences_quote_the_floors_they_were_given_not_the_ones_they_default_to() -> None:
+def test_the_refusal_sentences_quote_the_floors_given_not_the_ones_defaulted_to() -> None:
     """Every number in both sentences is interpolated, and this is what proves it.
 
     The suite above pins all three sentences only at ``min_items=10`` and

@@ -183,6 +183,7 @@ table — so the completeness claim is checkable rather than asserted.
 | `tests/test_cli.py` | `AdapterError`, `EvidenceError`, `EvidenceLog`, `FakeAdapter`, `JudgeOutputError`, `ModelPinError`, `PassRateError`, `RegressionError`, `RigorError`, `RubricDriftError`, `SampleTimeout` |
 | `tests/test_comparison.py` | `SCORE_MAX`, `SCORE_MIN` |
 | `tests/test_comparison_regressions.py` | `PassRateError`, `RegressionError`, `SCORE_MAX`, `SCORE_MIN`, `assert_no_regression` |
+| `tests/test_dimensions.py` | `DEFAULT_CONFIDENCE`, `wilson_interval` |
 | `tests/test_evidence_scale.py` | `EvidenceError`, `EvidenceLog`, `FakeAdapter` |
 | `tests/test_judging.py` | `EvidenceLog`, `FakeAdapter`, `JudgeOutputError`, `ModelPinError`, `PinnedJudge`, `SCORE_MIN`, `hash_rubric_file`, `is_pinned` |
 | `tests/test_property_based.py` | `FakeAdapter`, `SCORE_MAX`, `SCORE_MIN` |
@@ -206,6 +207,8 @@ src/model_migration_kit/cli.py:43 from opik_rigor import Adapter, AdapterError, 
 src/model_migration_kit/cli.py:53 from opik_rigor import __version__
 src/model_migration_kit/comparison.py:88 from opik_rigor import EvidenceLog, PassRateError, RegressionError, SCORE_MAX, SCORE_MIN, assert_no_regression, assert_pass_rate, wilson_interval
 src/model_migration_kit/demo.py:91 from opik_rigor import AdapterError, EvidenceLog, FakeAdapter
+src/model_migration_kit/dimensions.py:25 from opik_rigor import wilson_interval
+src/model_migration_kit/dimensions.py:26 from opik_rigor.distribution import DEFAULT_CONFIDENCE
 src/model_migration_kit/judging.py:54 from opik_rigor import Adapter, EvidenceLog, JudgeOutputError, ModelPinError, PinnedJudge, SCORE_MIN, hash_rubric_file, require_pinned
 src/model_migration_kit/report.py:108 import opik_rigor
 src/model_migration_kit/report.py:110 from opik_rigor import EvidenceError, EvidenceRecord
@@ -214,6 +217,8 @@ tests/fixtures/make_fixtures.py:68 from opik_rigor import EvidenceLog, FakeAdapt
 tests/test_cli.py:55 from opik_rigor import AdapterError, EvidenceError, EvidenceLog, FakeAdapter, JudgeOutputError, ModelPinError, PassRateError, RegressionError, RigorError, RubricDriftError, SampleTimeout
 tests/test_comparison.py:52 from opik_rigor import SCORE_MAX, SCORE_MIN
 tests/test_comparison_regressions.py:66 from opik_rigor import PassRateError, RegressionError, SCORE_MAX, SCORE_MIN, assert_no_regression
+tests/test_dimensions.py:25 from opik_rigor import wilson_interval
+tests/test_dimensions.py:26 from opik_rigor.distribution import DEFAULT_CONFIDENCE
 tests/test_evidence_scale.py:43 from opik_rigor import EvidenceError, EvidenceLog, FakeAdapter
 tests/test_judging.py:46 from opik_rigor import EvidenceLog, FakeAdapter, ModelPinError, PinnedJudge, SCORE_MIN, hash_rubric_file, is_pinned
 tests/test_judging.py:436 from opik_rigor import JudgeOutputError
@@ -422,20 +427,50 @@ three) — so the re-export is an alias rather than a move, and a consumer still
 the old spelling is not broken by 0.2.0. That was rigor's stated intent when the
 names landed; it is now a run result rather than an intent.
 
-Every site in this repository now imports them from the package root, and
-`grep -rn "from opik_rigor\." src` returns nothing. That is checked on every push
-rather than asserted: `scripts/dependency_surface.py --check` derives the table in
+Every site in this repository imported them from the package root, and
+`grep -rn "from opik_rigor\." src` returned nothing until `dimensions.py`, which
+is the second recorded exception below and the first one in `src/`. The table
+itself is checked on every push rather than asserted: `scripts/dependency_surface.py --check` derives the table in
 §1 from the AST and fails CI when this document and the tree disagree. It was
 written because this record was wrong three times in a row about how many sites
 existed, always understating — the fix landed with **six**, where the last count
 said three.
 
-One recorded exception, in tests only: `tests/test_stranger_path.py` imports
+**Two recorded exceptions.**
+
+*In tests only:* `tests/test_stranger_path.py` imports
 `opik_rigor.adapters.{anthropic,openai_compat}` for their `PACKAGE` constants,
 which are not in `__all__`. It exists to detect drift — it asserts the SDK names
 this CLI tells a reader to install are the ones rigor is actually about to import
 — so it is the opposite of a hidden dependency, but it is a dependency and it is
 listed rather than waved through.
+
+*In `src/`, and it is the first:* `src/model_migration_kit/dimensions.py` imports
+`DEFAULT_CONFIDENCE` from `opik_rigor.distribution`, because the package root does
+not re-export it:
+
+```
+$ .\.venv\Scripts\python.exe -c "import opik_rigor, opik_rigor.distribution as d; n='DEFAULT_CONFIDENCE'; print(f'{n} in opik_rigor.__all__: {n in opik_rigor.__all__}  top-level attr: {hasattr(opik_rigor, n)}  in distribution.__all__: {n in d.__all__}')"
+DEFAULT_CONFIDENCE in opik_rigor.__all__: False  top-level attr: False  in distribution.__all__: True
+```
+
+It is public by every test this document has ever applied — no leading
+underscore, and in its own module's `__all__` — and it is the same shape of
+exposure `SCORE_MIN` had before 0.1.1: reachable only through a submodule, so a
+rigor release could move it without touching the root `__all__` and be within its
+rights.
+
+It is imported rather than hardcoded on purpose. `dimension_cell` discloses the
+confidence level behind any interval it computed from a defaulted one, and a
+disclosure that types `95%` as a literal is a sentence that goes quietly wrong the
+day rigor changes its default — the same defect class as a refusal sentence that
+hardcodes its own floor, which C9's review found and closed. Reading the constant
+is what makes the disclosure true rather than merely usually true.
+
+The cheap fix is upstream and is the one rigor already applied to the judge
+names: re-export `DEFAULT_CONFIDENCE` at the package root, beside
+`wilson_interval`, which is exported there and defaults to it. Until then this
+line stays, and it stays listed.
 
 ### rigor's pytest plugin autoloads into this suite
 
