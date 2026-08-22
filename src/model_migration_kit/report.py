@@ -156,7 +156,7 @@ from __future__ import annotations
 import html
 import os
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from html.parser import HTMLParser
@@ -171,6 +171,14 @@ from rich.table import Table
 from rich.text import Text
 
 from .contracts import EVENT_COMPARISON, EVENT_VERDICT, Verdict, hash_file, utc_now
+from .dimensions import (
+    MIN_ITEMS_FOR_A_VERDICT,
+    MIN_N_FOR_A_VERDICT,
+    UNTAGGED,
+    DimensionCell,
+    dimension_cell,
+    dimension_counts,
+)
 from .errors import ArtifactError, GoldenSetError, ReportError
 from .evidence import resolve_evidence, stream_records
 from .goldenset import GoldenSet
@@ -182,6 +190,7 @@ __all__ = [
     "DEFAULT_MAX_REPORT_CHARS",
     "Completeness",
     "DetailBudget",
+    "DimensionMatrix",
     "FlipRow",
     "JudgeRow",
     "MethodologySection",
@@ -747,6 +756,97 @@ class MethodologySection:
     body: tuple[str, ...]  # paragraphs, already substituted with real numbers
 
 
+#: What a :class:`DimensionMatrix` carries when nothing ever built one. Only
+#: :meth:`ReportModel.from_evidence` builds a matrix, so this is the sentence a
+#: model constructed by any other route hands its renderer. It is a sentence
+#: rather than an empty mapping for the reason ``dimensions.DimensionCounts``
+#: gives for the same choice: ``{}`` is not something anyone can print.
+#:
+#: It is deliberately *not* one of the refusals below. Those are reused verbatim
+#: from the thing that refused; this one says the matrix was never asked for,
+#: which is a different fact and has no other home.
+_NO_DIMENSION_MATRIX = (
+    "no dimension matrix was built for this report: ReportModel.from_evidence "
+    "is the only thing that builds one."
+)
+
+
+@dataclass(frozen=True)
+class DimensionMatrix:
+    """The per-tag table -- one column per model -- or a sentence saying why not.
+
+    Built from the evidence log and the golden set alone, never from the judged
+    artifacts. A ``judge.verdict`` carries the golden-set input verbatim, so a
+    verdict joins to an item by its input text; the judged artifacts are not
+    needed and asking for them would make the table the first thing in this
+    document to die on the cross-machine re-render that the module docstring
+    calls the designed workflow. A reviewer opening a shared log with no artifact
+    directory beside it still gets the table.
+
+    **A refusal is ``available=False`` and a ``reason`` lifted verbatim from
+    whatever refused** -- ``gs_view["reason"]`` when the golden set is not the one
+    that was run, :attr:`dimensions.DimensionCounts.reason` when the counting
+    declined. Neither is re-worded here. Three copies of a disclosure are three
+    chances for one of them to go stale, which is the argument
+    :attr:`DetailBudget.sentence` makes for writing it once, and a matrix that
+    explained a hash mismatch in its own words would be the fourth copy.
+
+    Unavailability has more causes than the two that are obvious from this class:
+    the golden set can be missing, unreadable, unrecorded or changed, and the
+    counting declines separately for a duplicated input, an unjoinable verdict, a
+    short judging group, verdicts left open at the end of the log, a model known
+    only from failed completions, a log with no judging pass in it at all, and a
+    judge that produced nothing under that name. Every one of them arrives here
+    as a string, which is exactly why this class holds one and not an enum.
+
+    **Nothing partial is ever rendered.** ``DimensionCounts`` guarantees an empty
+    ``by_model`` on a refusal, and that guarantee exists so a caller cannot be
+    tempted; when it refuses, :attr:`baseline` and :attr:`candidates` are empty
+    and :attr:`tags` is ``()``. In particular the per-tag cells are never
+    reconstructed out of :attr:`ReportModel.item_counts`, which is an aggregate:
+    splitting it across tags by any rule at all would be invention.
+
+    ``tags`` carries every tag the golden set holds, whether or not a model
+    produced anything under it -- a tag that was tested and returned nothing is a
+    finding, and dropping the row would hide it. :data:`dimensions.UNTAGGED` is
+    last and is the empty string rather than the word, because "untagged" is a
+    legal tag and a set that used it would collide with this bucket and read as a
+    larger slice.
+
+    ``min_n`` and ``min_items`` are the two floors every cell here was judged
+    against, carried because a document that refuses a cell has to be able to say
+    what it refused *against* -- and because a reader who wants the completions
+    shortfall as a number gets it by subtracting two fields already on the cell.
+
+    ``judge`` names whose verdicts were counted. A panel writes one verdict per
+    judge per completion, so a matrix that mixed two judges would multiply every
+    denominator by the panel size; one judge is counted and the document says
+    which.
+    """
+
+    available: bool = False
+    reason: str = _NO_DIMENSION_MATRIX
+    judge: str = ""
+    #: Golden-set tag order, ``UNTAGGED`` last. The only tag order the golden set
+    #: has is the one :meth:`GoldenSet.stats` publishes -- ``dict(sorted(...))``
+    #: -- so this is alphabetical with the untagged bucket moved off the front,
+    #: where the empty string would otherwise sort.
+    tags: tuple[str, ...] = ()
+    #: tag -> cell, for the side the comparison payload calls the baseline.
+    baseline: Mapping[str, DimensionCell] = field(default_factory=dict)
+    #: model_id -> tag -> cell, for every other model the log named.
+    #:
+    #: The outer and inner mappings both have a real ``.items()`` and
+    #: ``DimensionCell.items`` is an ``int``, so ``column.items`` and
+    #: ``cell.items`` are one keystroke apart and both "work" -- one is a number,
+    #: the other a bound method printed into the page. ``report.py``'s
+    #: ``goldenset["by_id"]`` was renamed away from ``items`` to kill exactly this
+    #: hazard, and here the mapping is the thing that cannot be renamed away.
+    candidates: Mapping[str, Mapping[str, DimensionCell]] = field(default_factory=dict)
+    min_n: int = MIN_N_FOR_A_VERDICT
+    min_items: int = MIN_ITEMS_FOR_A_VERDICT
+
+
 @dataclass(frozen=True)
 class ReportModel:
     """Everything the two renderers print, reconstructed from disk.
@@ -807,6 +907,14 @@ class ReportModel:
     #: the timeline can gain, lose or re-derive a field without the banner, the
     #: judge table, the flips or the provenance block moving with it.
     series: tuple[RunPoint, ...] = ()
+    #: How each tag in the golden set did, per model, under one judge -- or the
+    #: sentence saying why there is no such table. Never ``None``: a report that
+    #: has no matrix says so in the same place as one that has.
+    #:
+    #: Defaulted for the reason ``series`` is: every constructor of a
+    #: ``ReportModel`` in this codebase and in anyone else's predates the field,
+    #: and a required argument would break each one.
+    dimensions: DimensionMatrix = field(default_factory=DimensionMatrix)
 
     # -- construction ------------------------------------------------------- #
 
@@ -984,6 +1092,13 @@ class ReportModel:
         )
 
         thresholds = dict(payload.get("thresholds", {}) or {})
+        dimensions = _dimension_matrix(
+            _stream_records(path),
+            gs_view,
+            thresholds,
+            judges[0].name if judges else "",
+            baseline.model_id,
+        )
         config_path = str(payload.get("config_path", "") or "")
         # Per-threshold provenance -- CLI flag versus config file versus built-in
         # default -- is not carried in the comparison payload (contract §1.2), and
@@ -1027,6 +1142,7 @@ class ReportModel:
             command=str(payload.get("command", "") or ""),
             artifact_dir="" if artifact_dir is None else str(artifact_dir),
             series=series,
+            dimensions=dimensions,
         )
 
     # -- derived ------------------------------------------------------------ #
@@ -1314,6 +1430,109 @@ def _load_goldenset(
         }
     )
     return view
+
+
+def _dimension_matrix(
+    records: Iterable[Any],
+    gs_view: Mapping[str, Any],
+    thresholds: Mapping[str, Any],
+    judge: str,
+    baseline_model: str,
+) -> DimensionMatrix:
+    """The per-tag table, or the verbatim sentence explaining why there is none.
+
+    ``records`` is the evidence log, streamed. Nothing here opens a file: every
+    path this reconstruction may read was resolved by :meth:`from_evidence`
+    before this is called, and the judged artifacts -- which a cross-machine
+    render does not have -- are not among them, because a ``judge.verdict``
+    carries the golden-set input verbatim and so joins to an item without them.
+
+    **Both refusals are quoted, never re-worded.** ``gs_view["reason"]`` already
+    explains a missing, unreadable, unrecorded or changed golden set in the words
+    the completeness strip uses, and
+    :attr:`~model_migration_kit.dimensions.DimensionCounts.reason` already
+    explains each of the counting declines in the words that name the fix. A
+    third phrasing of either would be a third chance for one of them to go stale.
+
+    **Which side is the baseline comes from the comparison payload.**
+    ``dimension_counts`` keys by ``model_id`` and does not know which side is
+    which; position in ``by_model`` is not the answer, because that mapping is
+    ordered by which judging pass closed first. Every other column is a
+    candidate, which is what makes a three-way comparison render without this
+    function learning about it.
+    """
+    if not gs_view["available"]:
+        return DimensionMatrix(
+            available=False, reason=str(gs_view["reason"]), judge=judge
+        )
+    counts = dimension_counts(records, gs_view["by_id"], judge=judge)
+    if not counts.available:
+        return DimensionMatrix(available=False, reason=counts.reason, judge=judge)
+
+    # The two floors travel with the matrix, so ``dimension_cell`` is told the
+    # numbers this matrix advertises rather than left to its own defaults. They
+    # are the same constants today; passing them makes "what was this refused
+    # against" a fact with one source instead of two that happen to agree.
+    min_n, min_items = MIN_N_FOR_A_VERDICT, MIN_ITEMS_FOR_A_VERDICT
+    floor = _number(thresholds.get("pass_rate_floor"))
+    # ``None`` is not a missing value to paper over: ``dimension_cell`` reads it
+    # as "no confidence level was given" and discloses rigor's default in the
+    # cell's own note, which is what a printed interval of unknown confidence
+    # needs.
+    confidence = _number(thresholds.get("confidence"))
+
+    # Every column carries every tag in the golden set -- that is what
+    # ``dimension_counts`` guarantees, and a tag that produced nothing is a zero
+    # row rather than a missing one -- so any column answers "which tags".
+    # ``by_model`` is non-empty here: a refusal is the only way it is empty, and
+    # a refusal returned two statements ago.
+    present = tuple(next(iter(counts.by_model.values())))
+    tags = tuple(sorted(one for one in present if one != UNTAGGED))
+    if UNTAGGED in present:
+        # Last, not first, where the empty string sorts. A set in which every
+        # item is untagged is one row keyed ``UNTAGGED`` and is *available*:
+        # "you tagged nothing" is a finding, and a different fact from "the
+        # golden set is gone".
+        tags += (UNTAGGED,)
+
+    def column(per_tag: Mapping[str, Any]) -> dict[str, DimensionCell]:
+        # ``per_tag[tag].items`` is ``TagCount.items``, an int -- the distinct
+        # golden-set items behind the cell. It is not ``per_tag.items``, which is
+        # this mapping's bound method and would render as one.
+        return {
+            tag: dimension_cell(
+                tag,
+                per_tag[tag].passes,
+                per_tag[tag].n,
+                per_tag[tag].items,
+                confidence=confidence,
+                floor=floor,
+                min_n=min_n,
+                min_items=min_items,
+            )
+            for tag in tags
+        }
+
+    # ``.get`` rather than ``[]``: a log truncated after the baseline's judging
+    # pass but before the candidate's -- or the other way round -- names only one
+    # model, and the missing side is an empty mapping rather than a KeyError
+    # raised in the middle of rebuilding a report. The completeness strip is
+    # where a truncated log is already reported.
+    baseline_column = counts.by_model.get(baseline_model)
+    return DimensionMatrix(
+        available=True,
+        reason="",
+        judge=judge,
+        tags=tags,
+        baseline={} if baseline_column is None else column(baseline_column),
+        candidates={
+            model_id: column(per_tag)
+            for model_id, per_tag in counts.by_model.items()
+            if model_id != baseline_model
+        },
+        min_n=min_n,
+        min_items=min_items,
+    )
 
 
 def _load_side(
