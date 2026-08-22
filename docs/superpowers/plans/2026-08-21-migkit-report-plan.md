@@ -2102,10 +2102,16 @@ banner that took it.
 | every log written by `compare` today | byte-identical output to before |
 
 **Must not.** Sort. Drop a point. Change what a *complete* log renders --
-this chunk may only change what a log containing a crashed run renders. Leave
-`tests/test_report.py`'s dead-run `xfail(strict=True)` marker in place: when this
-lands it XPASSes, and a strict xfail that starts passing fails the suite on
-purpose.
+this chunk may only change what a log containing a crashed run renders.
+
+**Remove** `tests/test_report.py`'s dead-run `xfail(strict=True)` marker, and
+leave the test body untouched. Stated as its own instruction rather than as a
+Must-not item, because C19's tester read the original -- "Must not ... Leave the
+marker in place: when this lands it XPASSes, and a strict xfail that starts
+passing fails the suite on purpose" -- as contradicting itself. The clause after
+the colon is the *reason* the marker must go, not an argument for keeping it, but
+a sentence that needs that explained is a sentence that should have been written
+the other way round.
 
 **Failure mode when wrong.** A crashed run rendering as a clean GO with exit 0
 and `completeness.complete is True`, which is what 0.1.1 does today. `cli.py:435`
@@ -2269,10 +2275,12 @@ MIN_N_FOR_A_VERDICT: int = 20        # completions, unchanged -- R3 is not reope
 MIN_ITEMS_FOR_A_VERDICT: int = 10    # distinct items contributing to the tag
 ```
 
-Ten, and the reason is statable rather than aesthetic: below ten items a single
-item is worth more than a tenth of the dimension's verdict, and one badly written
-golden-set item should not be able to move a published claim by that much. It
-refuses the spec's own 4-item example. The showcase clears it at 16 items and 80
+Ten. **R10.6 corrects the argument that stood here**, which was circular -- it
+defined the threshold by restating it. The two constraints below narrow the
+number to the band 5 to 16 and no further; ten is a judgement inside that band,
+expressed as a leverage tolerance: no single golden-set item should move a
+published dimension claim by more than a tenth. It refuses the spec's own 4-item
+example. The showcase clears it at 16 items and 80
 completions, so **C15 does not change and its two headline tests stand.**
 
 R3 is amended, not reversed: the completions floor stays at 20 completions and
@@ -2566,3 +2574,67 @@ cross-machine render with no artifact directory now produces a full matrix, and
 that is the point of R1. The C10 test named at line 1050 must be rewritten to
 assert the opposite of what it currently says: a log whose artifacts have been
 moved away still renders its matrix.
+
+---
+
+### R10 — C9's four ambiguities, ruled; and one product defect R9 created
+
+C9's tester found four places where its contract was ambiguous enough that the
+implementer and the tester could each pick a different reading and neither be
+wrong, plus two objections to R9 itself. All six are accepted. The rulings went
+to both C9 agents verbatim, mid-flight, in identical words — that is the only way
+a blind pair does not diverge on a late correction.
+
+**R10.1 — `note` is not only the refusal sentence.** The field comment says
+`# the refusal sentence, "" when not refused`; the edge table says a defaulted
+confidence must be recorded in `note`, "never silently". An unrefused cell with
+`confidence=None` is both. **"Never silently" wins**: `note` is the cell's
+disclosure line, and a defaulted confidence appears there whether or not the cell
+is refused. The field comment is wrong.
+
+**R10.2 — at `n == 0`, `needed is None` and `needed_unit == ""`.** "You need 6
+more items" implies you have some. At zero nothing was measured and the honest
+statement is different in kind, so the note says that and names neither floor as
+a shortfall.
+
+**R10.3 — the completions refusal sentence, verbatim:**
+`"20 completions needed for a verdict here; you have 12."` It mirrors the items
+sentence. C9 gave a verbatim for one and not the other, which is how two agents
+end up pinning two different strings.
+
+**R10.4 — `floor` is an echoed input, not a derived field.** Echo it always,
+including at `n == 0`. "Every derived field is `None`" does not reach it.
+
+**R10.5 — the n=4 edge row is a slip, and repairing it exposed a real defect.**
+That row says "both floors named in `needed`/`needed_unit`", which those singular
+fields cannot express. `needed`/`needed_unit` keep the **actionable** floor —
+items when both bind, for the reason R9 gives.
+
+But naming only one floor is a product defect, and C9's tester found it: a user
+at n=4/items=4 who is told "10 items needed; you have 4" adds six single-draw
+items, lands at items=10 and n=10, and **is refused again** on the floor nobody
+mentioned — having done exactly what the note asked. For a document whose entire
+differentiator is declining honestly, being refused twice for one shortfall is
+the worst available second impression.
+
+So **`note` names the other floor too when it also binds**, in two sentences:
+
+```
+"10 items needed for a verdict here; you have 4. The 20-completion floor is
+also unmet: you have 4."
+```
+
+One sentence when only one floor binds.
+
+**R10.6 — R9's justification for ten is circular, and this corrects it.**
+"Below ten items a single item is worth more than a tenth of the dimension's
+verdict" defines the threshold by restating it. The constraints R9 actually cites
+— refuse the spec's 4-item example, clear the showcase's 16 — narrow the number
+to the band **5 to 16** and no further. Ten is a **judgement inside that band**,
+expressed as a leverage tolerance: no single golden-set item should move a
+published dimension claim by more than a tenth.
+
+The number does not change. What changes is that the plan no longer presents a
+judgement call as a derivation, which is the kind of dressing-up that survives
+into a docstring and then into an argument with someone who checked the
+arithmetic.
