@@ -96,6 +96,7 @@ fourth number derived from them.
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from collections.abc import Mapping, Sequence
@@ -2090,10 +2091,72 @@ def _print_changes(console: Console, title: str, rows: Sequence[FlipRow]) -> Non
 #: restating it; importing this keeps the test honest if the number ever moves.
 INTERVAL_BAR_PAD = 8
 
-#: Decimals used for every ``data-value`` *and* for every number in the
-#: ``<title>``. One format for both is what makes "the words agree with the
-#: drawing" a string comparison rather than a re-derivation of the projection.
+#: The narrowest interval band that still puts ink on the canvas, in user units.
+#: An SVG ``<rect>`` with ``width="0"`` is not rendered at all, so a degenerate
+#: interval -- ``(0.5, 0.5)``, which a Wilson interval approaches as n grows --
+#: would vanish rather than draw a hairline at the value it does have. An absent
+#: interval and a zero-width one are different claims and must not arrive as the
+#: same picture; the band's ``x`` stays the mapped ``interval[0]``, so the widening
+#: is rightward and the contract's positioning rule is untouched.
+INTERVAL_BAR_MIN_SPAN = 1.0
+
+#: Decimals in every ``data-value``. R7 pins this at the *unmapped* float to
+#: exactly six places: the attribute is the seam a test uses to watch the model's
+#: number reach the drawing without re-deriving the projection, and a rounded or
+#: projected one would make the check circular. The ``<title>`` deliberately does
+#: *not* share the format -- it speaks percents, like every other number the
+#: reader of the surrounding document sees. The machine seam and the human
+#: sentence are two audiences, and one format cannot serve both.
 _INTERVAL_BAR_PLACES = 6
+
+#: The three not-recorded phrases, named rather than left as literals. R7's
+#: argument for naming ``INTERVAL_BAR_PAD`` applies verbatim to a string a test
+#: has to match: a test that guesses at the wording -- and C12's tester had to
+#: accept nine spellings of the floor phrase -- cannot tell a deliberate rewording
+#: from a bar that quietly started printing a number for a value nobody measured.
+#: All three exist because the contract's rule for the floor ("an absent rule must
+#: not read as a floor of zero") is not about floors; it is about absence.
+INTERVAL_BAR_NO_RATE = "pass rate not recorded"
+INTERVAL_BAR_NO_INTERVAL = "interval not recorded"
+INTERVAL_BAR_NO_FLOOR = "floor not recorded"
+
+
+def _is_number(value: Any) -> bool:
+    """A real, finite number. ``bool``, ``None``, ``NaN`` and the infinities are not.
+
+    Deliberately a second copy of ``comparison._is_number`` rather than an import
+    of another module's private name. ``report._number`` is *not* this predicate:
+    it widens an ``int``/``float`` out of an evidence record and is finiteness-blind
+    on purpose, because the model fields it feeds carry their own handling. Nothing
+    in this module tested finiteness before, and the interval bar is the first place
+    that must.
+    """
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+    )
+
+
+def _interval_bar_number(value: Any) -> float | None:
+    """``value`` as a float, or ``None`` if it is not a number the bar may project.
+
+    ``json.loads`` accepts a bare ``NaN``, so a malformed evidence log can put one
+    in a pass rate and it arrives here intact. ``min(1.0, max(0.0, nan))`` is
+    ``0.0`` -- a NaN rate would draw at ``INTERVAL_BAR_PAD``, pixel-identical to a
+    rate of 0.0, with ``data-value="nan"`` beside it violating R7's six-place
+    contract. That is the contract's own "silently wrong projection": a picture
+    saying the run scored zero when nothing was measured.
+
+    So a non-finite value renders as *not recorded* rather than being projected,
+    and rather than being refused. Three reasons for degrading instead of raising.
+    The module already answers an unusable number this way -- ``_number`` returns
+    ``None`` and ``_pct`` prints an em dash. This function returns a ``str`` and has
+    no channel for a warning, so a raise would take a whole document down over one
+    bar. And "not recorded" is the *true* statement about a NaN, which is the line
+    R5 draws: missing data stated as missing, never as zero.
+    """
+    return float(value) if _is_number(value) else None
 
 
 def _interval_bar_clamp(value: float) -> float:
@@ -2168,7 +2231,20 @@ def interval_bar_svg(
     Each of the four missing-value states is a different picture, and the third is
     the one that matters. ``floor is None`` draws no line at all and says so in
     the title, because a rule that was never set, rendered as a floor of 0.0,
-    makes the document claim a bar cleared a bar that does not exist.
+    makes the document claim a bar cleared a bar that does not exist. The same
+    reasoning governs an absent rate and an absent interval, so all three get a
+    named phrase (``INTERVAL_BAR_NO_RATE`` and friends) rather than a number.
+
+    A non-finite ``rate``, ``floor`` or interval endpoint is treated as *not
+    recorded* rather than projected -- see :func:`_interval_bar_number`, which
+    carries the reasoning and the arithmetic that makes it necessary.
+
+    Two number formats, on purpose. The ``<title>`` speaks percents through
+    ``_pct``, matching everything else a reader of the surrounding document meets:
+    the pass-rate cell, the interval cell and the banner's floor. ``data-value``
+    keeps the unmapped six-place fraction R7 pins, because that is the machine
+    seam. A screen-reader user should hear ``72.0%`` where the sighted reader sees
+    ``72.0%``, not six zeros nobody else is shown.
 
     Args:
         rate: the point estimate as a fraction, or None if nothing was measured.
@@ -2176,26 +2252,34 @@ def interval_bar_svg(
         floor: the gate's threshold as a fraction, or None if no rule was set.
         width: viewport width in user units.
         height: viewport height in user units.
-        label: prefixed to the accessible title; may be empty.
+        label: prefixed to the accessible title; may be empty or whitespace.
 
     Returns:
         One ``<svg>`` element as a string, on a single line.
     """
-    if rate is None:
-        rate_words = "pass rate not recorded"
-    else:
-        rate_words = f"pass rate {_interval_bar_value(rate)}"
+    rate = _interval_bar_number(rate)
+    floor = _interval_bar_number(floor)
+    if interval is not None:
+        low_end = _interval_bar_number(interval[0])
+        high_end = _interval_bar_number(interval[1])
+        # Half an interval is not an interval. A band drawn from a good lower end
+        # to a NaN upper end would claim a span nobody measured, which is the
+        # failure this whole guard exists to prevent.
+        interval = None if low_end is None or high_end is None else (low_end, high_end)
+
+    rate_words = INTERVAL_BAR_NO_RATE if rate is None else f"pass rate {_pct(rate)}"
     if interval is None:
-        interval_words = "interval not recorded"
+        interval_words = INTERVAL_BAR_NO_INTERVAL
     else:
-        interval_words = (
-            f"interval {_interval_bar_value(interval[0])} "
-            f"to {_interval_bar_value(interval[1])}"
-        )
-    floor_words = "floor not recorded" if floor is None else f"floor {_interval_bar_value(floor)}"
+        interval_words = f"interval {_pct(interval[0])} to {_pct(interval[1])}"
+    floor_words = INTERVAL_BAR_NO_FLOOR if floor is None else f"floor {_pct(floor)}"
     sentence = f"{rate_words}, {interval_words}, {floor_words}"
-    if label:
-        sentence = f"{label}: {sentence}"
+    # Trimmed and control-stripped before the test for emptiness, because a label
+    # of "  " -- or of a lone ESC lifted out of an evidence log -- would otherwise
+    # open the accessible name with a bare " : " and announce nothing.
+    named = _CONTROL_RE.sub(" ", label).strip()
+    if named:
+        sentence = f"{named}: {sentence}"
 
     # The title is unconditional -- it is the accessible name of a `role="img"`
     # element, and it is where the floor-was-never-recorded state is stated in
@@ -2219,10 +2303,11 @@ def interval_bar_svg(
             parts.append(
                 f'<rect class="interval" x="{_interval_bar_coord(low)}" '
                 f'y="{_interval_bar_coord(height * 0.34)}" '
-                # max(0, ...) only guards a reversed pair: a negative `width` is
-                # invalid SVG and renders as nothing at all. `x` stays the mapped
-                # `interval[0]`, exactly as the geometry contract says.
-                f'width="{_interval_bar_coord(max(0.0, high - low))}" '
+                # The floor guards two ways of drawing nothing: a reversed pair,
+                # whose negative `width` is invalid SVG, and a degenerate one,
+                # whose `width="0"` an SVG renderer skips outright. `x` stays the
+                # mapped `interval[0]`, exactly as the geometry contract says.
+                f'width="{_interval_bar_coord(max(INTERVAL_BAR_MIN_SPAN, high - low))}" '
                 f'height="{_interval_bar_coord(height * 0.32)}" '
                 f'fill="#cfd4da" stroke="#7b838d" stroke-width="1" '
                 f'data-value="{_interval_bar_value(interval[0])}" '
