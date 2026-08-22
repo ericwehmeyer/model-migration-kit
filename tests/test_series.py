@@ -1804,58 +1804,159 @@ def test_a_stray_leading_verdict_does_not_displace_the_verdict_that_followed(tmp
     assert points[0].reason == "tonight's decision"
 
 
-def test_two_comparisons_written_before_either_verdict_pair_first_with_first(tmp_path: Path):
+def test_two_comparisons_written_before_either_verdict_both_land_on_the_second(tmp_path: Path):
     """Row five, and the one row a fixture built from a real log cannot reach.
+
+    Was `test_two_comparisons_written_before_either_verdict_pair_first_with_first`
+    until C19, and inverted rather than deleted: C2 chose first-in-first-out on the
+    reasoning kept below, deliberately and after argument, and the record of a
+    decision that was later reconsidered is worth more than a tidy file.
 
     `compare` writes the verdict on the line after its comparison
     (`comparison.py:906-908`), so on every log in existence "pairs correctly" and
     "assumes the next line is the verdict" are the same reader. This log is C, C,
-    V, V, and there the two answers differ.
+    V, V, and there the two answers differ. That much is unchanged, and so is the
+    failure being defended against: a verdict landing on the wrong run, which draws
+    a red night over a green one.
 
-    **This asserts the contract's edge table against the contract's own prose.**
-    The prose says a point is closed by "the next `migkit.verdict` before the next
-    `migkit.comparison`", which on this log closes nothing and returns two points
-    with no verdicts. The table says "first verdict closes the first point; the
-    second verdict closes the second". The table is asserted, because it is the
-    sentence written about *this* log while the prose was written about the
-    adjacent case, and because the failure the chunk exists to prevent is a verdict
-    landing on the wrong run -- which the prose's reading produces the moment any
-    writer batches.
-
-    What it costs when it is wrong: run three's NO-GO draws on run four's
-    comparison, and the timeline shows a red night on a green one."""
+    **What changed is which of the two answers is right.** C2 read the contract's
+    Edges row -- "first verdict closes the first point; the second closes the
+    second" -- against the contract's own prose, and took the row. C19 finds the
+    premise under the row false. There is exactly one writer of either record,
+    `comparison.py:907-908`, two `evidence.append` calls back to back inside one
+    `if`, so no pipeline in this repository can produce C, C, V, V at all, and
+    first-in-first-out is right only about a log nobody writes. The shape that *is*
+    written is a crash -- a comparison with no verdict after it, and the next night
+    appended to the same growing file -- and there first-in-first-out hands night
+    one night two's verdict and shifts every later verdict by one, permanently. So
+    the rule is now that **every verdict record updates the most recently opened
+    point**. On this log both verdicts land on run four, and run three, whose
+    verdict this log genuinely does not contain, keeps `None`.
+    """
     log = _write_log(
         tmp_path / "evidence.jsonl",
         _a_comparison("run-three"),
         _a_comparison("run-four"),
-        _a_verdict("GO", reason="run three was fine"),
-        _a_verdict("NO-GO", reason="run four regressed"),
+        _a_verdict("GO", reason="the first of the two verdicts"),
+        _a_verdict("NO-GO", reason="the second of the two verdicts"),
     )
     points = read_series(log)
     assert len(points) == 2, f"C, C, V, V gave {len(points)} point(s)"
     assert [point.candidate_model for point in points] == ["run-three", "run-four"]
-    assert points[0].verdict == "GO", "the first verdict did not close the first point"
-    assert points[0].reason == "run three was fine"
-    assert points[1].verdict == "NO-GO"
-    assert points[1].reason == "run four regressed"
+    assert points[0].verdict is None, (
+        "the first verdict closed the first point -- C2's rule, which shifts every "
+        "verdict in a log that holds one crashed night"
+    )
+    assert points[0].reason is None
+    assert points[1].verdict == "NO-GO", (
+        "the second verdict did not overwrite the first on the most recent point"
+    )
+    assert points[1].reason == "the second of the two verdicts"
 
 
-def test_a_verdict_with_no_point_left_open_is_ignored_and_overwrites_nothing(tmp_path: Path):
-    """The tail of row five. Three verdicts against two comparisons is a log that
-    was concatenated, and the extra record has to fall on the floor: a reader that
-    lets it overwrite the last point reports the wrong outcome on the most recent
-    night, which is the one anybody looks at."""
+def test_a_third_verdict_after_two_comparisons_overwrites_the_most_recent_point(tmp_path: Path):
+    """The tail of row five. Was
+    `test_a_verdict_with_no_point_left_open_is_ignored_and_overwrites_nothing`
+    until C19, and inverted rather than deleted, for the reason on the test above.
+
+    Three verdicts against two comparisons is a log that was concatenated, and
+    under C2's rule the extra record had to fall on the floor: a reader that let it
+    overwrite the last point reported the wrong outcome on the most recent night,
+    which is the one anybody looks at. That reasoning still holds, and the risk it
+    names is now taken on purpose, because refusing it costs more than it saves.
+
+    "Closes the most recent *open* point" cannot tell a concatenated log from a
+    re-decided run either -- both are a verdict arriving after a point was closed,
+    and nothing in the record distinguishes them. What it does do is drop the
+    second verdict of a `C V1 V2` log, while the headline keeps the last verdict
+    record unconditionally. A banner and a timeline disagreeing about tonight's
+    outcome is the failure this module exists to prevent, and it is a worse one
+    than an over-written night in a hand-concatenated file.
+
+    So the last verdict in the log wins, on the last point opened, which is exactly
+    what the headline does, and the two therefore agree by construction. What is
+    still ignored is a verdict with no point at *all*: see
+    `test_a_verdict_written_before_any_comparison_belongs_to_no_point`.
+    """
     log = _write_log(
         tmp_path / "evidence.jsonl",
         _a_comparison("run-one"),
         _a_comparison("run-two"),
         _a_verdict("GO", reason="one"),
         _a_verdict("NO-GO", reason="two"),
-        _a_verdict("GO", reason="a third verdict with nothing left to close"),
+        _a_verdict("REVIEW", reason="a third verdict, written after both comparisons"),
     )
     points = read_series(log)
-    assert len(points) == 2
-    assert [point.reason for point in points] == ["one", "two"]
+    assert len(points) == 2, "a verdict opened a point of its own"
+    assert [point.verdict for point in points] == [None, "REVIEW"]
+    assert [point.reason for point in points] == [
+        None,
+        "a third verdict, written after both comparisons",
+    ]
+
+
+def test_a_comparison_followed_by_two_verdicts_carries_the_second(tmp_path: Path):
+    """Row eight, and the one row that separates "updates" from "closes once".
+
+    Every other row of the agreement table reads the same under either rule. This
+    one does not: a rule that closes a point and refuses to reopen it drops V2 and
+    leaves the point reading GO, while `ReportModel.from_evidence` keeps the last
+    verdict record it saw and prints NO-GO in the banner. One log, two answers,
+    about the run at the right-hand end of the chart -- which is the disagreement
+    the whole chunk exists to make impossible.
+    """
+    log = _write_log(
+        tmp_path / "evidence.jsonl",
+        _a_comparison("tonight"),
+        _a_verdict("GO", reason="decided, and then decided again"),
+        _a_verdict("NO-GO", reason="the decision the log ends on"),
+    )
+    points = read_series(log)
+    assert len(points) == 1, "the second verdict opened a point of its own"
+    assert points[0].verdict == "NO-GO", (
+        "the point kept the first verdict, so the timeline says GO where the banner says NO-GO"
+    )
+    assert points[0].reason == "the decision the log ends on"
+
+
+def test_one_crashed_night_in_the_middle_of_a_log_moves_no_later_verdict(tmp_path: Path):
+    """The Edges row that takes four nights to state and that two cannot reach.
+
+    First-in-first-out does not merely mispair the crashed night. It shifts every
+    verdict after it by one, and an evidence log only ever grows, so the shift is
+    permanent and cumulative -- verbatim the failure `series.py`'s docstring says
+    the module exists to prevent, produced by the rule chosen to prevent it.
+
+    Night two is the crash: it compared, and died before deciding. On this log C2's
+    rule hands night one its own GO, night two night three's NO-GO, night three
+    night four's REVIEW, and leaves night four -- the run the banner reports on --
+    with no verdict at all. Three of the four points move, and a two-night log
+    would have shown only one of them.
+    """
+    log = _write_log(
+        tmp_path / "evidence.jsonl",
+        _a_comparison("night-one"),
+        _a_verdict("GO", reason="night one"),
+        _a_comparison("night-two"),
+        _a_comparison("night-three"),
+        _a_verdict("NO-GO", reason="night three"),
+        _a_comparison("night-four"),
+        _a_verdict("REVIEW", reason="night four"),
+    )
+    points = read_series(log)
+    assert [point.candidate_model for point in points] == [
+        "night-one",
+        "night-two",
+        "night-three",
+        "night-four",
+    ]
+    assert [point.verdict for point in points] == ["GO", None, "NO-GO", "REVIEW"]
+    assert [point.reason for point in points] == [
+        "night one",
+        None,
+        "night three",
+        "night four",
+    ]
 
 
 def test_a_record_between_a_comparison_and_its_verdict_does_not_break_the_pairing(tmp_path: Path):
