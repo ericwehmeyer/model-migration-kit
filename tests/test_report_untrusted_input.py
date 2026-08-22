@@ -956,9 +956,21 @@ def test_the_bans_the_exemption_rests_on_are_untouched(fragment: str, tag: str) 
     ],
 )
 def test_the_two_css_rules_are_untouched(fragment: str) -> None:
-    # CSS is the one place an attribute value could plausibly become a request
-    # with no script -- attr() -- so these two rules carry more weight after this
-    # chunk than before it, not less.
+    """CSS is the one place an exempt value could plausibly become a request.
+
+    ``span[data-icon] { background-image: url(attr(data-icon)) }`` is the shape
+    that would make this whole exemption unsafe with no script anywhere in the
+    document. It does not work, and not by accident: a value produced by
+    ``attr()`` is *attr()-tainted*, and using a tainted value in any URL context
+    -- ``url()``, ``image-set()``, ``src()`` -- makes the declaration invalid at
+    computed value time. The CSS WG made ``type(<url>)`` invalid in ``attr()``
+    for exactly the reason this chunk cares about. That is a second coupling the
+    exemption rests on, alongside the script ban, and it is a platform rule
+    rather than a rule this repository controls.
+
+    So these two rules carry more weight after this chunk than before it, not
+    less: they are what still catches CSS that fetches.
+    """
     assert len(external_urls(fragment)) == 1
 
 
