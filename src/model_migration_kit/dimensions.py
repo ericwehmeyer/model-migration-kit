@@ -63,10 +63,33 @@ class TagCount(NamedTuple):
     An item carrying three tags contributes to all three, so a model's columns sum
     to more than its item count. That is the arithmetic rather than a bug in it,
     and the caller has to say so on the page.
+
+    **A failed completion's item joins the distinct-item set.** The contract's
+    counting paragraph names ``items`` only for an attributed verdict, and the
+    failed-completion rule is silent, so the literal reading would produce a cell
+    of ``n=1, items=0``. That is refused here for three reasons. ``items <= n`` is
+    an invariant of the pair -- one is the same population as the other with
+    repeats collapsed -- and a cell that breaks it is not a smaller measurement
+    but an incoherent one. The floor ``items`` feeds asks how many distinct
+    golden-set *questions* stand behind a cell, and a question the model failed to
+    answer was still asked. And under the literal reading a model that timed out
+    on a whole tag would report ``items=0``, so the tag could never clear the item
+    floor and would decline as "not enough data" -- turning the model's worst
+    result into an absence of results, which is the failure ``R5`` already
+    recorded once in this codebase.
     """
 
     passes: int
     n: int
+    #: Named ``items`` on purpose, matching ``comparison.py:615``,
+    #: ``report.py:515``, ``report.py:580`` and ``series.py:106``, which all
+    #: already carry an ``items: int`` meaning exactly this. The rename that
+    #: ``report.py:1206`` performed does not transfer: it protected a *dict-like*
+    #: view, where a template writing ``goldenset.items`` silently reaches
+    #: ``dict.items`` and renders a bound method. A ``NamedTuple`` has no
+    #: ``items`` attribute of its own, so ``cell.items`` can only ever be this
+    #: int. The live version of that hazard is on ``by_model`` instead, and the
+    #: warning is filed there.
     items: int
 
 
@@ -77,10 +100,35 @@ class DimensionCounts:
     A refusal is ``available=False`` with a ``reason`` a reader can act on, rather
     than an empty ``by_model``: a missing matrix has several causes, they call for
     different fixes, and ``{}`` is not a sentence anyone can print.
+
+    **On a refusal ``by_model`` is empty, and that is a promise rather than an
+    accident.** Every guard here is global: a duplicated input poisons the join
+    for every model, an unjoinable verdict means the log and the set disagree, and
+    a short group means an unknown number of verdicts are missing from a column.
+    None of them leaves a subset of cells that happen to be sound, so handing back
+    the partial matrix would only offer a caller something it must be disciplined
+    enough not to render -- and rendering part of a matrix as if it were the
+    matrix is the "missing data stated as zero" failure this codebase has already
+    shipped once. Emptiness removes the temptation at the type level.
+
+    **Which model keys exist.** Exactly the models a ``migkit.judging_completed``
+    named, and each column carries every tag in the golden set. A side that was
+    judged and produced nothing is a column of zeros rather than a missing column:
+    the two are rendered next to each other, and a vanishing column would turn a
+    comparison into a single reading with no sentence explaining where the other
+    one went. No model reaches this mapping by any other route -- a model known
+    only from failed completions means the log stops before its judging pass, and
+    that is a refusal rather than a column of failures.
     """
 
     available: bool
     reason: str
+    #: Note for whoever renders this: the *outer* and *inner* mappings have a real
+    #: ``.items()``, and ``TagCount.items`` is an int, so ``column.items`` and
+    #: ``cell.items`` are one keystroke apart and both "work" -- one is a number,
+    #: the other a bound method printed into the page. This is the hazard
+    #: ``report.py:1206`` names; there it was fixed by renaming, and here the
+    #: mapping is the thing that cannot be renamed away.
     by_model: Mapping[str, Mapping[str, TagCount]]
 
 
@@ -148,7 +196,20 @@ def dimension_counts(
     Every failure is a refusal carrying a reason, never a silent approximation.
     Two items sharing an input, a verdict whose input joins to nothing, a judging
     group short of what the log says was written, verdicts left open at the end of
-    the stream, and a judge that produced nothing anywhere are all declines.
+    the stream, a model seen only in failed completions, and a judge that produced
+    nothing anywhere are all declines.
+
+    **"No judging_completed at all" and "this judge produced no verdicts" stay two
+    refusals, checked in that order.** They fire together on an empty log, so it
+    is tempting to merge them, and merging them would cost the reader the only
+    thing a refusal is for. The first says judging never ran, and the fix is to
+    run it. The second says judging ran and wrote nothing under this name, and the
+    fix is to check how the panel spells the judge. Answering the second question
+    to someone whose real problem is the first sends them hunting a name that was
+    never wrong, so the no-judging check goes first. The distinguisher is the
+    sentence and deliberately not a machine-readable code: the caller prints
+    ``reason``, and a code that is only ever printed is a second home for a fact
+    that already has one.
 
     The expected size of a judging group is ``graded - imputed - parse_failures``
     for this judge, not ``graded``. ``graded`` counts every ``JudgeRecord``
@@ -166,6 +227,18 @@ def dimension_counts(
     Returns:
         Counts for every model the log names, or ``available=False`` and a reason.
     """
+    # The golden set is checked before a single record is read, and the
+    # duplicate-input guard below is therefore a *precondition on ``items``*
+    # rather than something that fires only when a verdict lands on the ambiguous
+    # input. Three reasons. The join runs set -> input, so the collision is
+    # discovered here or not at all; a stream cannot be rewound to re-ask the
+    # question later. Deferring it would make availability depend on which items
+    # happened to be sampled, so one golden set would render on Tuesday and refuse
+    # on Wednesday with nothing in the document to say why. And the defect is in
+    # the set, not in the run: the fix -- give the two items distinct inputs -- is
+    # the same whether or not a verdict landed on them. The cost is refusing a
+    # matrix that would have been arithmetically correct; the price of the other
+    # reading is a refusal nobody can reproduce.
     by_input: dict[str, str] = {}
     tag_universe: set[str] = set()
     for item_id, item in items.items():
@@ -184,9 +257,15 @@ def dimension_counts(
                 f"for either would be attributed to whichever was seen first."
             )
         by_input[item.input] = item_id
+        # The key set is the golden set's own tag universe, so ``UNTAGGED``
+        # appears exactly when some item carries no tags and is absent otherwise.
+        # This is not in tension with the zero-cells below: a tag that exists in
+        # the set and produced nothing is a finding, while an "untagged" row for a
+        # set in which every item is tagged is a category that does not exist.
         tag_universe.update(item.tags or (UNTAGGED,))
 
     counts: dict[str, dict[str, _Acc]] = {}
+    closed_models: set[str] = set()
     group: list[tuple[str, bool]] = []
     verdicts_seen = 0
     closes_seen = 0
@@ -254,7 +333,10 @@ def dimension_counts(
                 )
             for verdict_item_id, passed in group:
                 attribute(model_id, verdict_item_id, passed)
+            # A side that was judged gets a column even if it produced nothing:
+            # zeros are a finding, a missing column is a silence.
             counts.setdefault(model_id, {})
+            closed_models.add(model_id)
             group.clear()
 
         elif record.event_type == EVENT_COMPLETION and payload.get("ok") is False:
@@ -292,6 +374,16 @@ def dimension_counts(
             f"judge {judge!r} produced no judge.verdict records anywhere in this log. "
             f"Either no judging pass ran under that name, or the panel spells it "
             f"differently there."
+        )
+    unclosed = sorted(set(counts) - closed_models)
+    if unclosed:
+        return _declined(
+            f"the log names {', '.join(repr(one) for one in unclosed)} only in failed "
+            f"migkit.completion records: no migkit.judging_completed ever closes a "
+            f"group for that model, so its judging pass did not run or did not "
+            f"finish. Counting it anyway would publish a column built entirely out "
+            f"of the completions that failed -- a full, plausible matrix in which a "
+            f"truncated run reads as a model that got everything wrong."
         )
 
     by_model = {
