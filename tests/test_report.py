@@ -2883,23 +2883,6 @@ def test_a_series_of_runs_renders_exactly_what_one_run_rendered(tmp_path: Path) 
 # -- pairing, and order ------------------------------------------------------ #
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Verdicts are paired first-in-first-out, so a night that died between its "
-        "comparison record and its verdict record is handed the *next* night's "
-        "verdict -- and every later verdict shifts by one, permanently, in a log "
-        "that only ever grows. This test states the behaviour the review confirmed "
-        "is correct. The rule it fails against was merged in C2, whose contract "
-        "contradicts itself: the plan's prose says a verdict closes the comparison "
-        "it follows, its own Edges row says first-in-first-out. Fixing it means "
-        "changing C2's rule and the headline's reduction together, and C3 is "
-        "forbidden to touch the headline, so it belongs to the chunk 'the verdict "
-        "belongs to the comparison before it'. strict=True deliberately: when that "
-        "chunk lands this starts passing, XPASS fails the suite, and whoever lands "
-        "it is told to delete this marker instead of leaving a green xfail behind."
-    ),
-)
 def test_a_run_that_died_before_its_verdict_is_a_point_with_no_verdict(
     tmp_path: Path,
 ) -> None:
@@ -2991,8 +2974,16 @@ def test_every_earlier_run_keeps_its_own_numbers(tmp_path: Path) -> None:
 # -- Edges row 3: demo-ness reaches back through the series ------------------- #
 
 
+@pytest.mark.parametrize(
+    ("baseline_adapter", "candidate_adapter"),
+    [
+        ("AnthropicAdapter", "FakeScriptedAdapter"),
+        ("FakeAdapter", "OpenAICompatAdapter"),
+    ],
+    ids=["scripted-candidate", "scripted-baseline"],
+)
 def test_a_fake_adapter_on_an_earlier_run_still_bands_the_report(
-    tmp_path: Path,
+    tmp_path: Path, baseline_adapter: str, candidate_adapter: str
 ) -> None:
     """Edges row 3, and §4.3: "or any point in ``series`` names a ``Fake*`` adapter".
 
@@ -3000,16 +2991,24 @@ def test_a_fake_adapter_on_an_earlier_run_still_bands_the_report(
     scripted models by avoiding ``migkit demo``". Once a log carries history, the
     way to obtain one is to run the scripted nights first and a real night last,
     which is exactly the shape of a demo somebody pastes into a deck.
+
+    **One side at a time, which is the shape a demo actually has.** Scripting both
+    sides of the earlier run made this test blind to half of what it checks: the
+    disjunct reads ``adapter_baseline`` *or* ``adapter_candidate``, and a reader
+    that dropped either term still banded a log where both were ``Fake*``. The
+    realistic case is a real baseline against a scripted candidate -- the demo's
+    own shape, and the one where dropping a term costs the band entirely.
     """
-    scenario = _scenario(tmp_path / "demo-history")
+    slug = f"{baseline_adapter}-{candidate_adapter}"
+    scenario = _scenario(tmp_path / f"demo-history-{slug}")
     log = _log_with_history(
         scenario,
         "evidence-demo.jsonl",
         _earlier_run(
             scenario,
             tag="fake",
-            baseline_adapter="FakeAdapter",
-            candidate_adapter="FakeScriptedAdapter",
+            baseline_adapter=baseline_adapter,
+            candidate_adapter=candidate_adapter,
         ),
     )
     model = _model_from(log)
