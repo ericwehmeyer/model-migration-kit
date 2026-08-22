@@ -3719,3 +3719,251 @@ def test_every_interval_bar_variant_is_one_well_formed_svg_element(
         "nor its role; this is what a stub returns"
     )
     assert bar.elements, "the <svg> is empty: there is nothing in it to read"
+
+
+# --------------------------------------------------------------------------- #
+# C12, closed against its mutants.
+#
+# The fixes made in response to C12's review were argued from the review and
+# never re-run against the mutants they targeted. 115 mutants were applied to
+# ``interval_bar_svg`` and everything it depends on; 99 died. Eight of the
+# sixteen survivors were real holes and are closed below, each test named for the
+# mutant that motivated it. The other eight are recorded in the handoff as
+# equivalent, or as behaviour the contract deliberately leaves open.
+#
+# Nothing here duplicates a check above. Each one asserts a property no existing
+# test states: that an integral value is a measurement, that a bool is not, that
+# the em dash puts ink on the canvas, that the minimum band width never overrides
+# a real one, that two marks for the same value land in the same place, and that
+# the names C14 will reach for are the names that are there.
+# --------------------------------------------------------------------------- #
+
+
+def test_a_rate_or_floor_that_arrives_as_an_int_is_a_measurement_not_an_absence() -> None:
+    """``json.loads('{"pass_rate": 1}')`` yields an ``int``, not a ``float``.
+
+    Mutant: narrowing ``_is_number``'s ``isinstance(value, (int, float))`` to
+    ``float`` alone passed all 238 tests. Under it, a pass rate of exactly 1 and a
+    floor of exactly 0 -- the two values most likely to be written without a
+    decimal point, by a hand-authored log or by an encoder that drops a trailing
+    zero -- render as *not recorded*.
+
+    That is the contract's dangerous failure mode running backwards: instead of
+    an absence drawn as a zero, a real and perfect score drawn as an absence. A
+    run that passed every case would show an empty bar saying nothing was
+    measured.
+
+    It is also where the two ends of the axis get exercised together: 0.0 and 1.0
+    exactly, which the projection maps to ``PAD`` and ``width - PAD``.
+    """
+    bar = _bar(rate=1, interval=(0, 1), floor=0)
+    pad = _bar_pad()
+
+    point = _one_element(bar.classed("rate"), 'element with class="rate"')
+    assert point["attrs"].get("data-value") == _six_places(1.0), (
+        f"an integral rate of 1 must reach the drawing as the number it is; the "
+        f"point carries {point['attrs'].get('data-value')!r}"
+    )
+    _assert_sits_at(point, BAR_WIDTH - pad, "a rate of exactly 1")
+
+    line = _one_element(bar.classed("floor"), 'element with class="floor"')
+    assert line["attrs"].get("data-value") == _six_places(0.0), (
+        f"an integral floor of 0 is a recorded floor; the line carries "
+        f"{line['attrs'].get('data-value')!r}"
+    )
+    _assert_sits_at(line, pad, "a floor of exactly 0")
+
+    band = _one_element(bar.classed("interval"), 'element with class="interval"')
+    assert float(band["attrs"]["width"]) >= (BAR_WIDTH - 2 * pad) - 1.0, (
+        f"an interval of (0, 1) spans the whole axis; the band is "
+        f"{band['attrs']['width']} wide of {BAR_WIDTH - 2 * pad}"
+    )
+
+    assert "not recorded" not in bar.title.lower(), (
+        f"every value here was recorded, two of them as ints; the title says "
+        f"something was not: {bar.title!r}"
+    )
+
+
+def test_a_bool_is_not_a_pass_rate_however_much_it_looks_like_one() -> None:
+    """Mutant: dropping ``and not isinstance(value, bool)`` passed all 238 tests.
+
+    ``isinstance(True, int)`` is ``True`` in Python, so without that clause a
+    ``rate=True`` -- an adapter answering "did it pass" where the caller asked
+    "how often" -- silently draws a pass rate of 100%. A wrong kind is the one
+    error that cannot be told from a right answer once it has been projected, so
+    it is refused at the door rather than rendered.
+    """
+    bar = _bar(rate=True, interval=None, floor=BAR_FLOOR)
+
+    assert bar.classed("rate") == [], (
+        "a bool is not a measured rate and must not be drawn as one; the bar drew "
+        f"{[one['tag'] for one in bar.classed('rate')]}"
+    )
+    assert _six_places(1.0) not in bar.data_values, (
+        'the bar carries data-value="1.000000" for a rate that was handed over as '
+        "True, which draws a perfect score nobody measured"
+    )
+    assert "not recorded" in bar.title.lower(), (
+        f"a rate that could not be read is a rate that was not recorded, and the "
+        f"title must say so; it reads {bar.title!r}"
+    )
+
+
+def test_the_em_dash_standing_in_for_an_empty_bar_actually_puts_ink_on_the_canvas() -> None:
+    """Mutants: ``font-size="0"`` on the em dash, and ``fill="none"``. Both lived.
+
+    The canvas-bounds test skips ``_paints`` for ``<text>``, because text is
+    painted by rules a coordinate check cannot read. That left the one element
+    which *is* the entire picture in the nothing-recorded state free to be
+    invisible: a bar rendering as a blank box, which a reader cannot tell from a
+    failed render or a missing image.
+
+    The section's own rule applies here more than anywhere -- invisible reads as
+    absent -- and here absent is the whole of what there is to read.
+    """
+    for height in (44, 20, 120):
+        bar = _bar(rate=None, interval=None, floor=None, height=height)
+        mark = _one_element(bar.texts, "<text> element")
+        attrs = mark["attrs"]
+
+        size = attrs.get("font-size")
+        if size is not None:
+            assert float(size) > 0.0, (
+                f"the em dash is set at font-size={size!r}, which renders nothing at "
+                f"all; the bar is a blank box claiming to say {mark['text']!r}"
+            )
+            assert float(size) <= height, (
+                f"the em dash is set at font-size={size!r} in a {height}-unit canvas"
+            )
+
+        fill = attrs.get("fill", "").strip().lower()
+        stroke = attrs.get("stroke", "").strip().lower()
+        assert fill not in _INVISIBLE_PAINTS or stroke not in _INVISIBLE_PAINTS, (
+            f"the em dash is painted fill={attrs.get('fill')!r} stroke="
+            f"{attrs.get('stroke')!r} -- no ink either way. An unrecorded bar that "
+            f"renders empty is indistinguishable from a bar that failed to render."
+        )
+
+
+@pytest.mark.parametrize("span", [0.005, 0.02, 0.05])
+def test_a_narrow_but_real_interval_is_drawn_at_its_own_width_not_a_minimum(span: float) -> None:
+    """Mutant: ``INTERVAL_BAR_MIN_SPAN`` raised from 1.0 to 40.0. It lived.
+
+    The guard exists so a *degenerate* interval still puts a hairline on the
+    canvas, and the test for that asks only that the band be wider than zero. So
+    nothing stopped the minimum from growing until it swallowed real widths: at
+    40 user units a Wilson interval two points wide would be drawn nine points
+    wide, and the band's upper edge would sit far past the number beneath it.
+
+    The rule the guard must obey is asserted here rather than its value: it may
+    only ever widen a band that would otherwise be too thin to see. Where the
+    mapped span is already visible, the band is exactly the mapped span.
+    """
+    lower = 0.5
+    upper = lower + span
+    mapped = _mapped_x(upper) - _mapped_x(lower)
+    assert mapped > 2.0, "this case is meant to exercise a span that is already visible"
+
+    bar = _bar(rate=lower, interval=(lower, upper), floor=None)
+    band = _one_element(bar.classed("interval"), 'element with class="interval"')
+    drawn = float(band["attrs"]["width"])
+
+    assert abs(drawn - mapped) <= 1.0, (
+        f"the interval ({lower}, {upper}) maps to a span of {mapped:.3f} units and "
+        f"the band is drawn {drawn} wide. A minimum width that overrides a measured "
+        f"one puts the upper end where the numbers do not say it is, and a band "
+        f"drawn wider than it was measured overstates the uncertainty it depicts."
+    )
+    assert abs((float(band["attrs"]["x"]) + drawn) - _mapped_x(upper)) <= 1.0, (
+        f"the band ends at x={float(band['attrs']['x']) + drawn}, not at the mapped "
+        f"upper end {_mapped_x(upper):.3f}"
+    )
+
+
+@pytest.mark.parametrize("value", [0.0, 0.25, 0.72, 1.0])
+def test_two_marks_drawn_for_the_same_value_land_at_the_same_x(value: float) -> None:
+    """Mutants: the floor line shifted by one pixel, and by half a pixel. Both lived.
+
+    Every positional assertion in this section compares one mark against a
+    re-derivation of the projection and allows a pixel of slack -- which the
+    contract's own named test asks for, and which is right, because pinning the
+    coordinate *format* is not this section's business. The cost is that a
+    constant offset applied to one mark and not the others slips underneath all
+    of them.
+
+    C13 shipped exactly this defect: one side of a marker convention used
+    ``transform="translate(-3.5 -3.5)"`` and the other used ``x + width/2``, and
+    the tests of either side passed. So the property asserted here is not
+    precision but *agreement* -- marks standing for the same number must stand in
+    the same place, far tighter than a pixel, whatever the projection rounds to.
+    A rounding that moves them moves them together; an offset applied to one of
+    them does not.
+
+    The band is included deliberately: it is a ``<rect>`` where the others are
+    ``<line>``s, and a rect positioned by its centre beside a line positioned by
+    its axis is the C13 mismatch in this function's own vocabulary.
+    """
+    bar = _bar(rate=value, interval=(value, min(1.0, value + 0.1)), floor=value)
+
+    point = _one_element(bar.classed("rate"), 'element with class="rate"')
+    line = _one_element(bar.classed("floor"), 'element with class="floor"')
+    band = _one_element(bar.classed("interval"), 'element with class="interval"')
+
+    at_point = float(point["attrs"]["x1"])
+    at_floor = float(line["attrs"]["x1"])
+    at_band = float(band["attrs"]["x"])
+
+    assert abs(at_floor - at_point) <= 0.01, (
+        f"a floor of {value} and a rate of {value} are the same number, so the two "
+        f"marks must coincide; the point is at x={at_point} and the floor at "
+        f"x={at_floor}. The relationship between the band and the floor *is* the "
+        f"verdict, and an offset applied to one mark alone falsifies it while every "
+        f"number in the markup stays right."
+    )
+    assert abs(at_band - at_point) <= 0.01, (
+        f"the band's lower end is {value}, the number the point stands for, so the "
+        f"band's x must be the point's x; they are at {at_band} and {at_point}. A "
+        f"<rect> positioned by its centre beside a <line> positioned by its axis is "
+        f"a marker-convention mismatch, which is a defect C13 shipped."
+    )
+
+
+def test_the_interval_bar_names_itself_the_way_a_stylesheet_will_ask_for_it() -> None:
+    """Mutant: renaming the root's ``class="interval-bar"``. It lived.
+
+    The same argument the section already makes for ``class="interval"``,
+    ``"rate"`` and ``"floor"``: C14 embeds this markup and will select it by
+    name, and a seam another chunk addresses by name is part of the contract
+    whether or not the contract wrote it down. The root is the one selector that
+    reaches the whole picture, and it was the one nothing pinned.
+    """
+    for variant in BAR_VARIANT_CASES:
+        bar = _bar(**variant)
+        classes = bar.root_attrs.get("class", "").split()
+        assert "interval-bar" in classes, (
+            f"the <svg> must name itself so a stylesheet and C14 can select it; the "
+            f"{variant} bar carries class={bar.root_attrs.get('class')!r}"
+        )
+
+
+def test_the_label_opens_the_accessible_name_rather_than_trailing_it() -> None:
+    """Mutant: ``f"{sentence}: {named}"`` instead of ``f"{named}: {sentence}"``. It lived.
+
+    The existing label test asks only that the label not vanish, on the correct
+    grounds that the contract does not say where it goes. But the ``<title>`` of
+    a ``role="img"`` element is its *accessible name*, and a name is announced
+    before its content is read. A listener given "pass rate 72.0%, interval 61.0%
+    to 83.0%, floor 90.0%: candidate accuracy" has to hold four numbers in mind
+    before learning what they are about, and on a page of several bars cannot tell
+    which bar has begun until it has ended.
+
+    So the order is pinned where the contract left it open, in the direction the
+    implementation already chose and its own docstring already promises.
+    """
+    label = "candidate accuracy on the golden set"
+    bar = _bar(rate=BAR_RATE, interval=BAR_INTERVAL, floor=BAR_FLOOR, label=label)
+    assert bar.title.startswith(label), (
+        f"the label must open the accessible name, not trail the numbers it names; "
+        f"the title reads {bar.title!r}"
+    )
