@@ -3141,7 +3141,12 @@ def test_every_marker_carries_the_four_data_attributes_and_a_verdict_class() -> 
     # `RunPoint.verdict` actually carries are `Verdict`'s, which is a different
     # vocabulary -- `NO-GO` is classed `nogo`. Seeding this with the class names
     # would test a verdict string no evidence log contains.
-    cases = ((Verdict.GO, "go"), (Verdict.NO_GO, "nogo"), (Verdict.REVIEW, "review"), (None, "none"))
+    cases = (
+        (Verdict.GO, "go"),
+        (Verdict.NO_GO, "nogo"),
+        (Verdict.REVIEW, "review"),
+        (None, "none"),
+    )
     points = [
         _point(_timeline_day(index * 2), verdict=verdict)
         for index, (verdict, _class) in enumerate(cases)
