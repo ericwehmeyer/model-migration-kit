@@ -249,7 +249,7 @@ Settle these before C1, because every chunk downstream assumes them.
 
 The comparison payload carries its own `created`, stamped by
 `contracts.utc_now()` at `comparison.py:903`. The envelope `ts` is stamped inside
-rigor, `opik_rigor/evidence.py:89`, by `datetime.now(timezone.utc)`.
+rigor, `opik-rigor/src/opik_rigor/evidence.py:89`, by `datetime.now(timezone.utc)`.
 
 `created` is the better field on the merits — it is a recorded fact about the
 comparison rather than about when a line was written, and it survives a log that
@@ -1378,7 +1378,7 @@ Four facts, established by reading and by running the demo, that shape how this
 is possible at all:
 
 1. **`FakeAdapter` accepts a callable** `Callable[[str], str]`
-   (`opik_rigor/adapters/fake.py:47`), not only a prompt→response mapping. A
+   (`opik-rigor/src/opik_rigor/adapters/fake.py:47`), not only a prompt→response mapping. A
    mapping gives every draw of an item the same answer, so every item is 0/n or
    n/n and the pass rate is quantised to multiples of 1/N. A callable holding a
    private per-prompt counter gives per-draw variation, which is what any
@@ -2736,9 +2736,9 @@ already written against the current signature. **C9's reviewer decides.**
 
 ### R12 — what C8's and C9's reviews changed, and the errors they found in my contracts
 
-**R12.1 — a fifth factual error, which R11 missed.** C8's contract says *"read
-`judge.py:318-328` before you write a line of this."* There is no `judge.py` in
-`model_migration_kit`. The verdict is emitted at **`opik_rigor/judge.py:315-329`**
+**R12.1 — a fifth factual error, which R11 missed.** C8's contract told the
+implementer to read judge&#46;py, lines 318-328, before writing a line of the
+chunk. There is no such file in `model_migration_kit`. The verdict is emitted at **`opik-rigor/src/opik_rigor/judge.py:315-329`**
 — a different package. Same class as R11.3's `Item`/`GoldenItem`, and this one is
 in the sentence telling the implementer that this is the single most likely way to
 get the chunk wrong. Both C8 agents inherited it into their docstrings.
