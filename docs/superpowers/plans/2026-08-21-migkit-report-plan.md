@@ -2638,3 +2638,82 @@ The number does not change. What changes is that the plan no longer presents a
 judgement call as a derivation, which is the kind of dressing-up that survives
 into a docstring and then into an argument with someone who checked the
 arithmetic.
+
+---
+
+### R11 — four things C8's contract got factually wrong, one process hazard, and a second correction to R9's arithmetic
+
+C8's implementer cross-checked its work against a real 300-record `migkit demo`
+log and matched the artifact-derived matrix at **8/8 cells, zero mismatches**,
+over both models — the same check R1 ran at 24/24. On the way it found four
+errors in the contract I wrote.
+
+**R11.1 — the resumed-judging guard's expected count is wrong, and the literal
+reading breaks every normal run.** The contract says the check is
+`len(group) != payload["graded"].get(judge, 0)`. But `graded` is incremented for
+*every* `JudgeRecord` written (`judging.py:653-659`), including imputed ones and
+parse failures, and neither of those emits a `judge.verdict` — an imputed record
+returns before `evaluate()` is called, and a parse failure writes
+`judge.parse_failure` and raises. The correct expected count is:
+
+```
+verdicts in the log = graded - imputed - parse_failures
+```
+
+Comparing against raw `graded` declines the whole matrix the moment one
+completion fails, which is precisely the case rule 4 exists to handle. **As
+written, C8's rule 3 and rule 4 were mutually exclusive.** Use `.get(judge, 0)`
+on each of the three so a synthetic log omitting the latter two degrades to the
+literal reading.
+
+**R11.2 — that guard cannot detect the resume it is named for.** On a resume
+`pending` excludes already-graded records, so `graded` shrinks by exactly the
+amount the verdict count shrinks. Resuming into the same log after a crash leaves
+earlier partial verdicts with no intervening `judging_completed`, so they merge
+into the group and the guard fires on a total that is actually correct; resuming
+with a fresh log and a copied-in judged artifact makes both numbers shrink
+together and the under-count passes silently. It remains a valid consistency
+check on one record. It is not a resume detector, and R1 overstated it. Test it
+with hand-built shortfall data and say so in the docstring.
+
+**R11.3 — the class is `GoldenItem`, in `contracts.py:106`.** There is no `Item`.
+Both C8's contract and R1 name a type that does not exist.
+
+**R11.4 — `judge.verdict` has no usable `EVENT_*` constant.** `contracts.py`
+deliberately names only the `migkit.` events, and `EVENT_JUDGE_VERDICT` lives in
+`opik_rigor.evidence` and is not in `opik_rigor.__all__`. Importing it would put a
+private rigor name in `COMPATIBILITY.md`. Type the literal as a private module
+constant with a comment saying why. So "use the constants, do not type the
+strings" holds for the two `migkit.` events and cannot hold for this one.
+
+**R11.5 — a process hazard, and it is new.** Two chunks appending to one *new*
+module can each define `__all__`, and the second binding silently wins: the first
+chunk's names vanish from the export list with no error and **no git conflict**.
+Giving C8 the top of the file and C9 the EOF made the merge mechanical for
+everything except this. When two chunks share a new module, the orchestrator
+creates `__all__` in the skeleton or checks it by hand at merge — a conflict
+marker is the thing that makes a merge safe, and this collision does not produce
+one.
+
+**R11.6 — the two floors overlap far more than R9 implies.** C9's implementer did
+the arithmetic R9 did not: ten items at `n_per_item >= 2` is already 20
+completions, so `MIN_N_FOR_A_VERDICT` **can only bind when `n_per_item == 1`**,
+or on a ragged tag whose items were not all sampled the same number of times.
+
+Its remaining job — "one draw per item is not enough" — is real, and the floors
+are still floors on different quantities, so R9's shape stands. But R9 presents
+the two as doing comparable work and they do not, and the both-bind case R10.5 is
+built around is reachable only at one draw per item. **This is the second time
+R9's arithmetic has needed correcting**, which is worth noticing: the ruling was
+made quickly, and both errors were found by agents who checked rather than
+assumed.
+
+**Deferred to C9's review, not ruled here.** C9's implementer argues that
+`needed` + `needed_unit` is the wrong shape — a stringly-typed unit beside a
+single number can express only one floor, so the moment both bind the second fact
+has to be smuggled into prose, and R10.5 is exactly that patch. It proposes
+`needed_items: int | None` and `needed_completions: int | None`, which would carry
+both at the type level, delete `needed_unit`, and make the note derivable from
+fields rather than being the only place a fact lives. The argument is good and I
+have not taken it, because review is where renames belong and both C9 agents have
+already written against the current signature. **C9's reviewer decides.**
