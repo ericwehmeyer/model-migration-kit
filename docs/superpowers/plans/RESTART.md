@@ -201,10 +201,8 @@ worktree; no `PYTHONPATH` prefix, and the ceremony every brief used to carry is
 obsolete. But the conftest runs under pytest and nowhere else:
 
 ```
-bare python -c from a worktree:  ...\migration-kit\src\...eport.py   <- the MAIN checkout
-eport.py   <- the MAIN checkout
-the same import under pytest:    ...\mk-c14a-impl\src\...eport.py    <- the worktree
-eport.py    <- the worktree
+bare python -c from a worktree:  ...\migration-kit\src\...\report.py   <- the MAIN checkout
+the same import under pytest:    ...\mk-c14a-impl\src\...\report.py    <- the worktree
 ```
 
 So anything that reads a signature, prints a docstring or probes behaviour with
