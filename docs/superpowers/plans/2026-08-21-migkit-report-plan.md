@@ -1408,7 +1408,10 @@ is 16 — below `MIN_N_FOR_A_VERDICT = 20` if the cell counts items, at or above
 if the cell counts completions. **That is a decision C9 must make and C15 must
 match**: I recommend the cell counts **completions**, matching every other rate
 in the document, and `min_n` stays 20 completions, which at 16 items × 5 draws
-is comfortably cleared while a 4-item tag at 20 completions is not. If that reads
+is comfortably cleared. The rest of this sentence used to read "while a
+4-item tag at 20 completions is not", which is arithmetically false -- 4 x 5
+is exactly 20 and `20 < 20` is `False`, so that tag clears. **R9 settles it**
+with a second, independent floor in items; read R9 rather than this. If that reads
 wrong to the reviewer, the alternative is item-level counting with `min_n = 20`
 and a 25-item-per-tag set; say which before C9 is implemented, not after.
 
@@ -2227,3 +2230,339 @@ chunk is wrong and the status quo is right.
 `data-verdict` filter becomes defence-in-depth rather than load-bearing, which
 unblocks carrying the recorded verdict verbatim-escaped; C14 gets the same
 freedom for its own `data-` attributes.
+
+---
+
+### R9 — the completions floor has an effective item floor of four, and four is the number the spec uses as its own example
+
+`MIN_N_FOR_A_VERDICT = 20` counted in completions, ratified by R3, does not do the
+job R3 believed it did. The plan's justification for it (line 1411) says 16 items
+x 5 draws "is comfortably cleared while a 4-item tag at 20 completions is not."
+Four items at `n_per_item=5` **is** 20 completions, and `20 < 20` is `False`, so
+that tag clears. The effective floor is four items.
+
+Four is not an arbitrary number to land on. It is the number in the spec's own
+refusal sentence — *"20 items needed for a verdict here; you have 4"* — which is
+the product's showpiece example of a cell that must decline. Under R3 as written,
+the showpiece renders a verdict.
+
+Two things are wrong at once and they need separate fixes:
+
+**The unit in the refusal sentence is items, and R3 chose completions.** The spec
+wrote that sentence before R3 existed. Keeping the sentence and changing the unit
+under it produces a cell that says "20 items needed, you have 4" while refusing on
+a completion count of 20 — a note that contradicts the number it is refusing over.
+
+**Twenty completions from four items are not twenty observations.** They are four
+questions asked five times each. The draws within an item are correlated by
+construction: same prompt, same reference, same rubric clause. A dimension verdict
+generalises over *questions*, so the sample size that matters for "does the
+candidate hold up on refusal" is nearer four than twenty. This is the substantive
+reason the completions floor is too weak, and it is why the fix is not simply a
+bigger completions number — at `n_per_item=10` a 4-item tag would clear a floor of
+40 just as easily.
+
+**Ruling: two independent floors, and a cell must clear both.**
+
+```python
+MIN_N_FOR_A_VERDICT: int = 20        # completions, unchanged -- R3 is not reopened
+MIN_ITEMS_FOR_A_VERDICT: int = 10    # distinct items contributing to the tag
+```
+
+Ten, and the reason is statable rather than aesthetic: below ten items a single
+item is worth more than a tenth of the dimension's verdict, and one badly written
+golden-set item should not be able to move a published claim by that much. It
+refuses the spec's own 4-item example. The showcase clears it at 16 items and 80
+completions, so **C15 does not change and its two headline tests stand.**
+
+R3 is amended, not reversed: the completions floor stays at 20 completions and
+keeps every argument R3 made for it. R9 adds a second floor that R3 did not
+consider, because R3 was answering "items or completions?" and the answer turns
+out to be "both, for different reasons."
+
+This changes C9's signature (it must be told the item count) and C8's return (it
+must produce one). Both are restated below. It does not change anything already
+merged.
+
+---
+
+### C8 (restated under R1) — per-tag counts from the log, never from the artifacts
+
+This replaces the C8 section at line 866 in full. That section takes a
+`JudgedArtifact`; R1 established that it must not, and the evidence for that is in
+R1. Read R1 and this; do not read line 866.
+
+**Files.** A **new** `src/model_migration_kit/dimensions.py` and a new
+`tests/test_dimensions.py`. Both exist on `main` already, holding a module
+docstring and nothing else — that placement decision is made and is not yours to
+revisit. `series.py` is 652 lines, past the ~600 the original contract set as the
+trigger, and it is being edited by C19 concurrently.
+
+**Insert your code directly after the module docstring**, above everything C9 will
+add. C9 is being written in parallel against the same file and appends at EOF. Do
+not reorganise, re-header, or reflow the module; the merge between you is mine and
+I want it mechanical.
+
+**Contract.**
+
+```python
+class TagCount(NamedTuple):
+    passes: int
+    n: int
+    items: int      # distinct golden-set items that contributed, for R9's floor
+
+@dataclass(frozen=True)
+class DimensionCounts:
+    available: bool
+    reason: str                                       # "" when available
+    by_model: Mapping[str, Mapping[str, TagCount]]    # model_id -> tag -> count
+
+def dimension_counts(
+    records: Iterable[EvidenceRecord],
+    items: Mapping[str, Item],
+    *,
+    judge: str,
+) -> DimensionCounts: ...
+```
+
+`records` is what `evidence.stream_records` yields — **stream it, do not list
+it.** `evidence.py`'s docstring records the measurement: a `judge.verdict` embeds
+the input, the output and the judge's raw reply for every completion, and holding
+the log cost 5.0-5.8x its own bytes resident. Materialising the records here would
+reintroduce exactly the amplification that module was extracted to kill. `items`
+is `gs_view["by_id"]`, id -> `Item`.
+
+**The join, and why it is by input text.** `judge.verdict` carries no `item_id`.
+It carries `input`, which `judging.py:744` passes through verbatim from the golden
+set, so an item is recovered by inverting `items` on `Item.input`. R1 verified
+this on a real 300-record log at 120/120 joined and the resulting matrix at 24/24
+cells identical to the artifact-derived one.
+
+**The side comes from ordering, not from the record.** The `model_id` on a
+`judge.verdict` is the **judge's** model, not the candidate's — read
+`judge.py:318-328` before you write a line of this, because using it is the single
+most likely way to get this chunk silently wrong, and every cell would still
+render. The side is the `model_id` on the next `migkit.judging_completed`
+(`judging.py:664`). Verdicts accumulate; that record closes the group and names
+whose they were.
+
+Failed completions do **not** need the ordering trick: `migkit.completion` carries
+`model_id` on the record itself (`runner.py:465-475`). Use it.
+
+**One forward pass. Four rules.**
+
+| record | what it does |
+|---|---|
+| `judge.verdict` with `payload["judge"] == judge` | append `(input, passed)` to the open group |
+| `judge.verdict` for any other judge | ignore |
+| `migkit.judging_completed` | close the group, attribute it to `payload["model_id"]` |
+| `migkit.completion` with `ok` false | one non-pass for `payload["item_id"]` under `payload["model_id"]` |
+
+A failed completion never reaches `evaluate()` and writes no verdict, so without
+that last rule the denominator silently loses exactly the completions the model
+failed — the one bucket a pass rate must not lose.
+
+**Parse failures need no rule, and this is the correction R1 makes to the original
+contract.** Line 866 says parse failures are "counted in `n`", with the rationale
+that "the aggregate gate already counts them this way." That rationale is exactly
+right and the conclusion drawn from it is backwards. `comparison.py:1184-1193`
+drops them from both numerator and denominator, and the module docstring at
+`comparison.py:39-43` gives the reason: "the *judge* having been unintelligible
+... Conflating the two would let an unreliable judge read as an unreliable model."
+A dimension view that counted them would disagree with the gate above it, which is
+the harm the original rationale named. In the log they are `judge.parse_failure`
+records, which carry no `input` and therefore cannot join to an item at all — so
+this is a consequence to state in the docstring, not a branch to write.
+
+**Imputed records stay in, and the same source settles it.** `comparison.py:1191`:
+"a model that times out has told us something." That is the failed-completion rule
+above.
+
+**Counting.** For each attributed verdict, `tags = item.tags or ("",)`; every tag
+gets `n += 1` and `passes += 1` if it passed, and the item id joins that tag's
+distinct-item set. An item carrying three tags contributes to three tags —
+`_parse_tags` (`goldenset.py:263`) returns a duplicate-free tuple, so assert that
+invariant rather than defending against it. Untagged items go to the reserved key
+`""`, which the caller renders as "untagged" and never drops.
+
+**The three guards R1 requires, each a refusal with a reason, never a silent
+approximation.** `available=False` with a sentence a reader can act on:
+
+| condition | reason must name |
+|---|---|
+| two items share an `input` | both item ids. `goldenset.py:113-125` enforces unique `id` and **not** unique `input`, so this is reachable; two items with one input cannot be told apart and a verdict would be attributed to the wrong one |
+| a verdict's `input` is in no item | the offending input, truncated. `_load_goldenset` already refused on hash mismatch, so an unjoinable input means the log and the set disagree in a way the hash did not catch |
+| `len(group) != payload["graded"].get(judge, 0)` | the judge, the expected count and the seen count. `judging.py:612-620` skips already-graded records on a resume, so a resumed pass writes fewer verdicts to this log than the artifact holds; under-counting silently is the failure mode |
+| verdicts still open at end of stream | that a judging pass did not complete |
+| the judge produced no verdicts anywhere | the judge name |
+
+That last row **changes** the original contract's edge, which returned `{}`. C10
+has to print a sentence saying why a matrix is missing, and `{}` is not a
+sentence. Decline with a reason.
+
+**Edges.**
+
+| Input | Required |
+|---|---|
+| an item with no entry in `items` | unreachable via the hash check; still, refuse rather than guess |
+| a tag in the set with no records for a model | key present, `TagCount(0, 0, 0)` — a dimension that was in the set and produced nothing is a finding, not an absence |
+| every item untagged | one key, `""`. `available` stays `True` |
+| a log with no `migkit.judging_completed` at all | refuse, naming the judge |
+
+**Must not.** Open a file. Take a path. Import `report`. Touch a `JudgedArtifact`.
+Compute a rate, an interval or a verdict — this chunk returns integers only. Build
+a list of the records.
+
+**Failure mode when wrong.** Two of them, and the second is worse. A multi-tagged
+item counted once, so `#refusal` and `#multi-value` disagree about `refuse-04` and
+the columns sum to nothing a reader can check. Or the judge's `model_id` used as
+the side, which produces a full, plausible, entirely wrong matrix in which both
+columns are the same numbers.
+
+**Test that fails first.**
+`test_an_item_carrying_two_tags_is_counted_under_both_of_them`. The demo's
+`refuse-04` is exactly this item — `["refusal", "multi-value"]` — and it is one of
+the three flips, so this test is also the demo's own case.
+
+**Done.** `PYTHONPATH=<worktree>\src <main>\.venv\Scripts\python.exe -m pytest
+<worktree>\tests\test_dimensions.py -q`, and print `dimensions.__file__` to prove
+it resolved inside your worktree. See R4; a green suite that imported the main
+checkout has tested nothing.
+
+**Reviewer.** Three things, in this order. **One:** confirm the side is taken from
+`migkit.judging_completed` and not from the verdict's own `model_id`; construct a
+log where the two differ and prove the implementation picks the right one. **Two:**
+the double-count question cuts both ways — contributing to both tags is correct,
+and it means column totals exceed the item count. Check the function does not
+"fix" that by dividing, and check the caller is told so the document can say it.
+**Three:** mutate the resumed-judging guard off and confirm something goes red;
+that guard is the one with no natural test data.
+
+---
+
+### C9 (amended by R9) — the cell, the refusal, and the two floors
+
+This replaces the C9 section at line 923. The differences from it are R9's second
+floor, the item count that feeds it, and the unit carried on the refusal sentence.
+Everything else there still holds and the reasoning in it is still the reasoning.
+
+**Files.** `dimensions.py`, `tests/test_dimensions.py`. **Append at EOF**, below
+everything. C8 is being written in parallel against the same file and inserts at
+the top. Do not reorganise or re-header the module.
+
+**Contract.**
+
+```python
+MIN_N_FOR_A_VERDICT: int = 20        # completions
+MIN_ITEMS_FOR_A_VERDICT: int = 10    # distinct items -- see R9
+
+@dataclass(frozen=True)
+class DimensionCell:
+    tag: str
+    passes: int
+    n: int
+    items: int
+    rate: float | None
+    interval: tuple[float, float] | None
+    floor: float | None
+    verdict_refused: bool
+    needed: int | None          # how many more, in the unit that binds
+    needed_unit: str            # "items" | "completions" | "" when not refused
+    note: str                   # the refusal sentence, "" when not refused
+
+def dimension_cell(
+    tag: str,
+    passes: int,
+    n: int,
+    items: int,
+    *,
+    confidence: float | None,
+    floor: float | None,
+    min_n: int = MIN_N_FOR_A_VERDICT,
+    min_items: int = MIN_ITEMS_FOR_A_VERDICT,
+) -> DimensionCell: ...
+```
+
+Takes plain integers, not C8's `TagCount`. That is deliberate: the two chunks are
+being written blind against each other and neither may import the other's types.
+
+Calls `opik_rigor.wilson_interval(passes, n, confidence)`. When `n == 0` every
+derived field is `None` and it calls nothing — `wilson_interval(0, 0)` raises
+`ValueError("a rate over zero runs is not a rate")`, verified at
+`tests/test_report.py:1374`, and that is a rendering state rather than a
+computation.
+
+**`verdict_refused` is `True` when `n < min_n` or `items < min_items`, regardless
+of how the interval sits against the floor.**
+
+**When both floors bind, the note names items.** Not a style preference — it is
+the only one the reader can act on. A note that says "you need more completions"
+sends someone to raise `n_per_item`, and R9 is the proof that raising `n_per_item`
+cannot fix an item shortfall: it multiplies the same four questions. Naming the
+completions floor when the item floor also binds is advice that does not work.
+
+The sentence keeps the spec's shape with the unit made honest:
+`"10 items needed for a verdict here; you have 4."`
+
+**Edges.**
+
+| Input | Required |
+|---|---|
+| `n == 0`, `items == 0` | `rate`, `interval` `None`; refused; note says nothing was measured |
+| `n == 20`, `items == 4` (4 items x 5 draws) | **refused**, `needed == 6`, `needed_unit == "items"`. This is R9's whole case; if this cell renders a verdict the chunk is wrong |
+| `n == 12`, `items == 12` (12 items x 1 draw) | refused, `needed == 8`, `needed_unit == "completions"` |
+| `n == 80`, `items == 16` | interval shown, `verdict_refused=False` — the showcase |
+| `n == 4`, `passes == 1` | interval computed and shown, refused, both floors named in `needed`/`needed_unit` by the items rule above |
+| `confidence is None` | fall back to rigor's `DEFAULT_CONFIDENCE` (0.95) and record that in `note`; never silently |
+| `floor is None` | cell renders, `verdict_refused` unaffected — neither sample-size floor depends on the floor |
+| `passes > n` | `ValueError` — a corrupt count must not render |
+| `items > n` | `ValueError` — more distinct items than completions is impossible and means the caller mispaired two numbers |
+
+**Must not.** Colour, style, or otherwise imply a verdict on a refused cell.
+Compare the interval to the floor when `verdict_refused`. Fall back to a default
+confidence without saying so. Collapse the two floors into one number.
+
+**Failure mode when wrong.** The spec names it: "Every dashboard in this market
+would happily colour that cell red. Declining is the differentiator." A cell that
+renders a verdict at four items is not a bug in a chart, it is the product's claim
+failing — and R9 exists because the pre-R9 rule rendered a verdict on precisely
+the example the spec chose to illustrate declining.
+
+**Test that fails first.**
+`test_a_tag_with_four_items_and_twenty_completions_declines_the_verdict`.
+
+**Done.** As C8's Done block. Same R4 warning, same `__file__` proof.
+
+**Reviewer.** Check `verdict_refused` is not short-circuited by a wide interval
+that happens to clear the floor — the tempting implementation says "refuse when
+the interval is too wide to decide", which is a different and worse rule: it would
+answer at n=4 whenever four out of four passed. Then check the two floors are
+genuinely independent: mutate `min_items` to 0 and confirm a test goes red, and
+mutate `min_n` to 0 and confirm a *different* test goes red. If one mutation kills
+both, the floors were collapsed.
+
+---
+
+### C10 (amended) — the decline reasons collapse from two to one and a half
+
+C10 at line 989 stands, with one change forced by R1 and R9.
+
+Its "exactly two causes" of unavailability were: a judged artifact missing, and
+the golden set unavailable. R1 deleted the first — there are no artifacts in this
+path any more. The causes are now:
+
+- `gs_view["available"]` is `False`. Reason reuses `gs_view["reason"]` verbatim,
+  which already explains that pairing today's file with last week's outputs would
+  be a fabricated exhibit. Unchanged.
+- `dimension_counts` returned `available=False`. Reason is its `reason`, reused
+  verbatim, not re-worded. `report.py:645-650` already reasons about why: three
+  copies of a disclosure are three chances for one to go stale.
+
+`DimensionMatrix` carries `min_n` and now also `min_items`, because a document
+that refuses a cell has to be able to say what it refused against.
+
+The edge "candidate artifact missing -> unavailable" is **deleted**. A
+cross-machine render with no artifact directory now produces a full matrix, and
+that is the point of R1. The C10 test named at line 1050 must be rewritten to
+assert the opposite of what it currently says: a log whose artifacts have been
+moved away still renders its matrix.
