@@ -154,6 +154,7 @@ fourth number derived from them.
 from __future__ import annotations
 
 import html
+import math
 import os
 import re
 from collections.abc import Mapping, Sequence
@@ -198,6 +199,8 @@ __all__ = [
     "render_html_string",
     "render_terminal",
     "timeline_svg",
+    "interval_bar_svg",
+    "INTERVAL_BAR_PAD",
 ]
 
 #: Printed wherever a number does not exist, rather than a zero or a guess. The
@@ -2264,6 +2267,268 @@ def _print_changes(console: Console, title: str, rows: Sequence[FlipRow]) -> Non
         # a model id and ``Text`` does not touch ESC.
         table.add_row(_cell(row.item_id), _cell(margins), _cell(", ".join(row.judges)))
     console.print(table)
+
+
+# --------------------------------------------------------------------------- #
+# the interval bar -- a pure function, drawn so the geometry is the claim
+# --------------------------------------------------------------------------- #
+
+#: Breathing room in user units at each end of an interval bar. The x-axis maps
+#: ``[0.0, 1.0]`` onto ``[INTERVAL_BAR_PAD, width - INTERVAL_BAR_PAD]``, so a rate
+#: of 1.0 lands a stroke inside the viewport instead of half of it outside.
+#: Exported rather than spelled ``8`` at the call sites because a test that
+#: hard-codes the padding has stopped checking the projection and started
+#: restating it; importing this keeps the test honest if the number ever moves.
+INTERVAL_BAR_PAD = 8
+
+#: The narrowest interval band that still puts ink on the canvas, in user units.
+#: An SVG ``<rect>`` with ``width="0"`` is not rendered at all, so a degenerate
+#: interval -- ``(0.5, 0.5)``, which a Wilson interval approaches as n grows --
+#: would vanish rather than draw a hairline at the value it does have. An absent
+#: interval and a zero-width one are different claims and must not arrive as the
+#: same picture; the band's ``x`` stays the mapped ``interval[0]``, so the widening
+#: is rightward and the contract's positioning rule is untouched.
+INTERVAL_BAR_MIN_SPAN = 1.0
+
+#: Decimals in every ``data-value``. R7 pins this at the *unmapped* float to
+#: exactly six places: the attribute is the seam a test uses to watch the model's
+#: number reach the drawing without re-deriving the projection, and a rounded or
+#: projected one would make the check circular. The ``<title>`` deliberately does
+#: *not* share the format -- it speaks percents, like every other number the
+#: reader of the surrounding document sees. The machine seam and the human
+#: sentence are two audiences, and one format cannot serve both.
+_INTERVAL_BAR_PLACES = 6
+
+#: The three not-recorded phrases, named rather than left as literals. R7's
+#: argument for naming ``INTERVAL_BAR_PAD`` applies verbatim to a string a test
+#: has to match: a test that guesses at the wording -- and C12's tester had to
+#: accept nine spellings of the floor phrase -- cannot tell a deliberate rewording
+#: from a bar that quietly started printing a number for a value nobody measured.
+#: All three exist because the contract's rule for the floor ("an absent rule must
+#: not read as a floor of zero") is not about floors; it is about absence.
+INTERVAL_BAR_NO_RATE = "pass rate not recorded"
+INTERVAL_BAR_NO_INTERVAL = "interval not recorded"
+INTERVAL_BAR_NO_FLOOR = "floor not recorded"
+
+
+def _is_number(value: Any) -> bool:
+    """A real, finite number. ``bool``, ``None``, ``NaN`` and the infinities are not.
+
+    Deliberately a second copy of ``comparison._is_number`` rather than an import
+    of another module's private name. ``report._number`` is *not* this predicate:
+    it widens an ``int``/``float`` out of an evidence record and is finiteness-blind
+    on purpose, because the model fields it feeds carry their own handling. Nothing
+    in this module tested finiteness before, and the interval bar is the first place
+    that must.
+    """
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+    )
+
+
+def _interval_bar_number(value: Any) -> float | None:
+    """``value`` as a float, or ``None`` if it is not a number the bar may project.
+
+    ``json.loads`` accepts a bare ``NaN``, so a malformed evidence log can put one
+    in a pass rate and it arrives here intact. ``min(1.0, max(0.0, nan))`` is
+    ``0.0`` -- a NaN rate would draw at ``INTERVAL_BAR_PAD``, pixel-identical to a
+    rate of 0.0, with ``data-value="nan"`` beside it violating R7's six-place
+    contract. That is the contract's own "silently wrong projection": a picture
+    saying the run scored zero when nothing was measured.
+
+    So a non-finite value renders as *not recorded* rather than being projected,
+    and rather than being refused. Three reasons for degrading instead of raising.
+    The module already answers an unusable number this way -- ``_number`` returns
+    ``None`` and ``_pct`` prints an em dash. This function returns a ``str`` and has
+    no channel for a warning, so a raise would take a whole document down over one
+    bar. And "not recorded" is the *true* statement about a NaN, which is the line
+    R5 draws: missing data stated as missing, never as zero.
+    """
+    return float(value) if _is_number(value) else None
+
+
+def _interval_bar_clamp(value: float) -> float:
+    """``value`` pulled into ``[0.0, 1.0]``.
+
+    Cannot fire on today's inputs -- a pass rate and a Wilson interval are both
+    fractions by construction. It is here because the failure it prevents is the
+    quiet kind: an ``x`` of ``-40`` raises nothing, it draws off-canvas, and an
+    element nobody can see reads as an element nobody drew.
+    """
+    return min(1.0, max(0.0, value))
+
+
+def _interval_bar_x(value: float, width: int) -> float:
+    """The one projection. Every element's geometry is computed through here.
+
+    Four call sites each open-coding ``PAD + v * (width - 2 * PAD)`` is four
+    places to drift, and the drift is invisible rather than loud: the band still
+    renders, it just sits on the wrong side of the floor, and the spec says that
+    relationship *is* the verdict.
+    """
+    return INTERVAL_BAR_PAD + _interval_bar_clamp(value) * (width - 2 * INTERVAL_BAR_PAD)
+
+
+def _interval_bar_value(value: float) -> str:
+    """The model's own number to six places -- not rounded, not projected.
+
+    ``data-value`` exists so a test can assert that the number the model produced
+    reached the drawing *without* re-deriving the projection, which is precisely
+    the check a re-derivation would not make. Deliberately unclamped: if a caller
+    ever hands over 1.4, the markup should say 1.400000 next to geometry pinned at
+    the right edge, so the disagreement is legible instead of being erased here.
+    """
+    return f"{value:.{_INTERVAL_BAR_PLACES}f}"
+
+
+def _interval_bar_coord(value: float) -> str:
+    """A geometry number, at a resolution finer than anyone can see."""
+    return f"{value:.3f}"
+
+
+def _interval_bar_escape(text: str) -> str:
+    """Element text, made safe to concatenate into markup.
+
+    ``&<>`` only -- this goes between tags, never into an attribute. The control
+    strip is the same one the terminal renderer applies: a label can come from a
+    metric name lifted out of an evidence log, and ``ESC`` in a document is a
+    finding in its own right.
+    """
+    stripped = _CONTROL_RE.sub(" ", text)
+    return stripped.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def interval_bar_svg(
+    *,
+    rate: float | None,
+    interval: tuple[float, float] | None,
+    floor: float | None,
+    width: int = 480,
+    height: int = 44,
+    label: str = "",
+) -> str:
+    """One ``<svg>`` element drawing a pass rate, its interval and its floor.
+
+    Pure: no I/O, no globals, no model object, no template. Presentation is inline
+    ``fill``/``stroke`` and geometry, so the result survives ``assert_self_contained``
+    wherever it is embedded. Note the absent ``xmlns``: the value
+    ``http://www.w3.org/2000/svg`` matches the URL-scheme rule in ``_UrlScanner``
+    and would be reported as a fetching position even though no browser fetches
+    it. Inline SVG in an HTML5 document does not need the declaration anyway.
+
+    Each of the four missing-value states is a different picture, and the third is
+    the one that matters. ``floor is None`` draws no line at all and says so in
+    the title, because a rule that was never set, rendered as a floor of 0.0,
+    makes the document claim a bar cleared a bar that does not exist. The same
+    reasoning governs an absent rate and an absent interval, so all three get a
+    named phrase (``INTERVAL_BAR_NO_RATE`` and friends) rather than a number.
+
+    A non-finite ``rate``, ``floor`` or interval endpoint is treated as *not
+    recorded* rather than projected -- see :func:`_interval_bar_number`, which
+    carries the reasoning and the arithmetic that makes it necessary.
+
+    Two number formats, on purpose. The ``<title>`` speaks percents through
+    ``_pct``, matching everything else a reader of the surrounding document meets:
+    the pass-rate cell, the interval cell and the banner's floor. ``data-value``
+    keeps the unmapped six-place fraction R7 pins, because that is the machine
+    seam. A screen-reader user should hear ``72.0%`` where the sighted reader sees
+    ``72.0%``, not six zeros nobody else is shown.
+
+    Args:
+        rate: the point estimate as a fraction, or None if nothing was measured.
+        interval: ``(low, high)`` as fractions, or None.
+        floor: the gate's threshold as a fraction, or None if no rule was set.
+        width: viewport width in user units.
+        height: viewport height in user units.
+        label: prefixed to the accessible title; may be empty or whitespace.
+
+    Returns:
+        One ``<svg>`` element as a string, on a single line.
+    """
+    rate = _interval_bar_number(rate)
+    floor = _interval_bar_number(floor)
+    if interval is not None:
+        low_end = _interval_bar_number(interval[0])
+        high_end = _interval_bar_number(interval[1])
+        # Half an interval is not an interval. A band drawn from a good lower end
+        # to a NaN upper end would claim a span nobody measured, which is the
+        # failure this whole guard exists to prevent.
+        interval = None if low_end is None or high_end is None else (low_end, high_end)
+
+    rate_words = INTERVAL_BAR_NO_RATE if rate is None else f"pass rate {_pct(rate)}"
+    if interval is None:
+        interval_words = INTERVAL_BAR_NO_INTERVAL
+    else:
+        interval_words = f"interval {_pct(interval[0])} to {_pct(interval[1])}"
+    floor_words = INTERVAL_BAR_NO_FLOOR if floor is None else f"floor {_pct(floor)}"
+    sentence = f"{rate_words}, {interval_words}, {floor_words}"
+    # Trimmed and control-stripped before the test for emptiness, because a label
+    # of "  " -- or of a lone ESC lifted out of an evidence log -- would otherwise
+    # open the accessible name with a bare " : " and announce nothing.
+    named = _CONTROL_RE.sub(" ", label).strip()
+    if named:
+        sentence = f"{named}: {sentence}"
+
+    # The title is unconditional -- it is the accessible name of a `role="img"`
+    # element, and it is where the floor-was-never-recorded state is stated in
+    # words. "Nothing else" in the all-None row of the contract is about drawn
+    # elements; a document whose only picture had no accessible name would trade
+    # one silent failure for another.
+    parts = [f"<title>{_interval_bar_escape(sentence)}</title>"]
+
+    if rate is None and interval is None and floor is None:
+        parts.append(
+            f'<text x="{_interval_bar_coord(width / 2)}" '
+            f'y="{_interval_bar_coord(height / 2)}" text-anchor="middle" '
+            f'dominant-baseline="middle" font-family="system-ui, sans-serif" '
+            f'font-size="{_interval_bar_coord(height * 0.45)}" '
+            f'fill="#4a5058">{EM_DASH}</text>'
+        )
+    else:
+        if interval is not None:
+            low = _interval_bar_x(interval[0], width)
+            high = _interval_bar_x(interval[1], width)
+            parts.append(
+                f'<rect class="interval" x="{_interval_bar_coord(low)}" '
+                f'y="{_interval_bar_coord(height * 0.34)}" '
+                # The floor guards two ways of drawing nothing: a reversed pair,
+                # whose negative `width` is invalid SVG, and a degenerate one,
+                # whose `width="0"` an SVG renderer skips outright. `x` stays the
+                # mapped `interval[0]`, exactly as the geometry contract says.
+                f'width="{_interval_bar_coord(max(INTERVAL_BAR_MIN_SPAN, high - low))}" '
+                f'height="{_interval_bar_coord(height * 0.32)}" '
+                f'fill="#cfd4da" stroke="#7b838d" stroke-width="1" '
+                f'data-value="{_interval_bar_value(interval[0])}" '
+                f'data-value-upper="{_interval_bar_value(interval[1])}"/>'
+            )
+        if rate is not None:
+            at_rate = _interval_bar_x(rate, width)
+            parts.append(
+                f'<line class="rate" x1="{_interval_bar_coord(at_rate)}" '
+                f'y1="{_interval_bar_coord(height * 0.22)}" '
+                f'x2="{_interval_bar_coord(at_rate)}" '
+                f'y2="{_interval_bar_coord(height * 0.78)}" '
+                f'stroke="#16191d" stroke-width="2" '
+                f'data-value="{_interval_bar_value(rate)}"/>'
+            )
+        if floor is not None:
+            at_floor = _interval_bar_x(floor, width)
+            parts.append(
+                f'<line class="floor" x1="{_interval_bar_coord(at_floor)}" '
+                f'y1="{_interval_bar_coord(height * 0.10)}" '
+                f'x2="{_interval_bar_coord(at_floor)}" '
+                f'y2="{_interval_bar_coord(height * 0.90)}" '
+                f'stroke="#a1141a" stroke-width="2" stroke-dasharray="3 2" '
+                f'data-value="{_interval_bar_value(floor)}"/>'
+            )
+
+    return (
+        f'<svg class="interval-bar" role="img" width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}" preserveAspectRatio="xMidYMid meet">'
+        f"{''.join(parts)}</svg>"
+    )
 
 
 # --------------------------------------------------------------------------- #

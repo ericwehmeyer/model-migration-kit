@@ -54,7 +54,10 @@ def tracked_python_files() -> list[Path]:
         ["git", "-C", str(REPO), "ls-files", "*.py"],
         capture_output=True, text=True, check=True,
     )
-    return [REPO / line for line in out.stdout.splitlines() if line.strip()]
+    # ``git ls-files`` lists a conflicted path once per merge stage, and this
+    # script exists to be run mid-merge -- so dedup, or every finding in a
+    # conflicted file is reported three times.
+    return sorted({REPO / line for line in out.stdout.splitlines() if line.strip()})
 
 
 def tracked_text_files() -> list[Path]:
@@ -63,11 +66,11 @@ def tracked_text_files() -> list[Path]:
         capture_output=True, text=True, check=True,
     )
     keep = {".py", ".md", ".toml", ".cfg", ".yml", ".yaml", ".jsonl", ".txt"}
-    return [
+    return sorted({
         REPO / line
         for line in out.stdout.splitlines()
         if line.strip() and Path(line).suffix in keep
-    ]
+    })
 
 
 def check_no_conflict_markers() -> list[str]:
