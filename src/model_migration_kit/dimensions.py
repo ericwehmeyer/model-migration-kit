@@ -87,6 +87,41 @@ class DimensionCell:
     in two different situations: the cell is not refused, or nothing was measured
     at all and there is no shortfall to quantify.
 
+    **Why one number and a unit rather than ``needed_items`` and
+    ``needed_completions``.** Ruled at review; the case for two typed fields was
+    good and is recorded here because it will be made again.
+
+    It runs: a unit beside a single number can express only one floor, so when
+    both bind the second fact has to be smuggled into prose. Two nullable ints
+    would carry both at the type level, delete the stringly-typed unit, and
+    reduce "which one is actionable" to ``needed_items or needed_completions``.
+
+    That last clause is why the answer is no. Which floor to name when both bind
+    is not a formatting detail, it is the whole substance of the two-floor
+    ruling: naming the completions floor while items are short is advice that
+    does not work, because more draws multiply the same few questions. Under this
+    shape the module decides once and no consumer can get it wrong. Under two
+    fields the decision moves into every renderer, where ``needed_completions or
+    needed_items`` is a one-token slip that reproduces exactly the defect the
+    ruling exists to prevent -- and it is a slip no type would catch, because
+    both spellings type-check.
+
+    The premise that the second fact lives only in prose is also not quite true.
+    A cell carries ``n`` and ``items``; the floors it was judged against travel
+    with the matrix that holds it, because a document that refuses a cell has to
+    be able to say what it refused against. A renderer that wants the completions
+    shortfall as a number subtracts two fields it already has. The note is a
+    convenience for a human reader, not the only carrier.
+
+    One correction to the ground this was argued on: the both-bind case is not
+    rare. It was said to be reachable only at one draw per item or on a ragged
+    tag, and that is the region where the *completions* floor binds **alone**.
+    Both floors bind together across 33 uniform (items, draws) pairs -- every
+    tag with nine or fewer items and fewer than twenty completions, so four items
+    at three draws each lands there. That is the ordinary shape of a young golden
+    set, which cuts toward this shape rather than away from it: a decision taken
+    on most refused cells is worth taking once, correctly, inside the module.
+
     ``note`` is the cell's disclosure line rather than only its refusal sentence.
     It carries whichever of these apply: that nothing was measured, that a floor
     is unmet, that a *second* floor is also unmet, and that no confidence level
