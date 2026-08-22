@@ -467,9 +467,20 @@ def read_series(evidence: str | Path) -> tuple[RunPoint, ...]: ...
 ```
 
 One streaming pass over the log, in file order. Each `migkit.comparison` record
-opens a point; the **next** `migkit.verdict` record before the next
-`migkit.comparison` closes it. A comparison with no following verdict yields a
-point with `verdict is None`. Points are returned in **log order**, not sorted.
+opens a point; **every** `migkit.verdict` record updates the most recently opened
+point, overwriting a value already there. A comparison with no verdict after it
+yields a point with `verdict is None`. Points are returned in **log order**, not
+sorted.
+
+> **Amended 2026-08-21, by C19.** This paragraph and Edges row five below used to
+> say different things: the prose gave a verdict to the comparison it follows,
+> the row paired first-in-first-out. C2's implementer shipped the row, and that
+> is where the defect came from — so both now state C19's rule rather than one
+> being deleted. The reasoning is in
+> [C19](#c19--the-verdict-belongs-to-the-comparison-before-it): there is exactly
+> one writer of these two events, `comparison.py:907-908`, which makes
+> first-in-first-out right only on a log this pipeline cannot write and wrong on
+> the log a crash produces.
 
 Reuse `report._stream_records` — do not write a second reader. The docstring at
 `report.py:971` records why: `EvidenceLog.read()` was measured at 5.0–5.8× the
@@ -487,7 +498,7 @@ preferable to `series.py` importing a private name.
 | log with one comparison and one verdict | one point, `verdict` populated |
 | log with one comparison, no verdict | one point, `verdict is None` |
 | verdict *before* any comparison | ignored; it belongs to no point |
-| two comparisons then two verdicts | first verdict closes the first point; the second verdict closes the second. Comparison-then-verdict adjacency is what `compare` writes (`comparison.py:906-908`) and must not be assumed to be the *only* interleaving. |
+| two comparisons then two verdicts | both verdicts land on the **second** point — it ends up carrying the second verdict, and the first point's `verdict is None`. Amended by C19; see the note above. Comparison-then-verdict adjacency is what `compare` writes (`comparison.py:907-908`) and must not be assumed to be the *only* interleaving. |
 | torn final line | dropped, per `_stream_records` |
 | malformed line not at the end | `EvidenceError` propagates |
 | path is a directory | `<dir>/evidence.jsonl`, matching `from_evidence` |
