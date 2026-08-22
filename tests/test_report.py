@@ -2883,6 +2883,23 @@ def test_a_series_of_runs_renders_exactly_what_one_run_rendered(tmp_path: Path) 
 # -- pairing, and order ------------------------------------------------------ #
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Verdicts are paired first-in-first-out, so a night that died between its "
+        "comparison record and its verdict record is handed the *next* night's "
+        "verdict -- and every later verdict shifts by one, permanently, in a log "
+        "that only ever grows. This test states the behaviour the review confirmed "
+        "is correct. The rule it fails against was merged in C2, whose contract "
+        "contradicts itself: the plan's prose says a verdict closes the comparison "
+        "it follows, its own Edges row says first-in-first-out. Fixing it means "
+        "changing C2's rule and the headline's reduction together, and C3 is "
+        "forbidden to touch the headline, so it belongs to the chunk 'the verdict "
+        "belongs to the comparison before it'. strict=True deliberately: when that "
+        "chunk lands this starts passing, XPASS fails the suite, and whoever lands "
+        "it is told to delete this marker instead of leaving a green xfail behind."
+    ),
+)
 def test_a_run_that_died_before_its_verdict_is_a_point_with_no_verdict(
     tmp_path: Path,
 ) -> None:
