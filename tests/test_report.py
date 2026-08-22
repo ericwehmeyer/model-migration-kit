@@ -2697,6 +2697,11 @@ def test_the_series_field_is_declared_with_an_empty_default(tmp_path: Path) -> N
     factory = field.default_factory
     default = field.default if factory is dataclasses.MISSING else factory()
     assert default == (), f"series defaults to {default!r}, not ()"
+    assert "RunPoint" in str(field.type), (
+        f"series is annotated {field.type!r}; C3 spells the element type, and the "
+        f"annotation is the only place it is stated -- C6 renders this tuple and has "
+        f"nothing else to read it from"
+    )
 
 
 def test_a_single_comparison_log_still_reports_every_headline_it_did_before(
@@ -3085,9 +3090,14 @@ def test_a_log_with_no_comparison_is_refused_in_the_same_words(tmp_path: Path) -
     records happened to be present is a refusal that has started describing the
     implementation instead of the problem.
 
-    The exact sentence is not pinned here. This suite has no copy of the tree
-    that came before C3, so "unchanged" can only be held as "one wording, and
-    not one that has learned the new vocabulary".
+    The exact sentence *is* pinned, as a literal. "Unchanged" needs a copy of
+    the tree that came before C3 to mean anything, and this branch is that tree:
+    the sentence below was lifted from ``report.py`` at ``main``, where it has
+    stood since before this chunk was written, and it is quoted here so that a
+    reduction rebuilt around pairing cannot reword the refusal on its way past.
+    The event name is spelled through ``EVENT_COMPARISON`` rather than typed
+    out, because the message interpolates it and a renamed event should move
+    both together.
     """
     from model_migration_kit.errors import ArtifactError
 
@@ -3115,6 +3125,11 @@ def test_a_log_with_no_comparison_is_refused_in_the_same_words(tmp_path: Path) -
     assert messages[0] == messages[1], (
         f"the refusal has two wordings: {messages[0]!r} and {messages[1]!r}"
     )
+    assert messages[0] == (
+        f"<LOG> contains no {EVENT_COMPARISON} record, so there is nothing to "
+        f"report on. A run that died before comparing produced evidence of an "
+        f"attempt, not of a comparison."
+    ), f"the refusal was reworded; Edges row 2 says it is unchanged: {messages[0]!r}"
     for word in ("series", "run point", "runpoint", "timeline"):
         assert word not in messages[0].lower(), (
             f"the refusal now names {word!r}; §2.6 row 2 is about a report having "
