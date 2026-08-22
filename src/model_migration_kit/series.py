@@ -88,8 +88,8 @@ class RunPoint:
     #: placed this point is a fact the reader is entitled to: the envelope's
     #: belongs to a package this project does not own.
     created_source: str
-    #: ``None`` when no verdict record was paired with this comparison, which is
-    #: what a run that died between the two records looks like.
+    #: ``None`` when no verdict record followed this comparison, which is what a
+    #: run that died between the two records looks like.
     verdict: str | None
     reason: str | None
     baseline_model: str
@@ -340,12 +340,20 @@ def read_series(evidence: str | Path) -> tuple[RunPoint, ...]:
     rigor's evidence log interleaves whole records rather than tearing them, and
     ``cli.DEFAULT_EVIDENCE`` makes one shared path the default, so
     ``C_A C_B V_A V_B`` and ``C_A C_B V_B V_A`` are equally likely and neither is
-    distinguishable from a crash. This rule does not detect that; it declines to
-    be wrong on the single-writer log the pipeline actually produces, and says
-    here that it is guessing on any other.
+    distinguishable from a crash. Detecting the shape and refusing it was weighed
+    at C19's review and rejected: the only signature the interleave leaves --
+    two comparisons standing before either verdict -- is the crashed night's
+    signature too, so a detector keyed on it would refuse the log this rule was
+    rewritten to read. It would also have nothing to say about *which* of the two
+    orderings it saw. So this rule does not detect it; it declines to be wrong on
+    the single-writer log the pipeline actually produces, and says here that it is
+    guessing on any other. The same limitation is recorded in ``report``'s module
+    docstring, at more length and with what a future chunk would need -- a writer
+    identity on each record -- because the person it costs is reading a banner
+    that disagrees with the timeline, not this function.
 
-    A record whose payload is not a JSON object still opens or closes a point,
-    with the payload read as empty. ``EvidenceRecord.from_json`` checks the
+    A record whose payload is not a JSON object still opens a point, or updates
+    one, with the payload read as empty. ``EvidenceRecord.from_json`` checks the
     envelope and not the payload, so this is reachable, and the choice is between
     a point that says nothing and a series shorter than the log it was read from.
     A blank row can be seen and asked about; a missing run cannot.
@@ -401,7 +409,7 @@ def read_series(evidence: str | Path) -> tuple[RunPoint, ...]:
     reintroduced one layer up. It also removes an argument: because a point takes
     its place in the list the moment its comparison is read, the returned order is
     the comparisons' order by construction rather than by reasoning about when
-    each one closed.
+    each one took its verdict.
     """
     builder = SeriesBuilder()
     for record in stream_records(resolve_evidence(evidence)):
