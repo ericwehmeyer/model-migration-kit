@@ -2127,3 +2127,103 @@ concurrent-writer case: `opik_rigor`'s evidence log documents that concurrent
 writers interleave whole records and `cli.py:87` makes one shared path the
 default, so `C_A C_B V_A V_B` and `C_A C_B V_B V_A` are equally likely. Neither
 rule is right there; say whether this chunk should detect it rather than guess.
+
+---
+
+#### C20 — the self-containment scanner judges shape where it means dereference
+
+Added 2026-08-22, out of C12's and C13's reviews. Shared code. Three chunks are
+already shaped by this defect and C14 will be the fourth.
+
+**Files.** `report.py` (`_UrlScanner._attribute_reason`, `FETCHING_ATTRS`).
+`tests/test_report_untrusted_input.py`.
+
+**The defect.** `_attribute_reason` applies two *name-agnostic* rules -- the
+protocol-relative check and `_SCHEME_RE` -- to every attribute value regardless of
+the attribute's name. The property it means to enforce is "this document fetches
+nothing when rendered". The property it actually tests is "no attribute value
+begins with something that looks like a scheme". Those are different, and the rule
+is neither sound nor complete:
+
+| fragment | scanner | browser |
+|---|---|---|
+| `<svg xmlns="http://www.w3.org/2000/svg">` | flagged | never fetched |
+| `<rect data-verdict="review: n was too small">` | flagged | never fetched |
+| `<rect data-verdict="javascript:alert(1)">` | flagged | never fetched, no script runs |
+| `<p data-note="//TODO fix this">` | flagged | never fetched |
+| `<p title="see http://example.com for details">` | **not** flagged | never fetched |
+
+The last row is the tell: `title` escapes only because `_SCHEME_RE` is anchored
+`^\s*`. The rule is not defending a boundary; it fires on values that happen to
+*begin* with a scheme.
+
+**What it has already cost.** Two chunks omitted `xmlns` from their `<svg>`,
+which is correct for inline SVG in HTML5 and wrong the moment anyone saves the
+chart standalone. Worse, C13 found that a recorded verdict reading
+`review: n was too small` matches `scheme:` -- so **an evidence log can stop the
+report rendering at all**. A control whose false positives are triggerable by the
+untrusted input it exists to defend against is a denial-of-render vector, which is
+a larger hole than the one it closes.
+
+**Contract.** In `_attribute_reason`, skip **only** the two name-agnostic rules
+for attribute names a browser provably never dereferences: `data-*`, `aria-*`,
+`xmlns`, and `xmlns:*`. Change nothing else. The event-handler rule, the
+`FETCHING_ATTRS` rule and both CSS rules are already name-based and are doing all
+the real work.
+
+Additionally, add `ping`, `xlink:href` and `xml:base` to `FETCHING_ATTRS`. All
+three genuinely fetch, none is in the set today, and each is currently caught
+*only* by the broad rule. They are not exempted by this change, so nothing breaks
+today -- but leaving three real fetching attributes resting on a rule this chunk
+has just narrowed is how the next narrowing becomes a hole.
+
+**Why an exemption rather than an allowlist.** An allowlist must enumerate every
+dereferenced attribute correctly and decays as HTML grows. The exemption needs
+only that three families are *never* dereferenced, which is a stable property of
+the platform. It shrinks the trusted claim to something a reader can check.
+
+**The safety argument, which must be written into the code.** This is sound only
+because `<script>` and inline event handlers are separately forbidden and
+asserted: nothing can read a `data-` value into a fetch if no script runs. Put
+that coupling in the comment beside the exemption. **If the script ban is ever
+relaxed, this exemption becomes unsafe** -- and the person relaxing it will be
+reading that comment, not this plan.
+
+**Must not.** Relax, narrow or reword the `<script>` ban or the event-handler
+rule; this chunk's correctness rests on them. Exempt any attribute family beyond
+the four named. Touch `_SCHEME_RE` itself -- the anchoring is odd but it is what
+makes the remaining name-based checks cheap, and changing it is a separate
+question.
+
+**Test that fails first.** `test_a_data_attribute_holding_a_scheme_is_inert_
+rather_than_a_violation` -- a document carrying `data-verdict="javascript:alert(1)"`
+must render, must report no external URLs, and must contain no script. Note the
+assertion is "the document renders and nothing fetches", **not** "the scanner does
+not fire": a test that only checks the scanner stayed quiet would pass against a
+scanner that had been deleted.
+
+**Edges.**
+
+| Input | Required |
+|---|---|
+| `data-*`, `aria-*`, `xmlns`, `xmlns:*` holding a scheme or `//` | not a violation |
+| `href`, `src`, `ping`, `xlink:href`, `xml:base` holding a scheme | violation, as today |
+| `onclick="..."` anywhere | violation, as today |
+| a `<style>` carrying `url(https://…)` | violation, as today |
+| an evidence log whose recorded verdict reads `review: n was too small` | the report renders |
+
+**Failure mode when wrong.** Two, opposite. Too narrow and a real fetch ships in
+a document that promises it is self-contained. Too broad and an evidence log can
+refuse to render -- which is what happens today.
+
+**Reviewer.** Mutate the exemption to cover `href` and `src` and confirm the suite
+screams. Then check the claim the whole chunk rests on: that no `data-*`,
+`aria-*` or `xmlns*` attribute is dereferenced by a browser in a document with no
+script. Look specifically for CSS `attr()`, SVG `<use>`, and anything that can
+turn an attribute value into a request without script. If you find one, this
+chunk is wrong and the status quo is right.
+
+**Afterwards, not part of this chunk.** C12 and C13 may put `xmlns` back; C13's
+`data-verdict` filter becomes defence-in-depth rather than load-bearing, which
+unblocks carrying the recorded verdict verbatim-escaped; C14 gets the same
+freedom for its own `data-` attributes.
