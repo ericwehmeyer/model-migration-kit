@@ -5044,3 +5044,1069 @@ def test_a_payload_that_calls_a_scripted_run_real_is_still_banded(
             f"band marker {marker!r} is missing from a document whose {side} run "
             f"was produced by a scripted adapter"
         )
+
+
+# --------------------------------------------------------------------------- #
+# 19. The per-dimension matrix on the model (C10 restated, and R1).
+#
+# Written from `### C10 (restated)` and `### R1` in
+# docs/superpowers/plans/2026-08-21-migkit-report-plan.md, plus the docstrings of
+# the merged `dimensions` module the chunk consumes. The author of this section
+# did not read `report.py`'s dimension code and did not run it to derive a single
+# expected number: every count below is worked out by hand from the fixture and
+# written as a literal.
+#
+# The one thing R1 changed, and the reason this section exists in this shape: the
+# matrix is built from `judge.verdict` records joined to the golden set by input
+# text, so it survives a log whose run and judged artifacts are not beside it.
+# The original C10 contract asserted the opposite. Every fixture here therefore
+# writes the verdicts into the *log*, and the artifacts are decoration that some
+# tests take away.
+# --------------------------------------------------------------------------- #
+
+
+def _dimensions_module() -> Any:
+    """The merged, reviewed module C10 consumes.
+
+    Imported inside a function rather than at the top of this file on purpose:
+    several chunks append sections here, and the top import block is the one
+    place two of them would collide. Nothing about it is lazy in effect -- it is
+    bound to module-level names immediately below.
+    """
+    from model_migration_kit import dimensions
+
+    return dimensions
+
+
+_DIMENSIONS = _dimensions_module()
+
+#: Imported rather than typed as `""`. The contract requires the caller to import
+#: it, and the sentinel's own comment says why: `"untagged"` is a legal tag, and a
+#: set that used it would collide with this bucket and read as a larger slice.
+_DIM_UNTAGGED = _DIMENSIONS.UNTAGGED
+_DIM_MIN_N = _DIMENSIONS.MIN_N_FOR_A_VERDICT
+_DIM_MIN_ITEMS = _DIMENSIONS.MIN_ITEMS_FOR_A_VERDICT
+
+
+def _dim_event_completion() -> str:
+    from model_migration_kit.contracts import EVENT_COMPLETION
+
+    return EVENT_COMPLETION
+
+
+_DIM_EVENT_COMPLETION = _dim_event_completion()
+
+#: Typed here rather than imported, for the reason `dimensions.py` gives for
+#: typing it there: rigor does not carry `EVENT_JUDGE_VERDICT` in `__all__`, and
+#: reaching past a package's public surface is what COMPATIBILITY.md exists to
+#: catch. Typing it also means this file pins the wire string independently of
+#: the module under test.
+_DIM_EVENT_JUDGE_VERDICT = "judge.verdict"
+
+_DIM_ZETA = "zeta"
+_DIM_ALPHA = "alpha"
+
+#: Twelve items: five `zeta`, five `alpha`, two carrying no tag at all. The two
+#: real tags are deliberately in an order where first-appearance and alphabetical
+#: disagree, so "golden-set tag order" is a testable claim rather than a
+#: coincidence; and `UNTAGGED` sorts *first* as a bare `""`, so "untagged last" is
+#: a correction on top of any sort rather than a free consequence of one.
+_DIM_TAGS: dict[str, tuple[str, ...]] = {
+    "dim-01": (_DIM_ZETA,),
+    "dim-02": (_DIM_ZETA,),
+    "dim-03": (_DIM_ZETA,),
+    "dim-04": (_DIM_ZETA,),
+    "dim-05": (_DIM_ZETA,),
+    "dim-06": (_DIM_ALPHA,),
+    "dim-07": (_DIM_ALPHA,),
+    "dim-08": (_DIM_ALPHA,),
+    "dim-09": (_DIM_ALPHA,),
+    "dim-10": (_DIM_ALPHA,),
+    "dim-11": (),
+    "dim-12": (),
+}
+
+#: Hand-chosen and asymmetric between the sides, so a matrix that put one side's
+#: numbers in the other side's column fails rather than passing by symmetry.
+#: baseline: zeta 15/25 over 5 items, alpha 25/25 over 5 items, untagged 0/10
+#: over 2 items -- 40 passes over 60 draws in total.
+_DIM_BASELINE_PASSES = {
+    "dim-01": 5,
+    "dim-02": 4,
+    "dim-03": 3,
+    "dim-04": 2,
+    "dim-05": 1,
+    "dim-06": 5,
+    "dim-07": 5,
+    "dim-08": 5,
+    "dim-09": 5,
+    "dim-10": 5,
+    "dim-11": 0,
+    "dim-12": 0,
+}
+#: candidate: zeta 5/25 over 5 items, alpha 0/25 over 5 items, untagged 10/10
+#: over 2 items -- 15 passes over 60 draws, and the candidate is better at
+#: exactly the slice nobody tagged.
+_DIM_CANDIDATE_PASSES = {
+    "dim-01": 1,
+    "dim-02": 1,
+    "dim-03": 1,
+    "dim-04": 1,
+    "dim-05": 1,
+    "dim-06": 0,
+    "dim-07": 0,
+    "dim-08": 0,
+    "dim-09": 0,
+    "dim-10": 0,
+    "dim-11": 5,
+    "dim-12": 5,
+}
+
+#: (passes, n, items) per tag per side, worked out from the two maps above by
+#: hand. Nothing here was read back out of the code.
+_DIM_EXPECTED_BASELINE = {
+    _DIM_ALPHA: (25, 25, 5),
+    _DIM_ZETA: (15, 25, 5),
+    _DIM_UNTAGGED: (0, 10, 2),
+}
+_DIM_EXPECTED_CANDIDATE = {
+    _DIM_ALPHA: (0, 25, 5),
+    _DIM_ZETA: (5, 25, 5),
+    _DIM_UNTAGGED: (10, 10, 2),
+}
+
+#: A hash that is a well-formed sha256 and is not the set's, so the golden-set
+#: gate refuses for the one reason it exists to refuse for.
+_DIM_WRONG_HASH = "d" * 64
+
+
+def _dim_input(item_id: str) -> str:
+    """The verbatim text a `judge.verdict` carries, which is the join key."""
+    return f"DIM-INPUT for {item_id}"
+
+
+def _dim_verdicts(
+    passes: Mapping[str, int],
+    inputs: Mapping[str, str],
+    *,
+    judge: str = J,
+    n_per_item: int = N_PER_ITEM,
+) -> list[dict[str, Any]]:
+    """One `judge.verdict` record per draw, in rigor's own payload shape.
+
+    rigor's judge writes `judge`, `model_id`, `rubric_hash`, `passed`, `score`,
+    `reason`, `input`, `output` and `raw`. `model_id` is the *judge's* model and
+    never the candidate's, which is why every verdict on both sides here carries
+    the same one: a matrix that read the side off that field would produce two
+    identical columns and look entirely plausible doing it.
+    """
+    out: list[dict[str, Any]] = []
+    for item_id, text in inputs.items():
+        for index in range(n_per_item):
+            ok = index < passes.get(item_id, 0)
+            out.append(
+                _record(
+                    _DIM_EVENT_JUDGE_VERDICT,
+                    {
+                        "judge": judge,
+                        "model_id": JUDGE_MODEL,
+                        "rubric_hash": RUBRIC_HASH,
+                        "passed": ok,
+                        "score": 5.0 if ok else 1.0,
+                        "reason": f"graded {item_id} #{index}",
+                        "input": text,
+                        "output": f"OUT {item_id} #{index}",
+                        "raw": "{}",
+                    },
+                    TS_JUDGING,
+                )
+            )
+    return out
+
+
+def _dim_close(model_id: str, graded: int, *, judge: str = J) -> dict[str, Any]:
+    """A `migkit.judging_completed`, in `judging.py`'s payload shape.
+
+    `graded`, `imputed` and `parse_failures` are per-judge maps, and the group
+    size the counter checks against is `graded - imputed - parse_failures`.
+    """
+    return _record(
+        EVENT_JUDGING_COMPLETED,
+        {
+            "model_id": model_id,
+            "judges_hash": JUDGES_HASH,
+            "judged": f"{model_id}.judged.jsonl",
+            "graded": {judge: graded},
+            "parse_failures": {},
+            "imputed": {},
+        },
+        TS_JUDGING,
+    )
+
+
+def _dim_scenario(
+    root: Path,
+    *,
+    tags: Mapping[str, Sequence[str]] | None = None,
+    baseline_passes: Mapping[str, int] | None = None,
+    candidate_passes: Mapping[str, int] | None = None,
+    inputs: Mapping[str, str] | None = None,
+    sides_in_log: Sequence[str] = ("baseline", "candidate"),
+    judge: str = J,
+    failed_completions: Sequence[tuple[str, str]] = (),
+    close_last_group: bool = True,
+    recorded_goldenset_hash: str | None = None,
+) -> Scenario:
+    """A run whose *log* carries every verdict, which is what R1 made the source.
+
+    Everything the report reads is written here: a golden set, both run and both
+    judged artifacts, and an evidence log holding one `judge.verdict` per draw
+    followed by the `migkit.judging_completed` that names whose draws they were.
+    The artifacts are written so that a test can take them away and see that
+    nothing in the matrix moved.
+
+    `sides_in_log` fixes the order the two judging groups appear in, which is the
+    only thing that decides `by_model`'s iteration order -- so a test can put the
+    candidate first and check that "which model is the baseline" still comes from
+    the comparison payload.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    tag_map = dict(_DIM_TAGS if tags is None else tags)
+    item_ids = tuple(tag_map)
+    text = dict(inputs) if inputs is not None else {one: _dim_input(one) for one in item_ids}
+    base_passes = dict(_DIM_BASELINE_PASSES if baseline_passes is None else baseline_passes)
+    cand_passes = dict(_DIM_CANDIDATE_PASSES if candidate_passes is None else candidate_passes)
+
+    goldenset_path = root / "goldenset.jsonl"
+    golden = _write_goldenset(
+        goldenset_path,
+        [
+            {"id": item_id, "input": text[item_id], "tags": list(tag_map[item_id])}
+            for item_id in item_ids
+        ],
+    )
+
+    per_side = len(item_ids) * N_PER_ITEM
+    artifacts: dict[str, Path] = {}
+    for label, model_id, passes in (
+        ("baseline", BASELINE_MODEL, base_passes),
+        ("candidate", CANDIDATE_MODEL, cand_passes),
+    ):
+        artifacts[f"{label}_run"] = _write_run(
+            root / f"{label}.jsonl",
+            model_id=model_id,
+            adapter="AnthropicAdapter",
+            goldenset_hash=golden.hash,
+            goldenset_path=str(goldenset_path),
+            item_ids=item_ids,
+            outputs={
+                one: [f"OUT {one} #{index}" for index in range(N_PER_ITEM)]
+                for one in item_ids
+            },
+            duration=LATENCY[label]["median"],
+        )
+        artifacts[f"{label}_judged"] = _write_judged(
+            root / f"{label}.judged.jsonl",
+            model_id=model_id,
+            goldenset_hash=golden.hash,
+            source=str(artifacts[f"{label}_run"]),
+            item_ids=item_ids,
+            passes=passes,
+            reasons={one: f"{label}-reason {one}" for one in item_ids},
+        )
+
+    judge_rows = [dict(_judge_payload(name=judge, items=len(item_ids)))]
+    payload: dict[str, Any] = {
+        "created": TS_COMPARISON,
+        "goldenset_hash": recorded_goldenset_hash or golden.hash,
+        "goldenset_path": str(goldenset_path),
+        "judges_hash": JUDGES_HASH,
+        "config_hash": CONFIG_HASH,
+        "config_path": str(root / "migkit.toml"),
+        "baseline": _side(
+            model_id=BASELINE_MODEL,
+            adapter="AnthropicAdapter",
+            artifact=artifacts["baseline_run"],
+            judged_artifact=artifacts["baseline_judged"],
+            records=per_side,
+        ),
+        "candidate": _side(
+            model_id=CANDIDATE_MODEL,
+            adapter="OpenAICompatAdapter",
+            artifact=artifacts["candidate_run"],
+            judged_artifact=artifacts["candidate_judged"],
+            records=per_side,
+        ),
+        "thresholds": dict(THRESHOLDS),
+        "judges": judge_rows,
+        "flips": _grouped(()),
+        "gains": _grouped(()),
+        "unstable": _grouped(()),
+        "latency": {side: dict(stat) for side, stat in LATENCY.items()},
+        "completion_rates": {
+            "baseline": {"passes": ODD_SUCCESSES, "n": ODD_N},
+            "candidate": {"passes": 11, "n": ODD_N},
+            "unit": "completion",
+        },
+        "item_counts": {
+            "unit": "item",
+            "per_judge": {one["name"]: dict(one["item_counts"]) for one in judge_rows},
+        },
+        "n_per_item": N_PER_ITEM,
+        "warnings": [],
+    }
+    verdict_payload = {
+        "verdict": Verdict.NO_GO,
+        "exit_code": Verdict.exit_code(Verdict.NO_GO),
+        "reason": "REASON-SENTENCE: judge 'accuracy' shows a significant regression.",
+        "decided_by": "rule 1",
+        "rule": 1,
+        "thresholds": dict(THRESHOLDS),
+        "judges": [{"name": judge, "regressed": True}],
+        "baseline_model": BASELINE_MODEL,
+        "candidate_model": CANDIDATE_MODEL,
+    }
+
+    records: list[dict[str, Any]] = [
+        _record(EVENT_RUN_STARTED, {"model_id": BASELINE_MODEL}, TS_JUDGING)
+    ]
+    by_side = {
+        "baseline": (BASELINE_MODEL, base_passes),
+        "candidate": (CANDIDATE_MODEL, cand_passes),
+    }
+    for position, label in enumerate(sides_in_log):
+        model_id, passes = by_side[label]
+        verdicts = _dim_verdicts(passes, text, judge=judge)
+        records.extend(verdicts)
+        if position == len(sides_in_log) - 1 and not close_last_group:
+            continue
+        records.append(_dim_close(model_id, len(verdicts), judge=judge))
+    for model_id, item_id in failed_completions:
+        records.append(
+            _record(
+                _DIM_EVENT_COMPLETION,
+                {
+                    "model_id": model_id,
+                    "item_id": item_id,
+                    "sample_index": 0,
+                    "duration": 30.0,
+                    "ok": False,
+                    "error": "timeout after 30s",
+                    "error_type": "SampleTimeout",
+                    "tokens_in": None,
+                    "tokens_out": None,
+                },
+                TS_JUDGING,
+            )
+        )
+    records.append(_record(EVENT_COMPARISON, payload, TS_COMPARISON))
+    records.append(_record(EVENT_VERDICT, verdict_payload, TS_VERDICT))
+
+    evidence = _write_evidence(root / "evidence.jsonl", records)
+    return Scenario(
+        root=root,
+        evidence=evidence,
+        goldenset=goldenset_path,
+        goldenset_hash=golden.hash,
+        items=item_ids,
+        comparison=payload,
+        verdict=verdict_payload,
+    )
+
+
+def _dim_scenario_with_silent_baseline(root: Path) -> Scenario:
+    """A log in which the baseline's judging pass closed a group of nothing.
+
+    Judging ran for that side and wrote no verdict under this judge. The counter
+    calls that a column of zeros rather than a missing model, and the two are not
+    the same fact.
+    """
+    scenario = _dim_scenario(root, sides_in_log=("candidate",))
+    records = [
+        json.loads(line)
+        for line in scenario.evidence.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    closed = next(
+        index
+        for index, one in enumerate(records)
+        if one["event_type"] == EVENT_JUDGING_COMPLETED
+    )
+    records.insert(closed + 1, _dim_close(BASELINE_MODEL, 0))
+    _write_evidence(scenario.evidence, records)
+    return scenario
+
+
+def _dim_matrix(model: Any) -> Any:
+    return _get(model, "dimensions")
+
+
+def _dim_cell(matrix: Any, side: str, tag: str, *, model_id: str = CANDIDATE_MODEL) -> Any:
+    column = _get(matrix, "baseline") if side == "baseline" else _get(matrix, "candidates")
+    if side != "baseline":
+        assert model_id in column, (
+            f"the contract keys `candidates` by model_id; {model_id!r} is missing "
+            f"from {sorted(column)}"
+        )
+        column = column[model_id]
+    assert tag in column, f"tag {tag!r} is missing from the column: {sorted(column)}"
+    return column[tag]
+
+
+def _dim_triple(cell: Any) -> tuple[int, int, int]:
+    return (_get(cell, "passes"), _get(cell, "n"), _get(cell, "items"))
+
+
+def _dim_artifact_names() -> tuple[str, ...]:
+    return ("baseline.jsonl", "candidate.jsonl", "baseline.judged.jsonl", "candidate.judged.jsonl")
+
+
+def _dim_move_artifacts(scenario: Scenario) -> Path:
+    """Take the four artifacts away from the log, leaving log and golden set.
+
+    This is the cross-machine render `report.py`'s own module docstring calls the
+    designed workflow, reproduced locally: the reviewer has the evidence and the
+    set, and no artifact directory at all.
+    """
+    elsewhere = scenario.root.parent / f"{scenario.root.name}-elsewhere"
+    elsewhere.mkdir(parents=True, exist_ok=True)
+    for name in _dim_artifact_names():
+        source = scenario.root / name
+        assert source.exists(), f"{name} was never written, so moving it proves nothing"
+        source.replace(elsewhere / name)
+        assert not source.exists()
+    return elsewhere
+
+
+def _dim_counter_reason(scenario: Scenario, *, judge: str = J) -> str:
+    """What `dimension_counts` itself says, so "verbatim" can be checked verbatim.
+
+    Computed by calling the merged module the report consumes, rather than by
+    copying its sentence into this file: a reason re-worded upstream and re-worded
+    the same way downstream would still be a second home for one fact.
+    """
+    from model_migration_kit.evidence import stream_records
+
+    golden = GoldenSet.load(scenario.goldenset)
+    counts = _DIMENSIONS.dimension_counts(
+        stream_records(scenario.evidence),
+        {item.id: item for item in golden},
+        judge=judge,
+    )
+    assert counts.available is False, "this fixture was meant to make the counter decline"
+    assert counts.reason, "a decline with no sentence is not a decline anyone can act on"
+    return str(counts.reason)
+
+
+# -- the headline: R1 inverted the original contract's named test ------------ #
+
+
+def test_the_dimension_matrix_still_renders_when_the_artifacts_are_not_beside_the_log(
+    tmp_path: Path,
+) -> None:
+    """R1's whole point, and the test the original C10 wrote the other way round.
+
+    The original contract asserted `available=False` here, on the premise that the
+    matrix had to come from the judged artifacts. R1 verified the join to the log
+    instead -- 120 of 120 verdicts joined on a real 300-record log, and the matrix
+    checked 24/24 against the artifacts -- so the matrix must now *survive* the
+    render this test performs, which is the one `report.py`'s module docstring
+    calls the designed workflow.
+    """
+    scenario = _dim_scenario(tmp_path / "moved")
+    _dim_move_artifacts(scenario)
+    for name in _dim_artifact_names():
+        assert not (scenario.root / name).exists(), (
+            "precondition: the artifacts really are gone, so a matrix that needed "
+            "them would have nothing to read"
+        )
+
+    matrix = _dim_matrix(_from_evidence(scenario))
+
+    assert _get(matrix, "available") is True, (
+        f"R1: the matrix is built from judge.verdict joined to the golden set, so a "
+        f"log without its artifacts still holds everything it needs. Reason given: "
+        f"{_get(matrix, 'reason')!r}"
+    )
+    assert _get(matrix, "reason") == "", "an available matrix has nothing to explain"
+    assert _dim_triple(_dim_cell(matrix, "baseline", _DIM_ZETA)) == (15, 25, 5)
+    assert _dim_triple(_dim_cell(matrix, "candidate", _DIM_ALPHA)) == (0, 25, 5)
+
+
+def test_the_dimension_matrix_is_identical_with_and_without_the_artifacts(
+    tmp_path: Path,
+) -> None:
+    """The strong form of R1: the artifacts are not an input to this matrix.
+
+    A matrix that read the artifacts when they happened to be there and the log
+    when they were not would pass the test above and still be wrong: the two
+    renders would agree only by luck, and the cross-machine document would quietly
+    be a different document.
+    """
+    beside = _dim_scenario(tmp_path / "beside")
+    away = _dim_scenario(tmp_path / "away")
+    _dim_move_artifacts(away)
+
+    with_artifacts = _dim_matrix(_from_evidence(beside))
+    without = _dim_matrix(_from_evidence(away))
+
+    assert _get(with_artifacts, "available") is True
+    assert _get(without, "available") is True
+    assert tuple(_get(with_artifacts, "tags")) == tuple(_get(without, "tags"))
+    for tag in _get(with_artifacts, "tags"):
+        for side in ("baseline", "candidate"):
+            assert _dim_triple(_dim_cell(with_artifacts, side, tag)) == _dim_triple(
+                _dim_cell(without, side, tag)
+            ), f"the {side} {tag!r} cell moved when the artifacts did"
+
+
+# -- the contract's named most-likely-subtle-wrong --------------------------- #
+
+
+def test_a_dimension_matrix_over_a_golden_set_with_no_tags_at_all_is_available(
+    tmp_path: Path,
+) -> None:
+    """"You tagged nothing" is a different fact from "the file is gone".
+
+    A set nobody tagged still measured something: it is one row, keyed by the
+    untagged sentinel, and it is `available=True`. Treating it as unavailable is
+    the wrong the contract's reviewer note names first.
+    """
+    scenario = _dim_scenario(tmp_path / "untagged-set", tags={one: () for one in _DIM_TAGS})
+    matrix = _dim_matrix(_from_evidence(scenario))
+
+    assert _get(matrix, "available") is True, (
+        f"a golden set in which every item is untagged is a set with one slice, not "
+        f"a missing set. Reason given: {_get(matrix, 'reason')!r}"
+    )
+    assert _get(matrix, "reason") == ""
+    assert tuple(_get(matrix, "tags")) == (_DIM_UNTAGGED,)
+    assert _dim_triple(_dim_cell(matrix, "baseline", _DIM_UNTAGGED)) == (40, 60, 12)
+    assert _dim_triple(_dim_cell(matrix, "candidate", _DIM_UNTAGGED)) == (15, 60, 12)
+
+
+def test_the_dimension_matrix_keys_untagged_items_by_the_empty_string_sentinel(
+    tmp_path: Path,
+) -> None:
+    """`UNTAGGED` is `""`, and the matrix uses it rather than a word.
+
+    The sentinel's own comment gives the reason: `"untagged"` is a legal tag, so a
+    bucket spelled that way would collide with a real one and read as a larger
+    slice rather than as an error.
+    """
+    assert _DIM_UNTAGGED == "", "the sentinel this section is written against moved"
+    matrix = _dim_matrix(_from_evidence(_dim_scenario(tmp_path / "sentinel")))
+
+    tags = tuple(_get(matrix, "tags"))
+    assert _DIM_UNTAGGED in tags
+    assert "untagged" not in tags, (
+        "the untagged bucket is keyed by the empty sentinel, never by the word"
+    )
+    assert _DIM_UNTAGGED in _get(matrix, "baseline")
+
+
+def test_the_dimension_matrix_keeps_untagged_apart_from_a_literal_untagged_tag(
+    tmp_path: Path,
+) -> None:
+    """The collision the sentinel exists to prevent, built on purpose.
+
+    Six items carry the real tag `"untagged"`; six carry no tag. Those are two
+    slices with two different meanings, and a matrix that spelled its bucket
+    `"untagged"` would merge them into one row of twelve items -- a bigger slice
+    than either, with no error anywhere.
+    """
+    tags = {one: (("untagged",) if index < 6 else ()) for index, one in enumerate(_DIM_TAGS)}
+    matrix = _dim_matrix(_from_evidence(_dim_scenario(tmp_path / "collision", tags=tags)))
+
+    assert _get(matrix, "available") is True, _get(matrix, "reason")
+    assert tuple(_get(matrix, "tags")) == ("untagged", _DIM_UNTAGGED)
+    # dim-01..06 carry the word: baseline passes 5+4+3+2+1+5 = 20 over 30 draws.
+    assert _dim_triple(_dim_cell(matrix, "baseline", "untagged")) == (20, 30, 6)
+    # dim-07..12 carry nothing: baseline passes 5+5+5+5+0+0 = 20 over 30 draws.
+    assert _dim_triple(_dim_cell(matrix, "baseline", _DIM_UNTAGGED)) == (20, 30, 6)
+
+
+# -- shape, order and the two sides ------------------------------------------ #
+
+
+def test_the_dimension_matrix_carries_every_field_the_contract_names(tmp_path: Path) -> None:
+    """The dataclass the contract writes out, field by field."""
+    matrix = _dim_matrix(_from_evidence(_dim_scenario(tmp_path / "shape")))
+
+    for name in (
+        "available",
+        "reason",
+        "judge",
+        "tags",
+        "baseline",
+        "candidates",
+        "min_n",
+        "min_items",
+    ):
+        assert _get(matrix, name, default=_MISSING) is not _MISSING, (
+            f"the C10 contract's DimensionMatrix declares {name!r}; the object "
+            f"exposes {_surface(matrix)}"
+        )
+    assert isinstance(_get(matrix, "available"), bool)
+    assert isinstance(_get(matrix, "reason"), str)
+    assert isinstance(_get(matrix, "tags"), tuple), (
+        "the contract types `tags` as a tuple, which is what makes the order a "
+        "promise rather than whatever a mapping happened to yield"
+    )
+    assert isinstance(_get(matrix, "baseline"), Mapping)
+    assert isinstance(_get(matrix, "candidates"), Mapping)
+
+
+def test_the_dimension_matrix_names_the_judge_whose_verdicts_it_counted(
+    tmp_path: Path,
+) -> None:
+    """A panel writes one verdict per judge per completion.
+
+    Which is why the counter takes a judge at all: mixing two would multiply every
+    denominator by the panel size. The matrix has to say which one it counted, or
+    the number on the page belongs to nobody.
+    """
+    matrix = _dim_matrix(_from_evidence(_dim_scenario(tmp_path / "judge")))
+    assert _get(matrix, "judge") == J
+
+
+def test_the_dimension_matrix_orders_its_tags_with_untagged_last(tmp_path: Path) -> None:
+    """`UNTAGGED` is `""`, which sorts *first* under every ordinary sort.
+
+    So "untagged last" is a deliberate correction rather than something a sort
+    gives away, and it is the half of the ordering claim that has no second
+    reading.
+    """
+    matrix = _dim_matrix(_from_evidence(_dim_scenario(tmp_path / "order-last")))
+    tags = tuple(_get(matrix, "tags"))
+
+    assert len(tags) == 3
+    assert tags[-1] == _DIM_UNTAGGED, (
+        f"the untagged bucket goes last; got {tags!r}. As a bare empty string it "
+        f"sorts first, so a matrix that only sorted its keys lands here"
+    )
+    assert tags.count(_DIM_UNTAGGED) == 1
+
+
+def test_the_dimension_matrix_lists_the_real_tags_in_the_golden_sets_own_order(
+    tmp_path: Path,
+) -> None:
+    """The golden set's tag order is the order `GoldenSet.stats()` publishes.
+
+    `stats()` returns `dict(sorted(tags.items()))` and the counter keys by
+    `sorted(tag_universe)`, so the golden set has exactly one order and it is
+    alphabetical. The fixture puts `zeta` on the first five items and `alpha` on
+    the next five, so first-appearance order and the set's own order disagree and
+    this assertion tells them apart.
+    """
+    matrix = _dim_matrix(_from_evidence(_dim_scenario(tmp_path / "order-tags")))
+    assert tuple(_get(matrix, "tags")) == (_DIM_ALPHA, _DIM_ZETA, _DIM_UNTAGGED)
+
+
+def test_the_dimension_matrix_counts_every_tag_from_the_log_for_both_sides(
+    tmp_path: Path,
+) -> None:
+    """Every cell, both sides, against numbers worked out by hand.
+
+    Deliberately asymmetric: the baseline is strong on `alpha` and empty on the
+    untagged slice, the candidate the other way round. A matrix that swapped the
+    columns, or summed both sides into one, fails here rather than passing on a
+    symmetry the fixture refused to give it.
+    """
+    matrix = _dim_matrix(_from_evidence(_dim_scenario(tmp_path / "counts")))
+
+    assert _get(matrix, "available") is True, _get(matrix, "reason")
+    for tag, expected in _DIM_EXPECTED_BASELINE.items():
+        assert _dim_triple(_dim_cell(matrix, "baseline", tag)) == expected, tag
+    for tag, expected in _DIM_EXPECTED_CANDIDATE.items():
+        assert _dim_triple(_dim_cell(matrix, "candidate", tag)) == expected, tag
+    assert set(_get(matrix, "candidates")) == {CANDIDATE_MODEL}, (
+        "the baseline has a field of its own; a `candidates` mapping that also held "
+        "the baseline would print one side twice"
+    )
+
+
+def test_the_dimension_matrix_takes_the_baseline_from_the_payload_not_from_position(
+    tmp_path: Path,
+) -> None:
+    """`dimension_counts` keys by model_id and does not know which side is which.
+
+    Here the candidate's judging group is written to the log *first*, so it is
+    also first in `by_model`. A matrix that took `by_model`'s first key as the
+    baseline gets both columns backwards, and every number in it stays plausible.
+    """
+    scenario = _dim_scenario(tmp_path / "reversed", sides_in_log=("candidate", "baseline"))
+    matrix = _dim_matrix(_from_evidence(scenario))
+
+    assert _get(matrix, "available") is True, _get(matrix, "reason")
+    assert set(_get(matrix, "candidates")) == {CANDIDATE_MODEL}
+    assert _dim_triple(_dim_cell(matrix, "baseline", _DIM_ALPHA)) == (25, 25, 5), (
+        "the baseline column holds the model the comparison payload calls the "
+        "baseline, whichever side the log closed first"
+    )
+    assert _dim_triple(_dim_cell(matrix, "candidate", _DIM_ALPHA)) == (0, 25, 5)
+
+
+def test_the_dimension_matrix_gives_a_side_that_produced_nothing_a_column_of_zeros(
+    tmp_path: Path,
+) -> None:
+    """Zeros are a finding; a missing column is a silence.
+
+    The two columns are printed next to each other, so a side that vanished would
+    turn a comparison into a single reading with no sentence saying where the
+    other one went.
+    """
+    scenario = _dim_scenario_with_silent_baseline(tmp_path / "silent")
+    matrix = _dim_matrix(_from_evidence(scenario))
+
+    assert _get(matrix, "available") is True, _get(matrix, "reason")
+    assert tuple(_get(matrix, "tags")) == (_DIM_ALPHA, _DIM_ZETA, _DIM_UNTAGGED)
+    for tag in _get(matrix, "tags"):
+        assert _dim_triple(_dim_cell(matrix, "baseline", tag)) == (0, 0, 0), tag
+    assert _dim_triple(_dim_cell(matrix, "candidate", _DIM_ZETA)) == (5, 25, 5)
+
+
+def test_the_dimension_matrix_counts_a_failed_completion_against_the_side_that_failed(
+    tmp_path: Path,
+) -> None:
+    """A failed completion writes no verdict and must not leave the denominator.
+
+    `dim-11` carries no tag, so the failure lands in the untagged row: the
+    candidate's ten passes stay ten, the denominator goes from ten to eleven, and
+    the distinct-item count stays at two, because the item was asked whether or
+    not the model answered.
+    """
+    scenario = _dim_scenario(
+        tmp_path / "failed", failed_completions=((CANDIDATE_MODEL, "dim-11"),)
+    )
+    matrix = _dim_matrix(_from_evidence(scenario))
+
+    assert _get(matrix, "available") is True, _get(matrix, "reason")
+    assert _dim_triple(_dim_cell(matrix, "candidate", _DIM_UNTAGGED)) == (10, 11, 2)
+    assert _dim_triple(_dim_cell(matrix, "baseline", _DIM_UNTAGGED)) == (0, 10, 2), (
+        "the failure belongs to the side that failed, and to no other"
+    )
+
+
+def test_the_dimension_matrix_is_built_from_a_log_that_holds_no_run_history(
+    tmp_path: Path,
+) -> None:
+    """One comparison and no earlier nights: the matrix is still the headline run's."""
+    model = _from_evidence(_dim_scenario(tmp_path / "no-history"))
+    matrix = _dim_matrix(model)
+
+    assert len(_get(model, "series")) <= 1, "precondition: this log holds no history"
+    assert _get(matrix, "available") is True, _get(matrix, "reason")
+    assert _dim_triple(_dim_cell(matrix, "baseline", _DIM_ZETA)) == (15, 25, 5)
+
+
+# -- the six ways to be unavailable, and what a refusal may not do ----------- #
+
+
+def test_a_dimension_matrix_refused_by_the_golden_set_uses_the_golden_sets_own_words(
+    tmp_path: Path,
+) -> None:
+    """Three copies of a disclosure are three chances for one to go stale.
+
+    The golden-set gate already writes this sentence, and what it refuses is the
+    fabricated exhibit `_load_goldenset` exists to prevent. The matrix reuses that
+    sentence verbatim and holds no cells.
+    """
+    scenario = _dim_scenario(tmp_path / "hash-moved", recorded_goldenset_hash=_DIM_WRONG_HASH)
+    model = _from_evidence(scenario)
+    matrix = _dim_matrix(model)
+
+    gs_reason = _get(model, "goldenset")["reason"]
+    assert gs_reason, "precondition: the golden-set gate refused and said why"
+    assert _get(matrix, "available") is False
+    assert _get(matrix, "reason") == gs_reason, (
+        "the contract says reuse `gs_view['reason']` verbatim and never re-word it"
+    )
+    assert dict(_get(matrix, "baseline")) == {}
+    assert dict(_get(matrix, "candidates")) == {}
+
+
+def test_a_dimension_matrix_refused_by_the_counter_uses_the_counters_own_words(
+    tmp_path: Path,
+) -> None:
+    """Two golden-set items sharing one input cannot be told apart.
+
+    A verdict joins to an item by its input text -- `judge.verdict` carries no
+    item id -- and a golden set enforces unique ids and not unique inputs, so the
+    counter refuses the whole matrix rather than attributing every verdict for
+    either to whichever it saw first. The report prints that refusal in the
+    counter's words.
+    """
+    shared = {one: _dim_input(one) for one in _DIM_TAGS}
+    shared["dim-02"] = shared["dim-01"]
+
+    scenario = _dim_scenario(tmp_path / "duplicate-input", inputs=shared)
+    expected = _dim_counter_reason(scenario)
+    model = _from_evidence(scenario)
+    matrix = _dim_matrix(model)
+
+    assert _get(model, "goldenset")["available"] is True, (
+        "precondition: the golden set loaded and matched, so only the counter can refuse"
+    )
+    assert _get(matrix, "available") is False, (
+        "two items with one input poison the join for every model, so there is no "
+        "sound subset of this matrix to render"
+    )
+    assert _get(matrix, "reason") == expected, (
+        "the contract says reuse `DimensionCounts.reason` verbatim and never re-word it"
+    )
+    assert dict(_get(matrix, "baseline")) == {}
+    assert dict(_get(matrix, "candidates")) == {}
+
+
+def test_a_dimension_matrix_refused_for_an_unfinished_judging_pass_says_so(
+    tmp_path: Path,
+) -> None:
+    """Verdicts left open at the end of the log name no model at all.
+
+    A second distinct decline from the counter, which is the point of "six causes,
+    not two": the golden set is fine here, and the refusal still has to be the
+    counter's sentence rather than the golden set's.
+    """
+    scenario = _dim_scenario(tmp_path / "unclosed", close_last_group=False)
+    expected = _dim_counter_reason(scenario)
+    model = _from_evidence(scenario)
+    matrix = _dim_matrix(model)
+
+    assert _get(model, "goldenset")["available"] is True, (
+        "precondition: the golden set is fine, so only the counter can refuse"
+    )
+    assert _get(matrix, "available") is False
+    assert _get(matrix, "reason") == expected
+    assert dict(_get(matrix, "baseline")) == {}
+
+
+def test_a_refused_dimension_matrix_never_fabricates_a_cell_from_the_item_counts(
+    tmp_path: Path,
+) -> None:
+    """`item_counts` is aggregate and splitting it across tags is invention.
+
+    The fixture's per-judge item counts are 9/1/2 and 6/3/3 over twelve items.
+    None of those may become a cell, and the guarantee that makes that cheap is
+    the counter's: `by_model` is empty on a refusal so a caller cannot be tempted.
+    """
+    scenario = _dim_scenario(
+        tmp_path / "no-fabrication", recorded_goldenset_hash=_DIM_WRONG_HASH
+    )
+    model = _from_evidence(scenario)
+    matrix = _dim_matrix(model)
+
+    assert _get(model, "item_counts")["per_judge"][J]["baseline"] == {
+        "passing": 9,
+        "failing": 1,
+        "unstable": 2,
+    }, "precondition: the aggregate numbers a fabricator would reach for are present"
+    assert _get(matrix, "available") is False
+    assert _get(matrix, "reason") != ""
+    assert list(_get(matrix, "baseline")) == []
+    assert list(_get(matrix, "candidates")) == []
+
+
+def test_an_available_dimension_matrix_has_nothing_to_explain(tmp_path: Path) -> None:
+    """`reason` is `""` exactly when available, and a sentence otherwise.
+
+    `{}` is not a sentence anyone can print, which is why a refusal carries words
+    rather than an empty mapping.
+    """
+    available = _dim_matrix(_from_evidence(_dim_scenario(tmp_path / "reason-empty")))
+    refused = _dim_matrix(
+        _from_evidence(
+            _dim_scenario(tmp_path / "reason-said", recorded_goldenset_hash=_DIM_WRONG_HASH)
+        )
+    )
+
+    assert _get(available, "available") is True
+    assert _get(available, "reason") == ""
+    assert _get(refused, "available") is False
+    assert len(_get(refused, "reason").split()) >= 8, (
+        f"a refusal is a sentence a reader can act on: {_get(refused, 'reason')!r}"
+    )
+
+
+# -- the two floors, which are not decoration -------------------------------- #
+
+
+def test_the_dimension_matrix_carries_both_floors_it_refused_cells_against(
+    tmp_path: Path,
+) -> None:
+    """A document that refuses a cell has to say what it refused against.
+
+    Two floors, both travelling with the matrix, both the module's own constants
+    and both the numbers the contract's signature prints as its defaults.
+    """
+    matrix = _dim_matrix(_from_evidence(_dim_scenario(tmp_path / "floors")))
+
+    assert _get(matrix, "min_n") == _DIM_MIN_N == 20
+    assert _get(matrix, "min_items") == _DIM_MIN_ITEMS == 10
+
+
+def test_a_dimension_cell_short_of_the_item_floor_refuses_its_verdict(
+    tmp_path: Path,
+) -> None:
+    """Five items and twenty-five draws: the item floor binds and the other does not.
+
+    Twenty-five completions clear the completions floor, so a matrix carrying only
+    that floor would publish this cell as a verdict. Five distinct questions are
+    not a slice, and `needed` names the floor a reader can act on.
+    """
+    matrix = _dim_matrix(_from_evidence(_dim_scenario(tmp_path / "item-floor")))
+    cell = _dim_cell(matrix, "baseline", _DIM_ZETA)
+
+    assert _dim_triple(cell) == (15, 25, 5)
+    assert _get(cell, "verdict_refused") is True, (
+        "five distinct items is below the ten-item floor, whatever twenty-five "
+        "completions look like"
+    )
+    assert _get(cell, "needed") == 5
+    assert _get(cell, "needed_unit") == "items"
+    assert "10 items needed" in _get(cell, "note")
+    assert "also unmet" not in _get(cell, "note"), (
+        "twenty-five completions clear the twenty-completion floor, so naming it "
+        "here would refuse against a floor that was met"
+    )
+
+
+def test_a_dimension_cell_short_of_both_floors_names_the_actionable_one(
+    tmp_path: Path,
+) -> None:
+    """Two items and ten draws: both floors bind.
+
+    `needed` names items, because raising `n_per_item` multiplies the same two
+    questions and cannot fix an item shortfall. The note still names the
+    completions floor, or a reader who adds eight single-draw items arrives at ten
+    items and ten completions and is refused a second time on a floor nobody
+    mentioned -- after doing exactly what the note asked.
+    """
+    matrix = _dim_matrix(_from_evidence(_dim_scenario(tmp_path / "both-floors")))
+    cell = _dim_cell(matrix, "baseline", _DIM_UNTAGGED)
+
+    assert _dim_triple(cell) == (0, 10, 2)
+    assert _get(cell, "verdict_refused") is True
+    assert _get(cell, "needed") == 8
+    assert _get(cell, "needed_unit") == "items"
+    note = _get(cell, "note")
+    assert "10 items needed" in note
+    assert "20-completion floor is also unmet" in note, (
+        f"the floor that is not actionable is still named, or the reader does "
+        f"exactly what the note asked and is refused again: {note!r}"
+    )
+
+
+def test_a_dimension_cell_that_clears_both_floors_is_not_refused(tmp_path: Path) -> None:
+    """Twelve items at five draws each: sixty completions, twelve questions.
+
+    The other half of the refusal rule. A suite that only ever saw refused cells
+    would pass against an implementation that refused every cell it ever built,
+    and a tool that declines everything has not declined anything.
+    """
+    scenario = _dim_scenario(tmp_path / "wide", tags={one: ("wide",) for one in _DIM_TAGS})
+    matrix = _dim_matrix(_from_evidence(scenario))
+    cell = _dim_cell(matrix, "baseline", "wide")
+
+    assert _dim_triple(cell) == (40, 60, 12)
+    assert _get(cell, "verdict_refused") is False, (
+        "twelve items and sixty completions clear both floors"
+    )
+    assert _get(cell, "needed") is None
+    assert _get(cell, "needed_unit") == ""
+
+
+def test_a_dimension_cell_that_measured_nothing_is_a_state_and_not_an_exception(
+    tmp_path: Path,
+) -> None:
+    """`wilson_interval(0, 0)` raises, and a tag that produced nothing must render.
+
+    A tag that was in the golden set and produced nothing for a side is a finding
+    to display, not an exception to propagate. Every derived field is `None` and
+    the note says so in words.
+    """
+    with pytest.raises(ValueError):
+        wilson_interval(0, 0, THRESHOLDS["confidence"])
+
+    scenario = _dim_scenario_with_silent_baseline(tmp_path / "zero-cell")
+    matrix = _dim_matrix(_from_evidence(scenario))
+    cell = _dim_cell(matrix, "baseline", _DIM_ZETA)
+
+    assert _dim_triple(cell) == (0, 0, 0)
+    assert _get(cell, "rate") is None
+    assert _get(cell, "interval") is None
+    assert _get(cell, "needed") is None
+    assert _get(cell, "needed_unit") == ""
+    assert "Nothing was measured" in _get(cell, "note")
+
+
+def test_a_dimension_cell_echoes_the_runs_own_pass_rate_floor(tmp_path: Path) -> None:
+    """`floor` is carried, not consulted, and it arrives from the run's gate.
+
+    The fixture's recorded floor is 0.87, which is nobody's built-in default, so a
+    cell showing anything else is showing a number this run never used. It is
+    echoed on every cell including the one that measured nothing, because that is
+    not a derived field and the `n == 0` rule does not reach it.
+    """
+    scenario = _dim_scenario_with_silent_baseline(tmp_path / "floor-echo")
+    matrix = _dim_matrix(_from_evidence(scenario))
+
+    for tag in _get(matrix, "tags"):
+        for side in ("baseline", "candidate"):
+            assert _get(_dim_cell(matrix, side, tag), "floor") == THRESHOLDS[
+                "pass_rate_floor"
+            ], f"the {side} {tag!r} cell does not echo the floor this run was gated at"
+
+
+def test_a_dimension_cells_interval_is_rigors_and_its_rate_is_the_counted_one(
+    tmp_path: Path,
+) -> None:
+    """The one place this document computes rather than echoes, and it says which.
+
+    Every other rate in the report is passed through from the payload -- 0.4242
+    over 17 of 20, deliberately not 0.85 -- because the report may not recompute a
+    statistic. A dimension cell is different in kind: nothing upstream ever
+    computed a per-tag rate. What must not happen is a third number appearing.
+    """
+    matrix = _dim_matrix(_from_evidence(_dim_scenario(tmp_path / "interval")))
+    cell = _dim_cell(matrix, "baseline", _DIM_ZETA)
+
+    assert _get(cell, "rate") == pytest.approx(15 / 25)
+    assert _get(cell, "rate") != pytest.approx(ODD_PASS_RATE), (
+        "the payload's headline rate belongs to the whole run and to no tag"
+    )
+    interval = _get(cell, "interval")
+    assert interval is not None and len(interval) == 2
+    assert interval[0] <= _get(cell, "rate") <= interval[1]
+
+    at_recorded = wilson_interval(15, 25, THRESHOLDS["confidence"])
+    if "default" in _get(cell, "note").lower():
+        assert interval != pytest.approx(at_recorded), (
+            "the cell discloses that rigor's default confidence stood behind the "
+            "printed interval, so the interval must not be the recorded one"
+        )
+    else:
+        assert interval == pytest.approx(at_recorded), (
+            "the cell shows no defaulted-confidence disclosure, so its interval is "
+            "the one rigor gives at the confidence this run recorded"
+        )
+
+
+def test_a_dimension_cells_items_is_an_integer_and_its_column_keeps_its_items_method(
+    tmp_path: Path,
+) -> None:
+    """`column.items` and `cell.items` are one keystroke apart and both work.
+
+    One is a `dict.items` bound method, the other an int. `report.py:1206` already
+    renamed a field to dodge exactly this, and here the mapping is the thing that
+    cannot be renamed away, so the distinction is pinned rather than trusted.
+    """
+    matrix = _dim_matrix(_from_evidence(_dim_scenario(tmp_path / "keystroke")))
+    column = _get(matrix, "baseline")
+    cell = _dim_cell(matrix, "baseline", _DIM_ALPHA)
+
+    assert isinstance(_get(cell, "items"), int)
+    assert not isinstance(_get(cell, "items"), bool)
+    assert _get(cell, "items") == 5
+    assert callable(column.items), "the column is a mapping and keeps its own .items()"
+    assert dict(column.items()) == dict(column)
