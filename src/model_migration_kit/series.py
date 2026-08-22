@@ -51,7 +51,6 @@ record and not the report.
 from __future__ import annotations
 
 import math
-from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -241,36 +240,38 @@ class SeriesBuilder:
     largest artifact this pipeline writes, so it is worth a class.
 
     What is *not* worth it is a second copy of the pairing rule. Two
-    implementations of "which verdict closes which comparison" is the arrangement
+    implementations of "which comparison a verdict belongs to" is the arrangement
     in which the report and the timeline printed beside it start disagreeing
     about which run a NO-GO belongs to, which is the failure this module was
     written to prevent. So the rule lives here once, and every reason behind it
-    -- FIFO closing, a verdict that closes nothing, records passed over without
-    closing, a payload that is not an object, and why nothing is sorted -- is
-    documented on :func:`read_series`.
+    -- which point a verdict updates, a verdict arriving before any comparison,
+    records passed over untouched, a payload that is not an object, and why
+    nothing is sorted -- is documented on :func:`read_series`.
     """
 
-    __slots__ = ("_points", "_unclosed")
+    __slots__ = ("_points",)
 
     def __init__(self) -> None:
         self._points: list[RunPoint] = []
-        self._unclosed: deque[int] = deque()
 
     def add(self, record: EvidenceRecord) -> None:
-        """Open a point, close the oldest still open, or pass the record over.
+        """Open a point, update the most recently opened one, or pass the record over.
 
         Safe to call on every record of a log, including the ones this class has
         no interest in, so a caller that is already looping for another reason
         adds one line rather than a second condition it has to keep in step.
         """
         if record.event_type == EVENT_COMPARISON:
-            self._unclosed.append(len(self._points))
             self._points.append(
                 run_point(_mapping(record.payload), None, envelope_ts=_text(record.ts))
             )
-        elif record.event_type == EVENT_VERDICT and self._unclosed:
-            row = self._unclosed.popleft()
-            self._points[row] = _closed(self._points[row], _mapping(record.payload))
+        elif record.event_type == EVENT_VERDICT and self._points:
+            # The most recently opened point is always the last row: points are
+            # appended when their comparison is read, and never removed or
+            # reordered. A second verdict overwrites the first rather than being
+            # dropped -- see :func:`read_series` for why that is not "close the
+            # most recent point still open".
+            self._points[-1] = _decided(self._points[-1], _mapping(record.payload))
 
     def points(self) -> tuple[RunPoint, ...]:
         """The points added so far, in the order their comparisons were written.
@@ -292,26 +293,56 @@ def read_series(evidence: str | Path) -> tuple[RunPoint, ...]:
     kept the *last* comparison in a log and discarded the rest, so fourteen
     nightly runs appended to one file rendered as one verdict.
 
-    **Pairing is first-in, first-out, and that is the whole of the difficulty.**
-    A comparison record opens a point; a verdict record closes the *oldest* point
-    still open. ``compare`` writes the two adjacent (``comparison.py:906-908``),
-    which makes almost every rule agree on almost every log, and the rule chosen
-    here is the one that survives a log where they are not. Two implementations
-    that pass the adjacent case and fail this one are worth naming, because both
-    are the obvious thing to write: keeping a single "last comparison" and
-    abandoning it unclosed when the next one arrives pairs C1-C2-V1-V2 as
-    ``(C1, none)`` and ``(C2, V1)``, which attaches one run's verdict to another
-    run's numbers -- a NO-GO drawn on a green night, which is the exact failure
-    this module exists to prevent. Collecting comparisons and verdicts into two
-    lists and zipping them pairs correctly here and silently misaligns the moment
-    a log holds a verdict that opened no point.
+    **A verdict belongs to the comparison it follows, and that is the whole of
+    the difficulty.** A comparison record opens a point; every verdict record
+    updates the *most recently opened* point, overwriting a value already there.
 
-    A verdict arriving with no point open is dropped: it belongs to a comparison
-    this log does not contain, which is what the tail of a log rotated mid-run
-    looks like. Records between a comparison and its verdict -- rigor's own
-    ``judge.verdict`` lines, a ``migkit.judging_completed`` -- are passed over
-    without closing anything, so a future writer that interleaves more than
-    ``compare`` does today still reads correctly.
+    The rule turns on one fact about this repository: there is exactly one writer
+    of ``migkit.comparison`` and ``migkit.verdict``, at ``comparison.py:907-908``
+    -- two ``evidence.append`` calls back to back inside one ``if``. So a log
+    holding two comparisons before either verdict is not a shape this pipeline
+    writes, and that shape is the only one first-in-first-out pairing gets right.
+    First-in-first-out was the rule here until C19, chosen against a log the
+    writer cannot produce.
+
+    The shape a **crash** produces is the shape first-in-first-out gets wrong, and
+    that one is routine: a comparison with no verdict after it, then the next
+    night appended to the same file. The surviving verdict closes the *dead* run,
+    and every later verdict shifts with it::
+
+        log:  C(night-1)   C(night-2) V(night-2)   C(night-3) V(night-3)
+              night-1  verdict=GO     reason='night 2 was fine'
+              night-2  verdict=NO-GO  reason='night 3 regressed'
+              night-3  verdict=None
+
+    One crashed night moves every later verdict by one, permanently, in a file
+    that only ever grows -- a NO-GO drawn on a green night, which is verbatim the
+    failure this module exists to prevent, produced by the rule chosen to prevent
+    it. Under the rule above the same log reads night-1 as ``verdict is None`` and
+    leaves every later night's verdict exactly where it was written.
+
+    *Updates*, and deliberately not "closes the most recent point still open": a
+    log reading ``C V1 V2`` carries V2. The headline reduction in
+    ``report.ReportModel.from_evidence`` takes the last verdict record it sees, so
+    a close-once rule would drop V2 here and put the timeline back into
+    disagreement with the banner printed beside it -- which is the one thing a
+    single shared pairing rule exists to make impossible.
+
+    A verdict arriving before any comparison is ignored: it belongs to a
+    comparison this log does not contain, which is what the tail of a log rotated
+    mid-run looks like. It opens no point and overwrites nothing. Records
+    *between* a comparison and its verdict -- rigor's own ``judge.verdict`` lines,
+    a ``migkit.judging_completed`` -- are passed over untouched, so a future
+    writer that interleaves more than ``compare`` does today still reads
+    correctly.
+
+    Two processes appending to one log is the case no rule reads correctly.
+    rigor's evidence log interleaves whole records rather than tearing them, and
+    ``cli.DEFAULT_EVIDENCE`` makes one shared path the default, so
+    ``C_A C_B V_A V_B`` and ``C_A C_B V_B V_A`` are equally likely and neither is
+    distinguishable from a crash. This rule does not detect that; it declines to
+    be wrong on the single-writer log the pipeline actually produces, and says
+    here that it is guessing on any other.
 
     A record whose payload is not a JSON object still opens or closes a point,
     with the payload read as empty. ``EvidenceRecord.from_json`` checks the
@@ -323,10 +354,13 @@ def read_series(evidence: str | Path) -> tuple[RunPoint, ...]:
     order: the timestamps are written by whichever machine ran each night, a
     sorted series would silently reorder a log whose clock stepped backwards over
     a daylight-saving boundary, and two runs of the same config are two runs
-    rather than one measurement recorded twice. First-in-first-out closing is
-    also what makes the returned order free -- the oldest open point is always
-    the one that closes next, so points are appended in the order their
-    comparisons appeared and never need sorting back into it.
+    rather than one measurement recorded twice. The returned order is free too,
+    though no longer for the reason that used to be given for it: it is not that
+    the oldest open point is always the one that closes next, but that a verdict
+    never appends, reorders or removes a row -- it writes back into one a
+    comparison already put in place. That argument holds whatever the pairing
+    rule is, and it falls out of the eager construction argued for in the last
+    paragraph below.
 
     Args:
         evidence: The log, or a directory holding ``evidence.jsonl``. Resolved by
@@ -356,8 +390,9 @@ def read_series(evidence: str | Path) -> tuple[RunPoint, ...]:
             :func:`~model_migration_kit.evidence.stream_records`.
 
     **A point is built when its comparison is read, not when its verdict is.**
-    The queue therefore holds row numbers rather than payloads, and the reader
-    never has more than one payload alive at a time. The obvious alternative --
+    :class:`SeriesBuilder` therefore holds nothing but the finished points, and
+    the reader never has more than one payload alive at a time. The obvious
+    alternative --
     hold each comparison payload until its verdict turns up, then build the point
     once from both -- is a payload queue, and on a log of 5,000 comparisons whose
     verdicts all arrive at the end it peaked at 114 MB against a 31 MB log, where
@@ -374,12 +409,14 @@ def read_series(evidence: str | Path) -> tuple[RunPoint, ...]:
     return builder.points()
 
 
-def _closed(point: RunPoint, verdict: Mapping[str, Any]) -> RunPoint:
+def _decided(point: RunPoint, verdict: Mapping[str, Any]) -> RunPoint:
     """``point``, with the verdict record's two fields filled in.
 
     A verdict payload feeds exactly two fields of a point and nothing else reads
-    it, so closing a point is a substitution rather than a rebuild -- which is
-    what lets :func:`read_series` build points eagerly and hold no payloads.
+    it, so taking a verdict is a substitution rather than a rebuild -- which is
+    what lets :func:`read_series` build points eagerly and hold no payloads. It
+    is also what makes a second verdict cheap to honour: the two fields are
+    written again, over whatever the first one left there.
 
     The two values are lifted from a throwaway point rather than read out of the
     mapping here, so that this function knows *which* fields the verdict feeds and

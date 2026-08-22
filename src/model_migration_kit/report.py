@@ -26,6 +26,24 @@ number is absent from the payload it is printed as unavailable rather than
 reconstructed -- including per-threshold provenance, which the payload does not
 carry (see :data:`THRESHOLD_SOURCE_UNRECORDED`).
 
+**A verdict is read as belonging to the comparison it follows.** The headline
+verdict and :attr:`ReportModel.series` are two reductions of one log, and if they
+disagree the document contradicts itself about which night a NO-GO belongs to.
+They agree by construction rather than by coincidence: in
+:meth:`ReportModel.from_evidence` a ``migkit.comparison`` record *clears* the
+verdict slot as well as filling the comparison slot, so the headline can only
+ever carry a verdict written after the comparison it is printed beside, and
+:class:`~model_migration_kit.series.SeriesBuilder` gives every verdict to the most
+recently opened point, so ``series[-1]`` is the headline run. Kept as two
+independent last-wins variables -- which is what 0.1.1 does -- a verdict from an
+earlier night fills the slot of a night that died before deciding, and a crashed
+run renders as a clean GO with ``complete is True`` and exit 0, because
+``cli.py`` derives the exit code from the verdict alone. Under this rule that run
+renders with no verdict, exit 3, and a line in the completeness strip naming the
+absent ``migkit.verdict`` record. ``compare`` writes the two records back to back
+(``comparison.py:907-908``), so no *complete* log renders differently for any of
+this; what changed is what a crashed one renders.
+
 **``n == 0`` is a rendering state, not a computation.** ``wilson_interval(0, 0)``
 raises ``ValueError`` ("a rate over zero runs is not a rate"), which is correct
 and which a truncated run reaches routinely. :class:`RateStat` carries ``None``
@@ -825,12 +843,18 @@ class ReportModel:
         for record in _stream_records(path):
             last = record
             builder.add(record)
-            # Last one wins, unchanged and on purpose. Every log written today
-            # holds one comparison and one verdict, so a slip to first-wins here
-            # would pass every test in this repo and report on the wrong run the
-            # first time a log held two.
+            # Last one wins, and a comparison clears the verdict beside it, so
+            # these are one reduction over the log and not two independent
+            # last-wins variables. Independent, they let a verdict written on an
+            # earlier night fill the slot of a night that died before deciding:
+            # the banner reports the older decision, the timeline reports none,
+            # and the document disagrees with itself. Every log written today
+            # holds one comparison followed immediately by its verdict, so both a
+            # slip to first-wins and a dropped reset here pass every test that
+            # only ever looks at a one-run log.
             if record.event_type == EVENT_COMPARISON:
                 comparison = record
+                verdict_record = None
             elif record.event_type == EVENT_VERDICT:
                 verdict_record = record
         series = builder.points()
