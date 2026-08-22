@@ -24,11 +24,21 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
-from opik_rigor import EvidenceRecord
+from opik_rigor import EvidenceRecord, wilson_interval
+from opik_rigor.distribution import DEFAULT_CONFIDENCE
 
 from .contracts import EVENT_COMPLETION, EVENT_JUDGING_COMPLETED, GoldenItem
 
-__all__ = ["DimensionCounts", "TagCount", "dimension_counts"]
+__all__ = [
+    "DimensionCell",
+    "DimensionCounts",
+    "MIN_ITEMS_FOR_A_VERDICT",
+    "MIN_N_FOR_A_VERDICT",
+    "TagCount",
+    "UNTAGGED",
+    "dimension_cell",
+    "dimension_counts",
+]
 
 #: rigor's event type for a graded verdict. Typed here rather than imported,
 #: which is the opposite of the rule ``contracts.py`` sets for the ``migkit.``
@@ -400,3 +410,264 @@ def dimension_counts(
         for model_id, per_tag in counts.items()
     }
     return DimensionCounts(available=True, reason="", by_model=by_model)
+
+# --- C9: the cell, the refusal, and the two floors ---------------------------
+#
+# ``DEFAULT_CONFIDENCE`` is imported from ``opik_rigor.distribution`` rather than
+# from the package root because the root does not re-export it, and the root is
+# where ``wilson_interval`` comes from two lines up. It is in
+# ``distribution.__all__``, so it is rigor's public surface and invariant 1 holds
+# -- but it is the first submodule import anywhere in ``src/``, and the cheaper
+# fix lives upstream: rigor re-exporting the constant beside the function that
+# defaults to it.
+#
+# Two floors, and a cell must clear both.
+#
+# ``MIN_N_FOR_A_VERDICT`` counts completions and is the older of the two. It does
+# not do the job on its own. At ``n_per_item=5`` a tag carrying four items
+# produces exactly twenty completions, ``20 < 20`` is ``False``, and the cell
+# renders a verdict -- so the effective floor was four items. Four is the number
+# in the spec's own refusal sentence, the showpiece example of a cell that must
+# decline, which means the completions floor as written passed the one case it
+# exists to fail.
+#
+# ``MIN_ITEMS_FOR_A_VERDICT`` counts distinct items and is the fix. Twenty
+# completions drawn from four items are not twenty observations: they are four
+# questions asked five times each, correlated by construction because every draw
+# within an item shares a prompt, a reference and a rubric clause. A dimension
+# verdict generalises over *questions*, so the sample size that matters here is
+# nearer four than twenty. That is also why a larger completions floor is not the
+# fix: at ``n_per_item=10`` the same four questions would clear a floor of forty
+# just as easily.
+#
+# Ten is a judgement, not a derivation, and it is worth saying so plainly. The
+# two constraints that are forced -- refuse the spec's four-item example, clear
+# the showcase at sixteen -- narrow the number to the band 5-16 and no further.
+# Ten is a choice inside that band, and the choice is a leverage tolerance: no
+# single golden-set item should move a published dimension claim by more than a
+# tenth. Argue with the tolerance and you have argued with the constant, which is
+# the right way round.
+#
+# The floors are independent on purpose. Neither subsumes the other -- twelve
+# items at one draw each clears the item floor and fails the completions floor --
+# and collapsing them into one number loses whichever case the survivor cannot
+# see.
+
+MIN_N_FOR_A_VERDICT: int = 20
+MIN_ITEMS_FOR_A_VERDICT: int = 10
+
+
+@dataclass(frozen=True)
+class DimensionCell:
+    """One tag's row: what was measured, and whether it may be read as a verdict.
+
+    ``rate``, ``interval`` and ``floor`` are the numbers a renderer draws.
+    ``verdict_refused`` is the only field that decides whether it may draw them as
+    a judgement, and it is settled by sample size alone -- never by how the
+    interval happens to sit against ``floor``. A refused cell still shows its
+    interval; what it does not do is colour it.
+
+    ``needed`` and ``needed_unit`` travel as a pair and answer "what would make
+    this cell answerable", in the one unit the reader can act on. They are
+    ``None`` and ``""`` together, never one without the other, and they are empty
+    in two different situations: the cell is not refused, or nothing was measured
+    at all and there is no shortfall to quantify.
+
+    **Why one number and a unit rather than ``needed_items`` and
+    ``needed_completions``.** Ruled at review; the case for two typed fields was
+    good and is recorded here because it will be made again.
+
+    It runs: a unit beside a single number can express only one floor, so when
+    both bind the second fact has to be smuggled into prose. Two nullable ints
+    would carry both at the type level, delete the stringly-typed unit, and
+    reduce "which one is actionable" to ``needed_items or needed_completions``.
+
+    That last clause is why the answer is no. Which floor to name when both bind
+    is not a formatting detail, it is the whole substance of the two-floor
+    ruling: naming the completions floor while items are short is advice that
+    does not work, because more draws multiply the same few questions. Under this
+    shape the module decides once and no consumer can get it wrong. Under two
+    fields the decision moves into every renderer, where ``needed_completions or
+    needed_items`` is a one-token slip that reproduces exactly the defect the
+    ruling exists to prevent -- and it is a slip no type would catch, because
+    both spellings type-check.
+
+    The premise that the second fact lives only in prose is also not quite true.
+    A cell carries ``n`` and ``items``; the floors it was judged against travel
+    with the matrix that holds it, because a document that refuses a cell has to
+    be able to say what it refused against. A renderer that wants the completions
+    shortfall as a number subtracts two fields it already has. The note is a
+    convenience for a human reader, not the only carrier.
+
+    One correction to the ground this was argued on: the both-bind case is not
+    rare. It was said to be reachable only at one draw per item or on a ragged
+    tag, and that is the region where the *completions* floor binds **alone**.
+    Both floors bind together across 50 uniform (items, draws) pairs -- every
+    tag with nine or fewer items and fewer than twenty completions, so four items
+    at three draws each lands there. (Fifty, enumerated over the whole grid; an
+    earlier pass through this docstring said 33, which was this reviewer making
+    the same class of error it had just corrected in R11.6.)
+
+    That is the ordinary shape of a young golden set, which cuts toward this
+    shape rather than away from it: a decision taken on most refused cells is
+    worth taking once, correctly, inside the module.
+
+    ``note`` is the cell's disclosure line rather than only its refusal sentence.
+    It carries whichever of these apply: that nothing was measured, that a floor
+    is unmet, that a *second* floor is also unmet, and that no confidence level
+    was supplied so rigor's default stands behind the printed interval.
+
+    ``floor`` is echoed from the input on every cell, including one where nothing
+    was measured. It is not a derived field and the ``n == 0`` rule does not
+    reach it.
+    """
+
+    tag: str
+    passes: int
+    n: int
+    items: int
+    rate: float | None
+    interval: tuple[float, float] | None
+    floor: float | None
+    verdict_refused: bool
+    needed: int | None
+    needed_unit: str
+    note: str
+
+
+def dimension_cell(
+    tag: str,
+    passes: int,
+    n: int,
+    items: int,
+    *,
+    confidence: float | None,
+    floor: float | None,
+    min_n: int = MIN_N_FOR_A_VERDICT,
+    min_items: int = MIN_ITEMS_FOR_A_VERDICT,
+) -> DimensionCell:
+    """One :class:`DimensionCell`, refusing the verdict when the sample cannot carry it.
+
+    **Takes four plain integers rather than a counts object.** The counting and
+    the cell are written against each other's contract and not against each
+    other's types, so nothing here imports what the counter defines.
+
+    **The refusal rule is sample size, and only sample size.** ``verdict_refused``
+    is ``True`` when ``n < min_n`` or ``items < min_items``, however the interval
+    sits against ``floor``. The tempting alternative -- "refuse when the interval
+    is too wide to decide" -- is a different and worse rule, because a narrow
+    interval can be produced by a tiny sample that happens to be unanimous: four
+    passes out of four would answer, on four draws of one question. Declining is
+    the differentiator this whole document is built on, and a rule a narrow
+    interval can talk out of refusing does not decline.
+
+    **When both floors bind, ``needed`` names items**, which is not a style
+    preference. It is the only one of the two a reader can act on. "You need more
+    completions" sends someone to raise ``n_per_item``, and raising ``n_per_item``
+    cannot fix an item shortfall -- it multiplies the same few questions. So the
+    actionable floor is the one the pair reports.
+
+    **The note still names the other floor when it also binds**, because the pair
+    cannot and someone has to. A reader at four items and four completions who is
+    told only "six more items" adds six items at one draw each, arrives at ten
+    items and ten completions, and is refused a second time on a floor nobody
+    mentioned -- having done exactly what the note asked. For a tool whose whole
+    claim is that it declines honestly, that is the worst available second
+    impression.
+
+    **``n == 0`` is a rendering state, not a computation.** ``wilson_interval(0,
+    0)`` raises ``ValueError("a rate over zero runs is not a rate")``, which is
+    correct of it and useless here: a tag that was in the golden set and produced
+    nothing judged is a finding to display, not an exception to propagate. So the
+    zero case calls nothing and every derived field is ``None``.
+
+    **``floor`` is carried, not consulted.** It arrives from the run's gate for
+    the renderer's benefit and is echoed on every cell including the empty one;
+    nothing in this function compares an interval to it, which is the cheapest way
+    to guarantee that no refused cell is quietly judged against it.
+
+    **A defaulted confidence is disclosed whether or not the cell is refused**,
+    because the alternative is a printed interval whose confidence level the
+    reader cannot know, and that misleads in a way an extra sentence does not. It
+    is disclosed only where an interval was actually computed: at ``n == 0``
+    nothing consumed the default, and claiming otherwise would be a disclosure of
+    something that did not happen.
+
+    Args:
+        confidence: ``None`` falls back to rigor's ``DEFAULT_CONFIDENCE``, and the
+            fallback is recorded in ``note``. It is never silent.
+        min_n: Completions floor. Overridable so a caller -- or a mutation test --
+            can move it independently of ``min_items``.
+        min_items: Distinct-items floor. Independent of ``min_n`` in both
+            directions; moving one must not change what the other refuses.
+
+    Raises:
+        ValueError: ``passes > n``, a corrupt count that must not render.
+            ``items > n``, which is impossible and means the caller mispaired two
+            numbers. Any negative count, which nothing downstream would catch --
+            ``items`` in particular is validated nowhere else.
+    """
+    if passes < 0 or n < 0 or items < 0:
+        raise ValueError(
+            f"counts for {tag!r} cannot be negative: passes={passes}, n={n}, items={items}"
+        )
+    if passes > n:
+        raise ValueError(f"more passes than completions for {tag!r}: {passes} > {n}")
+    if items > n:
+        raise ValueError(f"more items than completions for {tag!r}: {items} > {n}")
+
+    level = DEFAULT_CONFIDENCE if confidence is None else confidence
+
+    rate: float | None = None
+    interval: tuple[float, float] | None = None
+    if n > 0:
+        rate = passes / n
+        interval = wilson_interval(passes, n, level)
+
+    short_items = items < min_items
+    short_n = n < min_n
+
+    needed: int | None
+    refusals: list[str] = []
+    if n == 0:
+        # No shortfall to quantify. "Six more items" implies you have some, and at
+        # zero the honest statement is different in kind -- so the note says
+        # nothing was measured and neither floor is named as a shortfall.
+        needed, needed_unit = None, ""
+    elif short_items:
+        needed, needed_unit = min_items - items, "items"
+        refusals.append(f"{min_items} items needed for a verdict here; you have {items}.")
+        if short_n:
+            # The floor that is not actionable is still named, because a reader
+            # who is told only about items adds six single-draw items, lands at
+            # ten items and ten completions, and is refused a second time on a
+            # floor nobody mentioned -- after doing exactly what the note asked.
+            refusals.append(f"The {min_n}-completion floor is also unmet: you have {n}.")
+    elif short_n:
+        needed, needed_unit = min_n - n, "completions"
+        refusals.append(f"{min_n} completions needed for a verdict here; you have {n}.")
+    else:
+        needed, needed_unit = None, ""
+
+    sentences: list[str] = []
+    if n == 0:
+        sentences.append(f"Nothing was measured for {tag}.")
+    sentences.extend(refusals)
+    if confidence is None and interval is not None:
+        sentences.append(
+            f"No confidence level was given, so rigor's default of {level:.0%} was used."
+        )
+
+    return DimensionCell(
+        tag=tag,
+        passes=passes,
+        n=n,
+        items=items,
+        rate=rate,
+        interval=interval,
+        floor=floor,
+        verdict_refused=short_items or short_n,
+        needed=needed,
+        needed_unit=needed_unit,
+        note=" ".join(sentences),
+    )
