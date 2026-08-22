@@ -352,6 +352,10 @@ def test_a_tag_with_nothing_measured_quotes_no_shortfall_because_a_shortfall_imp
     assert cell.needed is None
     assert cell.needed_unit == ""
 
+    measured_one_thing = _cell(passes=1, n=1, items=1)
+    assert measured_one_thing.needed == 9
+    assert measured_one_thing.needed_unit == "items"
+
 
 def test_the_floor_is_echoed_even_where_there_is_no_interval_to_compare_it_to() -> None:
     """R10.4: ``floor`` is an input the cell carries, not a field it derives."""
