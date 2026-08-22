@@ -972,3 +972,312 @@ def test_the_stream_is_consumed_exactly_once():
 
     assert result.available is True, result.reason
     assert list(records) == [], "the iterator was not drained"
+
+
+# --------------------------------------------------------------------------- #
+# The seven rulings. Each ambiguity below is a place where the implementer and
+# the tester could each have picked a different reading and neither been wrong;
+# they happened to agree, which is luck rather than coverage. C10 is written
+# against these answers, so each one is pinned by a test that dies if the other
+# reading is taken -- including the readings the original suite could not tell
+# apart.
+# --------------------------------------------------------------------------- #
+
+
+class _TrackedInput(str):
+    """A ``str`` that can be weak-referenced, so a retained input is visible."""
+
+    __slots__ = ("__weakref__",)
+
+
+def test_a_refusal_hands_back_no_matrix_at_all():
+    """Ruling 3. ``available=False`` must not arrive with populated ``by_model``.
+
+    Every guard here is global -- a duplicated input poisons the join for every
+    model, a short group means an unknown number of verdicts are missing -- so
+    there is no subset of cells that survives a refusal. Returning the partial
+    matrix would hand C10 data it must be disciplined enough not to render, and
+    half a matrix printed as a matrix is the "missing data stated as zero"
+    failure this codebase has shipped once already.
+    """
+    items = _by_id(_item("a", "alpha", ("t",)), _item("b", "bravo", ("t",)))
+    records = [
+        _verdict("alpha", True),
+        _completed(BASELINE, {JUDGE: 1}),
+        _verdict("bravo", True),
+        _completed(CANDIDATE, {JUDGE: 9}),  # a shortfall, after a good column
+    ]
+
+    result = _counts(records, items)
+
+    assert result.available is False
+    assert result.by_model == {}, (
+        "the baseline column was computed before the refusal and came back with "
+        "it; a refusal must carry a sentence and nothing else"
+    )
+
+
+def test_duplicate_inputs_refuse_even_when_no_verdict_ever_touched_them():
+    """Ruling 2. The guard is a precondition on ``items``, not a lazy trigger.
+
+    Both readings refuse when a verdict lands on the ambiguous input, so the
+    original suite could not tell them apart. Here the two duplicates are never
+    judged at all: under the lazy reading this renders perfectly, under the
+    precondition reading it declines. It declines, because a stream cannot be
+    rewound to ask later, because availability that depends on which items
+    happened to be sampled is a refusal nobody can reproduce, and because the
+    defect is in the golden set, whose fix is the same either way.
+    """
+    items = _by_id(
+        _item("dup-a", "the very same question", ("t",)),
+        _item("dup-b", "the very same question", ("u",)),
+        _item("real", "a question with one owner", ("t",)),
+    )
+    records = [
+        _verdict("a question with one owner", True),
+        _completed(BASELINE, {JUDGE: 1}),
+    ]
+
+    result = _counts(records, items)
+
+    assert result.available is False
+    assert "dup-a" in result.reason
+    assert "dup-b" in result.reason
+
+
+def test_a_side_that_was_judged_and_produced_nothing_is_a_column_of_zeros():
+    """Ruling 5. A model key exists for every side a ``judging_completed`` named.
+
+    C10 renders the columns beside each other. A side whose whole run produced
+    no verdict is a finding -- the loudest one in the document -- and dropping
+    its column would turn a two-model comparison into a single reading with
+    nothing on the page to say where the other one went.
+    """
+    items = _by_id(_item("a", "alpha", ("t",)), _item("b", "bravo", ("u",)))
+    records = [
+        _verdict("alpha", True),
+        _completed(BASELINE, {JUDGE: 1}),
+        _completed(CANDIDATE, {JUDGE: 0}),
+    ]
+
+    result = _counts(records, items)
+
+    assert result.available is True, result.reason
+    assert set(result.by_model) == {BASELINE, CANDIDATE}, (
+        "the judged side that produced nothing vanished instead of showing zeros"
+    )
+    assert _cell(result, CANDIDATE, "t") == (0, 0, 0)
+    assert _cell(result, CANDIDATE, "u") == (0, 0, 0)
+
+
+def test_a_model_known_only_from_failed_completions_is_a_refusal():
+    """A log that stops before a side's judging pass must not publish that side.
+
+    This is the same shape as the open-verdicts guard, on the other rule. The
+    log below is a run whose completions were written for both models and whose
+    judging finished for only one: the candidate is named by a failed
+    ``migkit.completion`` and by nothing else. Attributing it produces a
+    complete, plausible matrix in which a truncated run reads as a model that
+    got everything wrong -- the failure the contract names as the worst one,
+    reached by a different road.
+    """
+    items = _by_id(_item("a", "alpha", ("t",)))
+    records = [
+        _verdict("alpha", True),
+        _completed(BASELINE, {JUDGE: 1}),
+        _completion(CANDIDATE, "a", ok=False),
+    ]
+
+    result = _counts(records, items)
+
+    assert result.available is False, (
+        "the candidate column was built out of its failed completions alone: "
+        + repr(dict(result.by_model.get(CANDIDATE, {})))
+    )
+    assert CANDIDATE in result.reason
+
+
+def test_the_two_judging_guards_give_two_different_sentences_in_a_fixed_order():
+    """Ruling 6. They fire together on an empty log and stay two refusals.
+
+    "Judging never ran" is fixed by running it. "Judging ran and wrote nothing
+    under this name" is fixed by checking how the panel spells the judge.
+    Answering the second to a reader whose problem is the first sends them
+    hunting a name that was never wrong, so the no-``judging_completed`` check
+    goes first and says so in its own words.
+    """
+    items = _by_id(_item("a", "alpha", ("t",)))
+
+    no_judging = _counts([_completion(BASELINE, "a", ok=True)], items, judge="strictness")
+    wrong_name = _counts(
+        [_verdict("alpha", True, judge=OTHER_JUDGE), _completed(BASELINE, {OTHER_JUDGE: 1})],
+        items,
+        judge="strictness",
+    )
+
+    assert no_judging.available is False
+    assert wrong_name.available is False
+    assert no_judging.reason != wrong_name.reason
+    assert "migkit.judging_completed" in no_judging.reason, (
+        "the empty-of-judging log fell through to the wrong guard: its reason "
+        "must say that no judging pass closed a group, not that the judge is "
+        "spelled wrong"
+    )
+    assert "migkit.judging_completed" not in wrong_name.reason
+    assert "strictness" in no_judging.reason
+    assert "strictness" in wrong_name.reason
+
+
+def test_a_judging_completed_that_names_no_model_is_a_refusal():
+    """There is no side to attribute the group to, and guessing invents one."""
+    items = _by_id(_item("a", "alpha", ("t",)))
+    records = [
+        _verdict("alpha", True),
+        _record(EVENT_JUDGING_COMPLETED, {"graded": {JUDGE: 1}}),
+    ]
+
+    result = _counts(records, items)
+
+    assert result.available is False
+    assert "migkit.judging_completed" in result.reason
+    assert "names no model" in result.reason
+
+
+def test_a_failed_completion_that_names_no_model_is_a_refusal():
+    """Dropping it would take a failure out of a denominator it belongs in."""
+    items = _by_id(_item("a", "alpha", ("t",)))
+    records = [
+        _verdict("alpha", True),
+        _completed(BASELINE, {JUDGE: 1}),
+        _record(EVENT_COMPLETION, {"item_id": "a", "ok": False}),
+    ]
+
+    result = _counts(records, items)
+
+    assert result.available is False
+    assert "failed migkit.completion names no model" in result.reason
+
+
+def test_a_completion_record_with_no_ok_key_is_not_read_as_a_failure():
+    """A malformed record is missing data, and a non-pass is a measurement.
+
+    ``ok`` is tested identically to ``False`` rather than for falsiness, so a
+    record that never says whether it succeeded contributes nothing instead of
+    inventing a failure against the model.
+    """
+    items = _by_id(_item("a", "alpha", ("t",)))
+    records = [
+        _verdict("alpha", True),
+        _record(EVENT_COMPLETION, {"model_id": BASELINE, "item_id": "a"}),
+        _completed(BASELINE, {JUDGE: 1}),
+    ]
+
+    result = _counts(records, items)
+
+    assert result.available is True, result.reason
+    assert _cell(result, BASELINE, "t") == (1, 1, 1), (
+        "a completion record with no ``ok`` key was counted as a non-pass"
+    )
+
+
+def test_imputed_and_parse_failures_are_read_for_this_judge_not_for_the_panel():
+    """``graded``, ``imputed`` and ``parse_failures`` are all keyed by judge.
+
+    The other judge on the panel here had one timeout and one unparseable reply
+    and ours had neither. Summing any of the three across the panel moves the
+    expected count and declines a run that is entirely healthy.
+    """
+    items = _by_id(_item("a", "alpha", ("t",)), _item("b", "bravo", ("t",)))
+    records = [
+        _verdict("alpha", True),
+        _verdict("bravo", False),
+        _verdict("alpha", True, judge=OTHER_JUDGE),
+        _parse_failure(judge=OTHER_JUDGE),
+        _completed(
+            BASELINE,
+            {JUDGE: 2, OTHER_JUDGE: 3},
+            imputed={OTHER_JUDGE: 1},
+            parse_failures={OTHER_JUDGE: 1},
+        ),
+    ]
+
+    result = _counts(records, items)
+
+    assert result.available is True, result.reason
+    assert _cell(result, BASELINE, "t") == (1, 2, 2)
+
+
+def test_an_unjoinable_input_is_truncated_and_quoted_in_the_reason():
+    """The reason is printed into a document, so it quotes an excerpt, not a prompt.
+
+    An unjoinable input can be an entire golden-set question. Naming it whole
+    would put arbitrary untrusted text into the sentence a reader is shown, and
+    the sentence stops being a sentence.
+    """
+    long_input = "tell me at length about " + ("the sorrows of young werther " * 20)
+    items = _by_id(_item("a", "alpha", ("t",)))
+    records = [
+        _verdict("alpha", True),
+        _verdict(long_input, False),
+        _completed(BASELINE, {JUDGE: 2}),
+    ]
+
+    result = _counts(records, items)
+
+    assert result.available is False
+    assert long_input not in result.reason, "the whole input was pasted into the reason"
+    assert repr(long_input[:80] + "...") in result.reason, (
+        "the excerpt must be quoted and elided, so a reader can see where the "
+        "quoted text starts and stops"
+    )
+    assert len(result.reason) < len(long_input)
+
+
+def test_a_golden_set_item_with_duplicate_tags_trips_the_invariant():
+    """``goldenset._parse_tags`` returns a duplicate-free tuple, so this is a bug.
+
+    The contract says assert the invariant rather than defend against it: a
+    mapping carrying ``("t", "t")`` did not come from a parsed golden set, and
+    counting it would double one tag's denominator with no way to see it.
+    """
+    items = {"a": GoldenItem(id="a", input="alpha", tags=("t", "t"))}
+    records = [_verdict("alpha", True), _completed(BASELINE, {JUDGE: 1})]
+
+    with pytest.raises(AssertionError, match="duplicate tags"):
+        _counts(records, items)
+
+
+def test_the_open_group_holds_the_item_id_and_not_the_input_string():
+    """The reason ``evidence.py`` exists: 5.0-5.8x amplification, measured.
+
+    The weakref test above proves the *records* are not materialised. This one
+    proves the group that outlives them holds ``(item_id, passed)`` pairs rather
+    than the inputs -- the input is the largest string on a ``judge.verdict``
+    payload, and keeping it for the length of a judging group would put the
+    amplification straight back while every record still looked streamed.
+    """
+    items = _by_id(_item("a", "alpha", ("t",)), _item("b", "bravo", ("t",)))
+    held: list[weakref.ref] = []
+
+    def stream():
+        tracked = _TrackedInput("alpha")
+        held.append(weakref.ref(tracked))
+        yield _verdict(tracked, True)
+        del tracked
+        # A second verdict, so the consumer's own view of the last input is
+        # rebound; then two records it ignores, so the verdict record itself has
+        # been dropped by the time the check runs. The group is still open.
+        yield _verdict("bravo", True)
+        yield _record("migkit.item_completed", {"item_id": "a"})
+        yield _record("migkit.item_completed", {"item_id": "b"})
+        gc.collect()
+        assert held[0]() is None, (
+            "the input text of a verdict is still alive while its group is open: "
+            "the group is holding input strings rather than item ids"
+        )
+        yield _completed(BASELINE, {JUDGE: 2})
+
+    result = dimensions.dimension_counts(stream(), items, judge=JUDGE)
+
+    assert result.available is True, result.reason
+    assert _cell(result, BASELINE, "t") == (2, 2, 2)
