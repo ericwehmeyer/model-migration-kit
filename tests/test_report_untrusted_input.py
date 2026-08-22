@@ -22,6 +22,14 @@ true of the reader, each one demonstrated against the build before it was fixed:
 3. ``external_urls`` missed ``<meta http-equiv=refresh>`` and inline ``on*``
    handlers -- unreachable from data, reachable from one template edit.
 4. ``judged_path_for`` did not slug its fallback stem.
+5. ``external_urls`` then failed in the other direction: two of its rules judged
+   every attribute value by shape rather than by whether the browser dereferences
+   the attribute holding it. A recorded verdict reading ``review: n was too small``
+   matches ``scheme:``, so an evidence log could make ``render_html`` refuse to
+   produce a document at all -- a denial-of-render driven by exactly the untrusted
+   input the control exists to defend against, and a larger hole than the one it
+   closed. Section 5 pins both halves: the four attribute families a browser
+   provably never dereferences are inert, and every name-based rule still fires.
 
 Everything here is offline, deterministic and keyless. Artifacts are written byte
 by byte, timestamps are injected, and no test touches the network or the clock.
@@ -42,7 +50,16 @@ from model_migration_kit.contracts import ARTIFACT_SCHEMA_VERSION
 from model_migration_kit.errors import ReportError
 from model_migration_kit.goldenset import GoldenSet
 from model_migration_kit.judging import JudgedArtifact, judged_path_for
-from model_migration_kit.report import ReportModel, external_urls, render_terminal
+from model_migration_kit.report import (
+    FETCHING_ATTRS,
+    ReportModel,
+    _NEVER_DEREFERENCED_RE,
+    assert_self_contained,
+    external_urls,
+    render_html,
+    render_html_string,
+    render_terminal,
+)
 from model_migration_kit.runner import RunArtifact
 
 NOW = "2026-08-13T00:00:00.000000+00:00"
@@ -642,3 +659,423 @@ def test_the_judged_path_still_follows_the_run_artifacts_own_name(tmp_path: Path
         path=str(tmp_path / "runs" / "baseline-v1__abcdef.jsonl"),
     )
     assert judged_path_for(named, tmp_path) == tmp_path / "baseline-v1__abcdef.judged.jsonl"
+
+
+# --------------------------------------------------------------------------- #
+# 5. the detector judged shape where it meant dereference
+# --------------------------------------------------------------------------- #
+
+#: A value that looks exactly like a fetch and is not one. Nothing dereferences a
+#: ``data-`` attribute, and with ``<script>`` banned outright nothing in the
+#: document can read this string back out and turn it into one. It is text.
+INERT_SCHEME = "javascript:alert(1)"
+
+#: The string that started this chunk. A verdict recorded in an evidence log,
+#: which matches the scheme rule because ``review:`` is shaped like a scheme --
+#: and that was enough to make the detector refuse the whole document. Untrusted
+#: input that can delete the report is a worse hole than the one it closes.
+RECORDED_VERDICT = "review: n was too small"
+
+#: One unambiguous fetch, carried by every exemption test below as a live
+#: control. "The scanner did not fire on the exempt attribute" is a sentence a
+#: *deleted* scanner satisfies; "the scanner reported this and only this" is not.
+#: Every assertion in this section that permits something also demands something.
+REAL_FETCH = '<a href="https://evil.example/beacon">x</a>'
+
+
+def _positions(html: str) -> tuple[tuple[str, str], ...]:
+    """Every violation as ``(tag, attribute)``, in the order the scanner found them.
+
+    Compared as a whole tuple rather than by count: an assertion that two
+    violations came back is satisfied by the wrong two.
+    """
+    return tuple((one.tag, one.attribute) for one in external_urls(html))
+
+
+def _rendered_with(tmp_path: Path, fragment: str) -> str:
+    """The real report, with ``fragment`` spliced in after ``<main>``.
+
+    The template emits no attribute carrying evidence-derived text *yet* -- the
+    chart that will is a later chunk -- so a fixture is the only way to ask this
+    question of a whole document today. It is asked of a whole document
+    deliberately: the property is "the report renders and fetches nothing", and
+    the fixture is the shape that chart is going to have.
+    """
+    html = render_html_string(_model(tmp_path))
+    marker = "<main>"
+    assert marker in html, "the template lost its <main>; this helper needs a new anchor"
+    return html.replace(marker, marker + fragment, 1)
+
+
+# -- the exemption: four families a browser provably never dereferences ------ #
+
+
+def test_a_data_attribute_holding_a_scheme_is_inert_rather_than_a_violation(
+    tmp_path: Path,
+) -> None:
+    """The chunk's first failing test, asserted on the document, not the scanner.
+
+    Three claims, and the order matters. The document *renders*:
+    ``assert_self_contained`` is the gate ``render_html`` runs on itself before
+    writing a byte, so a raise here is a report that does not exist. Nothing
+    *fetches*: no position in the finished document reaches off the machine. And
+    no *script*: the exemption is sound only because nothing in the document can
+    read a ``data-`` value and act on it, so that ban is asserted beside the
+    exemption rather than trusted from a plan nobody will re-read.
+    """
+    document = _rendered_with(tmp_path, f'<rect data-verdict="{INERT_SCHEME}"></rect>')
+    assert_self_contained(document)
+    assert external_urls(document) == ()
+    assert "<script" not in document.lower()
+    # The control, and the reason this test is four lines rather than three:
+    # every assertion above is satisfied by a scanner that has been deleted. The
+    # same document with one real fetch in it must still be refused.
+    with pytest.raises(ReportError):
+        assert_self_contained(_rendered_with(tmp_path, '<img src="https://evil.example/x.png">'))
+
+
+INERT_ATTRIBUTES = [
+    f'data-verdict="{INERT_SCHEME}"',
+    f'data-verdict="{RECORDED_VERDICT}"',
+    'data-note="//TODO fix this"',
+    'data-src="https://evil.example/x.png"',
+    f'aria-label="{INERT_SCHEME}"',
+    f'aria-valuetext="{RECORDED_VERDICT}"',
+    'aria-description="//see the appendix"',
+    'xmlns="http://www.w3.org/2000/svg"',
+    'xmlns="//www.w3.org/2000/svg"',
+    'xmlns:xlink="http://www.w3.org/1999/xlink"',
+]
+
+
+@pytest.mark.parametrize("attribute", INERT_ATTRIBUTES)
+def test_an_attribute_a_browser_never_dereferences_is_not_a_violation(attribute: str) -> None:
+    # Each case carries REAL_FETCH, so the assertion is "this one and not the
+    # other" rather than "nothing at all". A scanner switched off entirely fails
+    # every line of this test, which is the point: the risk on a security control
+    # is a suite that goes green because the control was weakened rather than
+    # because it was corrected.
+    document = f"<div {attribute}>{REAL_FETCH}</div>"
+    assert _positions(document) == (("a", "href"),)
+
+
+def test_an_inline_svg_may_carry_the_namespace_that_makes_it_savable() -> None:
+    # Two chunks dropped xmlns from their <svg> to get past the detector. That is
+    # correct for inline SVG in an HTML5 document and wrong the moment a reviewer
+    # saves the chart on its own, which is a thing reviewers do with charts. The
+    # <use> reference is same-document and is not a fetch either.
+    document = (
+        '<svg xmlns="http://www.w3.org/2000/svg" '
+        'xmlns:xlink="http://www.w3.org/1999/xlink" role="img" '
+        f'aria-label="{RECORDED_VERDICT}">'
+        '<use xlink:href="#series"></use>'
+        f'<rect data-verdict="{INERT_SCHEME}"></rect>'
+        f"</svg>{REAL_FETCH}"
+    )
+    assert _positions(document) == (("a", "href"),)
+
+
+def test_a_recorded_verdict_in_a_data_attribute_does_not_refuse_the_document(
+    tmp_path: Path,
+) -> None:
+    # The denial-of-render, in the shape the chart chunk will give it. The second
+    # half re-asks the same document whether the gate is still live, so this test
+    # cannot pass by the gate having been removed.
+    document = _rendered_with(tmp_path, f'<rect data-verdict="{RECORDED_VERDICT}"></rect>')
+    assert_self_contained(document)
+    with pytest.raises(ReportError):
+        assert_self_contained(_rendered_with(tmp_path, '<img src="https://evil.example/x.png">'))
+
+
+def test_an_evidence_log_whose_verdict_reads_like_a_scheme_still_renders_a_report(
+    tmp_path: Path,
+) -> None:
+    # End to end, because the defect was reachable from data on disk: a verdict
+    # somebody's rule wrote last night, read back on a reviewer's machine, and no
+    # report at the end of it. render_html rather than render_html_string, so the
+    # gate under test is the one in the path a user actually takes.
+    log = _write_evidence(tmp_path / "log" / "evidence.jsonl", _payload(), verdict=RECORDED_VERDICT)
+    out = render_html(ReportModel.from_evidence(log, now=NOW), tmp_path / "report.html", now=NOW)
+    written = out.read_text(encoding="utf-8")
+    assert RECORDED_VERDICT in written
+    # The gate that had been refusing this document is still watching it.
+    assert _positions(written.replace("<main>", f"<main>{REAL_FETCH}", 1)) == (("a", "href"),)
+
+
+# -- the exemption does not leak: every name-based rule still fires ---------- #
+
+
+def test_an_inline_event_handler_beside_an_exempt_attribute_is_still_the_violation() -> None:
+    # The whole safety argument for the exemption is that no script runs. An on*
+    # handler is script by another name, and it is judged on what the attribute
+    # is, not on what the element beside it happens to carry.
+    document = f'<div data-verdict="{INERT_SCHEME}" onclick="fetch(1)">x</div>'
+    assert _positions(document) == (("div", "onclick"),)
+
+
+def test_a_style_block_beside_an_exempt_attribute_is_still_the_violation() -> None:
+    document = (
+        '<div data-note="//chart">'
+        "<style>.k { background: url(https://evil.example/bg.png) }</style>"
+        f"{REAL_FETCH}</div>"
+    )
+    assert _positions(document) == (("style", ""), ("a", "href"))
+
+
+DEREFERENCED = [
+    ("a", "href"),
+    ("img", "src"),
+    ("img", "srcset"),
+    ("video", "poster"),
+    ("div", "data"),
+    ("form", "action"),
+    ("button", "formaction"),
+    ("body", "background"),
+    ("blockquote", "cite"),
+    ("img", "longdesc"),
+    ("html", "manifest"),
+    ("img", "usemap"),
+    ("a", "ping"),
+    ("use", "xlink:href"),
+    ("rect", "xml:base"),
+]
+
+
+@pytest.mark.parametrize(("tag", "attribute"), DEREFERENCED)
+def test_an_attribute_the_browser_dereferences_is_still_a_violation(
+    tag: str, attribute: str
+) -> None:
+    document = f'<{tag} {attribute}="https://evil.example/x">'
+    assert _positions(document) == ((tag, attribute),)
+
+
+@pytest.mark.parametrize(
+    ("tag", "attribute"),
+    [("a", "ping"), ("use", "xlink:href"), ("rect", "xml:base")],
+)
+def test_the_three_newly_named_fetching_attributes_catch_a_bare_relative_path(
+    tag: str, attribute: str
+) -> None:
+    """A value with no scheme, in an attribute that genuinely fetches.
+
+    This is the assertion that distinguishes "named in ``FETCHING_ATTRS``" from
+    "caught in passing by the broad rule this chunk has just narrowed". All three
+    fetch; none was named; each was resting on a rule that is about to stop
+    applying to its neighbours. A relative path is the value that tells the two
+    apart, and it resolves against wherever the reviewer saved the file.
+    """
+    assert _positions(f'<{tag} {attribute}="assets/chart.png">') == ((tag, attribute),)
+
+
+def test_a_same_document_reference_in_a_fetching_attribute_is_not_a_fetch() -> None:
+    # The other half of naming xlink:href: <use xlink:href="#series"> is how an
+    # inline chart reuses a shape, and a rule that called that a fetch would be a
+    # rule somebody eventually switches off.
+    assert _positions(f'<use xlink:href="#series"></use>{REAL_FETCH}') == (("a", "href"),)
+
+
+@pytest.mark.parametrize(
+    "attribute",
+    [
+        "database-url",
+        "datax",
+        "dataurl",
+        "data",
+        "aria",
+        "arialabel",
+        "ariax",
+        "xmlnsfoo",
+        "xmlns-x",
+    ],
+)
+def test_an_attribute_that_only_begins_like_an_inert_one_is_still_judged(attribute: str) -> None:
+    """The exemption covers four families, not four prefixes.
+
+    ``datax``, ``dataurl`` and ``database-url`` are the sharp ones, and it is
+    worth being exact about why, because the obvious answer is wrong. Bare
+    ``data`` -- the ``<object data=>`` attribute -- looks like the dangerous case
+    and is not: it is in ``FETCHING_ATTRS``, so it stays caught by name even if a
+    ``startswith("data")`` exemption swallows it, and it kills no mutant. The
+    names that actually detect the dropped hyphen are the ones in neither list,
+    where the shape rule is the only guard. The rest are the same mistake spelled
+    differently. ``aria`` and ``xmlns-x`` are here on the strict reading
+    of the contract: the families are ``data-*``, ``aria-*``, ``xmlns`` and
+    ``xmlns:*``, and nothing else earns the exemption by resembling them.
+    """
+    assert _positions(f'<div {attribute}="https://evil.example/x">') == (("div", attribute),)
+
+
+@pytest.mark.parametrize(
+    "attribute",
+    ["HREF", "Src", "PING", "XLINK:HREF", "XML:BASE", "Data", "DATABASE-URL"],
+)
+def test_a_fetching_attribute_is_caught_whatever_its_casing(attribute: str) -> None:
+    # HTML attribute names are case-insensitive and the parser lowers them, so
+    # the exemption has to be decided on the lowered name. Asserted through
+    # external_urls rather than against the rule in isolation, because that
+    # composition is what a document exercises.
+    assert _positions(f'<div {attribute}="https://evil.example/x">') == (
+        ("div", attribute.lower()),
+    )
+
+
+@pytest.mark.parametrize("attribute", ["href", "src", "poster", "action", "cite"])
+def test_a_bare_relative_path_in_a_fetching_attribute_is_still_a_violation(
+    attribute: str,
+) -> None:
+    assert _positions(f'<div {attribute}="assets/chart.png">') == (("div", attribute),)
+
+
+# -- the bans the exemption rests on, and the rule it must not have widened -- #
+
+
+@pytest.mark.parametrize(
+    ("fragment", "tag"),
+    [
+        ("<script></script>", "script"),
+        ("<script>1</script>", "script"),
+        ('<link rel="stylesheet" href="fonts.css">', "link"),
+        ("<iframe></iframe>", "iframe"),
+        ('<base href="/">', "base"),
+        ("<embed>", "embed"),
+        ('<object data="x.swf"></object>', "object"),
+    ],
+)
+def test_the_bans_the_exemption_rests_on_are_untouched(fragment: str, tag: str) -> None:
+    """If the script ban is ever relaxed, the exemption above becomes unsafe.
+
+    Nothing can read a ``data-`` value into a request while no script runs; that
+    coupling is the entire argument for the exemption, and it belongs beside it
+    rather than in a plan document. Whoever relaxes ``FORBIDDEN_TAGS`` fails
+    these seven cases and, with luck, reads this docstring before deleting them.
+    """
+    assert _positions(fragment)[0] == (tag, "")
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        "<style>.k { background: url(https://evil.example/bg.png) }</style>",
+        '<style>@import "https://evil.example/x.css";</style>',
+        '<div style="background: url(https://evil.example/bg.png)"></div>',
+    ],
+)
+def test_the_two_css_rules_are_untouched(fragment: str) -> None:
+    """CSS is the one place an exempt value could plausibly become a request.
+
+    ``span[data-icon] { background-image: url(attr(data-icon)) }`` is the shape
+    that would make this whole exemption unsafe with no script anywhere in the
+    document. It does not work, and not by accident: a value produced by
+    ``attr()`` is *attr()-tainted*, and css-values-5 makes a declaration invalid
+    at computed-value time when a tainted value is used "as or in a ``<url>``".
+    That is a constraint on the type rather than a list of functions, so it holds
+    for ``src()`` and ``image-set()`` too, and for laundering through ``var()``.
+    That is a second coupling the exemption rests on, alongside the script ban,
+    and unlike the script ban it is a platform rule rather than one this
+    repository controls.
+
+    So these two rules carry more weight after this chunk than before it, not
+    less: they are what still catches CSS that fetches. Which is also why
+    ``_URL_FN_RE`` matching only ``url(`` -- not ``image-set()``, which ships
+    everywhere -- is worth fixing, though it predates this chunk and is not part
+    of it.
+    """
+    assert len(external_urls(fragment)) == 1
+
+
+def test_the_scheme_rule_is_still_anchored_where_it_was() -> None:
+    """``title="see http://example.com"`` was never flagged and still is not.
+
+    The anchoring is the odd part of the old rule -- it fires on values that
+    happen to *begin* with a scheme and walks past the same URL one word in --
+    but un-anchoring it is a separate question, and a chunk that narrowed the
+    rule by name while quietly widening it by position would be two changes
+    wearing one commit message. This pins that it was not.
+    """
+    document = f'<p title="see http://example.com for details">x</p>{REAL_FETCH}'
+    assert _positions(document) == (("a", "href"),)
+
+
+# -- the invariant the exemption's safety actually reduces to ---------------- #
+
+
+def test_the_exemption_never_covers_an_attribute_the_browser_dereferences() -> None:
+    """No name may be both exempt from the shape rules and a known fetching name.
+
+    This is the assertion the rest of section 5 cannot make, and the reason it
+    cannot is worth writing down. For any name already in ``FETCHING_ATTRS`` the
+    two shape rules are *strictly subsumed* by the ``FETCHING_ATTRS`` rule: every
+    value that starts with ``//`` or matches ``_SCHEME_RE`` is also non-empty and
+    starts with neither ``#`` nor ``data:``, so it is a violation by name whether
+    or not it was one by shape. Adding ``href`` and ``src`` to
+    ``_NEVER_DEREFERENCED_RE`` therefore changes no violation *count* anywhere --
+    only the ``reason`` string -- and every behavioural test above stays green
+    through it.
+
+    So the exemption is not pinned by any test that scans a document. What pins
+    it is this: the exemption and ``FETCHING_ATTRS`` must stay disjoint. That is
+    the property the safety argument really rests on -- "these families contain
+    no member the browser retrieves" -- stated as something a test can check, and
+    it is what fails the moment someone widens the regex toward a name that
+    fetches.
+    """
+    covered = sorted(name for name in FETCHING_ATTRS if _NEVER_DEREFERENCED_RE.match(name))
+    assert covered == [], (
+        f"{covered} are exempt from the shape rules *and* named as fetching. "
+        f"The exemption may only cover families with no dereferenced member."
+    )
+
+
+@pytest.mark.parametrize("attribute", ["imagesrcset", "archive", "somefutureurlattr"])
+def test_an_attribute_outside_both_lists_is_still_judged_by_shape(attribute: str) -> None:
+    """The shape rule is the only guard on every name ``FETCHING_ATTRS`` omits.
+
+    ``ping``, ``xlink:href`` and ``xml:base`` were three such names until this
+    chunk promoted them; ``imagesrcset`` and ``archive`` are two it did not, and
+    the third is the one nobody has invented yet. None is exempt, so each is
+    still caught -- by shape, which is the rule this chunk narrowed.
+
+    That is the real reason widening the exemption is dangerous, and why the
+    invariant test above is necessary but not sufficient: the invariant only sees
+    names that are in ``FETCHING_ATTRS``. Exempt ``imagesrcset`` instead and the
+    invariant passes, every document test passes, and a fetch ships.
+    """
+    assert _positions(f'<div {attribute}="https://evil.example/x">') == (("div", attribute),)
+
+
+def test_the_reason_says_which_rule_fired_not_merely_that_one_did() -> None:
+    """``reason`` is the whole output of ``_attribute_reason`` and nothing pins it.
+
+    Every other assertion in this section compares ``(tag, attribute)`` pairs,
+    which is deliberate -- a count is satisfied by the wrong violation. But it
+    leaves the rule *attribution* untested, and attribution is the only thing the
+    exemption changes on a name that is also in ``FETCHING_ATTRS``: the violation
+    is emitted either way, and only this string says which rule emitted it. That
+    makes ``reason`` the one observable difference between the exemption as
+    written and an exemption widened to swallow ``href``. It is also what a
+    reader debugging a false positive actually reads.
+    """
+    (shape,) = external_urls('<p title="//evil.example/x">y</p>')
+    assert "protocol-relative" in shape.reason
+
+    # href carries a scheme and href is also in FETCHING_ATTRS, so two rules
+    # match it. The shape rules run first, so today it is reported as a scheme.
+    # That ordering is the one observable difference the exemption makes on a
+    # fetching name -- exempt href and this same document comes back reported by
+    # name instead -- and it is the only thing in the suite that can tell the two
+    # apart, because the violation itself is emitted either way.
+    (scheme,) = external_urls('<a href="https://evil.example/x">y</a>')
+    assert "URL scheme other than data:" in scheme.reason, (
+        "href is not exempt from the shape rules and must still be judged by "
+        "them. If this now reads as a FETCHING_ATTRS reason, href has been "
+        "added to _NEVER_DEREFERENCED_RE -- see the invariant test above."
+    )
+
+    # A relative path in the same attribute has no shape to fail, so it reaches
+    # the name-based rule. Both sentences have to stay reachable or the reason
+    # stops distinguishing anything.
+    (by_name,) = external_urls('<a href="assets/chart.png">y</a>')
+    assert "dereferenced by the browser" in by_name.reason
+
+    (handler,) = external_urls('<div onclick="fetch(1)"></div>')
+    assert "inline event handler" in handler.reason
