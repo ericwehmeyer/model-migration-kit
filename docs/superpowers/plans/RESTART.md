@@ -32,66 +32,87 @@ agent that checked rather than assumed, so treat that one as suspect.
 
 ## Where things stand
 
-**C1, C2, C3, C13 and C15 are merged to main and green.** 1274 tests, ruff clean,
-`main` at `647efcf`. `series.py` (`RunPoint`, `run_point`, `read_series`,
-`SeriesBuilder`, `parse_created`), `evidence.py` (`stream_records`,
-`resolve_evidence`), the timeline chart, the relative work-dir fix, and the
-96-item synthetic showcase golden set with its generator are all in.
+**`main` is `1cfbf54`, 1585 tests, all seven gates green.** Merged and reviewed:
+**C1, C2, C3, C8, C9, C12, C13, C15, C19, C20**. Every one had a blind tester and
+a reviewer that mutation-tested it, and every review found something the other
+two roles missed.
 
-**Four chunks are written, merged onto their own branches, green, and in
-review.** None has landed on main yet.
+**Nothing any of that built is visible in the rendered document.** That is the
+single most important fact on this page. `interval_bar_svg` and `timeline_svg`
+are merged, reviewed and mutation-tested — 115 and 23 mutants, zero survivors —
+and **nothing calls them**. Render `migkit demo` and you get the same document
+you got before any of this started.
+
+The cause is an ordering mistake, not a defect: C14, the template that renders
+everything, was scheduled after all nine of its inputs. Ten chunks landed out of
+sight. **C14a exists to fix that** — see below.
 
 | Branch | Contains | State |
 |---|---|---|
-| `main` | spec, plan, R1-R11, C1, C2, C3, C13, C15 | green, 1274 passed |
-| `chunk/c8-impl` | per-tag counts, both halves, 41 passed | in review |
-| `chunk/c9-impl` | the cell and its two floors, both halves, 40 passed | in review |
-| `chunk/c19-impl` | verdict pairing, both halves, 1265 passed | in review |
-| `chunk/c20-impl` | the scanner narrowing, both halves, 1315 passed | in review |
-| `chunk/c12-impl` | the interval bar, 238 passed | mutation re-verification |
-| `fix/isolate-release-probe` | `-E` plus a corrected docstring, and the conftest | in flight |
-
-C15 merged after its revision pass, which is worth knowing about because the
-finding generalises: five of its sixteen `refusal` items **could not be refused**.
-Each referred to something the prompt never supplied. The rule now written into
-the generator: the thing being asked for must be present in the item, and the
-whole of the requested output must be the harm.
-
-The set is pinned by content hash, verified by mutation. **Re-pin deliberately,
-never to make the suite green** -- after C17 an edit here is a 56-run re-seed.
-
-Worktrees are under `repos\mk-*`; `git worktree list` enumerates them. They
-persist across sessions, so do not recreate them -- reset an idle one instead.
+| `main` | C1-C3, C8, C9, C12, C13, C15, C19, C20, R1-R13, tooling, `conftest.py` | 1585 passed |
+| `chunk/c21-unblock` | the C10 blocker | in flight, see below |
+| `chunk/c10-impl` / `c10-test` | matrix wired into `ReportModel` | written, **blocked**, 1 test red |
+| `chunk/c14a-impl` / `c14a-test` | the two charts | **contract written, not built** |
+| `chunk/c16-impl` / `c16-test` | narrative adapters | **contract written, not built** |
 
 ## Do these next, in this order
 
-1. **Land the four reviews.** Each reviewer sees both halves and was asked for
-   mutation testing. C8's was additionally asked to rule on **seven ambiguities**
-   its tester enumerated, because three of them decide things C10 will be written
-   against. C9's was asked to rule on whether `needed`/`needed_unit` should become
-   `needed_items`/`needed_completions` -- a change that is cheap now and expensive
-   after C10 and C14 exist.
-2. **Merge C8, C9, C19, C20**, in that order. C8 and C9 share one new module,
-   `dimensions.py`, split top and bottom. **Check `__all__` by hand** -- see R11.5,
-   the one collision in that arrangement that produces no conflict marker.
-3. **Then C10, then C14.** C10 wires the matrix into `ReportModel` and therefore
-   cannot run beside anything editing `report.py`. Its contract is amended -- see
-   `### C10 (amended)` -- because R1 deleted one of its two decline reasons, and
-   its named test must now assert the *opposite* of what the original says.
+1. **C14a — the two charts and the evidence made legible.** Contract at
+   `### C14a`. Worktrees exist. This is the chunk that puts something on the page,
+   and after it every later chunk lands visibly instead of accumulating out of
+   sight. **Do this first even though it is not the critical path**, because the
+   person paying for this cannot steer on chunks they cannot see.
+2. **The C10 blocker** — `chunk/c21-unblock`, detail below. Then merge C10.
+3. **C16** — narrative adapters, contract settled by R13, worktrees exist.
+4. Then C4-C7, C11, C14's remaining seven elements, C17, C18.
 
-Off the path, pick up when convenient: C4-C7, C11, C16-C18.
+## The C10 blocker, in full
 
-**Two shipped defects are recorded in R5 and still unfixed in 0.1.1**: the
-degraded render that prints "0 items" beside a table reading 55/60, and report
-degradation never reaching the exit code, so a stripped render and a complete one
-are indistinguishable to a pipeline. Both live in `report.py`, so they wait for it
-to go quiet.
+`from_evidence` must build a per-tag matrix. The matrix joins a `judge.verdict` to
+a golden-set item **by input text** (a verdict carries no `item_id`), so it needs
+the golden set. The golden set's path lives in the `migkit.comparison` payload,
+written *after* judging, so it is only in hand once the single streaming pass has
+finished. Both ways out are closed by merged tests:
 
-**One pre-existing hole, found by both C20 agents**: `_URL_FN_RE` matches only
-`url(`, so `src()` and `image-set()` fetch remotely and score zero violations, in
-a `<style>` block and in a `style=` attribute alike. Verified pre-existing at
-`559e521`. Worth a chunk; note that CSS is the one place C20's "no script runs"
-argument does not help.
+- **read the log twice** → `tests/test_report.py::test_the_log_is_read_once_for_both_the_headline_and_the_series` counts opens and asserts exactly 1.
+- **buffer the verdicts** → `tests/test_evidence_scale.py::test_rebuilding_the_report_does_not_hold_the_log_either` asserts peak allocation stays flat in log size. A `judge.verdict` embeds the input; the fixture's inputs are unique 4 KB strings.
+
+Neither test may be weakened; `evidence.py` records the measurement behind them
+(an 86 MB log cost 502 MB extra resident).
+
+**The unexplored option is a digest.** C10's implementer rejected buffering a
+digest per verdict because `dimension_counts`' refusal quotes the unjoinable
+input. That is a *message* objection to a *memory* problem. A digest is ~32 bytes
+against a 4 KB input — under 1% of the log's growth — and a refusal naming the
+verdict's ordinal position ("the 47th verdict's input matches no item") is
+arguably more actionable than a truncated quote. **Measure it before accepting or
+rejecting it.**
+
+The fix needs a change to a merged module — either `dimension_counts` gains a
+two-phase form, or the golden set resolves before the loop — which is why C10's
+implementer, correctly forbidden from touching them, could not solve it.
+
+**Also unsettled:** `dimension_counts` counts *every* `migkit.judging_completed`
+group, so a log of fourteen nightly runs yields a matrix summing all fourteen
+while the banner reports only the last. Nobody can reconcile those two numbers.
+Decide per-run or cumulative, and put the reasoning in the code.
+
+## Four defects a reader found in the rendered report
+
+Worth knowing because they are not in any chunk contract and they are what a
+person actually complained about on first sight:
+
+- **`extract-01` prints `98.10` five times**; `refuse-02` prints the same
+  260-character paragraph five times. Repetition presented as evidence, and it
+  hides the fact that matters — whether the draws agreed at all.
+- **The finding is behind a closed disclosure triangle.** The run's most important
+  result is that the candidate writes a fabricated data-breach notice on request
+  and invents a refund figure no thread states. Both sit inside `<details>`.
+- An absolute temp path is printed **eight times**, ~130 characters each.
+- **Latency prints `0.000 / 0.000`** on scripted adapters — a row that can never
+  say anything. `RunSummary.is_fake` already knows.
+
+All four are in C14a's contract.
 
 ## The dispatch pattern
 
@@ -174,18 +195,42 @@ five-minute salvage; without them it is a total loss.
 These traps have each bitten more than once. Paste them in rather than letting
 an agent rediscover them.
 
-**The editable install shadows every worktree.** `model_migration_kit` resolves
-to the main checkout, so a new module in a worktree is invisible and an edited
-one is silently the wrong copy. Every command must be:
+**The editable install used to shadow every worktree, and a `conftest.py` now
+fixes it — for `pytest` only.** A bare `pytest` from a worktree tests that
+worktree; no `PYTHONPATH` prefix, and the ceremony every brief used to carry is
+obsolete. But the conftest runs under pytest and nowhere else:
 
 ```
-PYTHONPATH=<worktree>\src C:\Users\ewehm\repos\migration-kit\.venv\Scripts\python.exe -m pytest <worktree>\tests\... -q
+bare python -c from a worktree:  ...\migration-kit\src\...eport.py   <- the MAIN checkout
+the same import under pytest:    ...\mk-c14a-impl\src\...eport.py    <- the worktree
 ```
 
-and every agent must print `module.__file__` and confirm the path is inside its
-worktree before believing a result. One agent reported a false green from this;
-two more designed around it unprompted. **The plan's own Done blocks are wrong
-about this** — R4 records the correction, the individual chunk contracts do not.
+So anything that reads a signature, prints a docstring or probes behaviour with
+bare `python` from a worktree is reading the **wrong tree**, and it looks right
+because the two are usually identical. The orchestrator hit this while checking
+two function signatures, an hour after merging the conftest that was supposed to
+have retired the hazard.
+
+Every agent should still print `module.__file__` once and confirm it. One agent
+reported a false green from the original form of this trap; two more designed
+around it unprompted. For a one-off probe outside pytest, set `PYTHONPATH`
+explicitly:
+
+```
+PYTHONPATH='<worktree>\src' <main>\.venv\Scripts\python.exe -c "..."
+```
+
+Note the **single quotes** in a bash tool — without them the backslashes are
+eaten and the import silently resolves to the main checkout, which is the same
+false green wearing a different hat.
+
+**Run `scripts/check_merge.py`, not `pytest`, before calling a merge green.** Two
+chunks reached the orchestrator test-green and CI-red in one session, both for a
+structural reason neither blind half could have prevented.
+
+**Run `scripts/check_contract.py <plan> --from N --to M` before dispatching
+against a contract.** Six contracts were wrong in one session; the mechanical half
+of that is free to catch.
 
 **A skip is exit 2.** `verify_release.py` scores a SKIPPED check as failure so a
 gate cannot mistake absence for success. A check that silently passes when its
@@ -244,6 +289,76 @@ item, so the two do not do comparable work.
 `judged_*`, `failures_*` became `judge_failures_*`, and `floor_source` was added.
 Gate `failures` means the judge failed the completion; the report's identically
 named row means the adapter errored — 15 versus 0 on the demo run.
+
+## What this session changed about how the work is done
+
+**Order the chunks so the artifact moves.** Ten chunks merged and the document
+never changed once, because the template that renders everything was scheduled
+after all nine of its inputs. Bottom-up sequencing means the person paying for the
+work steers on summaries instead of output, and it hides exactly the defects a
+reader finds in a second — repeated draws, buried evidence, a latency row of
+zeros. **Render something end to end early, then deepen it.**
+
+**Blind-test the invisible; eyeball the visible.** The four-role pipeline earned
+its cost on statistics, the join and the security scanner — places where a wrong
+answer looks exactly like a right one. It is overkill for "does the chart
+render", which a human verifies by opening the page. Keep the blind pair where a
+defect is undetectable by looking.
+
+**Contracts written as prose are a defect source.** Six were wrong in one
+session: a type that does not exist (`Item` for `GoldenItem`), a file cited in the
+wrong package, two arithmetic errors, a guard rule that contradicted another rule
+in the same contract, and a mutation instruction that was unsatisfiable by
+construction. Each cost an agent real time. Now that the modules exist and are
+reviewed, **point the agent at the code and let the module be the spec.**
+
+**`scripts/check_contract.py`** catches the mechanical half before dispatch —
+every `file.py:NN` resolved against both trees, every line number range-checked,
+unknown symbols flagged as advisory. It found four more across the plan on its
+first full run.
+
+**`scripts/check_merge.py`** refuses a merge that looks green and is not. Seven
+checks, built from five real failures: a conflict region that ends mid-statement
+(both sides sharing the closer git puts *after* the marker); two blind halves
+defining the same top-level name with no conflict marker; `__all__` collisions;
+`COMPATIBILITY.md` rows for imports only the tester's file makes; ruff on the
+merged import block neither pair can see. **Run it, not pytest, before calling a
+merge green** — two chunks reached the orchestrator test-green and CI-red.
+
+## Two hazards this session found the hard way
+
+**The `conftest.py` retires R4 for `pytest` only.** A bare `python -c` from a
+worktree still imports the **main checkout**:
+
+```
+bare python:   C:\Users\ewehm\repos\migration-kit\src\...\report.py
+under pytest:  C:\Users\ewehm\repos\mk-c14a-impl\src\...\report.py
+```
+
+Anything that reads a signature, prints a docstring or probes behaviour with bare
+`python` from a worktree is reading the wrong tree, and it looks right because the
+two are usually identical. Use `pytest`, or set `PYTHONPATH` explicitly for
+one-off probes.
+
+**Concurrent mutation arenas clobber each other.** Three agents had arenas
+silently replaced with pre-change source, and every time the symptom was
+fabricated `SURVIVED` results — the failure mode that quietly reports a chunk as
+unpinned. The session scratchpad is shared between all agents. **Put an arena
+outside both checkouts and outside the scratchpad**, and prove each mutant is on
+disk before pytest runs: `__file__`, a hash of the file taken *inside the
+importing interpreter*, and a check that the mutated text is present.
+
+## Agent dispatch can fail in bursts
+
+Six agents died at startup inside half an hour — "the response stopped arriving",
+"no progress for 600s" — each after a single message, while an agent dispatched
+earlier kept running to completion. Spawning was broken, not running.
+
+Nothing was lost, because they died before doing work. But the lesson for a wide
+dispatch is: **re-dispatch two at a time, not four**, and check that the first
+pair is actually making progress before sending more. And when it happens, tell
+the surviving long-running agent to commit immediately — it is the one with
+something to lose.
 
 ## What wastes tokens
 
