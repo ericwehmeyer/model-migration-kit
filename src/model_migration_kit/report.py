@@ -199,6 +199,14 @@ FORBIDDEN_TAGS = frozenset({"script", "link", "iframe", "object", "embed", "base
 #: Attributes a browser dereferences. A value here that is not a ``#``-fragment
 #: and not a ``data:`` URI is a request leaving the machine -- including a bare
 #: relative path, which resolves against wherever the reviewer saved the file.
+#:
+#: ``ping`` (a POST the browser sends when the link is followed), ``xlink:href``
+#: (what SVG's ``<use>`` and ``<image>`` are still written with) and ``xml:base``
+#: (re-points every relative URL beneath it) are named here rather than left to
+#: ``_SCHEME_RE``. That rule no longer sees every attribute -- see
+#: ``_NEVER_DEREFERENCED_RE`` -- and all three used to rest on it alone. A real
+#: fetching attribute whose only guard is a rule someone is in the middle of
+#: narrowing is the shape the next hole arrives in.
 FETCHING_ATTRS = frozenset(
     {
         "src",
@@ -213,6 +221,9 @@ FETCHING_ATTRS = frozenset(
         "longdesc",
         "manifest",
         "usemap",
+        "ping",
+        "xlink:href",
+        "xml:base",
     }
 )
 
@@ -231,6 +242,34 @@ _META_REFRESH_URL_RE = re.compile(r"(^|[;,\s])url\s*=", re.IGNORECASE)
 #: ``startswith("on")`` so that a future ``data-*``-style attribute is judged on
 #: what it is, not on two leading characters.
 _EVENT_HANDLER_RE = re.compile(r"^on[a-z]+$")
+
+#: The attribute names the two *name-agnostic* rules below -- the
+#: protocol-relative check and ``_SCHEME_RE`` -- are not applied to. Those two
+#: ask what a value looks like; every other rule in ``_attribute_reason`` asks
+#: what the attribute *is*. Shape is the wrong question for a family the browser
+#: never dereferences, and asking it anyway was not merely noisy: a recorded
+#: verdict reading ``review: n was too small`` matches ``scheme:``, so one line
+#: of evidence in a ``data-`` attribute made ``render_html`` refuse the entire
+#: document. A control whose false positives are reachable from the untrusted
+#: input it exists to defend against is a denial-of-render vector -- a bigger
+#: hole than the one it closes.
+#:
+#: SAFETY -- read before widening anything. A ``data-`` value is inert here only
+#: because nothing in the document can read it: ``<script>`` is banned outright
+#: by ``FORBIDDEN_TAGS`` and inline handlers by ``_EVENT_HANDLER_RE``, and
+#: ``assert_self_contained`` runs both over every rendered document. **Relax
+#: either ban and this exemption becomes unsafe**: one line of script turns
+#: ``data-verdict`` into a fetch and nothing here would say so. Whoever allows
+#: script must delete this exemption in the same change.
+#:
+#: These four families and no others. ``data-*`` is author data and ``aria-*``
+#: is accessibility metadata -- neither has a member the platform retrieves --
+#: and ``xmlns``/``xmlns:*`` carry namespace URIs, which are opaque identifiers
+#: rather than locations; no browser has ever fetched one. Widening past this is
+#: a new argument, not an extension of this one. The name-based rules still run
+#: on exempt names, so an exempt attribute that is also in ``FETCHING_ATTRS`` --
+#: as ``xmlns`` is not, but a future name might be -- is still a violation.
+_NEVER_DEREFERENCED_RE = re.compile(r"^(?:data-.+|aria-.+|xmlns|xmlns:.+)$")
 
 #: Any scheme other than ``data:``. Applied to *attribute values only*, which is
 #: the distinction a regex over the raw document cannot make.
@@ -308,9 +347,14 @@ class _UrlScanner(HTMLParser):
                 f"{name} is an inline event handler; it is script, and script may "
                 f"not appear in a self-contained report"
             )
-        if stripped.startswith("//"):
+        # The two rules that judge the value's shape instead of the attribute's
+        # meaning, and the only two the exemption turns off. See
+        # _NEVER_DEREFERENCED_RE for the four families and for the script ban
+        # this exemption's safety rests on.
+        judge_by_shape = not _NEVER_DEREFERENCED_RE.match(name)
+        if judge_by_shape and stripped.startswith("//"):
             return "protocol-relative URL; it fetches over whatever scheme the page was opened with"
-        if _SCHEME_RE.match(value):
+        if judge_by_shape and _SCHEME_RE.match(value):
             return "URL scheme other than data:; the document would fetch it"
         if name in FETCHING_ATTRS and stripped and not stripped.startswith(("#", "data:")):
             return (
