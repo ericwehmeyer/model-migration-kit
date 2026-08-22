@@ -725,6 +725,11 @@ def test_a_data_attribute_holding_a_scheme_is_inert_rather_than_a_violation(
     assert_self_contained(document)
     assert external_urls(document) == ()
     assert "<script" not in document.lower()
+    # The control, and the reason this test is four lines rather than three:
+    # every assertion above is satisfied by a scanner that has been deleted. The
+    # same document with one real fetch in it must still be refused.
+    with pytest.raises(ReportError):
+        assert_self_contained(_rendered_with(tmp_path, '<img src="https://evil.example/x.png">'))
 
 
 INERT_ATTRIBUTES = [
@@ -789,7 +794,10 @@ def test_an_evidence_log_whose_verdict_reads_like_a_scheme_still_renders_a_repor
     # gate under test is the one in the path a user actually takes.
     log = _write_evidence(tmp_path / "log" / "evidence.jsonl", _payload(), verdict=RECORDED_VERDICT)
     out = render_html(ReportModel.from_evidence(log, now=NOW), tmp_path / "report.html", now=NOW)
-    assert RECORDED_VERDICT in out.read_text(encoding="utf-8")
+    written = out.read_text(encoding="utf-8")
+    assert RECORDED_VERDICT in written
+    # The gate that had been refusing this document is still watching it.
+    assert _positions(written.replace("<main>", f"<main>{REAL_FETCH}", 1)) == (("a", "href"),)
 
 
 # -- the exemption does not leak: every name-based rule still fires ---------- #
@@ -861,7 +869,7 @@ def test_a_same_document_reference_in_a_fetching_attribute_is_not_a_fetch() -> N
     # The other half of naming xlink:href: <use xlink:href="#series"> is how an
     # inline chart reuses a shape, and a rule that called that a fetch would be a
     # rule somebody eventually switches off.
-    assert external_urls('<use xlink:href="#series"></use>') == ()
+    assert _positions(f'<use xlink:href="#series"></use>{REAL_FETCH}') == (("a", "href"),)
 
 
 @pytest.mark.parametrize(
@@ -963,4 +971,5 @@ def test_the_scheme_rule_is_still_anchored_where_it_was() -> None:
     rule by name while quietly widening it by position would be two changes
     wearing one commit message. This pins that it was not.
     """
-    assert external_urls('<p title="see http://example.com for details">x</p>') == ()
+    document = f'<p title="see http://example.com for details">x</p>{REAL_FETCH}'
+    assert _positions(document) == (("a", "href"),)
