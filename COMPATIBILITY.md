@@ -173,6 +173,7 @@ table — so the completeness claim is checkable rather than asserted.
 | `src/model_migration_kit/cli.py` | `Adapter`, `AdapterError`, `AnthropicAdapter`, `EvidenceLog`, `FakeAdapter`, `OpenAICompatAdapter`, `RigorError`, `SampleTimeout`, `__version__` |
 | `src/model_migration_kit/comparison.py` | `EvidenceLog`, `PassRateError`, `RegressionError`, `SCORE_MAX`, `SCORE_MIN`, `assert_no_regression`, `assert_pass_rate`, `wilson_interval` |
 | `src/model_migration_kit/demo.py` | `AdapterError`, `EvidenceLog`, `FakeAdapter` |
+| `src/model_migration_kit/dimensions.py` | `EvidenceRecord` |
 | `src/model_migration_kit/evidence.py` | `EvidenceError`, `EvidenceRecord` |
 | `src/model_migration_kit/judging.py` | `Adapter`, `EvidenceLog`, `JudgeOutputError`, `ModelPinError`, `PinnedJudge`, `SCORE_MIN`, `hash_rubric_file`, `require_pinned` |
 | `src/model_migration_kit/report.py` | **the module itself (`import opik_rigor`), read for `__version__`** |
@@ -182,6 +183,7 @@ table — so the completeness claim is checkable rather than asserted.
 | `tests/test_cli.py` | `AdapterError`, `EvidenceError`, `EvidenceLog`, `FakeAdapter`, `JudgeOutputError`, `ModelPinError`, `PassRateError`, `RegressionError`, `RigorError`, `RubricDriftError`, `SampleTimeout` |
 | `tests/test_comparison.py` | `SCORE_MAX`, `SCORE_MIN` |
 | `tests/test_comparison_regressions.py` | `PassRateError`, `RegressionError`, `SCORE_MAX`, `SCORE_MIN`, `assert_no_regression` |
+| `tests/test_dimensions.py` | `EvidenceRecord` |
 | `tests/test_evidence_scale.py` | `EvidenceError`, `EvidenceLog`, `FakeAdapter` |
 | `tests/test_judging.py` | `EvidenceLog`, `FakeAdapter`, `JudgeOutputError`, `ModelPinError`, `PinnedJudge`, `SCORE_MIN`, `hash_rubric_file`, `is_pinned` |
 | `tests/test_property_based.py` | `FakeAdapter`, `SCORE_MAX`, `SCORE_MIN` |
