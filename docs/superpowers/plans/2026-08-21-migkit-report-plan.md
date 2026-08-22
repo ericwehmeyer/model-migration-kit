@@ -2728,3 +2728,171 @@ both at the type level, delete `needed_unit`, and make the note derivable from
 fields rather than being the only place a fact lives. The argument is good and I
 have not taken it, because review is where renames belong and both C9 agents have
 already written against the current signature. **C9's reviewer decides.**
+
+---
+
+### R12 — what C8's and C9's reviews changed, and the errors they found in my contracts
+
+**R12.1 — a fifth factual error, which R11 missed.** C8's contract says *"read
+`judge.py:318-328` before you write a line of this."* There is no `judge.py` in
+`model_migration_kit`. The verdict is emitted at **`opik_rigor/judge.py:315-329`**
+— a different package. Same class as R11.3's `Item`/`GoldenItem`, and this one is
+in the sentence telling the implementer that this is the single most likely way to
+get the chunk wrong. Both C8 agents inherited it into their docstrings.
+
+Off-by-one line references, all confirmed one line from the truth: `cli.py:521`
+(the loop is at 522, and `demo.py:606` is a second path the contract never
+mentions); `judging.py:653-659` (it is 652-658). Everything else checks out
+exactly.
+
+**R12.2 — R1 overstates the ordering guarantee.** "The ordering is structural" is
+true only at the *group boundary*. Within a group, `judge.verdict` records are
+appended from worker threads inside `evaluate()`, so their log order is completion
+order, not `pending` order — `_graded_in_order` restores order downstream of the
+evidence append, not upstream. C8 does not rely on intra-group order so nothing
+breaks, but the next chunk to read that sentence needs the narrower version.
+
+**R12.3 — R1's selling point is now false.** It says building from the log
+"collapses the two independent decline reasons to one." There are **six**.
+
+**R12.4 — a wrong-answer defect neither blind half could see.** A log that stops
+*after* a failed completion but *before* that model's judging pass published a
+full, plausible matrix in which the truncated side read as a model that got
+everything wrong. That is C8's own named worst failure reached by a road the
+contract did not map: the open-verdicts guard covered exactly this shape for rule
+1 and had no counterpart for rule 4. A sixth guard now refuses a model known only
+from failed completions. Reachable whenever `migkit run` writes both sides'
+completions and `compare` finishes judging only one.
+
+**R12.5 — R11.5's hazard list needs two more entries, both found the hard way.**
+
+- **Ruff `I001` fires on the *merged* file's import block**, which neither pair
+  can see from its own side. Ruff-check the merged tree, not either half.
+- **Two blind halves collide on top-level helper names, silently.** C8 and C9 both
+  defined `_cell` in `tests/test_dimensions.py`; the later shadowed the earlier
+  and produced 27 failures with **no conflict marker**. Before committing a merge
+  of two chunks into one file, walk the module's top-level `def`/`class`/assign
+  names and refuse duplicates. R11.5 predicted this for `__all__` and the same
+  mechanism applies to every top-level name.
+
+**R12.6 — the merge check is three gates, not one.** C9 as merged was 40 tests
+green and **two CI steps red** — `dependency_surface.py --check` and `ruff`. C8
+had the identical `dependency_surface` failure for the identical structural
+reason: the *tester's* file imports a rigor name, and the implementer, writing
+blind, cannot add a `COMPATIBILITY.md` row for a file it never saw. Neither half
+can prevent it and neither is at fault. **Run ruff, `dependency_surface --check`
+and pytest before calling a merge green.**
+
+**R12.7 — a policy edge needing confirmation.** C9 introduces the first
+`from opik_rigor.<submodule>` import in `src/`, falsifying `COMPATIBILITY.md`'s
+claim that `grep -rn "from opik_rigor\." src` returns nothing.
+`DEFAULT_CONFIDENCE` is in `distribution.__all__`, so it is rigor's public
+surface and invariant 1 holds, but the root does not re-export it. It is recorded
+as a listed exception. The cheaper fix is upstream: rigor re-exporting the
+constant beside the function that defaults to it. **Not done, because it would
+require a rigor release and migkit pins `>=0.2,<0.3`.**
+
+---
+
+### C10 (restated) — wire the matrix into `ReportModel`, with six ways to be unavailable
+
+This replaces the C10 section at line 989 and the `### C10 (amended)` note after
+R9. Read R1, this, and nothing else in the plan.
+
+**Files.** `report.py` (`ReportModel`, `from_evidence`). `tests/test_report.py`.
+
+**What you are consuming is merged, reviewed and mutation-tested.** Read it
+rather than the plan's description of it —
+`src/model_migration_kit/dimensions.py`, whose public surface is exactly:
+
+```python
+__all__ = ["DimensionCell", "DimensionCounts", "MIN_ITEMS_FOR_A_VERDICT",
+           "MIN_N_FOR_A_VERDICT", "TagCount", "UNTAGGED",
+           "dimension_cell", "dimension_counts"]
+
+dimension_counts(records: Iterable[EvidenceRecord],
+                 items: Mapping[str, GoldenItem], *, judge: str) -> DimensionCounts
+dimension_cell(tag: str, passes: int, n: int, items: int, *,
+               confidence: float | None, floor: float | None,
+               min_n: int = 20, min_items: int = 10) -> DimensionCell
+
+DimensionCounts(available: bool, reason: str,
+                by_model: Mapping[str, Mapping[str, TagCount]])
+TagCount(passes: int, n: int, items: int)
+```
+
+**Contract.**
+
+```python
+@dataclass(frozen=True)
+class DimensionMatrix:
+    available: bool
+    reason: str                                            # "" when available
+    judge: str
+    tags: tuple[str, ...]           # golden-set tag order, UNTAGGED last
+    baseline: Mapping[str, DimensionCell]
+    candidates: Mapping[str, Mapping[str, DimensionCell]]  # model_id -> tag -> cell
+    min_n: int
+    min_items: int
+```
+
+`ReportModel` gains `dimensions: DimensionMatrix`, built in `from_evidence`.
+
+**`min_items` is not decoration.** A document that refuses a cell has to be able
+to say what it refused against, and R9 gave it two floors to refuse against.
+
+**Unavailability has six causes, not two.** R1 claimed building from the log
+"collapses the two independent decline reasons to one"; R12.3 records that this is
+false. The golden set can be unavailable, and `dimension_counts` can decline for
+five distinct reasons of its own. **Reuse `gs_view["reason"]` and
+`DimensionCounts.reason` verbatim — never re-word either.** `report.py:645-650`
+already reasons about why: three copies of a disclosure are three chances for one
+to go stale.
+
+**Must not.** Fabricate cells from `item_counts` when the matrix declines —
+`item_counts` is aggregate and splitting it across tags by any rule is invention.
+Read a file; `from_evidence` already resolved every path it may read. Render a
+partial matrix: `DimensionCounts` guarantees `by_model` is empty on a refusal, and
+that guarantee exists so that a caller cannot be tempted. Type `""` inline for the
+untagged key — **import `UNTAGGED`**, which is exported for exactly this reason and
+carries the comment explaining why the sentinel is empty rather than the word
+`"untagged"` (a set using `"untagged"` as a real tag would collide and read as a
+larger slice).
+
+**Edges.**
+
+| Input | Required |
+|---|---|
+| both sides judged, hash matches | `available=True`, one column per side |
+| **artifacts moved away from the log** | `available=True` and a full matrix. **This inverts the original contract's named test.** R1's whole point is that the matrix survives the cross-machine re-render that `report.py`'s docstring calls the designed workflow |
+| golden set hash mismatch | `available=False`, reason is `gs_view["reason"]` verbatim |
+| `dimension_counts` declines | `available=False`, reason is its `reason` verbatim |
+| golden set present, every item untagged | `available=True`, one row, key `UNTAGGED`. **Not** unavailable — "you tagged nothing" is a different fact from "the file is gone" |
+| a side judged that produced nothing | a column of zeros, never a missing column |
+| a log with no series | matrix still built from the headline run |
+
+**Which model is the baseline** comes from the comparison payload, not from
+position in `by_model`. `dimension_counts` keys by `model_id` and does not know
+which side is which.
+
+**Failure mode when wrong.** A crash on the ordinary cross-machine render — a
+reviewer opening a shared log with no artifact directory, which is the designed
+workflow — or a matrix built from a golden set whose hash no longer matches, which
+is the fabricated exhibit `_load_goldenset` exists to prevent.
+
+**Test that fails first.**
+`test_the_dimension_matrix_still_renders_when_the_artifacts_are_not_beside_the_log`
+— render a log whose artifacts have been moved away and assert `available is True`
+with a populated matrix. The original contract's test asserted the opposite; that
+is what R1 changed.
+
+**Done.** Full report suite plus `tests/test_stranger_path.py`, which is where the
+moved-log case already lives. **Three gates: ruff, `dependency_surface --check`,
+pytest.** See R12.6.
+
+**Reviewer.** The most likely subtle wrong is treating "no tags in the set" as
+unavailable. Second: reason strings re-worded rather than reused. Third, and new:
+`column.items` and `cell.items` are one keystroke apart and **both work** — one is
+a `dict.items` bound method, the other an int. `report.py:1206` already renamed a
+field to avoid exactly this, and here the mapping is the thing that cannot be
+renamed away, so check every call site by hand.
