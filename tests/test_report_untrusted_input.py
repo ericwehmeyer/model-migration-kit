@@ -51,7 +51,9 @@ from model_migration_kit.errors import ReportError
 from model_migration_kit.goldenset import GoldenSet
 from model_migration_kit.judging import JudgedArtifact, judged_path_for
 from model_migration_kit.report import (
+    FETCHING_ATTRS,
     ReportModel,
+    _NEVER_DEREFERENCED_RE,
     assert_self_contained,
     external_urls,
     render_html,
@@ -889,11 +891,14 @@ def test_a_same_document_reference_in_a_fetching_attribute_is_not_a_fetch() -> N
 def test_an_attribute_that_only_begins_like_an_inert_one_is_still_judged(attribute: str) -> None:
     """The exemption covers four families, not four prefixes.
 
-    ``data`` is the sharp one: it is the ``<object data=>`` attribute, it is in
-    ``FETCHING_ATTRS`` today, and it fetches -- so an exemption written as
-    ``startswith("data")`` rather than ``startswith("data-")`` opens a hole in
-    the middle of the list it was meant to shorten. The rest are the same mistake
-    spelled differently. ``aria`` and ``xmlns-x`` are here on the strict reading
+    ``datax``, ``dataurl`` and ``database-url`` are the sharp ones, and it is
+    worth being exact about why, because the obvious answer is wrong. Bare
+    ``data`` -- the ``<object data=>`` attribute -- looks like the dangerous case
+    and is not: it is in ``FETCHING_ATTRS``, so it stays caught by name even if a
+    ``startswith("data")`` exemption swallows it, and it kills no mutant. The
+    names that actually detect the dropped hyphen are the ones in neither list,
+    where the shape rule is the only guard. The rest are the same mistake spelled
+    differently. ``aria`` and ``xmlns-x`` are here on the strict reading
     of the contract: the families are ``data-*``, ``aria-*``, ``xmlns`` and
     ``xmlns:*``, and nothing else earns the exemption by resembling them.
     """
@@ -985,3 +990,87 @@ def test_the_scheme_rule_is_still_anchored_where_it_was() -> None:
     """
     document = f'<p title="see http://example.com for details">x</p>{REAL_FETCH}'
     assert _positions(document) == (("a", "href"),)
+
+
+# -- the invariant the exemption's safety actually reduces to ---------------- #
+
+
+def test_the_exemption_never_covers_an_attribute_the_browser_dereferences() -> None:
+    """No name may be both exempt from the shape rules and a known fetching name.
+
+    This is the assertion the rest of section 5 cannot make, and the reason it
+    cannot is worth writing down. For any name already in ``FETCHING_ATTRS`` the
+    two shape rules are *strictly subsumed* by the ``FETCHING_ATTRS`` rule: every
+    value that starts with ``//`` or matches ``_SCHEME_RE`` is also non-empty and
+    starts with neither ``#`` nor ``data:``, so it is a violation by name whether
+    or not it was one by shape. Adding ``href`` and ``src`` to
+    ``_NEVER_DEREFERENCED_RE`` therefore changes no violation *count* anywhere --
+    only the ``reason`` string -- and every behavioural test above stays green
+    through it.
+
+    So the exemption is not pinned by any test that scans a document. What pins
+    it is this: the exemption and ``FETCHING_ATTRS`` must stay disjoint. That is
+    the property the safety argument really rests on -- "these families contain
+    no member the browser retrieves" -- stated as something a test can check, and
+    it is what fails the moment someone widens the regex toward a name that
+    fetches.
+    """
+    covered = sorted(name for name in FETCHING_ATTRS if _NEVER_DEREFERENCED_RE.match(name))
+    assert covered == [], (
+        f"{covered} are exempt from the shape rules *and* named as fetching. "
+        f"The exemption may only cover families with no dereferenced member."
+    )
+
+
+@pytest.mark.parametrize("attribute", ["imagesrcset", "archive", "somefutureurlattr"])
+def test_an_attribute_outside_both_lists_is_still_judged_by_shape(attribute: str) -> None:
+    """The shape rule is the only guard on every name ``FETCHING_ATTRS`` omits.
+
+    ``ping``, ``xlink:href`` and ``xml:base`` were three such names until this
+    chunk promoted them; ``imagesrcset`` and ``archive`` are two it did not, and
+    the third is the one nobody has invented yet. None is exempt, so each is
+    still caught -- by shape, which is the rule this chunk narrowed.
+
+    That is the real reason widening the exemption is dangerous, and why the
+    invariant test above is necessary but not sufficient: the invariant only sees
+    names that are in ``FETCHING_ATTRS``. Exempt ``imagesrcset`` instead and the
+    invariant passes, every document test passes, and a fetch ships.
+    """
+    assert _positions(f'<div {attribute}="https://evil.example/x">') == (("div", attribute),)
+
+
+def test_the_reason_says_which_rule_fired_not_merely_that_one_did() -> None:
+    """``reason`` is the whole output of ``_attribute_reason`` and nothing pins it.
+
+    Every other assertion in this section compares ``(tag, attribute)`` pairs,
+    which is deliberate -- a count is satisfied by the wrong violation. But it
+    leaves the rule *attribution* untested, and attribution is exactly what this
+    chunk changed: it moved ``href`` and friends from "caught by shape" to
+    "caught by name" for a whole class of values. A reader debugging a false
+    positive reads this string, and a mutant that turns the exemption off
+    entirely still produces the right count with the wrong sentence.
+    """
+    (shape,) = external_urls('<p title="//evil.example/x">y</p>')
+    assert "protocol-relative" in shape.reason
+
+    # href carries a scheme and href is also in FETCHING_ATTRS, so two rules
+    # match it. The shape rules run first, so today it is reported as a scheme.
+    # That ordering is the one observable difference the exemption makes on a
+    # fetching name -- exempt href and this same document comes back reported by
+    # name instead -- and it is the only thing in the suite that can tell the two
+    # apart, because the violation itself is emitted either way.
+    (scheme,) = external_urls('<a href="https://evil.example/x">y</a>')
+    assert "URL scheme other than data:" in scheme.reason, (
+        "href is not exempt from the shape rules and must still be judged by "
+        "them. If this now reads as a FETCHING_ATTRS reason, href has been "
+        "added to _NEVER_DEREFERENCED_RE -- see the invariant test above."
+    )
+
+    # A relative path in the same attribute has no shape to fail, so it reaches
+    # the name-based rule. Both sentences have to stay reachable or the reason
+    # stops distinguishing anything.
+    (by_name,) = external_urls('<a href="assets/chart.png">y</a>')
+    assert "dereferenced by the browser" in by_name.reason
+
+    (handler,) = external_urls('<div onclick="fetch(1)"></div>')
+    assert "inline event handler" in handler.reason

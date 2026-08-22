@@ -262,6 +262,20 @@ _EVENT_HANDLER_RE = re.compile(r"^on[a-z]+$")
 #: ``data-verdict`` into a fetch and nothing here would say so. Whoever allows
 #: script must delete this exemption in the same change.
 #:
+#: SAFETY, the second coupling -- CSS. Script is not the only thing that can
+#: read an attribute back out: ``[data-icon] { background: url(attr(data-icon)) }``
+#: would turn an exempt value into a request with no script anywhere. It does not
+#: work, and not by accident -- a value produced by ``attr()`` is *attr()-tainted*
+#: and a tainted value is invalid at computed-value time in a ``<url>`` context --
+#: but note what that means: this is a **platform rule this repository does not
+#: control**, unlike the script ban above, which it does. Before this chunk the
+#: shape rules caught ``data-icon="https://..."`` on the way in and the taint rule
+#: never had to hold. Now it does. Two things follow. Widening ``_URL_FN_RE``
+#: past ``url(`` -- it does not match ``src()`` or ``image-set()`` today, which is
+#: a separate pre-existing gap -- becomes more valuable, not less. And if the CSS
+#: WG ever relaxes attr()-tainting, re-read this exemption rather than assuming
+#: the script ban still covers it.
+#:
 #: These four families and no others. ``data-*`` is author data and ``aria-*``
 #: is accessibility metadata -- neither has a member the platform retrieves --
 #: and ``xmlns``/``xmlns:*`` carry namespace URIs, which are opaque identifiers
