@@ -58,10 +58,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from opik_rigor import EvidenceRecord
+
 from .contracts import EVENT_COMPARISON, EVENT_VERDICT
 from .evidence import resolve_evidence, stream_records
 
-__all__ = ["RunPoint", "read_series", "run_point"]
+__all__ = ["RunPoint", "SeriesBuilder", "read_series", "run_point"]
 
 #: ``floor_source``'s three values. The word "unrecorded" is
 #: ``report.THRESHOLD_SOURCE_UNRECORDED``'s, deliberately: the report already has
@@ -226,13 +228,69 @@ def run_point(
 # --------------------------------------------------------------------------- #
 
 
+class SeriesBuilder:
+    """:func:`read_series`' pairing rule, as state a caller drives record by record.
+
+    A caller that only wants a series calls :func:`read_series`, which is a thin
+    driver over this class. This exists for the one caller that cannot:
+    ``ReportModel.from_evidence`` is already streaming the same log for the
+    records its headline is built from, and calling :func:`read_series` beside
+    that loop would read the log a second time. That is a different cost from the
+    one :func:`~model_migration_kit.evidence.stream_records` removed -- bytes off
+    the disk rather than records held in memory -- and the evidence log is the
+    largest artifact this pipeline writes, so it is worth a class.
+
+    What is *not* worth it is a second copy of the pairing rule. Two
+    implementations of "which verdict closes which comparison" is the arrangement
+    in which the report and the timeline printed beside it start disagreeing
+    about which run a NO-GO belongs to, which is the failure this module was
+    written to prevent. So the rule lives here once, and every reason behind it
+    -- FIFO closing, a verdict that closes nothing, records passed over without
+    closing, a payload that is not an object, and why nothing is sorted -- is
+    documented on :func:`read_series`.
+    """
+
+    __slots__ = ("_points", "_unclosed")
+
+    def __init__(self) -> None:
+        self._points: list[RunPoint] = []
+        self._unclosed: deque[int] = deque()
+
+    def add(self, record: EvidenceRecord) -> None:
+        """Open a point, close the oldest still open, or pass the record over.
+
+        Safe to call on every record of a log, including the ones this class has
+        no interest in, so a caller that is already looping for another reason
+        adds one line rather than a second condition it has to keep in step.
+        """
+        if record.event_type == EVENT_COMPARISON:
+            self._unclosed.append(len(self._points))
+            self._points.append(
+                run_point(_mapping(record.payload), None, envelope_ts=_text(record.ts))
+            )
+        elif record.event_type == EVENT_VERDICT and self._unclosed:
+            row = self._unclosed.popleft()
+            self._points[row] = _closed(self._points[row], _mapping(record.payload))
+
+    def points(self) -> tuple[RunPoint, ...]:
+        """The points added so far, in the order their comparisons were written.
+
+        Cheap to call more than once and never a final step: a point takes its
+        place the moment its comparison is read, so this is a copy of a list and
+        not a build.
+        """
+        return tuple(self._points)
+
+
 def read_series(evidence: str | Path) -> tuple[RunPoint, ...]:
     """Every comparison in one evidence log, in the order it was written.
 
-    One streaming pass, through the same reader the renderer uses. What this
-    replaces is not another function but a habit: the report has always kept the
-    *last* comparison in a log and discarded the rest, so fourteen nightly runs
-    appended to one file rendered as one verdict.
+    One streaming pass, through the same reader the renderer uses, driving the
+    pairing rule :class:`SeriesBuilder` holds -- the renderer drives that same
+    rule from its own loop rather than calling this, so the log is read once.
+    What this replaces is not another function but a habit: the report has always
+    kept the *last* comparison in a log and discarded the rest, so fourteen
+    nightly runs appended to one file rendered as one verdict.
 
     **Pairing is first-in, first-out, and that is the whole of the difficulty.**
     A comparison record opens a point; a verdict record closes the *oldest* point
@@ -310,16 +368,10 @@ def read_series(evidence: str | Path) -> tuple[RunPoint, ...]:
     the comparisons' order by construction rather than by reasoning about when
     each one closed.
     """
-    points: list[RunPoint] = []
-    unclosed: deque[int] = deque()
+    builder = SeriesBuilder()
     for record in stream_records(resolve_evidence(evidence)):
-        if record.event_type == EVENT_COMPARISON:
-            unclosed.append(len(points))
-            points.append(run_point(_mapping(record.payload), None, envelope_ts=_text(record.ts)))
-        elif record.event_type == EVENT_VERDICT and unclosed:
-            row = unclosed.popleft()
-            points[row] = _closed(points[row], _mapping(record.payload))
-    return tuple(points)
+        builder.add(record)
+    return builder.points()
 
 
 def _closed(point: RunPoint, verdict: Mapping[str, Any]) -> RunPoint:

@@ -2444,3 +2444,784 @@ def test_an_overridden_goldenset_path_is_used_and_disclosed(tmp_path: Path) -> N
     row = next(iter(_get(model, "flips")))
     assert _get(row, "input") == "INPUT-TEXT for item-03"
     assert str(moved) in _html(model), "the override must be printed in the provenance block"
+
+
+# --------------------------------------------------------------------------- #
+# 16. The series. Plan C3: ``ReportModel`` gains ``series: tuple[RunPoint, ...]``,
+#     populated by ``from_evidence`` in one pass, while every headline field goes
+#     on meaning the *last* comparison and the *last* verdict.
+#
+#     The failure this section exists to catch is silent. Every test above this
+#     line uses a log holding one comparison, and on such a log "the first
+#     comparison" and "the last comparison" are the same record -- so a
+#     ``from_evidence`` that quietly started reducing to the first would keep the
+#     whole suite green. Every fixture below therefore holds more than one run,
+#     and every earlier run is poisoned in every field a reader would notice:
+#     different models, different adapters, different hashes, different config
+#     path, different judge, different flips, different draw count, and artifact
+#     paths that are not on disk, so a report built from the wrong record does
+#     not merely differ -- it degrades, loudly.
+# --------------------------------------------------------------------------- #
+
+
+EARLIER_BASELINE_MODEL = "model-a-20250101"
+EARLIER_CANDIDATE_MODEL = "model-b-20250101"
+
+#: Timestamps for the *envelopes* of an older run. Nothing in this section
+#: asserts on ordering by time -- see
+#: :func:`test_the_series_is_in_log_order_and_is_not_sorted_by_time` -- so these
+#: exist only to be distinct from ``TS_COMPARISON``/``TS_VERDICT``.
+EARLIER_TS_COMPARISON = "2026-08-01T01:00:00.000000+00:00"
+EARLIER_TS_VERDICT = "2026-08-01T01:00:01.000000+00:00"
+EARLIER_CREATED = "2026-08-01T00:59:00.000000+00:00"
+
+
+def _tag_hash(tag: str, kind: str) -> str:
+    """A distinct 64-character digest per (run, kind), so a leak names its source.
+
+    An earlier run's hashes must not be mistakable for the headline's, and they
+    must still look like hashes: a report that printed ``EARLIER`` where a
+    ``goldenset_hash`` belongs would fail for the wrong reason.
+    """
+    return hashlib.sha256(f"{tag}:{kind}".encode()).hexdigest()
+
+
+def _earlier_comparison(
+    scenario: Scenario,
+    *,
+    tag: str,
+    created: str = EARLIER_CREATED,
+    baseline_adapter: str = "AnthropicAdapter",
+    candidate_adapter: str = "OpenAICompatAdapter",
+    pass_rate: float = 0.9191,
+) -> dict[str, Any]:
+    """A ``migkit.comparison`` payload for a run older than ``scenario``'s.
+
+    Deep-copied through JSON -- the payload is JSON by construction -- and then
+    contradicted field by field, so that any single value of it reaching a
+    headline field is visible without having to know which field leaked.
+    """
+    payload: dict[str, Any] = json.loads(json.dumps(scenario.comparison))
+    name = f"judge-{tag}"
+    payload["created"] = created
+    payload["goldenset_hash"] = _tag_hash(tag, "goldenset")
+    payload["goldenset_path"] = str(scenario.root / f"goldenset-{tag}.jsonl")
+    payload["judges_hash"] = _tag_hash(tag, "judges")
+    payload["config_hash"] = _tag_hash(tag, "config")
+    payload["config_path"] = str(scenario.root / f"migkit-{tag}.toml")
+    payload["n_per_item"] = 3
+    payload["warnings"] = [f"EARLIER-WARNING-{tag}"]
+
+    for side, model_id, adapter in (
+        ("baseline", f"{EARLIER_BASELINE_MODEL}-{tag}", baseline_adapter),
+        ("candidate", f"{EARLIER_CANDIDATE_MODEL}-{tag}", candidate_adapter),
+    ):
+        payload[side]["model_id"] = model_id
+        payload[side]["adapter"] = adapter
+        payload[side]["adapters"] = [adapter] if adapter else []
+        payload[side]["artifact"] = str(scenario.root / f"{side}-{tag}.jsonl")
+        payload[side]["judged_artifact"] = str(scenario.root / f"{side}-{tag}.judged.jsonl")
+
+    judge = payload["judges"][0]
+    judge["name"] = name
+    judge["rubric_hash"] = _tag_hash(tag, "rubric")
+    judge["baseline"]["label"] = f"{name}:baseline"
+    judge["candidate"]["label"] = f"{name}:candidate"
+    judge["candidate"]["pass_rate"] = pass_rate
+    payload["flips"] = _grouped(((f"earlier-{tag}", 5, 5, 0, 5),))
+    payload["gains"] = _grouped(())
+    payload["item_counts"]["per_judge"] = {name: dict(judge["item_counts"])}
+    return payload
+
+
+def _earlier_verdict(tag: str, verdict: str) -> dict[str, Any]:
+    """The ``migkit.verdict`` payload that closes an earlier run."""
+    return {
+        "verdict": verdict,
+        "exit_code": Verdict.exit_code(verdict),
+        "reason": f"EARLIER-REASON-{tag}: an older night, and not this report's finding.",
+        "decided_by": "rule 9",
+        "rule": 9,
+        "thresholds": dict(THRESHOLDS),
+        "judges": [{"name": f"judge-{tag}", "regressed": False}],
+        "baseline_model": f"{EARLIER_BASELINE_MODEL}-{tag}",
+        "candidate_model": f"{EARLIER_CANDIDATE_MODEL}-{tag}",
+    }
+
+
+def _earlier_run(
+    scenario: Scenario,
+    *,
+    tag: str,
+    verdict: str | None = Verdict.GO,
+    ts: str = EARLIER_TS_COMPARISON,
+    ts_verdict: str = EARLIER_TS_VERDICT,
+    **comparison: Any,
+) -> list[dict[str, Any]]:
+    """The evidence records one older run wrote: a comparison, and maybe a verdict.
+
+    ``verdict=None`` is the run that died between the two records. It is not an
+    error anywhere -- ``series.read_series`` documents it as a point whose
+    ``verdict`` is ``None`` -- and it is the fixture that separates a first-in-
+    first-out pairing from the two obvious wrong ones.
+    """
+    records = [_record(EVENT_COMPARISON, _earlier_comparison(scenario, tag=tag, **comparison), ts)]
+    if verdict is not None:
+        records.append(_record(EVENT_VERDICT, _earlier_verdict(tag, verdict), ts_verdict))
+    return records
+
+
+def _log_with_history(
+    scenario: Scenario, name: str, *earlier: Sequence[Mapping[str, Any]]
+) -> Path:
+    """``scenario``'s own log, with older runs appended *before* it.
+
+    Written beside the scenario's ``evidence.jsonl`` and reading the same
+    artifacts, so the only difference between a model built from this log and one
+    built from ``scenario.evidence`` is the history in front of it.
+    """
+    records: list[Mapping[str, Any]] = [
+        _record(EVENT_RUN_STARTED, {"model_id": BASELINE_MODEL}, TS_JUDGING),
+        _record(EVENT_JUDGING_COMPLETED, {"model_id": CANDIDATE_MODEL}, TS_JUDGING),
+    ]
+    for group in earlier:
+        records.extend(group)
+    records.append(_record(EVENT_COMPARISON, scenario.comparison, TS_COMPARISON))
+    if scenario.verdict is not None:
+        records.append(_record(EVENT_VERDICT, scenario.verdict, TS_VERDICT))
+    return _write_evidence(scenario.root / name, records)
+
+
+def _model_from(path: Path, **kwargs: Any) -> Any:
+    """``ReportModel.from_evidence`` on a log this section wrote by hand."""
+    kwargs.setdefault("now", NOW_A)
+    return _get(_get(_module(), "ReportModel"), "from_evidence")(path, **kwargs)
+
+
+def _series(model: Any) -> tuple[Any, ...]:
+    series = _get(model, "series")
+    assert isinstance(series, tuple), (
+        f"C3 declares series as tuple[RunPoint, ...]; got {type(series).__name__}"
+    )
+    return series
+
+
+def _fingerprint(model: Any, evidence: Path) -> str:
+    """Every field of the model except ``series``, as text, log identity removed.
+
+    Two things legitimately differ between a one-run log and the same log with a
+    night of history in front of it: the path it was read from and its sha256.
+    Both are replaced by a placeholder rather than dropped, so a field that
+    *stopped* carrying them would still show up as a difference.
+    """
+    assert dataclasses.is_dataclass(model), (
+        f"ReportModel is {type(model).__name__}, not a dataclass; C3's contract "
+        f"spells its new member as a dataclass field"
+    )
+    values = {
+        field.name: getattr(model, field.name)
+        for field in dataclasses.fields(model)
+        if field.name != "series"
+    }
+    text = json.dumps(values, sort_keys=True, default=str)
+    text = text.replace(json.dumps(str(evidence))[1:-1], "<EVIDENCE-PATH>")
+    return text.replace(_hash_bytes(evidence.read_bytes()), "<EVIDENCE-HASH>")
+
+
+def _headline_scrubbed(html: str, evidence: Path) -> str:
+    """A rendered document with the log's path and digest replaced, nothing else."""
+    scrubbed = html.replace(str(evidence), "<EVIDENCE-PATH>")
+    return scrubbed.replace(_hash_bytes(evidence.read_bytes()), "<EVIDENCE-HASH>")
+
+
+# -- the named first failure ------------------------------------------------- #
+
+
+def test_a_log_holding_two_comparisons_still_reports_on_the_last_one(
+    tmp_path: Path,
+) -> None:
+    """C3's named first failure: two comparisons, two different verdicts.
+
+    "The headline run's every existing field is unchanged -- the existing
+    reduction keeps the last comparison and the last verdict." A GO on the first
+    of the two is the value a reduction that grabbed the first record would
+    print, and printing GO for a NO-GO migration is the worst single thing this
+    document can do.
+    """
+    scenario = _scenario(tmp_path / "two", verdict=Verdict.NO_GO)
+    log = _log_with_history(
+        scenario, "evidence-two.jsonl", _earlier_run(scenario, tag="one", verdict=Verdict.GO)
+    )
+    model = _model_from(log)
+
+    assert _get(model, "verdict") == Verdict.NO_GO, (
+        "the headline verdict came from the first comparison in the log"
+    )
+    series = _series(model)
+    assert len(series) == 2, f"two comparisons, {len(series)} point(s)"
+    assert series[0].verdict == Verdict.GO
+    assert series[-1].verdict == Verdict.NO_GO
+    assert series[-1].verdict == _get(model, "verdict"), (
+        "the last point and the banner disagree about the same run"
+    )
+
+
+# -- Edges row 1: the single-comparison log, which is every log today --------- #
+
+
+def test_a_single_comparison_log_yields_exactly_one_point(tmp_path: Path) -> None:
+    """Edges row 1. Every log this tool has ever written holds one comparison."""
+    from model_migration_kit.series import RunPoint
+
+    scenario = _scenario(tmp_path / "single")
+    series = _series(_from_evidence(scenario))
+
+    assert len(series) == 1, f"one comparison, {len(series)} point(s)"
+    assert isinstance(series[0], RunPoint), (
+        f"C3 says tuple[RunPoint, ...]; the element is a {type(series[0]).__name__}"
+    )
+
+
+def test_the_series_field_is_declared_with_an_empty_default(tmp_path: Path) -> None:
+    """C3 spells it ``series: tuple[RunPoint, ...] = ()``.
+
+    The default is load-bearing rather than cosmetic: every other constructor of
+    a ``ReportModel`` in this codebase and in anyone else's predates the field,
+    and a required argument would break each one.
+    """
+    fields = {field.name: field for field in dataclasses.fields(_get(_module(), "ReportModel"))}
+    assert "series" in fields, (
+        f"ReportModel has no series field; it declares {sorted(fields)}"
+    )
+    field = fields["series"]
+    factory = field.default_factory
+    default = field.default if factory is dataclasses.MISSING else factory()
+    assert default == (), f"series defaults to {default!r}, not ()"
+    assert "RunPoint" in str(field.type), (
+        f"series is annotated {field.type!r}; C3 spells the element type, and the "
+        f"annotation is the only place it is stated -- C6 renders this tuple and has "
+        f"nothing else to read it from"
+    )
+
+
+def test_a_single_comparison_log_still_reports_every_headline_it_did_before(
+    tmp_path: Path,
+) -> None:
+    """Edges row 1's second half: "every other field byte-identical to before".
+
+    Pinned as values rather than as a diff, because the "before" this row names
+    is a tree that no longer exists by the time anyone runs this. Each of these
+    is asserted elsewhere in this file too; gathering them here is deliberate, so
+    that a C3 that moved the reduction shows up as one failure that names the
+    chunk rather than as fourteen scattered ones.
+    """
+    scenario = _scenario(tmp_path / "unchanged")
+    model = _from_evidence(scenario)
+
+    assert _get(model, "verdict") == Verdict.NO_GO
+    assert _get(model, "reason") == scenario.verdict["reason"]
+    assert _get(model, "decided_by") == "rule 1"
+    assert int(_get(model, "exit_code")) == 1
+    assert _get(model, "is_demo") is False
+    assert int(_get(model, "n_per_item")) == N_PER_ITEM
+    assert _ids(_get(model, "flips")) == ["item-03", "item-07"]
+    assert _ids(_get(model, "gains")) == ["item-11"]
+    assert _get(_get(model, "completeness"), "complete") is True
+
+    hashes = _get(model, "hashes")
+    assert _get(hashes, "goldenset", "goldenset_hash") == scenario.goldenset_hash
+    assert _get(hashes, "judges", "judges_hash") == JUDGES_HASH
+    assert _get(hashes, "config", "config_hash") == CONFIG_HASH
+
+    stat = _rate_stat(_judge_row(model), "candidate")
+    assert _get(stat, "rate") == 0.5353
+
+    assert len(_series(model)) == 1, (
+        "the assertions above pass on a tree with no series at all; this one is "
+        "what makes them assertions about C3"
+    )
+
+
+# -- Edges row 4: the last point and the headline describe one run ------------ #
+
+
+@pytest.mark.parametrize("history", [0, 1, 3])
+def test_the_last_point_describes_the_same_run_as_the_headline(
+    tmp_path: Path, history: int
+) -> None:
+    """Edges row 4, at one, two and four runs.
+
+    A timeline whose right-hand end disagrees with the banner printed above it is
+    worse than no timeline: the reader has two numbers for one night and no way
+    to tell which one the gate used.
+    """
+    scenario = _scenario(tmp_path / f"agree-{history}")
+    if history:
+        log = _log_with_history(
+            scenario,
+            f"evidence-{history}.jsonl",
+            *(_earlier_run(scenario, tag=f"n{index}") for index in range(history)),
+        )
+    else:
+        log = scenario.evidence
+    model = _model_from(log)
+    series = _series(model)
+    assert len(series) == history + 1
+    point = series[-1]
+
+    assert point.verdict == _get(model, "verdict")
+    assert point.reason == _get(model, "reason")
+    assert point.baseline_model == BASELINE_MODEL == _get(
+        _get(model, "baseline"), "model_id", "model"
+    )
+    assert point.candidate_model == CANDIDATE_MODEL == _get(
+        _get(model, "candidate"), "model_id", "model"
+    )
+    assert point.adapter_baseline == "AnthropicAdapter"
+    assert point.adapter_candidate == "OpenAICompatAdapter"
+    assert point.n_per_item == N_PER_ITEM
+
+    hashes = _get(model, "hashes")
+    assert point.goldenset_hash == _get(hashes, "goldenset", "goldenset_hash")
+    assert point.judges_hash == _get(hashes, "judges", "judges_hash")
+    assert point.config_hash == _get(hashes, "config", "config_hash")
+
+    stat = _rate_stat(_judge_row(model), "candidate")
+    assert point.pass_rate == _get(stat, "rate")
+    assert point.judge_name == J
+
+
+# -- the headline is not moved by anything in front of it -------------------- #
+
+
+def test_prepending_an_earlier_run_changes_no_field_but_the_series(
+    tmp_path: Path,
+) -> None:
+    """C3's "Must not": "Change any existing field's value on any existing fixture".
+
+    Stated relationally, because that is the only form of it a test can hold: the
+    same run, read from a log with a night of history in front of it, must
+    produce the same report. Every field is compared, including the ones no test
+    above this line reads, so a value that leaks out of the earlier record into
+    any corner of the model is a failure here even if nobody has thought to
+    assert on that corner yet.
+    """
+    scenario = _scenario(tmp_path / "prepend")
+    alone = _model_from(scenario.evidence)
+    log = _log_with_history(
+        scenario, "evidence-history.jsonl", _earlier_run(scenario, tag="one")
+    )
+    with_history = _model_from(log)
+
+    assert _fingerprint(with_history, log) == _fingerprint(alone, scenario.evidence)
+    assert len(_series(with_history)) == 2, (
+        "the comparison above is satisfied by a tree that reads no series at all"
+    )
+
+
+def test_the_judge_table_the_flips_and_the_provenance_come_from_the_last_run(
+    tmp_path: Path,
+) -> None:
+    """C3 names the four places by hand: banner, judge table, flips, provenance.
+
+    The fingerprint test above catches all of this in one comparison and says
+    nothing about *what* moved. This one names the four, so the failure a
+    reviewer reads points at a section of the document.
+    """
+    scenario = _scenario(tmp_path / "sections")
+    log = _log_with_history(
+        scenario, "evidence-sections.jsonl", _earlier_run(scenario, tag="old")
+    )
+    model = _model_from(log)
+
+    assert _ids(_get(model, "flips")) == ["item-03", "item-07"]
+    assert _ids(_get(model, "gains")) == ["item-11"]
+    assert _judge_row(model, J) is not None
+    hashes = _get(model, "hashes")
+    for kind, expected in (
+        ("goldenset", scenario.goldenset_hash),
+        ("judges", JUDGES_HASH),
+        ("config", CONFIG_HASH),
+    ):
+        assert _get(hashes, kind, f"{kind}_hash") == expected
+        assert _get(hashes, kind, f"{kind}_hash") != _tag_hash("old", kind)
+
+    html = _html(model)
+    assert "earlier-old" not in html, "an earlier run's flip is in the document"
+    assert f"{EARLIER_CANDIDATE_MODEL}-old" not in html, (
+        "an earlier run's candidate model is in the document"
+    )
+    assert _tag_hash("old", "config") not in html
+
+    assert len(_series(model)) == 2, (
+        "every assertion above passes on a tree that reads no series at all"
+    )
+
+
+def test_a_series_of_runs_renders_exactly_what_one_run_rendered(tmp_path: Path) -> None:
+    """C3's title is "hang the series off ``ReportModel``, render nothing".
+
+    Byte-for-byte, modulo the log's own path and digest. A chunk that quietly
+    added a row, a column or a sentence would ship a document nobody reviewed,
+    and C6 is where the timeline is supposed to arrive.
+    """
+    scenario = _scenario(tmp_path / "renders")
+    alone = _model_from(scenario.evidence)
+    log = _log_with_history(
+        scenario, "evidence-renders.jsonl", _earlier_run(scenario, tag="one")
+    )
+    with_history = _model_from(log)
+
+    assert _headline_scrubbed(_html(with_history), log) == _headline_scrubbed(
+        _html(alone), scenario.evidence
+    )
+    assert len(_series(with_history)) == 2, (
+        "the documents match because neither model has a series"
+    )
+
+
+# -- pairing, and order ------------------------------------------------------ #
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Verdicts are paired first-in-first-out, so a night that died between its "
+        "comparison record and its verdict record is handed the *next* night's "
+        "verdict -- and every later verdict shifts by one, permanently, in a log "
+        "that only ever grows. This test states the behaviour the review confirmed "
+        "is correct. The rule it fails against was merged in C2, whose contract "
+        "contradicts itself: the plan's prose says a verdict closes the comparison "
+        "it follows, its own Edges row says first-in-first-out. Fixing it means "
+        "changing C2's rule and the headline's reduction together, and C3 is "
+        "forbidden to touch the headline, so it belongs to the chunk 'the verdict "
+        "belongs to the comparison before it'. strict=True deliberately: when that "
+        "chunk lands this starts passing, XPASS fails the suite, and whoever lands "
+        "it is told to delete this marker instead of leaving a green xfail behind."
+    ),
+)
+def test_a_run_that_died_before_its_verdict_is_a_point_with_no_verdict(
+    tmp_path: Path,
+) -> None:
+    """The pairing hazard ``series.read_series`` names, reached through the report.
+
+    A log reading comparison, comparison, verdict has exactly one verdict in it,
+    and it belongs to the *second* comparison. The two obvious implementations
+    both get this wrong -- keeping one "last comparison" pairs the verdict with
+    the dead run, and zipping two lists pairs it with whichever comes first --
+    and both failures draw a real verdict on a night that never produced one.
+    """
+    scenario = _scenario(tmp_path / "died", verdict=Verdict.NO_GO)
+    log = _log_with_history(
+        scenario, "evidence-died.jsonl", _earlier_run(scenario, tag="dead", verdict=None)
+    )
+    model = _model_from(log)
+    series = _series(model)
+
+    assert len(series) == 2, f"two comparisons, {len(series)} point(s)"
+    assert series[0].verdict is None, (
+        f"the dead run was given a verdict of {series[0].verdict!r}, which belongs "
+        f"to the run after it"
+    )
+    assert series[0].reason is None
+    assert series[-1].verdict == Verdict.NO_GO
+    assert _get(model, "verdict") == Verdict.NO_GO
+    assert _get(model, "reason") == scenario.verdict["reason"]
+
+
+def test_the_series_is_in_log_order_and_is_not_sorted_by_time(tmp_path: Path) -> None:
+    """File order is the series order; ``series.read_series`` says so in full.
+
+    "the timestamps are written by whichever machine ran each night, a sorted
+    series would silently reorder a log whose clock stepped backwards over a
+    daylight-saving boundary". So the fixture is deliberately anti-chronological:
+    a sort by ``created`` would put the headline run in the middle.
+    """
+    scenario = _scenario(tmp_path / "order")
+    log = _log_with_history(
+        scenario,
+        "evidence-order.jsonl",
+        _earlier_run(scenario, tag="a", created="2027-01-01T00:00:00.000000+00:00"),
+        _earlier_run(scenario, tag="b", created="2024-01-01T00:00:00.000000+00:00"),
+        _earlier_run(scenario, tag="c", created="2026-12-31T00:00:00.000000+00:00"),
+    )
+    series = _series(_model_from(log))
+
+    assert [point.candidate_model for point in series] == [
+        f"{EARLIER_CANDIDATE_MODEL}-a",
+        f"{EARLIER_CANDIDATE_MODEL}-b",
+        f"{EARLIER_CANDIDATE_MODEL}-c",
+        CANDIDATE_MODEL,
+    ]
+    assert [point.created for point in series] == [
+        "2027-01-01T00:00:00.000000+00:00",
+        "2024-01-01T00:00:00.000000+00:00",
+        "2026-12-31T00:00:00.000000+00:00",
+        TS_COMPARISON,
+    ]
+
+
+def test_every_earlier_run_keeps_its_own_numbers(tmp_path: Path) -> None:
+    """Two points from one log must not share one run's values.
+
+    A loop that built each point from an accumulating dict, or that appended the
+    same object twice, passes every length assertion above and produces a
+    timeline of one night repeated.
+    """
+    scenario = _scenario(tmp_path / "distinct")
+    log = _log_with_history(
+        scenario,
+        "evidence-distinct.jsonl",
+        _earlier_run(scenario, tag="a", pass_rate=0.1111),
+        _earlier_run(scenario, tag="b", pass_rate=0.2222),
+    )
+    series = _series(_model_from(log))
+
+    assert [point.pass_rate for point in series] == [0.1111, 0.2222, 0.5353]
+    assert [point.n_per_item for point in series] == [3, 3, N_PER_ITEM]
+    assert [point.judge_name for point in series] == ["judge-a", "judge-b", J]
+    assert [point.goldenset_hash for point in series] == [
+        _tag_hash("a", "goldenset"),
+        _tag_hash("b", "goldenset"),
+        scenario.goldenset_hash,
+    ]
+    assert len(set(series)) == 3, "two of the three points are the same record"
+
+
+# -- Edges row 3: demo-ness reaches back through the series ------------------- #
+
+
+def test_a_fake_adapter_on_an_earlier_run_still_bands_the_report(
+    tmp_path: Path,
+) -> None:
+    """Edges row 3, and §4.3: "or any point in ``series`` names a ``Fake*`` adapter".
+
+    §5.3's rationale is that "you cannot obtain a clean-looking report from
+    scripted models by avoiding ``migkit demo``". Once a log carries history, the
+    way to obtain one is to run the scripted nights first and a real night last,
+    which is exactly the shape of a demo somebody pastes into a deck.
+    """
+    scenario = _scenario(tmp_path / "demo-history")
+    log = _log_with_history(
+        scenario,
+        "evidence-demo.jsonl",
+        _earlier_run(
+            scenario,
+            tag="fake",
+            baseline_adapter="FakeAdapter",
+            candidate_adapter="FakeScriptedAdapter",
+        ),
+    )
+    model = _model_from(log)
+
+    assert _get(model, "is_demo") is True
+    document = _parse(_html(model))
+    for marker in FAKE_BAND_MARKERS:
+        assert marker.lower() in document.text.lower(), (
+            f"band marker {marker!r} is missing on a log whose history is scripted"
+        )
+    assert "FAKE" in document.title.upper()
+
+
+@pytest.mark.parametrize(
+    ("baseline_adapter", "candidate_adapter"),
+    [
+        ("AnthropicAdapter", "OpenAICompatAdapter"),
+        ("", ""),
+        ("faked-out-adapter", "unfakeable"),
+    ],
+)
+def test_a_series_of_real_runs_does_not_band_the_report(
+    tmp_path: Path, baseline_adapter: str, candidate_adapter: str
+) -> None:
+    """The other half of §4.3's disjunct, which is the half that can rot silently.
+
+    C3's reviewer note asks for exactly this: "check the new disjunct cannot be
+    made false by an input, including a series whose adapter strings are empty".
+    A disjunct that is always true bands every report, and a band that is always
+    on is a band nobody reads -- which costs the demo warning its whole value.
+    The two adapters that merely *contain* "fake" are here because the rule §5.3
+    states is a prefix.
+    """
+    slug = f"{baseline_adapter or 'blank'}-{candidate_adapter or 'blank'}"
+    scenario = _scenario(tmp_path / f"real-{slug}")
+    log = _log_with_history(
+        scenario,
+        "evidence-real.jsonl",
+        _earlier_run(
+            scenario,
+            tag="old",
+            baseline_adapter=baseline_adapter,
+            candidate_adapter=candidate_adapter,
+        ),
+    )
+    model = _model_from(log)
+
+    assert _get(model, "is_demo") is False, (
+        f"adapters {baseline_adapter!r}/{candidate_adapter!r} on an earlier run "
+        f"banded a report whose models are both real"
+    )
+    document = _parse(_html(model))
+    for marker in FAKE_BAND_MARKERS:
+        assert marker.lower() not in document.text.lower()
+    assert len(_series(model)) == 2, (
+        "the assertions above pass on a tree that reads no series at all"
+    )
+
+
+def test_a_fake_headline_is_still_banded_when_the_history_is_real(
+    tmp_path: Path,
+) -> None:
+    """§4.3 widened the rule; it must not have replaced it.
+
+    An implementation that moved demo-ness onto the series alone would pass every
+    test above and drop the band from the case the rule was written for.
+    """
+    scenario = _scenario(
+        tmp_path / "fake-headline",
+        baseline_adapter="FakeAdapter",
+        candidate_adapter="FakeAdapter",
+    )
+    log = _log_with_history(
+        scenario, "evidence-fakehead.jsonl", _earlier_run(scenario, tag="real")
+    )
+    model = _model_from(log)
+
+    assert _get(model, "is_demo") is True
+    assert "FAKE" in _parse(_html(model)).title.upper()
+    assert len(_series(model)) == 2, (
+        "the assertions above pass on a tree that reads no series at all"
+    )
+
+
+# -- Edges row 2: the refusal, unchanged ------------------------------------- #
+
+
+def test_a_log_with_no_comparison_is_refused_in_the_same_words(tmp_path: Path) -> None:
+    """Edges row 2: "``ArtifactError``, unchanged wording".
+
+    Two logs with nothing to report on -- one empty of everything, one carrying a
+    verdict that opened no point, which is what the tail of a log rotated
+    mid-run looks like. Both must raise, both must raise the same type, and both
+    must raise the same sentence: a refusal whose wording forked on which
+    records happened to be present is a refusal that has started describing the
+    implementation instead of the problem.
+
+    The exact sentence *is* pinned, as a literal. "Unchanged" needs a copy of
+    the tree that came before C3 to mean anything, and this branch is that tree:
+    the sentence below was lifted from ``report.py`` at ``main``, where it has
+    stood since before this chunk was written, and it is quoted here so that a
+    reduction rebuilt around pairing cannot reword the refusal on its way past.
+    The event name is spelled through ``EVENT_COMPARISON`` rather than typed
+    out, because the message interpolates it and a renamed event should move
+    both together.
+    """
+    from model_migration_kit.errors import ArtifactError
+
+    root = tmp_path / "norecord"
+    root.mkdir()
+    bare = _write_evidence(
+        root / "bare.jsonl",
+        [_record(EVENT_RUN_STARTED, {"model_id": BASELINE_MODEL}, TS_JUDGING)],
+    )
+    orphaned = _write_evidence(
+        root / "orphaned.jsonl",
+        [
+            _record(EVENT_RUN_STARTED, {"model_id": BASELINE_MODEL}, TS_JUDGING),
+            _record(EVENT_JUDGING_COMPLETED, {"model_id": CANDIDATE_MODEL}, TS_JUDGING),
+            _record(EVENT_VERDICT, _earlier_verdict("orphan", Verdict.GO), TS_VERDICT),
+        ],
+    )
+
+    messages = []
+    for log in (bare, orphaned):
+        with pytest.raises(ArtifactError) as caught:
+            _model_from(log)
+        messages.append(str(caught.value).replace(str(log), "<LOG>"))
+
+    assert messages[0] == messages[1], (
+        f"the refusal has two wordings: {messages[0]!r} and {messages[1]!r}"
+    )
+    assert messages[0] == (
+        f"<LOG> contains no {EVENT_COMPARISON} record, so there is nothing to "
+        f"report on. A run that died before comparing produced evidence of an "
+        f"attempt, not of a comparison."
+    ), f"the refusal was reworded; Edges row 2 says it is unchanged: {messages[0]!r}"
+    for word in ("series", "run point", "runpoint", "timeline"):
+        assert word not in messages[0].lower(), (
+            f"the refusal now names {word!r}; §2.6 row 2 is about a report having "
+            f"nothing to report on, which is unchanged by C3"
+        )
+
+
+def test_a_log_whose_only_comparison_has_no_verdict_is_still_not_refused(
+    tmp_path: Path,
+) -> None:
+    """The line either side of Edges row 2, which C3 must not move.
+
+    §2.6 row 3 renders; row 2 refuses. The difference is a comparison record, not
+    a verdict record, and a loop rewritten around pairing is exactly the place
+    that difference gets blurred.
+    """
+    scenario = _scenario(tmp_path / "noverdict-series", with_verdict=False)
+    model = _from_evidence(scenario)
+
+    assert _get(model, "verdict") is None
+    assert int(_get(model, "exit_code")) == 3
+    series = _series(model)
+    assert len(series) == 1
+    assert series[0].verdict is None
+    assert series[0].candidate_model == CANDIDATE_MODEL
+
+
+# -- the "Must not" that is about bytes, not values -------------------------- #
+
+
+def test_the_log_is_read_once_for_both_the_headline_and_the_series(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """C3: "do **not** make two passes over the log", stated as a contract term.
+
+    It is observable, so it is observed. ``evidence.stream_records`` opens the
+    log in text mode and ``contracts.hash_file`` opens it in binary, so counting
+    text-mode opens of this one path counts passes over the records and ignores
+    the hashing that every report has always done. Both ``builtins.open`` and
+    ``io.open`` are replaced because ``Path.open`` reaches the latter directly.
+
+    A second pass is cheap on the 12-item fixture and is not cheap on the log
+    this measurement is about: the evidence log is the largest artifact the
+    pipeline writes, and ``stream_records`` exists because an 86 MB one already
+    cost 502 MB once.
+    """
+    import builtins
+    import os
+
+    scenario = _scenario(tmp_path / "onepass")
+    log = _log_with_history(
+        scenario, "evidence-onepass.jsonl", _earlier_run(scenario, tag="one")
+    )
+    target = log.resolve()
+    opened: list[str] = []
+    real_open = builtins.open
+
+    def counting(file: Any, mode: str = "r", *args: Any, **kwargs: Any) -> Any:
+        try:
+            same = Path(os.fspath(file)).resolve() == target
+        except (TypeError, ValueError, OSError):
+            same = False
+        if same and "b" not in mode:
+            opened.append(mode)
+        return real_open(file, mode, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", counting)
+    monkeypatch.setattr(io, "open", counting)
+    try:
+        model = _model_from(log)
+    finally:
+        monkeypatch.undo()
+
+    assert len(_series(model)) == 2, "no series was built, so no pass count is meaningful"
+    assert len(opened) == 1, (
+        f"the evidence log was read {len(opened)} times in text mode; C3 requires "
+        f"one pass that accumulates the points and keeps the last two records"
+    )
