@@ -51,9 +51,9 @@ from model_migration_kit.errors import ReportError
 from model_migration_kit.goldenset import GoldenSet
 from model_migration_kit.judging import JudgedArtifact, judged_path_for
 from model_migration_kit.report import (
+    _NEVER_DEREFERENCED_RE,
     FETCHING_ATTRS,
     ReportModel,
-    _NEVER_DEREFERENCED_RE,
     assert_self_contained,
     external_urls,
     render_html,
