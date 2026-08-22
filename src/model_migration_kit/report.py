@@ -2726,10 +2726,10 @@ TIMELINE_PAD = 24.0
 
 #: Side of the square one run is drawn as. A square rather than a circle so the
 #: marker carries an attribute literally named ``x``: a ``<circle>`` has ``cx``,
-#: and horizontal position is the one number this chart exists to be read for. The
-#: square is centred on its point by a ``transform`` rather than by subtracting
-#: half a side from ``x``, so that ``x`` holds the mapped coordinate exactly rather
-#: than the mapped coordinate minus 3.5.
+#: and horizontal position is the one number this chart exists to be read for. It
+#: is placed by its corner -- ``x`` is the mapped coordinate minus half a side --
+#: so the run's position is ``x + width/2``, which is what every reader of a
+#: ``<rect>`` already assumes. See :func:`_svg_marker` for why not a ``transform``.
 _MARKER_SIDE = 7.0
 
 #: Width given to a floor rule that would otherwise be zero-wide -- the one-run
