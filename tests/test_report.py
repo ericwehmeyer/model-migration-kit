@@ -2444,3 +2444,762 @@ def test_an_overridden_goldenset_path_is_used_and_disclosed(tmp_path: Path) -> N
     row = next(iter(_get(model, "flips")))
     assert _get(row, "input") == "INPUT-TEXT for item-03"
     assert str(moved) in _html(model), "the override must be printed in the provenance block"
+
+
+# --------------------------------------------------------------------------- #
+# 16. The interval bar. Plan C12, lines 1148-1218.
+#
+# Written from the chunk contract alone. Nothing below was derived by running
+# ``interval_bar_svg``; the projection is the one sentence the contract states
+# ("the x-axis maps [0.0, 1.0] to [PAD, width - PAD] linearly"), written once as
+# :func:`_mapped_x` and used everywhere a number is expected.
+#
+# Two rules govern this whole section, both from the contract's own reviewer
+# note -- "a picture whose accessible text is right and whose geometry is wrong
+# passes a lazy test":
+#
+#   * the geometry tests never read the ``<title>``;
+#   * the title test never reads a coordinate.
+#
+# Neither may stand in for the other, so a bar whose title says 0.72 while its
+# point sits at 0.27 fails a test in each half rather than passing both.
+#
+# The SVG is parsed rather than matched. ``xml.etree.ElementTree`` is stdlib and
+# an assertion on a parsed attribute survives a whitespace or attribute-order
+# change that a regex does not -- and, unlike a substring search, it can tell an
+# element that exists from an em dash that merely mentions one. It is imported
+# inside :class:`_Svg` rather than at the top of the file so that this section
+# appends cleanly beside the other chunks landing in the same place.
+# --------------------------------------------------------------------------- #
+
+
+#: Distinctive and mutually distinct, so that an element found by its
+#: ``data-value`` is the element that value belongs to and not a coincidence.
+#: The floor deliberately sits *above* the upper end of the interval, which is
+#: the verdict-bearing arrangement the contract calls the dangerous one to get
+#: wrong.
+BAR_RATE = 0.72
+BAR_INTERVAL = (0.61, 0.83)
+BAR_FLOOR = 0.9
+BAR_WIDTH = 480
+BAR_HEIGHT = 44
+
+#: The missing-value table of the contract, row by row, plus the complete case
+#: that it is the absence of. The keys are the keyword-only parameters verbatim.
+BAR_VARIANTS: tuple[tuple[str, dict[str, Any]], ...] = (
+    ("all recorded", {"rate": BAR_RATE, "interval": BAR_INTERVAL, "floor": BAR_FLOOR}),
+    ("no interval", {"rate": BAR_RATE, "interval": None, "floor": BAR_FLOOR}),
+    ("no rate", {"rate": None, "interval": BAR_INTERVAL, "floor": BAR_FLOOR}),
+    ("no floor", {"rate": BAR_RATE, "interval": BAR_INTERVAL, "floor": None}),
+    ("nothing recorded", {"rate": None, "interval": None, "floor": None}),
+)
+
+BAR_VARIANT_IDS = tuple(name for name, _ in BAR_VARIANTS)
+BAR_VARIANT_CASES = tuple(kwargs for _, kwargs in BAR_VARIANTS)
+
+#: Elements that put ink on the canvas. ``text`` is excluded: the all-missing row
+#: is *required* to be a ``<text>``, so counting it as a mark would make "nothing
+#: else is drawn" unsatisfiable.
+_SVG_MARKS = frozenset({"rect", "line", "circle", "ellipse", "path", "polyline", "polygon"})
+
+#: What the reader is allowed to see besides marks and text: structure and
+#: accessible text. Anything outside this union in the all-missing row is the
+#: "and nothing else" clause being broken.
+_SVG_STRUCTURE = frozenset({"g", "title", "desc", "defs", "metadata"})
+
+_BAR_NUMBER_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(%?)")
+
+
+def _bar_tag(element: Any) -> str:
+    """The local name, so a document with ``xmlns`` reads the same as one without."""
+    return str(element.tag).rsplit("}", 1)[-1]
+
+
+def _bar_attrs(element: Any) -> dict[str, str]:
+    return {str(name).rsplit("}", 1)[-1]: value for name, value in element.attrib.items()}
+
+
+def _six_places(value: float) -> str:
+    """The contract's ``data-value`` format: the unmapped float, six places."""
+    return f"{value:.6f}"
+
+
+class _Svg:
+    """One parsed ``interval_bar_svg`` return value, namespaces stripped.
+
+    The constructor is itself an assertion: the contract says the function
+    returns *one* ``<svg>`` element, and a well-formedness failure or a second
+    root element is a finding rather than a parse error the reader has to
+    decode.
+    """
+
+    def __init__(self, markup: str) -> None:
+        from xml.etree import ElementTree
+
+        assert isinstance(markup, str), (
+            f"interval_bar_svg must return a string; got {type(markup).__name__}"
+        )
+        self.markup = markup
+        stripped = markup.strip()
+        assert stripped.startswith("<svg"), (
+            f"the contract requires one <svg> element as the whole return value; "
+            f"it begins {stripped[:60]!r}"
+        )
+        try:
+            root = ElementTree.fromstring(stripped)
+        except ElementTree.ParseError as exc:
+            raise AssertionError(
+                f"interval_bar_svg must return one well-formed <svg> element; "
+                f"parsing raised {exc}. The markup was {stripped[:400]!r}"
+            ) from exc
+        assert _bar_tag(root) == "svg", f"the root element is <{_bar_tag(root)}>, not <svg>"
+
+        self.root = root
+        self.root_attrs = _bar_attrs(root)
+        self.elements: list[dict[str, Any]] = []
+        for element in root.iter():
+            if element is root:
+                continue
+            self.elements.append(
+                {
+                    "tag": _bar_tag(element),
+                    "attrs": _bar_attrs(element),
+                    "raw": dict(element.attrib),
+                    "text": "".join(element.itertext()),
+                }
+            )
+
+    @property
+    def marks(self) -> list[dict[str, Any]]:
+        return [one for one in self.elements if one["tag"] in _SVG_MARKS]
+
+    @property
+    def texts(self) -> list[dict[str, Any]]:
+        return [one for one in self.elements if one["tag"] == "text"]
+
+    @property
+    def title(self) -> str:
+        titles = [one["text"] for one in self.elements if one["tag"] == "title"]
+        assert titles, (
+            "the contract requires the <svg> to carry a <title>: it is what a "
+            "screen reader announces and what a blind test reads. Elements "
+            f"present: {sorted({one['tag'] for one in self.elements})}"
+        )
+        return titles[0].strip()
+
+    @property
+    def data_values(self) -> list[str]:
+        return [
+            one["attrs"]["data-value"] for one in self.elements if "data-value" in one["attrs"]
+        ]
+
+    def classed(self, name: str) -> list[dict[str, Any]]:
+        return [one for one in self.elements if name in one["attrs"].get("class", "").split()]
+
+    def valued(self, value: float) -> list[dict[str, Any]]:
+        wanted = _six_places(value)
+        return [one for one in self.elements if one["attrs"].get("data-value") == wanted]
+
+
+def _interval_bar(**kwargs: Any) -> str:
+    return _get(_module(), "interval_bar_svg")(**kwargs)
+
+
+def _bar(**kwargs: Any) -> _Svg:
+    kwargs.setdefault("width", BAR_WIDTH)
+    kwargs.setdefault("height", BAR_HEIGHT)
+    return _Svg(_interval_bar(**kwargs))
+
+
+def _bar_pad() -> int:
+    """``report.INTERVAL_BAR_PAD``, imported rather than hard-coded.
+
+    A test that writes ``8`` where the module writes a name cannot tell a
+    changed constant from a broken projection: both surface as the same wrong
+    number. Exactly one test below pins the value, and it is the only one.
+    """
+    pad = _get(_module(), "INTERVAL_BAR_PAD")
+    assert isinstance(pad, int), f"INTERVAL_BAR_PAD must be an int; got {pad!r}"
+    return pad
+
+
+def _mapped_x(value: float, width: int = BAR_WIDTH) -> float:
+    """The contract's projection: ``[0.0, 1.0] -> [PAD, width - PAD]``, linearly."""
+    pad = _bar_pad()
+    return pad + value * (width - 2 * pad)
+
+
+def _x_candidates(element: Mapping[str, Any]) -> list[float]:
+    """Every x this element could reasonably be said to sit at.
+
+    A ``<line>`` marking a position on a horizontal axis is vertical, so its
+    ``x1`` and ``x2`` coincide -- asserted here, because a *slanted* floor line
+    is a wrong picture whose ``x1`` alone would still read correctly. A
+    ``<rect>`` used as a tick may be positioned by its left edge or centred on
+    the value; the contract does not say which, so both are offered and the
+    caller requires one of them to land.
+    """
+    attrs = element["attrs"]
+    candidates: list[float] = []
+    if "x1" in attrs and "x2" in attrs:
+        x1, x2 = float(attrs["x1"]), float(attrs["x2"])
+        assert abs(x1 - x2) <= 0.5, (
+            f"a <{element['tag']}> marking a position on the rate axis must be "
+            f"vertical; x1={x1} and x2={x2} differ"
+        )
+        candidates.append(x1)
+    if "x" in attrs:
+        left = float(attrs["x"])
+        candidates.append(left)
+        if "width" in attrs:
+            candidates.append(left + float(attrs["width"]) / 2.0)
+    assert candidates, (
+        f"a <{element['tag']}> carrying data-value {attrs.get('data-value')!r} has "
+        f"no x or x1/x2 position: its attributes are {sorted(attrs)}"
+    )
+    return candidates
+
+
+def _assert_sits_at(element: Mapping[str, Any], expected: float, what: str) -> None:
+    candidates = _x_candidates(element)
+    assert min(abs(one - expected) for one in candidates) <= 1.0, (
+        f"{what} must sit at x={expected:.3f} (PAD + value * (width - 2*PAD)); the "
+        f"element is at {candidates}, more than a pixel away. A bar whose numbers "
+        f"are right and whose geometry is wrong is the failure the contract calls "
+        f"the dangerous one, because the position of the band relative to the "
+        f"floor *is* the verdict."
+    )
+
+
+def _one_element(elements: Sequence[Mapping[str, Any]], what: str) -> Mapping[str, Any]:
+    assert len(elements) == 1, f"expected exactly one {what}; found {len(elements)}"
+    return elements[0]
+
+
+def _bar_numbers_stated(text: str) -> set[float]:
+    """Every rate the words could be stating, read as a fraction or as a percent.
+
+    The contract fixes that the title "states the same numbers in words" without
+    fixing the notation, so ``0.72``, ``72%`` and ``72.0%`` are all accepted and
+    ``0.7`` is not: a title rounded past the second place is no longer stating
+    the number the picture was drawn from.
+    """
+    values: set[float] = set()
+    for digits, percent in _BAR_NUMBER_RE.findall(text):
+        value = float(digits)
+        if percent:
+            values.add(value / 100.0)
+            continue
+        values.add(value)
+        if value > 1.0:
+            values.add(value / 100.0)
+    return values
+
+
+def _assert_stated(text: str, value: float, what: str) -> None:
+    stated = _bar_numbers_stated(text)
+    assert any(abs(one - value) <= 0.005 for one in stated), (
+        f"the accessible title must state {what} ({value}); it reads {text!r}, "
+        f"whose numbers are {sorted(stated)}"
+    )
+
+
+def _minimal_document(svg: str) -> str:
+    """The smallest complete page that can hold the bar, and nothing that fetches."""
+    return (
+        '<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
+        "<title>interval bar</title>\n</head>\n<body>\n"
+        f"{svg}\n"
+        "</body>\n</html>\n"
+    )
+
+
+# -- the constant, pinned in exactly one place ------------------------------- #
+
+
+def test_the_interval_bar_pad_is_the_eight_pixels_the_contract_names() -> None:
+    """C12: "the x-axis maps [0.0, 1.0] to [PAD, width - PAD] linearly, ``PAD = 8``".
+
+    The one test allowed to write the literal. Every other test imports the
+    constant, so changing it moves exactly one failure here rather than
+    scattering identical arithmetic failures across the section, and a
+    projection broken *without* touching the constant fails there and not here.
+    """
+    pad = _bar_pad()
+    assert pad == 8, f"the contract fixes PAD at 8; INTERVAL_BAR_PAD is {pad}"
+    assert 2 * pad < BAR_WIDTH, "the padding must leave a drawable range"
+
+
+# -- geometry. Nothing in this block reads the <title>. ---------------------- #
+
+
+@pytest.mark.parametrize(
+    ("floor", "width"),
+    [
+        (0.9, 480),
+        (0.87, 480),
+        (0.5, 480),
+        (0.0, 480),
+        (1.0, 480),
+        (0.9, 300),
+        (0.9, 1000),
+        (0.87, 137),
+    ],
+)
+def test_the_interval_bar_places_the_floor_line_at_the_same_fraction_of_the_width_as_the_floor_is_of_the_range(  # noqa: E501
+    floor: float, width: int
+) -> None:
+    """C12's first named test: ``x == PAD + floor * (width - 2*PAD)``, within a pixel.
+
+    Several widths, because a projection that ignored ``width`` and one that used
+    it agree at the default and nowhere else. Several floors, because a
+    projection that ignored ``floor`` agrees with the truth at exactly one of
+    them.
+
+    ``floor=0.0`` is in the table on purpose: a *recorded* floor of zero is a
+    real floor and must be drawn at ``PAD``. It is the case the next test is the
+    other half of -- an absent floor must not produce this same picture.
+
+    No assertion here touches the ``<title>``. The title's job is checked
+    separately, and the two are kept apart so that neither can excuse the other.
+    """
+    bar = _bar(rate=BAR_RATE, interval=BAR_INTERVAL, floor=floor, width=width)
+    line = _one_element(bar.classed("floor"), 'element with class="floor"')
+    _assert_sits_at(line, _mapped_x(floor, width), "the floor line")
+    assert line["attrs"].get("data-value") == _six_places(floor), (
+        "the floor line must carry its unmapped value as data-value, so a test "
+        "can watch the model's number reach the drawing without re-deriving the "
+        f"projection; it carries {line['attrs'].get('data-value')!r}"
+    )
+
+
+def test_an_interval_bar_with_no_recorded_floor_says_so_rather_than_drawing_a_line_at_zero() -> None:  # noqa: E501
+    """C12's second named test, and the missing-value table's third row.
+
+    "no floor line, **and** an ``<title>`` saying the floor was not recorded --
+    an absent rule must not read as a floor of zero". Four separate readings,
+    because each catches a different way of getting it wrong:
+
+    * no element claims the ``floor`` class -- the line is gone, not merely moved;
+    * nothing carries ``data-value="0.000000"`` -- the "Must not" list's third
+      clause, which catches a line drawn at zero under some other class;
+    * the title says so in words, and states no zero;
+    * the band and the point are still drawn where they belong -- without which
+      the whole test would pass against a function returning ``<svg></svg>``.
+
+    The contrast render with an explicitly recorded ``floor=0.0`` is the control:
+    absence and a recorded zero must not produce the same picture, and a
+    conditional that treated ``None`` as ``0.0`` would make them identical.
+    """
+    bar = _bar(rate=BAR_RATE, interval=BAR_INTERVAL, floor=None)
+
+    assert bar.classed("floor") == [], (
+        "an absent floor must draw no floor line; found "
+        f"{[one['tag'] for one in bar.classed('floor')]}"
+    )
+    assert _six_places(0.0) not in bar.data_values, (
+        'the bar carries data-value="0.000000" for a floor that was never '
+        "recorded, which is the reading the contract forbids: an absent rule must "
+        "not read as a floor of zero"
+    )
+
+    title = bar.title.lower()
+    assert "floor" in title, (
+        f"the title must name the floor it is reporting on; it reads {bar.title!r}"
+    )
+    sayings = (
+        "not recorded",
+        "no recorded",
+        "not been recorded",
+        "none recorded",
+        "unrecorded",
+        "was not",
+        "no floor",
+        "not available",
+        "not set",
+    )
+    assert any(saying in title for saying in sayings), (
+        f"the title must say the floor was not recorded; it reads {bar.title!r}. "
+        f"Any of {sayings} satisfies this test -- the contract fixes the fact, not "
+        f"the wording."
+    )
+    assert not any(abs(one) <= 0.005 for one in _bar_numbers_stated(bar.title)), (
+        f"the title states a number indistinguishable from a floor of zero: {bar.title!r}"
+    )
+
+    band = _one_element(bar.valued(BAR_INTERVAL[0]), "band carrying the interval's lower end")
+    _assert_sits_at(band, _mapped_x(BAR_INTERVAL[0]), "the interval band")
+    point = _one_element(bar.valued(BAR_RATE), "point element carrying the rate")
+    _assert_sits_at(point, _mapped_x(BAR_RATE), "the point estimate")
+
+    recorded_zero = _bar(rate=BAR_RATE, interval=BAR_INTERVAL, floor=0.0)
+    zero_line = _one_element(recorded_zero.classed("floor"), 'element with class="floor"')
+    _assert_sits_at(zero_line, _mapped_x(0.0), "a recorded floor of zero")
+
+
+def test_the_interval_band_spans_the_mapped_ends_of_the_interval() -> None:
+    """C12: "the interval band is a ``<rect>`` whose ``x`` is the mapped
+    ``interval[0]`` and whose ``width`` is the mapped span".
+
+    The band is found by its ``data-value`` -- the contract's stated seam -- and
+    only then measured against the projection, so the test learns nothing from
+    the element's position about which element it is.
+    """
+    lower, upper = BAR_INTERVAL
+    bar = _bar(rate=BAR_RATE, interval=BAR_INTERVAL, floor=BAR_FLOOR)
+    band = _one_element(bar.valued(lower), "band carrying the interval's lower end")
+    assert band["tag"] == "rect", f"the contract fixes the band as a <rect>; got <{band['tag']}>"
+
+    left = float(band["attrs"]["x"])
+    assert abs(left - _mapped_x(lower)) <= 1.0, (
+        f"the band starts at x={left}, not at the mapped lower end {_mapped_x(lower):.3f}"
+    )
+    span = float(band["attrs"]["width"])
+    expected_span = _mapped_x(upper) - _mapped_x(lower)
+    assert abs(span - expected_span) <= 1.0, (
+        f"the band is {span}px wide; the mapped span of {BAR_INTERVAL} is "
+        f"{expected_span:.3f}px. A band of the right width from the wrong origin, "
+        f"and one of the wrong width from the right origin, both put the upper end "
+        f"somewhere the numbers do not say it is."
+    )
+    assert abs((left + span) - _mapped_x(upper)) <= 1.0, (
+        f"the band ends at x={left + span}, not at the mapped upper end {_mapped_x(upper):.3f}"
+    )
+
+
+def test_the_upper_end_of_the_interval_reaches_the_drawing_as_a_number() -> None:
+    """C12: "every element carries ``data-value`` with the unmapped float to 6 places".
+
+    A band has two unmapped floats and one ``data-value``. The contract does not
+    say where the second goes, so this test only requires that it goes
+    *somewhere* an attribute can be read from, rather than into a pixel width a
+    reader would have to invert the projection to recover.
+    """
+    upper = _six_places(BAR_INTERVAL[1])
+    bar = _bar(rate=BAR_RATE, interval=BAR_INTERVAL, floor=BAR_FLOOR)
+    carried = {
+        (one["tag"], name, value)
+        for one in bar.elements
+        for name, value in one["attrs"].items()
+        if value == upper
+    }
+    assert carried, (
+        f"no attribute anywhere in the bar carries the interval's upper end {upper}. "
+        f"It is a number the model measured, and a reader who cannot find it has to "
+        f"invert the projection from a pixel width to get it back."
+    )
+
+
+def test_the_point_estimate_sits_at_the_mapped_rate() -> None:
+    """C12: "the point estimate is a ``<line>`` or ``<rect>`` at the mapped ``rate``"."""
+    bar = _bar(rate=BAR_RATE, interval=BAR_INTERVAL, floor=BAR_FLOOR)
+    point = _one_element(bar.valued(BAR_RATE), "point element carrying the rate")
+    assert point["tag"] in {"line", "rect"}, (
+        f"the contract fixes the point estimate as a <line> or a <rect>; got <{point['tag']}>"
+    )
+    _assert_sits_at(point, _mapped_x(BAR_RATE), "the point estimate")
+
+
+def test_each_interval_bar_element_carries_its_unmapped_value_to_six_places() -> None:
+    """C12's "Must not": "Round the underlying value before putting it in ``data-value``".
+
+    The values here are chosen so that a pre-rounding implementation is visibly
+    different rather than coincidentally equal: ``round(0.987654321, 3)`` formats
+    as ``0.988000`` and ``round(0.123456789, 3)`` as ``0.123000``, neither of
+    which is the six-place rendering of the number that was passed in.
+    """
+    rate = 0.987654321
+    lower = 0.123456789
+    upper = 0.876543211
+    floor = 0.909090909
+    bar = _bar(rate=rate, interval=(lower, upper), floor=floor)
+
+    for value, what in (
+        (rate, "the rate"),
+        (lower, "the interval's lower end"),
+        (floor, "the floor"),
+    ):
+        assert _six_places(value) in bar.data_values, (
+            f"{what} reaches the drawing as {_six_places(value)!r}; the bar carries "
+            f"{sorted(set(bar.data_values))}"
+        )
+    assert "0.988000" not in bar.data_values, "the rate was rounded before it was written out"
+    assert "0.123000" not in bar.data_values, (
+        "the interval's lower end was rounded before it was written out"
+    )
+    for written in bar.data_values:
+        assert re.fullmatch(r"-?\d+\.\d{6}", written), (
+            f"data-value must be a plain float to exactly six decimal places; got {written!r}"
+        )
+
+
+def test_the_interval_bar_honours_the_width_and_height_it_was_given() -> None:
+    """The canvas the projection is computed against must be the canvas that is drawn.
+
+    A bar that projects into a 300px width and then declares ``width="480"`` puts
+    every mark at the wrong fraction of the picture the reader sees, and every
+    coordinate assertion above would still pass.
+    """
+    bar = _bar(rate=BAR_RATE, interval=BAR_INTERVAL, floor=BAR_FLOOR, width=300, height=20)
+    box = bar.root_attrs.get("viewBox", "")
+    declared = bar.root_attrs.get("width")
+    assert declared == "300" or box.split()[2:3] == ["300"], (
+        f"the svg must declare the width it was drawn for; it carries "
+        f"width={declared!r} viewBox={box!r}"
+    )
+    declared_height = bar.root_attrs.get("height")
+    assert declared_height == "20" or box.split()[3:4] == ["20"], (
+        f"the svg must declare the height it was drawn for; it carries "
+        f"height={declared_height!r} viewBox={box!r}"
+    )
+
+
+def test_a_rate_outside_the_unit_interval_still_draws_on_the_canvas() -> None:
+    """C12's reviewer note: "an SVG that draws off-canvas is invisible rather than
+    wrong-looking".
+
+    The clamp is on the *drawing*, not on the number: ``data-value`` must still
+    carry what was passed in, because the contract's other rule is that the
+    unmapped float reaches the drawing unaltered. So an out-of-range rate stays
+    visible at the edge and readable as itself, rather than silently absent.
+    """
+    pad = _bar_pad()
+    for rate in (-0.25, 1.4):
+        bar = _bar(rate=rate, interval=None, floor=BAR_FLOOR)
+        point = _one_element(bar.valued(rate), f"point element carrying rate={rate}")
+        for candidate in _x_candidates(point):
+            assert pad - 1.0 <= candidate <= BAR_WIDTH - pad + 1.0, (
+                f"rate={rate} was projected to x={candidate}, off the "
+                f"[{pad}, {BAR_WIDTH - pad}] canvas, where it is invisible rather "
+                f"than visibly wrong"
+            )
+
+
+# -- the accessible title. Nothing in this block reads a coordinate. --------- #
+
+
+def test_the_interval_bar_is_an_image_whose_title_states_the_same_numbers() -> None:
+    """C12: the ``<svg>`` carries ``role="img"`` and a ``<title>`` stating the numbers.
+
+    The other half of the pair the reviewer note is about. This test reads no
+    ``x``, no ``width`` and no ``data-value``; the geometry tests read no title.
+    A bar that got one of the two right passes exactly one of them.
+    """
+    bar = _bar(rate=BAR_RATE, interval=BAR_INTERVAL, floor=BAR_FLOOR)
+    assert bar.root_attrs.get("role") == "img", (
+        'the <svg> must carry role="img" so a screen reader announces it as a '
+        f"picture with a name; its attributes are {sorted(bar.root_attrs)}"
+    )
+    title = bar.title
+    assert title, "the <title> is empty, so the picture announces itself as nothing"
+    _assert_stated(title, BAR_RATE, "the point estimate")
+    _assert_stated(title, BAR_INTERVAL[0], "the interval's lower end")
+    _assert_stated(title, BAR_INTERVAL[1], "the interval's upper end")
+    _assert_stated(title, BAR_FLOOR, "the floor")
+
+
+def test_the_interval_bar_label_reaches_the_reader() -> None:
+    """The ``label`` parameter exists to be read; a label accepted and dropped is a
+    caller silently getting nothing.
+
+    The contract does not say whether the label belongs in the ``<title>`` or in
+    a ``<text>``, so either satisfies this. What it may not do is vanish.
+    """
+    label = "candidate accuracy on the golden set"
+    bar = _bar(rate=BAR_RATE, interval=BAR_INTERVAL, floor=BAR_FLOOR, label=label)
+    visible = " ".join([bar.title] + [one["text"] for one in bar.texts])
+    assert label in visible, (
+        f"the label {label!r} appears neither in the <title> nor in any <text>; what "
+        f"the picture says is {visible!r}"
+    )
+
+
+# -- the missing-value table, one row at a time ------------------------------ #
+
+
+def test_an_interval_bar_with_no_interval_still_draws_the_point() -> None:
+    """The table's first row: "no band element; the point estimate still drawn".
+
+    Three readings. The point is where it belongs; neither end of an interval
+    that does not exist appears anywhere; and the picture has strictly fewer
+    marks than the complete one, which is what "no band element" means when the
+    test is not allowed to assume which element the band was.
+    """
+    bar = _bar(rate=BAR_RATE, interval=None, floor=BAR_FLOOR)
+    point = _one_element(bar.valued(BAR_RATE), "point element carrying the rate")
+    _assert_sits_at(point, _mapped_x(BAR_RATE), "the point estimate")
+    _assert_sits_at(
+        _one_element(bar.classed("floor"), 'element with class="floor"'),
+        _mapped_x(BAR_FLOOR),
+        "the floor line",
+    )
+    for end in BAR_INTERVAL:
+        assert _six_places(end) not in bar.data_values, (
+            f"the bar carries {_six_places(end)} for an interval that was never recorded"
+        )
+
+    complete = _bar(rate=BAR_RATE, interval=BAR_INTERVAL, floor=BAR_FLOOR)
+    assert len(bar.marks) < len(complete.marks), (
+        f"a bar with no interval draws {len(bar.marks)} marks and a complete one "
+        f"draws {len(complete.marks)}; the band is still being drawn, presumably "
+        f"over a default"
+    )
+
+
+def test_an_interval_bar_with_no_rate_draws_no_point() -> None:
+    """The table's second row: "no point element".
+
+    The band and the floor stay, so the test cannot pass by the function
+    returning nothing, and the mark count must fall, so it cannot pass by the
+    point being drawn somewhere unrecognised.
+    """
+    bar = _bar(rate=None, interval=BAR_INTERVAL, floor=BAR_FLOOR)
+    band = _one_element(bar.valued(BAR_INTERVAL[0]), "band carrying the interval's lower end")
+    _assert_sits_at(band, _mapped_x(BAR_INTERVAL[0]), "the interval band")
+    _assert_sits_at(
+        _one_element(bar.classed("floor"), 'element with class="floor"'),
+        _mapped_x(BAR_FLOOR),
+        "the floor line",
+    )
+    assert _six_places(BAR_RATE) not in bar.data_values, (
+        "the bar carries the rate it was told was not recorded"
+    )
+
+    complete = _bar(rate=BAR_RATE, interval=BAR_INTERVAL, floor=BAR_FLOOR)
+    assert len(bar.marks) < len(complete.marks), (
+        f"a bar with no rate draws {len(bar.marks)} marks and a complete one draws "
+        f"{len(complete.marks)}; the point estimate is still being drawn"
+    )
+
+
+def test_an_interval_bar_with_nothing_recorded_is_a_single_em_dash() -> None:
+    """The table's fourth row: "a single ``<text>`` element reading the em dash
+    ``—``, and nothing else".
+
+    "Nothing else" is read as nothing *drawn*: no rect, line, circle, path or
+    polygon, and no number anywhere. The ``<title>`` is not counted against the
+    clause, because ``role="img"`` requires one and a picture that announces
+    itself as nothing is worse than one that announces itself as absent.
+    """
+    bar = _bar(rate=None, interval=None, floor=None)
+    assert bar.marks == [], (
+        f"nothing was recorded, so nothing may be drawn; found "
+        f"{[one['tag'] for one in bar.marks]}"
+    )
+    text = _one_element(bar.texts, "<text> element")
+    assert text["text"].strip() == "—", (
+        f"the whole picture is the em dash; the <text> reads {text['text']!r}"
+    )
+    assert bar.data_values == [], (
+        f"nothing was recorded, so no data-value may be written; found {bar.data_values}"
+    )
+    unexpected = sorted(
+        {
+            one["tag"]
+            for one in bar.elements
+            if one["tag"] not in _SVG_STRUCTURE and one["tag"] != "text"
+        }
+    )
+    assert unexpected == [], f'"and nothing else", yet the bar also contains {unexpected}'
+
+
+# -- self-containment, the machine-checkable half ---------------------------- #
+
+
+@pytest.mark.parametrize("variant", BAR_VARIANT_CASES, ids=BAR_VARIANT_IDS)
+def test_every_interval_bar_variant_passes_assert_self_contained(variant: dict[str, Any]) -> None:
+    """C12's third named test, over the missing-value table.
+
+    Each bar is wrapped in the smallest complete document that can hold it and
+    put through ``report.assert_self_contained`` -- the same function
+    ``render_html`` runs on itself, so what passes here is what ships.
+
+    The two assertions before the wrapping are not decoration. A function
+    returning ``"<svg></svg>"``, or the empty string, would sail through
+    self-containment while drawing nothing: an empty document fetches nothing.
+    ``role="img"`` and a non-empty ``<title>`` are required of every variant
+    including the all-missing one, so no row can pass by being empty.
+    """
+    bar = _bar(**variant)
+    assert bar.root_attrs.get("role") == "img"
+    assert bar.title, "every variant announces itself, including the one with nothing to say"
+
+    document = _minimal_document(bar.markup)
+    assert _get(_module(), "external_urls")(document) == (), (
+        f"the {variant} bar puts a fetching position in the document"
+    )
+    _get(_module(), "assert_self_contained")(document, source="<interval bar>")
+
+
+def test_the_interval_bar_self_containment_harness_still_catches_a_real_fetch() -> None:
+    """The control for the test above: the wrapper is live, not inert.
+
+    Without this, a mis-built ``_minimal_document`` -- one the scanner never
+    reaches into -- would make every row of the table pass for the wrong reason.
+    """
+    bar = _bar(rate=BAR_RATE, interval=BAR_INTERVAL, floor=BAR_FLOOR)
+    poisoned = _minimal_document(bar.markup + HOSTILE_IMG)
+    with pytest.raises(MigrationKitError):
+        _get(_module(), "assert_self_contained")(poisoned, source="<interval bar>")
+
+
+@pytest.mark.parametrize("variant", BAR_VARIANT_CASES, ids=BAR_VARIANT_IDS)
+def test_no_interval_bar_variant_emits_a_forbidden_tag_or_a_fetching_attribute(
+    variant: dict[str, Any],
+) -> None:
+    """C12's "Must not" list, read off the parsed element tree rather than the string.
+
+    ``assert_self_contained`` is the shipping check, but it is deliberately
+    scoped to what *fetches*: a ``<style>`` with no ``url()`` passes it and the
+    contract still forbids one. So the tags are checked directly, and
+    ``xlink:href`` is checked against the raw markup as well, because an
+    undeclared ``xlink`` prefix makes the document unparseable rather than
+    visibly wrong.
+    """
+    assert set(FETCHING_ATTRIBUTES) == set(_get(_module(), "FETCHING_ATTRS")), (
+        "this file's independent list of fetching attributes has drifted from "
+        "report.FETCHING_ATTRS"
+    )
+    bar = _bar(**variant)
+    assert bar.root_attrs.get("role") == "img" and bar.elements, (
+        "a picture with nothing in it emits no forbidden tag either, so without "
+        "this guard the whole test passes against a function that returned "
+        '"<svg></svg>". A "must not" assertion is only worth its run against a '
+        "bar that was actually drawn."
+    )
+    for element in bar.elements:
+        assert element["tag"] not in {"script", "style"}, (
+            f"the {variant} bar emits a <{element['tag']}>, which the contract forbids"
+        )
+        for name in element["attrs"]:
+            assert name not in set(FETCHING_ATTRIBUTES), (
+                f"the {variant} bar puts {name!r} on a <{element['tag']}>; every "
+                f"attribute in FETCHING_ATTRS is dereferenced by the browser"
+            )
+        for raw in element["raw"]:
+            assert "xlink" not in str(raw).lower(), (
+                f"the {variant} bar carries {raw!r} on a <{element['tag']}>"
+            )
+    assert "xlink:href" not in bar.markup.lower(), f"the {variant} bar carries an xlink:href"
+    for tag in FORBIDDEN_ELEMENTS:
+        assert f"<{tag}" not in bar.markup.lower(), (
+            f"the {variant} bar carries a <{tag}>, which §2.4 forbids outright"
+        )
+
+
+@pytest.mark.parametrize("variant", BAR_VARIANT_CASES, ids=BAR_VARIANT_IDS)
+def test_every_interval_bar_variant_is_one_well_formed_svg_element(
+    variant: dict[str, Any],
+) -> None:
+    """C12: "Returns one ``<svg>`` element as a string."
+
+    Parsing is the assertion -- ``_Svg`` refuses anything that is not a single
+    well-formed root -- and the two checks below are what stop a do-nothing
+    implementation from satisfying it.
+    """
+    bar = _bar(**variant)
+    assert bar.root_attrs, (
+        "the <svg> carries no attributes at all, so it declares neither its size "
+        "nor its role; this is what a stub returns"
+    )
+    assert bar.elements, "the <svg> is empty: there is nothing in it to read"
