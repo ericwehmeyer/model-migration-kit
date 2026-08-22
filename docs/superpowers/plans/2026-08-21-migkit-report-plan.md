@@ -2019,3 +2019,111 @@ a chunk of its own or it is a documented limitation. **Decide it at C3's review,
 and if the answer is "documented limitation", the document that carries it is
 `report.py`'s docstring, not this plan** — nobody debugging a disagreeing banner
 will be reading the build plan.
+
+---
+
+#### C19 — the verdict belongs to the comparison before it
+
+Added 2026-08-21, out of C3's review. This is a **correction to C2**, not a change
+of mind: C2's contract contradicts itself, and C2's implementer picked the half
+that is wrong. It also carries a defect older than either, shipped in 0.1.1.
+
+**Files.** `series.py` (the pairing rule in `SeriesBuilder.add`, and
+`read_series`' docstring). `report.py` (the reduction in `from_evidence`, and its
+module docstring). `tests/test_series.py` (two tests, rewritten).
+`tests/test_report.py` (one `xfail` marker removed, tests added). Plan lines
+469-486, amended so prose and Edges row five agree.
+
+**Why.** There is exactly one writer of `migkit.comparison` and `migkit.verdict`
+in this repository -- `comparison.py:907-908`, two `evidence.append` calls back to
+back inside one `if`. So a log holding two comparisons before either verdict
+cannot be written by this pipeline, and that is the only shape first-in-first-out
+pairing gets right. The shape a **crash** produces -- a comparison with no verdict
+after it, then the next night appended to the same file -- is the shape FIFO gets
+wrong, and it gets it wrong cumulatively:
+
+```
+log:  C(night-1)   C(night-2) V(night-2)   C(night-3) V(night-3)
+      night-1  verdict=GO     reason='night 2 was fine'
+      night-2  verdict=NO-GO  reason='night 3 regressed'
+      night-3  verdict=None
+```
+
+One crashed night shifts every later verdict by one, permanently, in a file that
+only ever grows. That is verbatim the failure `series.py`'s docstring says the
+module exists to prevent, produced by the rule chosen to prevent it.
+
+**Contract, part one -- the series.** A comparison record opens a point. **Every
+verdict record updates the most recently opened point**, overwriting a value
+already there. A verdict arriving before any comparison is ignored. Nothing is
+sorted, nothing is de-duplicated, and points stay in the order their comparisons
+were written -- all three of `read_series`' existing arguments for that survive
+unchanged; only the FIFO justification goes.
+
+**Contract, part two -- the headline.** `from_evidence` currently keeps the last
+comparison and the last verdict as two **independent** last-wins variables, so a
+verdict from an earlier run fills the slot of a run that never produced one. Set
+`verdict_record = None` on every comparison record, so a verdict only ever
+describes the comparison it followed.
+
+This is the change C3's "Must not" forbade, which is why it is here and not there.
+
+**The two rules are one rule.** Ship either alone and the banner and the timeline
+can still disagree about which night a NO-GO belongs to. The point of the pair is
+that `series[-1]` describes the headline run **by construction** rather than by
+coincidence:
+
+| log shape | headline verdict | `series[-1].verdict` | agree |
+|---|---|---|---|
+| `C V` | V | V | yes |
+| `C1 V1 C2 V2` | V2 | V2 | yes |
+| `C` (crashed) | None, with disclosure | None | yes |
+| `V C` | None | None | yes |
+| `C1 C2 V` | V | V, on C2 | yes |
+| `C1 V1 C2` (crashed) | None, with disclosure | None | yes |
+| `C1 C2 V1 V2` | V2 | V2 on C2, C1 None | yes |
+| `C V1 V2` | V2 | V2 | yes |
+
+The last row is why the rule is "updates" and not "closes the most recent *open*
+point": under a close-once rule V2 is dropped and the series disagrees with a
+banner that took it.
+
+**Edges.**
+
+| Input | Required |
+|---|---|
+| `C V C` | `model.verdict is None`, `exit_code == 3`, and `completeness.missing` names the absent `migkit.verdict` record |
+| a crashed night mid-log | that point's verdict is `None` **and no later point's verdict moves** |
+| `V` before any `C` | ignored; no point created, nothing overwritten |
+| `C V1 V2` | the point carries V2 |
+| every log written by `compare` today | byte-identical output to before |
+
+**Must not.** Sort. Drop a point. Change what a *complete* log renders --
+this chunk may only change what a log containing a crashed run renders. Leave
+`tests/test_report.py`'s dead-run `xfail(strict=True)` marker in place: when this
+lands it XPASSes, and a strict xfail that starts passing fails the suite on
+purpose.
+
+**Failure mode when wrong.** A crashed run rendering as a clean GO with exit 0
+and `completeness.complete is True`, which is what 0.1.1 does today. `cli.py:435`
+derives the exit code from the verdict alone, so a pipeline sees green for a run
+that never decided anything.
+
+**Test that fails first.** `test_a_run_that_died_before_deciding_is_not_reported_
+as_last_nights_verdict` -- log `C V C`, assert the headline verdict is `None` and
+the exit code is 3.
+
+**The two tests that must change.** `test_two_comparisons_written_before_either_
+verdict_pair_first_with_first` and `test_a_verdict_with_no_point_left_open_is_
+ignored_and_overwrites_nothing`, both in `tests/test_series.py`. They are the only
+tests in the repository that pin the old rule. Keep their docstrings' *reasoning*
+about why pairing is delicate and invert what they expect. They are evidence that
+C2's rule was chosen deliberately, not by accident, so deleting them loses the
+record of a decision that was reconsidered.
+
+**Reviewer.** Confirm by sweep, not by argument, that `comparison.py:907-908` is
+still the only writer of either event -- the whole case rests on it. Then check the
+concurrent-writer case: `opik_rigor`'s evidence log documents that concurrent
+writers interleave whole records and `cli.py:87` makes one shared path the
+default, so `C_A C_B V_A V_B` and `C_A C_B V_B V_A` are equally likely. Neither
+rule is right there; say whether this chunk should detect it rather than guess.
