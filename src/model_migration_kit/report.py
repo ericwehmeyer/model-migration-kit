@@ -61,10 +61,13 @@ is what those flags were always for.
 
 **The fake-model band derives from the artifacts, never from a flag.**
 ``RunHeader.adapter`` records ``type(adapter).__name__``, so ``is_demo`` is true
-whenever either side's adapter name starts with ``Fake``. The consequence is the
-point: you cannot obtain a clean-looking report from scripted models by avoiding
-``migkit demo``. A flag-driven banner is exactly the banner that goes missing from
-the screenshot someone pastes into a deck.
+whenever either side's adapter name starts with ``Fake`` -- or whenever any run
+in :attr:`ReportModel.series` names one, because a log whose headline run is real
+and whose earlier nights were scripted is still a document with scripted numbers
+drawn in it. The consequence is the point: you cannot obtain a clean-looking
+report from scripted models by avoiding ``migkit demo``. A flag-driven banner is
+exactly the banner that goes missing from the screenshot someone pastes into a
+deck.
 
 **The document is bounded, and says by how much.** The report used to grow as
 ``changed_items x 2n x max_output_chars`` with nothing looking at the total: 200
@@ -117,6 +120,7 @@ from .evidence import resolve_evidence, stream_records
 from .goldenset import GoldenSet
 from .judging import JudgedArtifact
 from .runner import RunArtifact
+from .series import RunPoint, SeriesBuilder
 
 __all__ = [
     "DEFAULT_MAX_REPORT_CHARS",
@@ -734,6 +738,16 @@ class ReportModel:
     #: Printed in the provenance block, because a report that quietly read
     #: different files than the ones recorded is worse than one that failed.
     artifact_dir: str = ""
+    #: One point per ``migkit.comparison`` record in the log, oldest first --
+    #: every run the log holds, not only the one this report is about. A log of
+    #: fourteen nightly runs used to render as one verdict with thirteen nights
+    #: on disk and unread.
+    #:
+    #: ``series[-1]`` is the headline run, but every field above is still read
+    #: from the records themselves rather than from a point. That is deliberate:
+    #: the timeline can gain, lose or re-derive a field without the banner, the
+    #: judge table, the flips or the provenance block moving with it.
+    series: tuple[RunPoint, ...] = ()
 
     # -- construction ------------------------------------------------------- #
 
@@ -788,19 +802,38 @@ class ReportModel:
         """
         path = resolve_evidence(evidence)
 
-        # One streaming pass, keeping three records and never the log. See
+        # One streaming pass, keeping three records and one flat point per
+        # comparison, never the log. See
         # :func:`~model_migration_kit.evidence.stream_records`: the list-returning
         # read this replaced cost 5.0 to 5.8 times the log's own bytes, and the
         # evidence log is the largest artifact the pipeline writes.
+        #
+        # The series is accumulated *in this loop*, through
+        # :class:`~model_migration_kit.series.SeriesBuilder` -- the same pairing
+        # rule ``read_series`` drives. Calling ``read_series`` beside this loop
+        # would be a second read of that same largest artifact, and a second
+        # pairing rule would be a way for the timeline and the banner to disagree
+        # about which verdict belongs to which run.
+        #
+        # It is accumulated *beside* the three assignments below rather than in
+        # place of them: nothing after this loop reads a point, so no later work
+        # on the timeline can move which record the banner came from.
         comparison = None
         verdict_record = None
         last = None
+        builder = SeriesBuilder()
         for record in _stream_records(path):
             last = record
+            builder.add(record)
+            # Last one wins, unchanged and on purpose. Every log written today
+            # holds one comparison and one verdict, so a slip to first-wins here
+            # would pass every test in this repo and report on the wrong run the
+            # first time a log held two.
             if record.event_type == EVENT_COMPARISON:
                 comparison = record
             elif record.event_type == EVENT_VERDICT:
                 verdict_record = record
+        series = builder.points()
         if comparison is None:
             raise ArtifactError(
                 f"{path} contains no {EVENT_COMPARISON} record, so there is nothing "
@@ -928,18 +961,36 @@ class ReportModel:
             config_path=config_path,
             command=str(payload.get("command", "") or ""),
             artifact_dir="" if artifact_dir is None else str(artifact_dir),
+            series=series,
         )
 
     # -- derived ------------------------------------------------------------ #
 
     @property
     def is_demo(self) -> bool:
-        """True when either side was produced by a ``Fake*`` adapter.
+        """True when a ``Fake*`` adapter produced any run this document shows.
 
         Derived from the artifacts and never from a flag, so a hand-wired
         ``FakeAdapter`` run cannot produce a clean-looking report.
+
+        The first two terms are the headline run's own sides and are what this
+        property has always meant. The third is the series: once the document
+        prints a timeline, a scripted night drawn on it is scripted numbers in
+        the report, and a band that appears only when the *last* run was fake is
+        a band you can remove by scripting the runs before it. Each term stands
+        alone -- an empty series, or one whose adapter strings were never
+        recorded, leaves the first two exactly as they were, because ``""``
+        starts with nothing.
         """
-        return self.baseline.is_fake or self.candidate.is_fake
+        return (
+            self.baseline.is_fake
+            or self.candidate.is_fake
+            or any(
+                point.adapter_baseline.startswith(_FAKE_PREFIX)
+                or point.adapter_candidate.startswith(_FAKE_PREFIX)
+                for point in self.series
+            )
+        )
 
     @property
     def exit_code(self) -> int:
