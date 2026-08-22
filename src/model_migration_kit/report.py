@@ -96,13 +96,15 @@ fourth number derived from them.
 
 from __future__ import annotations
 
+import html
 import os
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import opik_rigor
 from jinja2 import DictLoader, Environment, StrictUndefined, select_autoescape
@@ -117,6 +119,7 @@ from .evidence import resolve_evidence, stream_records
 from .goldenset import GoldenSet
 from .judging import JudgedArtifact
 from .runner import RunArtifact
+from .series import RunPoint, parse_created
 
 __all__ = [
     "DEFAULT_MAX_REPORT_CHARS",
@@ -128,6 +131,8 @@ __all__ = [
     "RateStat",
     "ReportModel",
     "RunSummary",
+    "TIMELINE_PAD",
+    "Timeline",
     "UrlViolation",
     "assert_self_contained",
     "external_urls",
@@ -135,6 +140,7 @@ __all__ = [
     "render_html",
     "render_html_string",
     "render_terminal",
+    "timeline_svg",
 ]
 
 #: Printed wherever a number does not exist, rather than a zero or a guess. The
@@ -2703,3 +2709,363 @@ def _default_title(model: ReportModel) -> str:
     if model.is_demo:
         return f"FAKE MODELS {EM_DASH} {head}"
     return head
+
+
+# --------------------------------------------------------------------------- #
+# the timeline -- one comparison per marker, on an axis that is time
+# --------------------------------------------------------------------------- #
+
+#: Blank margin, in user units, between the plotting area and every edge of the
+#: viewBox. One number for all four sides, which is what makes the centre of the
+#: plotting area the centre of the picture: the single-run case has to draw its one
+#: marker at the horizontal centre, and under asymmetric padding "the centre" would
+#: be two different numbers depending on which one you meant. Exported because the
+#: alternative is a test that hard-codes 24.0 and fails the day the layout is
+#: re-tuned, for no defect.
+TIMELINE_PAD = 24.0
+
+#: Side of the square one run is drawn as. A square rather than a circle so the
+#: marker carries an attribute literally named ``x``: a ``<circle>`` has ``cx``,
+#: and horizontal position is the one number this chart exists to be read for. The
+#: square is centred on its point by a ``transform`` rather than by subtracting
+#: half a side from ``x``, so that ``x`` holds the mapped coordinate exactly rather
+#: than the mapped coordinate minus 3.5.
+_MARKER_SIDE = 7.0
+
+#: Width given to a floor rule that would otherwise be zero-wide -- the one-run
+#: series, whose single group begins and ends at the same marker. Drawing nothing
+#: there would be indistinguishable from "no floor was recorded", which is a
+#: different fact about the run and is counted separately.
+_LONE_RULE_WIDTH = 16.0
+
+#: The chart's styling, inlined into the chart. The report's stylesheet cannot be
+#: relied on for this: an SVG ``<line>`` with no ``stroke`` is invisible rather
+#: than black, so a timeline that inherited its colours from the page would render
+#: as an empty rectangle everywhere the page is not -- including the one place this
+#: project promises the document still works, a reviewer's offline machine. Every
+#: rule is prefixed with the chart's own class because ``<style>`` inside inline
+#: SVG is not scoped: it applies to the whole document that embeds it.
+_TIMELINE_CSS = (
+    ".migkit-timeline .floor{stroke:#6b6b6b;stroke-width:1.5;stroke-dasharray:4 3;fill:none}"
+    ".migkit-timeline .whisker{stroke:#9aa0a6;stroke-width:1.5}"
+    ".migkit-timeline rect{stroke:#ffffff;stroke-width:1}"
+    ".migkit-timeline .go{fill:#1a7f37}"
+    ".migkit-timeline .nogo{fill:#b3261e}"
+    ".migkit-timeline .review{fill:#a76b00}"
+    ".migkit-timeline .none{fill:#6b6b6b}"
+    ".migkit-timeline text{font-size:11px;fill:#3c4043}"
+)
+
+
+class Timeline(NamedTuple):
+    """The chart, and the two counts the sentence beneath it has to print.
+
+    A tuple rather than a bare ``str`` because two of this chart's rules are about
+    what it does *not* draw: a run whose floor was never recorded leaves a gap in
+    the rule, and a run with no pass rate gets no marker at all. Both of those are
+    invisible by construction, and an absence nobody counts is an absence nobody
+    notices -- which is the failure this whole document is built against. Handing
+    the caller the counts is what lets the page say "2 of 14 runs recorded no
+    floor" beneath the picture instead of leaving a reader to wonder whether the
+    rule is broken for a reason.
+
+    Still a tuple, so ``svg, *_ = timeline_svg(points)`` reads the way the
+    contract's original ``-> str`` signature implied it would.
+    """
+
+    #: The chart, as one ``<svg>`` element. Never ``""``: an empty series renders
+    #: as a chart that says there is nothing to plot, because a blank space in a
+    #: compliance document is read as a rendering bug rather than as a fact.
+    svg: str
+    #: Points whose ``floor`` is ``None``. Counted over every point handed in and
+    #: not only the drawn ones: a run with no usable date and no floor is still a
+    #: run whose floor is unknown.
+    runs_without_floor: int
+    #: Points whose ``pass_rate`` is ``None`` -- a run that produced no measurable
+    #: rate, which a truncated run reaches routinely.
+    runs_without_rate: int
+
+
+def timeline_svg(
+    points: Sequence[RunPoint],
+    *,
+    width: int = 900,
+    height: int = 260,
+) -> Timeline:
+    """Draw a series of comparisons as one SVG, with time on the horizontal axis.
+
+    **The axis is time, not run number.** Nightly runs are not evenly spaced: a
+    series recorded under CI has weekends in it, and the three weeks between the
+    run that was green and the run that was not is the most informative thing on
+    the chart. Evenly spaced dots hide exactly that, and they hide it while looking
+    correct, which is why spacing is computed from each point's parsed ``created``
+    and never from its index.
+
+    **Nothing is interpolated.** A marker is drawn where a run happened and nowhere
+    else: no line joins the markers, because a line between two runs asserts a pass
+    rate on every date in between, and on those dates nothing ran. The floor is
+    drawn as a step -- horizontal while it held, vertical where it changed -- for
+    the same reason and a sharper one: a ``<polyline>`` through the floor values
+    draws a diagonal ramp between two different floors, and a floor that ramps is
+    a floor no run was ever held to.
+
+    Nothing undrawable is dropped in silence. A run with no pass rate gets no
+    marker and is counted; a run with no recorded floor leaves a gap in the rule
+    and is counted; a run whose ``created`` will not parse cannot be placed on a
+    time axis at all, so it is left off and the picture says how many were.
+
+    Args:
+        points: The series, in any order -- they are sorted here by parsed
+            timestamp, because a chart whose x-axis is time may not take its
+            ordering from the order records happened to be appended in.
+        width: viewBox width in user units. The element is drawn to scale.
+        height: viewBox height in user units.
+
+    Returns:
+        A :class:`Timeline`: the ``<svg>``, the number of points with no recorded
+        floor, and the number with no pass rate.
+    """
+    runs_without_floor = sum(1 for point in points if point.floor is None)
+    runs_without_rate = sum(1 for point in points if point.pass_rate is None)
+    left, right = TIMELINE_PAD, float(width) - TIMELINE_PAD
+    top, bottom = TIMELINE_PAD, float(height) - TIMELINE_PAD
+
+    dated = [(parse_created(point.created), point) for point in points]
+    placed = [(moment, point) for moment, point in dated if moment is not None]
+    placed.sort(key=lambda pair: pair[0])
+    undated = len(points) - len(placed)
+
+    if not placed:
+        # Also the all-undated case, which says the same thing in the same words:
+        # what the reader needs to know is that nothing below is plotted.
+        empty = _svg_text(float(width) / 2, float(height) / 2, "No dated runs to plot", "middle")
+        return Timeline(_svg_frame(width, height, [empty]), runs_without_floor, runs_without_rate)
+
+    span = (placed[-1][0] - placed[0][0]).total_seconds()
+    xs = _timeline_x(placed, left, right)
+    body = [_svg_title(len(placed), span), f"<style>{_TIMELINE_CSS}</style>"]
+    body.extend(_floor_marks([point for _, point in placed], xs, top, bottom))
+
+    for index, (_, point) in enumerate(placed):
+        if point.pass_rate is None:
+            continue
+        x = xs[index]
+        if point.interval is not None:
+            low, high = point.interval
+            body.append(
+                f'<line class="whisker" x1="{_svg_number(x)}" x2="{_svg_number(x)}"'
+                f' y1="{_svg_number(_timeline_y(low, top, bottom))}"'
+                f' y2="{_svg_number(_timeline_y(high, top, bottom))}"/>'
+            )
+        body.append(_svg_marker(x, _timeline_y(point.pass_rate, top, bottom), point))
+
+    if undated:
+        body.append(
+            _svg_text(
+                left,
+                float(height) - 6.0,
+                f"{undated} run(s) with no usable date, not plotted",
+                "start",
+            )
+        )
+    return Timeline(_svg_frame(width, height, body), runs_without_floor, runs_without_rate)
+
+
+def _timeline_x(
+    placed: Sequence[tuple[datetime, RunPoint]],
+    left: float,
+    right: float,
+) -> list[float]:
+    """One x per point, mapped linearly from the earliest instant to the latest.
+
+    Two inputs are not a mapping at all and are handled first, because both divide
+    by a zero span. A single run has no span to map and is drawn at the horizontal
+    centre. Every run sharing one timestamp is not a pathological input either: a
+    generator that pins ``utc_now`` to a constant -- which is how the showcase
+    series is built -- produces a series identical to the microsecond, and so does
+    any log where two comparisons landed inside the same one. Those are spread
+    evenly across the axis the mapping would have used, and the chart's ``<title>``
+    says why, so that even spacing is never read as a claim about elapsed time.
+    """
+    if len(placed) == 1:
+        return [(left + right) / 2]
+    span = (placed[-1][0] - placed[0][0]).total_seconds()
+    if span <= 0:
+        step = (right - left) / (len(placed) - 1)
+        return [left + step * index for index in range(len(placed))]
+    first = placed[0][0]
+    return [
+        left + (right - left) * ((moment - first).total_seconds() / span) for moment, _ in placed
+    ]
+
+
+def _timeline_y(rate: float, top: float, bottom: float) -> float:
+    """A rate on a fixed 0-to-1 axis, never on one scaled to the data.
+
+    An axis that rescaled itself to the observed range would draw a series moving
+    from 0.94 to 0.95 as a cliff, and the reader of a change-control document is
+    entitled to read height as rate without first reading the axis.
+    """
+    return bottom - min(max(rate, 0.0), 1.0) * (bottom - top)
+
+
+def _floor_groups(points: Sequence[RunPoint]) -> list[tuple[int, int, float]]:
+    """``(first index, last index, floor)`` per maximal run of one recorded floor.
+
+    A point with no recorded floor ends the group it follows rather than joining
+    it, so two 0.9 runs either side of an unrecorded one are two groups and not
+    one -- the rule breaks over the gap instead of being drawn straight through the
+    run nobody can say what it was held to.
+    """
+    groups: list[tuple[int, int, float]] = []
+    for index, point in enumerate(points):
+        floor = point.floor
+        if floor is None:
+            continue
+        if groups and groups[-1][1] == index - 1 and groups[-1][2] == floor:
+            groups[-1] = (groups[-1][0], index, floor)
+        else:
+            groups.append((index, index, floor))
+    return groups
+
+
+def _floor_marks(
+    points: Sequence[RunPoint],
+    xs: Sequence[float],
+    top: float,
+    bottom: float,
+) -> list[str]:
+    """The floor as horizontal rules and vertical steps, one ``<line>`` each.
+
+    A group's rule reaches half-way to the neighbouring run on each side rather
+    than stopping at its own outermost marker, and the vertical step is drawn at
+    that same midpoint. The midpoint is the honest position: the evidence says the
+    floor was one number on the day of one run and another on the day of the next,
+    and says nothing whatever about the days in between. Reaching half-way is also
+    what makes a group of one visible at all.
+    """
+    marks: list[str] = []
+    groups = _floor_groups(points)
+    last = len(xs) - 1
+    for start, end, floor in groups:
+        x1 = xs[start] if start == 0 else (xs[start - 1] + xs[start]) / 2
+        x2 = xs[end] if end == last else (xs[end] + xs[end + 1]) / 2
+        if x2 <= x1:
+            centre = (x1 + x2) / 2
+            x1, x2 = centre - _LONE_RULE_WIDTH / 2, centre + _LONE_RULE_WIDTH / 2
+        y = _timeline_y(floor, top, bottom)
+        marks.append(
+            f'<line class="floor" x1="{_svg_number(x1)}" x2="{_svg_number(x2)}"'
+            f' y1="{_svg_number(y)}" y2="{_svg_number(y)}" data-rule="{_svg_number(floor, 6)}"/>'
+        )
+    for position, before in enumerate(groups[:-1]):
+        after = groups[position + 1]
+        if before[1] + 1 != after[0]:
+            continue  # a run with no recorded floor sits between them: no step.
+        x = (xs[before[1]] + xs[after[0]]) / 2
+        marks.append(
+            f'<line class="floor" x1="{_svg_number(x)}" x2="{_svg_number(x)}"'
+            f' y1="{_svg_number(_timeline_y(before[2], top, bottom))}"'
+            f' y2="{_svg_number(_timeline_y(after[2], top, bottom))}"/>'
+        )
+    return marks
+
+
+def _svg_marker(x: float, y: float, point: RunPoint) -> str:
+    """One run, as a square carrying the four values the contract names.
+
+    Neither ``class`` nor ``data-verdict`` is ever a word lifted straight out of
+    the log. A class name built from recorded text is a class name an evidence log
+    gets to choose, and this module treats everything that arrived from disk as
+    attacker-influenced -- but the sharper reason is the one
+    :func:`assert_self_contained` supplies: it judges *every* attribute value by
+    :data:`_SCHEME_RE`, so a recorded verdict reading ``review: n was too small``
+    matches ``scheme:`` and makes ``render_html`` refuse the whole document.
+    Recorded text that can stop a report existing is recorded text controlling
+    markup. So a verdict this report recognises travels verbatim and one it does
+    not is rendered as no verdict rather than as itself -- the recorded word is
+    printed in full, as escaped text, in the row this marker belongs to.
+
+    ``data-rate`` and ``data-floor`` are empty exactly when the number is missing.
+    An absent floor is the reason the rule beneath this run has a gap in it, and
+    writing ``0`` there instead is the one thing this document may never do.
+    """
+    half = _MARKER_SIDE / 2
+    rate = "" if point.pass_rate is None else _svg_number(point.pass_rate, 6)
+    floor = "" if point.floor is None else _svg_number(point.floor, 6)
+    verdict = point.verdict if point.verdict in _VERDICT_CLASS else ""
+    return (
+        f'<rect class="{_VERDICT_CLASS.get(point.verdict, "none")}"'
+        f' x="{_svg_number(x)}" y="{_svg_number(y)}"'
+        f' width="{_svg_number(_MARKER_SIDE)}" height="{_svg_number(_MARKER_SIDE)}"'
+        f' transform="translate({_svg_number(-half)} {_svg_number(-half)})"'
+        f' data-created="{_svg_attr(point.created)}" data-rate="{rate}"'
+        f' data-verdict="{_svg_attr(verdict)}" data-floor="{floor}"/>'
+    )
+
+
+def _svg_title(runs: int, span: float) -> str:
+    """The chart's accessible name, and the disclosure the zero-span case owes."""
+    text = f"Candidate pass rate over {runs} run(s); the horizontal axis is time."
+    if runs > 1 and span <= 0:
+        text += (
+            f" All {runs} runs share a timestamp, so the markers are spaced evenly"
+            " rather than by elapsed time."
+        )
+    return f"<title>{_svg_attr(text)}</title>"
+
+
+def _svg_text(x: float, y: float, text: str, anchor: str) -> str:
+    return (
+        f'<text x="{_svg_number(x)}" y="{_svg_number(y)}" text-anchor="{anchor}">'
+        f"{_svg_attr(text)}</text>"
+    )
+
+
+def _svg_frame(width: int, height: int, body: Sequence[str]) -> str:
+    """The ``<svg>`` element itself, carrying no ``xmlns`` -- which is deliberate.
+
+    A namespace declaration is the one attribute value in this chart that looks
+    like a URL, and :func:`assert_self_contained` judges attribute values by
+    :data:`_SCHEME_RE` rather than by attribute name. So
+    ``xmlns="http://www.w3.org/2000/svg"`` is reported as a position that would
+    fetch, and ``render_html`` -- which runs that assertion over its own output
+    before writing anything -- refuses to render any report containing this chart.
+    Verified rather than surmised: it is what the first render of a timeline did.
+
+    Losing the declaration costs nothing where the chart is used. Inline SVG in an
+    HTML document is put into the SVG namespace by the HTML parser itself, and the
+    declaration matters only to somebody who saves the chart alone as a ``.svg``,
+    which is not how this document is read. Teaching the detector about namespace
+    URIs is the other fix, and it is not this chunk's to make: that detector is a
+    security control, and widening it so that a chart renders is the shape of
+    change that quietly widens it for something else.
+    """
+    joined = "\n".join(body)
+    return (
+        f'<svg class="migkit-timeline" role="img"'
+        f' viewBox="0 0 {_svg_number(width)} {_svg_number(height)}"'
+        f' width="{_svg_number(width)}" height="{_svg_number(height)}">{joined}</svg>'
+    )
+
+
+def _svg_number(value: float, digits: int = 3) -> str:
+    """A coordinate, rounded and trimmed, so that 450.0 is written ``450``.
+
+    Trimmed rather than left as ``450.000`` because these values are read by people
+    as often as by parsers, and rounded rather than repr'd because a coordinate
+    carrying seventeen significant figures of binary float is noise in a document
+    somebody has to diff.
+    """
+    return f"{value:.{digits}f}".rstrip("0").rstrip(".") or "0"
+
+
+def _svg_attr(value: object) -> str:
+    """Attribute values and text content, escaped.
+
+    Every string that reaches here came off disk -- ``created`` and ``verdict`` are
+    recorded text, and this module's whole posture is that recorded text is
+    attacker-influenced. An unescaped ``"`` in a ``data-`` value closes the
+    attribute, and the rest of the record becomes markup.
+    """
+    return html.escape(str(value), quote=True)

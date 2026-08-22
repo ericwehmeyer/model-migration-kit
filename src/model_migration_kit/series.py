@@ -54,14 +54,14 @@ import math
 from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from .contracts import EVENT_COMPARISON, EVENT_VERDICT
 from .evidence import resolve_evidence, stream_records
 
-__all__ = ["RunPoint", "read_series", "run_point"]
+__all__ = ["RunPoint", "parse_created", "read_series", "run_point"]
 
 #: ``floor_source``'s three values. The word "unrecorded" is
 #: ``report.THRESHOLD_SOURCE_UNRECORDED``'s, deliberately: the report already has
@@ -453,22 +453,40 @@ def _created(recorded: Any, envelope_ts: str) -> tuple[str, str]:
     return "", "unknown"
 
 
-def _is_timestamp(value: str) -> bool:
-    """Whether ``datetime.fromisoformat`` will accept this, on 3.10 as on 3.13.
+def parse_created(value: str) -> datetime | None:
+    """The instant a ``created`` string names, or ``None`` when it names none.
 
-    A trailing ``Z`` is normalised for the check and deliberately not for the
+    Public, and the only timestamp parser in this package, because the timeline
+    needs the parsed instant rather than merely the predicate below -- an x-axis
+    that is time has to subtract two of these. A second parser would be free to
+    disagree with this one about either normalisation, and the disagreement would
+    surface as a run that is dated in the table and undated in the chart.
+
+    A trailing ``Z`` is normalised for the parse and deliberately not for the
     stored value. ``fromisoformat`` learned to accept ``Z`` only in 3.11, and this
     package supports 3.10, so without the normalisation one evidence log would
     yield a dated point on one interpreter and an undated one on another.
+
+    A timestamp carrying no offset is read as UTC. Every timestamp this package
+    writes carries one (``contracts.utc_now``), so this is about logs written by
+    something else -- and the alternative is worse than a guess: Python refuses to
+    compare a naive datetime with an aware one, so a single offsetless record in a
+    log full of ``+00:00`` ones would raise ``TypeError`` out of a sort rather
+    than misplace one marker.
     """
     if not value:
-        return False
+        return None
     normalised = f"{value[:-1]}+00:00" if value.endswith("Z") else value
     try:
-        datetime.fromisoformat(normalised)
+        moment = datetime.fromisoformat(normalised)
     except ValueError:
-        return False
-    return True
+        return None
+    return moment if moment.tzinfo is not None else moment.replace(tzinfo=timezone.utc)
+
+
+def _is_timestamp(value: str) -> bool:
+    """Whether :func:`parse_created` can place this value on a timeline."""
+    return parse_created(value) is not None
 
 
 # --------------------------------------------------------------------------- #
