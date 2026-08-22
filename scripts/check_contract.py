@@ -42,7 +42,10 @@ REPO = Path(__file__).resolve().parent.parent
 #: dependency this package is built on, and half the interesting citations point
 #: into it -- so a bare ``judge.py`` must be resolved against both trees before
 #: it can be called missing.
-SIBLINGS = (REPO, REPO.parent / "opik-rigor")
+#: ``REPO.parent`` is included so a citation may be written the way a human
+#: would read it -- ``opik-rigor/src/opik_rigor/judge.py`` -- rather than
+#: relative to a root the reader has to infer.
+SIBLINGS = (REPO, REPO.parent / "opik-rigor", REPO.parent)
 
 #: Directories that hold copies of a tree rather than the tree. Matched by
 #: shape because a virtualenv is not always called ``.venv`` -- the sibling

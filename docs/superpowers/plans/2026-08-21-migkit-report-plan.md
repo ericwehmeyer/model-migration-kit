@@ -2349,7 +2349,8 @@ it.** `evidence.py`'s docstring records the measurement: a `judge.verdict` embed
 the input, the output and the judge's raw reply for every completion, and holding
 the log cost 5.0-5.8x its own bytes resident. Materialising the records here would
 reintroduce exactly the amplification that module was extracted to kill. `items`
-is `gs_view["by_id"]`, id -> `Item`.
+is `gs_view["by_id"]`, id -> `GoldenItem` (`contracts.py:106`). There is no
+`Item`; R11.3 records the error this sentence used to carry.
 
 **The join, and why it is by input text.** `judge.verdict` carries no `item_id`.
 It carries `input`, which `judging.py:744` passes through verbatim from the golden
@@ -2359,7 +2360,9 @@ cells identical to the artifact-derived one.
 
 **The side comes from ordering, not from the record.** The `model_id` on a
 `judge.verdict` is the **judge's** model, not the candidate's — read
-`judge.py:318-328` before you write a line of this, because using it is the single
+`opik-rigor/src/opik_rigor/judge.py:315-329` before you write a line of this, because using it is the single
+-- it is in the *dependency*, not this package, and R12.1 records that this
+sentence named that file as though it were local --
 most likely way to get this chunk silently wrong, and every cell would still
 render. The side is the `model_id` on the next `migkit.judging_completed`
 (`judging.py:664`). Verdicts accumulate; that record closes the group and names
