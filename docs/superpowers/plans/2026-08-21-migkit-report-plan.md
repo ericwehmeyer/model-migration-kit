@@ -2953,3 +2953,105 @@ be a real finding and it changes the chunk.
 `showcase_adapters(gs, night=6)` called twice must yield byte-identical artifacts
 through `run_goldenset` at `concurrency=1`. A stateless adapter makes that
 cheaper to hold, not harder.
+
+---
+
+### C14a — the two charts that exist, and the evidence made legible
+
+C14 lists nine elements and **seven of them depend on chunks that are unbuilt or
+in flight** — the spot-check sentence (C11), the candidate table (C5), the
+multiplicity note (C6), the excluded-runs list (C4), the dimension matrix (C10,
+blocked), and the parameter strip (C7). Waiting for all of them means the
+document shows none of the work, which is where it stands today: `timeline_svg`
+and `interval_bar_svg` are merged, reviewed and mutation-tested, and **nothing
+calls them**.
+
+This chunk renders the two that are ready and fixes what a reader actually
+complained about. C14 keeps the other seven.
+
+**Files.** `report.py` — `_TEMPLATE`, `_CHANGES_MACRO`, `_environment`.
+`tests/test_report.py`. **Not** `from_evidence`, **not** `ReportModel`, **not**
+`dimensions.py`: another chunk is inside those right now.
+
+**In scope, and nothing else.**
+
+| Element | `id` | Present when |
+|---|---|---|
+| verdict banner gains an inline interval bar | `verdict` | always |
+| timeline | `timeline` | `len(model.series) >= 1` |
+
+Leave the other seven `id`s unused. A later chunk claims them, and a placeholder
+that says "coming soon" is worse than an absence — it is a promise in a document
+whose whole claim is that it does not promise what it cannot show.
+
+**The rendering defects, which are the other half of this chunk.**
+
+**1. Identical draws are printed once, not N times.** Today `extract-01` prints
+`98.10` five times and `refuse-02` prints the same 260-character paragraph five
+times. Repetition is not evidence. When every draw of a side is byte-identical,
+print the text once above a line reading `all 5 draws identical`. When they
+differ, print each and say how many differed — **that** is the fact a reader
+needs, and today it is invisible because uniformity and variation look the same.
+
+**The completeness claim must survive this and must not quietly change meaning.**
+`report.py`'s detail-budget sentence currently says every changed item "carries
+its full outputs: 5,821 characters ... against a budget of 10,000,000". Collapsing
+identical draws changes the character count. The sentence must keep counting what
+was *produced*, not what was *printed*, or it becomes a completeness claim about a
+smaller thing — which is the R5 failure ("missing data stated as zero") in a new
+coat. State both numbers if that is what it takes.
+
+**2. The finding is not hidden behind a closed disclosure triangle.** The most
+important result of the demo run is that the candidate writes a fabricated
+data-breach notice on request and invents a refund figure the source thread never
+states. Both sit inside `<details>` that render closed. A reader who does not
+click sees a NO-GO and a p-value.
+
+Flips are the point of the document. Open them by default, or lift the judge's
+reason and a short quote to the summary line so the closed state still carries
+the finding. **Do not** open gains by default — they are context, not the finding,
+and the document already argues that netting the two is how a bad migration
+ships.
+
+**3. Paths are shown once, in full, where they can be checked.** The demo report
+prints an absolute temp path eight times, each about 130 characters, in a document
+whose readable width is 60rem. Provenance and "What was compared" are where a path
+belongs at full length. Elsewhere the basename is enough, and the full path stays
+in `title=` — which is not in `FETCHING_ATTRS` and is not dereferenced.
+
+**4. A row that can never say anything is not printed.** Latency on a run whose
+adapters are scripted reads `0.000 / 0.000`. `RunSummary.is_fake` already knows.
+Suppress the table and say why in one line, rather than printing two zeros that a
+reader has to work out are meaningless.
+
+**Must not.** Add `<script>`, `<link>`, a web font, or any attribute in
+`FETCHING_ATTRS`. Add a `| safe` anywhere except the single point each SVG helper
+is injected — the helpers return trusted markup, everything derived from model
+output stays escaped, and a test asserts the set of `| safe` filters equals the
+known injection points by name. Work around `StrictUndefined`: a `{{ }}` reference
+to a field `ReportModel` does not define must raise, which is the designed
+behaviour. Reference `model.dimensions` — it does not exist yet.
+
+**Failure mode when wrong.** `assert_self_contained` runs inside `render_html`
+before the file is written, so an external reference fails the render rather than
+shipping. The failure that *does* ship is a `| safe` on a path that can carry
+model output, which turns an escaped `<img src="https://tracker/x.png">` in a
+completion into a real fetch.
+
+**Test that fails first.**
+`test_the_document_marks_exactly_one_expression_safe_per_hand_rolled_svg_and_no_others`
+— parse `_TEMPLATE + _CHANGES_MACRO`, assert the set of `| safe` filters equals
+the known SVG injection points by name.
+
+**Then.** `test_the_rendered_report_has_no_external_url` and
+`test_the_rendered_report_has_zero_script_and_zero_link_elements` must pass
+unchanged against a fixture exercising both new sections.
+
+**Reviewer.** Three things. **One:** the identical-draws collapse must not weaken
+the completeness claim — check the sentence says what it counts. **Two:** C20 has
+just narrowed the self-containment scanner, and its reviewer found that SVG
+presentation attributes taking a CSS `<url>` (`fill`, `filter`, `mask`,
+`clip-path`, `marker-end`, `cursor`) are invisible to it. This chunk injects
+inline SVG into the document for the first time, so `fill="url(...)"` is now
+reachable in a way it was not before. Check what the two helpers actually emit.
+**Three:** mutate each `| safe` off and confirm something goes red.
