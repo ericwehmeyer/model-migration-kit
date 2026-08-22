@@ -1951,3 +1951,71 @@ Also worth naming: report degradation never affects the exit code, because
 a complete one are indistinguishable to a pipeline. Elsewhere in this codebase a
 SKIPPED release check is exit 2 precisely so a gate cannot mistake absence for
 success; the report does not hold that line.
+
+### R6 — C13's signature contradicts C13's prose; the counts come back in a tuple
+
+The contract declares `timeline_svg(...) -> str` and then says, two paragraphs
+later, that "the count of such runs is returned to the caller for a sentence
+beneath the chart" — and its Edges table adds a *second* count, for points whose
+`pass_rate is None`. A string cannot carry either.
+
+Dispatched as written this guarantees a mismatch: the implementer picks one
+reading, the tester picks the other, and neither is wrong. Settled before
+dispatch, and both agents were briefed identically:
+
+```python
+class Timeline(NamedTuple):
+    svg: str
+    runs_without_floor: int
+    runs_without_rate: int
+
+def timeline_svg(
+    points: Sequence[RunPoint], *, width: int = 900, height: int = 260,
+) -> Timeline: ...
+```
+
+The name `timeline_svg` stays because C14 will call it by that name, and a
+`NamedTuple` is still a tuple, so `svg, *_ = timeline_svg(...)` keeps working.
+Both counts are counts of **points**, not of segments — a run with no floor is one
+point whether or not it sits between two that share a floor.
+
+### R7 — the render helpers' padding constants are named, and imported by their tests
+
+C12's geometry contract writes its padding as `PAD = 8`. `report.py` is 2,700
+lines and a bare `PAD` is a collision waiting for the second helper that wants
+one — which is C13, in the same module, in the same week. So: **`INTERVAL_BAR_PAD`
+for C12, `TIMELINE_PAD` for C13**, both module-level and importable from
+`model_migration_kit.report`.
+
+Both testers were told to **import the constant, never to hard-code its value**. A
+test that spells `8` where the code spells `INTERVAL_BAR_PAD` cannot tell a
+deliberately changed constant from a broken projection: it fails either way, and
+the failure says nothing about which happened.
+
+C12's `data-value` is also pinned, for the same reason the constant is: the
+*unmapped* float to exactly six places. That attribute is the seam the tests use
+to check the model's number reached the drawing without re-deriving the
+projection, and a rounded one would make the check circular.
+
+### R8 — OPEN: the headline verdict and `series[-1].verdict` can disagree
+
+Not settled. Raised by C3's implementer and recorded here so the reviewer arrives
+at it with the evidence rather than rediscovering it.
+
+C3's Edges table requires that "`series[-1]` describes the same run as the
+headline fields". Its "Must not" requires that no existing field change value. On
+one log shape those two requirements point in opposite directions: given
+`C1 C2 V1`, the headline takes the last `migkit.verdict` record unconditionally
+and reports V1, while the series pairs FIFO and closes C1 with V1, leaving
+`series[-1].verdict` as `None`.
+
+The implementer chose "headline unchanged" over "the two always agree", on the
+grounds that `compare` writes a comparison and its verdict adjacent
+(`comparison.py:906-908`), so no log written today has this shape. That reasoning
+is sound and the choice is the conservative one, but it leaves a stated edge
+unmet, and the fix — if one is wanted — belongs to the headline's reduction, not
+to the series, which makes it a behaviour change C3 explicitly forbids. So it is
+a chunk of its own or it is a documented limitation. **Decide it at C3's review,
+and if the answer is "documented limitation", the document that carries it is
+`report.py`'s docstring, not this plan** — nobody debugging a disagreeing banner
+will be reading the build plan.

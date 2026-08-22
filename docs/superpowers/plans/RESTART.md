@@ -26,39 +26,64 @@ than the chunk is worth. `grep -n '^#### C' <plan>` gives the line numbers.
 
 **Read the `Revisions, 2026-08-21` section at the end of the plan before
 anything else.** It is the delta, it is short, and it supersedes the contracts
-above it in five places.
+above it in seven places -- R8 is the eighth entry and is an open question, not a
+ruling.
 
 ## Where things stand
 
-**C1 and C2 are merged to main and green.** 1214 tests, ruff clean, release gate
-16 passed / 0 skipped. `series.py` (`RunPoint`, `run_point`, `read_series`) and
-`evidence.py` (`stream_records`, `resolve_evidence`) are in. The relative
-work-dir fix is merged too.
+**C1, C2 and C15 are merged to main and green.** 1228 tests, ruff clean.
+`series.py` (`RunPoint`, `run_point`, `read_series`), `evidence.py`
+(`stream_records`, `resolve_evidence`), the relative work-dir fix, and the
+96-item synthetic showcase golden set with its generator are all in.
+
+C15 merged after its revision pass, which is worth knowing about because the
+finding generalises: five of its sixteen `refusal` items **could not be refused**.
+Each referred to something the prompt never supplied — a support thread, a rubric
+"you were given", tokens "shown in this conversation", "this set", a medical
+reason stated elsewhere. The correct single-turn answer to all five is "you have
+not given me that", which a refusal rubric scores as a *failure to refuse*. The
+rule now written into the generator: the thing being asked for must be present in
+the item, and the whole of the requested output must be the harm. An item that can
+be half-answered grades as partial credit, and the dimension the showcase
+collapses on cannot be built out of partial credit.
+
+The set is now pinned by content hash, verified by mutation: changing `SYN-1204`
+to `SYN-1205`, one character, leaves all thirteen property tests green and fails
+the pin alone. **Re-pin deliberately, never to make the suite green** — after C17
+an edit here is a 56-run re-seed, not a commit.
 
 | Branch | Contains | State |
 |---|---|---|
-| `main` | spec, plan, revisions, C1, C2, work-dir fix | green, pushed |
-| `chunk/c15-impl` | showcase golden set + generator, 12 blind tests | reviewed, **blocked** |
-| `chunk/c12-impl`, `chunk/c12-test` | empty | stopped 1 min in; re-dispatch fresh |
-| `chunk/c1-*`, `chunk/c2-*`, `fix/relative-work-dir` | merged | can be deleted |
+| `main` | spec, plan, R1-R8, C1, C2, C15, work-dir fix | green, pushed |
+| `chunk/c3-impl` | C3 implementation (`b90db16`) | done, awaiting its tests |
+| `chunk/c3-test` | C3's blind tests | in flight |
+| `chunk/c12-impl`, `chunk/c12-test` | the interval bar | in flight |
+| `chunk/c13-impl`, `chunk/c13-test` | the timeline | in flight |
+| `chunk/c1-*`, `chunk/c2-*`, `chunk/c15-*`, `fix/relative-work-dir` | merged | can be deleted |
 
 Worktrees are under `repos\mk-*`; `git worktree list` enumerates them. They
-persist across sessions, so do not recreate them.
+persist across sessions, so do not recreate them — reset an idle one to `main`
+instead.
 
-## Do these first, in this order
+## Do these next, in this order
 
-1. **C15's revision pass — before C16 or C17 run.** The reviewer found five of
-   sixteen `refusal` items are not refusable (`refuse-04`, `-06`, `-07`, `-14`,
-   `-15`), in the dimension the entire showcase narrative collapses. Also: pin
-   the content hash (one line, converts ten silent mutations to loud), assert
-   the six tag names, and correct `__init__.py`'s claim that the package ships
-   three data files — it now ships four. **The sequencing is the point:** today
-   an edit is a commit; after C17 it is a full 56-run re-seed.
-2. **Then the critical path**: C3 (its input, C2, is merged), then C8-C10, then
-   C13-C14. C8's contract is superseded by R1 -- build the matrix from
-   `judge.verdict` plus the golden set, not from the judged artifacts.
+1. **Land C3, C12 and C13**: merge each tester's file onto its implementer's
+   branch, run it yourself, then dispatch a reviewer that sees both and is asked
+   for mutation testing. C12 and C13 both touch `report.py` and
+   `tests/test_report.py`; they were given disjoint insertion points (C12 before
+   `_TEMPLATE_NAME`, C13 at EOF) so the merge is mechanical, but both testers
+   append to the same test file and that conflict is real, trivial, and yours.
+2. **Settle R8 at C3's review.** The headline verdict and `series[-1].verdict`
+   disagree on a `C1 C2 V1` log. It is unreachable today and the edge table asks
+   for agreement anyway. Decide, and if the answer is "documented limitation", put
+   it in `report.py`'s docstring where a person debugging a disagreeing banner
+   will find it.
+3. **Then C8-C10, then C14.** C8's contract is superseded by R1 — build the matrix
+   from `judge.verdict` plus the golden set, not from the judged artifacts. C10
+   wires the matrix into `ReportModel` and therefore **cannot** run beside C3; see
+   below.
 
-Off the path, pick up when convenient: C11, C12, C16-C18.
+Off the path, pick up when convenient: C11, C16-C18.
 
 ## The dispatch pattern
 
@@ -75,6 +100,38 @@ Four agents per chunk, none sharing context:
 Implementer and tester run **in parallel**. The reviewer is where most of the
 value has come from — three of three reviews found defects both other roles
 missed, and mutation testing found holes a green suite hid.
+
+### When it is safe to go wide
+
+Width is not limited by worktrees — those already solved file collisions. It is
+limited by **vocabulary**. The one time this project got burned, C1's review
+demanded field renames (`completions_*` became `judged_*`) *after* C2 had started
+typing the old ones. Nothing collided; the work simply had to be redone.
+
+Three rules, in the order they bite:
+
+1. **Every name a chunk will type must already be through review** — not merely
+   merged. Merged-but-unreviewed is the trap, because review is where the renames
+   come from. Three of three reviews so far demanded changes.
+2. **Never run a producer beside its consumer.** C3 defines
+   `ReportModel.series`; C10 wires the matrix into `ReportModel`. Sequential, no
+   matter how many worktrees are free.
+3. **Pure functions are the wide lane.** C12 takes floats and returns SVG; C13
+   takes `Sequence[RunPoint]` and reads only fields that are reviewed, merged and
+   post-rename. Verify that in `series.py` rather than trusting the plan — the
+   plan predates the renames. Both went out beside C3 at zero coordination cost.
+
+And a fourth that is about you, not the code: **the orchestrator is the cap.** You
+merge each tester's file onto each implementer's branch and run it. Three chunks
+in flight is about the width at which each still gets a real review, and the
+review is where the value has been.
+
+**Before dispatching a pair, read the contract for a self-contradiction and settle
+it yourself.** C13's said `-> str` in the signature and "returns the count" in the
+prose; dispatched as written, the implementer and the tester would each have
+picked a different reading and neither would have been wrong. R6 and R7 are what
+that looks like written down: decide, put it in *both* briefs verbatim, and
+record it as a revision.
 
 ## The preamble every agent brief needs
 
