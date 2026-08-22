@@ -262,19 +262,33 @@ _EVENT_HANDLER_RE = re.compile(r"^on[a-z]+$")
 #: ``data-verdict`` into a fetch and nothing here would say so. Whoever allows
 #: script must delete this exemption in the same change.
 #:
-#: SAFETY, the second coupling -- CSS. Script is not the only thing that can
-#: read an attribute back out: ``[data-icon] { background: url(attr(data-icon)) }``
-#: would turn an exempt value into a request with no script anywhere. It does not
-#: work, and not by accident -- a value produced by ``attr()`` is *attr()-tainted*
-#: and a tainted value is invalid at computed-value time in a ``<url>`` context --
-#: but note what that means: this is a **platform rule this repository does not
-#: control**, unlike the script ban above, which it does. Before this chunk the
-#: shape rules caught ``data-icon="https://..."`` on the way in and the taint rule
-#: never had to hold. Now it does. Two things follow. Widening ``_URL_FN_RE``
-#: past ``url(`` -- it does not match ``src()`` or ``image-set()`` today, which is
-#: a separate pre-existing gap -- becomes more valuable, not less. And if the CSS
-#: WG ever relaxes attr()-tainting, re-read this exemption rather than assuming
+#: SAFETY, the second coupling -- CSS. Script is not the only thing that can read
+#: an attribute back out. ``[data-icon] { background: url(attr(data-icon)) }``
+#: would turn an exempt value into a request with no script anywhere, and what
+#: stops it is *attr()-tainting*: css-values-5 makes a value produced by
+#: ``attr()`` tainted as a whole, and "using an attr()-tainted value as or in a
+#: ``<url>`` makes a declaration invalid at computed-value time". That is a rule
+#: on the *type*, not a list of functions, so it covers ``src()``, ``image()``,
+#: ``image-set()`` and laundering through ``var()`` or a custom property alike;
+#: Chrome enforces it (WPT ``css/css-values/attr-security.html``, 30/30), and
+#: Gecko and WebKit have not shipped advanced ``attr()`` at all.
+#:
+#: Note what kind of rule that is. The script ban above is enforced *here*, by
+#: ``FORBIDDEN_TAGS``. Tainting is enforced by browsers, and this repository does
+#: not control it. Before this chunk the shape rules caught
+#: ``data-icon="https://..."`` on the way in, so tainting never had to hold; now
+#: it does. If it is ever relaxed, re-read this exemption rather than assuming
 #: the script ban still covers it.
+#:
+#: What tainting does *not* stop, and never did: an attribute value can still
+#: *select* which static URL is fetched -- ``[data-verdict^="a"] { background:
+#: url(...) }`` is the classic form, and the CSSWG closed the ``@container
+#: style(attr(...))`` version as wontfix on the grounds that attribute selectors
+#: already did it. That channel reads the attribute whether or not this scanner
+#: flagged its value, so the exemption neither opens nor widens it, and the
+#: static URL it needs is caught by ``_scan_css`` -- unless written as
+#: ``image-set()``, which ``_URL_FN_RE`` does not match. That gap predates this
+#: chunk and is the follow-up worth doing.
 #:
 #: These four families and no others. ``data-*`` is author data and ``aria-*``
 #: is accessibility metadata -- neither has a member the platform retrieves --

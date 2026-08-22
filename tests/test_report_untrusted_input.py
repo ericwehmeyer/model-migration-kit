@@ -966,15 +966,19 @@ def test_the_two_css_rules_are_untouched(fragment: str) -> None:
     ``span[data-icon] { background-image: url(attr(data-icon)) }`` is the shape
     that would make this whole exemption unsafe with no script anywhere in the
     document. It does not work, and not by accident: a value produced by
-    ``attr()`` is *attr()-tainted*, and using a tainted value in any URL context
-    -- ``url()``, ``image-set()``, ``src()`` -- makes the declaration invalid at
-    computed value time. The CSS WG made ``type(<url>)`` invalid in ``attr()``
-    for exactly the reason this chunk cares about. That is a second coupling the
-    exemption rests on, alongside the script ban, and it is a platform rule
-    rather than a rule this repository controls.
+    ``attr()`` is *attr()-tainted*, and css-values-5 makes a declaration invalid
+    at computed-value time when a tainted value is used "as or in a ``<url>``".
+    That is a constraint on the type rather than a list of functions, so it holds
+    for ``src()`` and ``image-set()`` too, and for laundering through ``var()``.
+    That is a second coupling the exemption rests on, alongside the script ban,
+    and unlike the script ban it is a platform rule rather than one this
+    repository controls.
 
     So these two rules carry more weight after this chunk than before it, not
-    less: they are what still catches CSS that fetches.
+    less: they are what still catches CSS that fetches. Which is also why
+    ``_URL_FN_RE`` matching only ``url(`` -- not ``image-set()``, which ships
+    everywhere -- is worth fixing, though it predates this chunk and is not part
+    of it.
     """
     assert len(external_urls(fragment)) == 1
 
