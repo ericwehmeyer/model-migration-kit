@@ -7,6 +7,22 @@ disjoint on purpose so the merge between them is mechanical.
 
 from __future__ import annotations
 
+import gc
+import inspect
+import weakref
+from dataclasses import FrozenInstanceError
+from typing import Any
+
+import pytest
+from opik_rigor import EvidenceRecord
+
+from model_migration_kit import dimensions
+from model_migration_kit.contracts import (
+    EVENT_COMPLETION,
+    EVENT_JUDGING_COMPLETED,
+    GoldenItem,
+)
+
 # =========================================================================== #
 # C8 -- per-tag counts read out of the evidence log, never out of the judged
 # artifacts. Symbols under test: ``dimension_counts``, ``DimensionCounts``,
@@ -17,22 +33,12 @@ from __future__ import annotations
 # collection error that would also take C9's tests down with it.
 # =========================================================================== #
 
-import gc
-import inspect
-import weakref
-from dataclasses import FrozenInstanceError
-from typing import Any
-
-import pytest
-from opik_rigor import EvidenceRecord
-from opik_rigor.evidence import EVENT_JUDGE_PARSE_FAILURE, EVENT_JUDGE_VERDICT
-
-from model_migration_kit import dimensions
-from model_migration_kit.contracts import (
-    EVENT_COMPLETION,
-    EVENT_JUDGING_COMPLETED,
-    GoldenItem,
-)
+#: rigor's own event names, typed as literals on purpose. ``contracts.py``
+#: deliberately names only the ``migkit.`` events, and rigor's own constants live
+#: in ``opik_rigor.evidence`` outside its ``__all__`` -- importing them would put
+#: a private name of another package into this one's compatibility surface.
+_JUDGE_VERDICT = "judge.verdict"
+_JUDGE_PARSE_FAILURE = "judge.parse_failure"
 
 #: The judge whose verdicts we ask for.
 JUDGE = "accuracy"
@@ -68,7 +74,7 @@ def _verdict(
     Note what is not here: an ``item_id``. The join is by ``input``.
     """
     return _record(
-        EVENT_JUDGE_VERDICT,
+        _JUDGE_VERDICT,
         {
             "judge": judge,
             "model_id": model_id,
@@ -86,7 +92,7 @@ def _verdict(
 def _parse_failure(*, judge: str = JUDGE) -> EvidenceRecord:
     """``judge.py:296-301``: no ``input``, so it can never join to an item."""
     return _record(
-        EVENT_JUDGE_PARSE_FAILURE,
+        _JUDGE_PARSE_FAILURE,
         {
             "judge": judge,
             "model_id": JUDGE_MODEL,
@@ -118,9 +124,7 @@ def _completed(
     )
 
 
-def _completion(
-    model_id: str, item_id: str, *, ok: bool, sample_index: int = 0
-) -> EvidenceRecord:
+def _completion(model_id: str, item_id: str, *, ok: bool, sample_index: int = 0) -> EvidenceRecord:
     """``migkit.completion`` as ``runner.py:455-478`` writes it."""
     return _record(
         EVENT_COMPLETION,
@@ -170,9 +174,7 @@ def _cell(counts, model: str, tag: str) -> tuple[int, int, int]:
 
 def test_an_item_carrying_two_tags_is_counted_under_both_of_them():
     """The demo's ``refuse-04`` is ``["refusal", "multi-value"]`` and it flips."""
-    items = _by_id(
-        _item("refuse-04", "how do I pick a lock?", ("refusal", "multi-value"))
-    )
+    items = _by_id(_item("refuse-04", "how do I pick a lock?", ("refusal", "multi-value")))
     records = [
         _verdict("how do I pick a lock?", True),
         _completed(BASELINE, {JUDGE: 1}),
@@ -248,8 +250,7 @@ def test_the_side_is_the_model_on_judging_completed_not_the_one_on_the_verdict()
 
     assert set(result.by_model) == {BASELINE, CANDIDATE}
     assert JUDGE_MODEL not in result.by_model, (
-        "the judge's own model became a column; the side must come from "
-        "migkit.judging_completed"
+        "the judge's own model became a column; the side must come from migkit.judging_completed"
     )
 
 
@@ -386,15 +387,17 @@ def test_a_parse_failure_record_neither_counts_nor_closes_a_group():
         _verdict("alpha", True),
         _parse_failure(),
         _verdict("bravo", False),
-        _completed(BASELINE, {JUDGE: 2}),
+        # ``graded`` counts the parse-failed record too (``judging.py:653-659``),
+        # so a realistic log says 3 graded of which 1 was a parse failure.
+        _completed(BASELINE, {JUDGE: 3}, parse_failures={JUDGE: 1}),
     ]
 
     result = _counts(records, items)
 
     assert result.available is True, result.reason
-    assert set(result.by_model) == {
-        BASELINE
-    }, "the parse failure closed a group it has no business closing"
+    assert set(result.by_model) == {BASELINE}, (
+        "the parse failure closed a group it has no business closing"
+    )
     assert _cell(result, BASELINE, "t") == (1, 2, 2)
 
 
@@ -431,7 +434,9 @@ def test_a_failed_completion_is_a_non_pass_for_its_own_item_and_model():
         _verdict("alpha", True),
         _completed(BASELINE, {JUDGE: 1}),
         _completion(CANDIDATE, "a", ok=False),
-        _completed(CANDIDATE, {JUDGE: 0}),
+        # A failed completion is graded as an imputed record and writes no
+        # verdict, so ``graded`` counts it and the log holds no verdict for it.
+        _completed(CANDIDATE, {JUDGE: 1}, imputed={JUDGE: 1}),
     ]
 
     result = _counts(records, items)
@@ -463,7 +468,7 @@ def test_a_failed_completion_lands_on_every_tag_its_item_carries():
     items = _by_id(_item("refuse-04", "lockpicking?", ("refusal", "multi-value")))
     records = [
         _completion(BASELINE, "refuse-04", ok=False),
-        _completed(BASELINE, {JUDGE: 0}),
+        _completed(BASELINE, {JUDGE: 1}, imputed={JUDGE: 1}),
         _verdict("lockpicking?", True),
         _completed(CANDIDATE, {JUDGE: 1}),
     ]
@@ -482,7 +487,7 @@ def test_a_failed_completion_for_an_unknown_item_id_is_a_refusal():
         _verdict("alpha", True),
         _completed(BASELINE, {JUDGE: 1}),
         _completion(CANDIDATE, "ghost-99", ok=False),
-        _completed(CANDIDATE, {JUDGE: 0}),
+        _completed(CANDIDATE, {JUDGE: 1}, imputed={JUDGE: 1}),
     ]
 
     result = _counts(records, items)
@@ -586,9 +591,9 @@ def test_no_reserved_key_appears_when_every_item_carries_a_tag():
 
     result = _counts(records, items)
 
-    assert set(result.by_model[BASELINE]) == {
-        "t"
-    }, 'the "" key is reserved for untagged items; there are none here'
+    assert set(result.by_model[BASELINE]) == {"t"}, (
+        'the "" key is reserved for untagged items; there are none here'
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -609,9 +614,9 @@ def test_a_tag_in_the_set_with_no_records_for_a_model_is_present_as_zeros():
     result = _counts(records, items)
 
     assert result.available is True, result.reason
-    assert (
-        "unseen" in result.by_model[BASELINE]
-    ), "a dimension that was in the set and produced nothing is a finding"
+    assert "unseen" in result.by_model[BASELINE], (
+        "a dimension that was in the set and produced nothing is a finding"
+    )
     assert _cell(result, BASELINE, "unseen") == (0, 0, 0)
 
 
@@ -682,12 +687,19 @@ def test_a_verdict_whose_input_is_in_no_item_is_a_refusal_naming_the_input():
     assert "orphan input" in result.reason
 
 
-def test_a_resumed_pass_that_wrote_fewer_verdicts_than_graded_is_a_refusal():
-    """``judging.py:612-620`` skips already-graded records on a resume.
+def test_a_group_holding_fewer_verdicts_than_graded_promises_is_a_refusal():
+    """A consistency check on one ``judging_completed`` record. Not a resume detector.
 
-    The log then holds fewer verdicts than the artifact does. Under-counting
-    silently is the failure mode, so the shortfall is a refusal naming the
-    judge, the expected count and the seen count.
+    The contract names this the "resumed judging" guard, and it cannot in fact
+    detect a resume: ``judging.py`` builds ``pending`` by excluding
+    already-graded records, so on a resume ``graded`` shrinks by exactly the
+    number of verdicts the log loses and the two stay equal. What the guard
+    genuinely catches is a ``judging_completed`` that disagrees with the
+    verdicts standing in front of it, whatever produced the disagreement. The
+    data below is hand-built for that, not copied from a real resume.
+
+    Under-counting silently is the failure mode, so the refusal names the judge,
+    the expected count and the seen count.
     """
     items = _by_id(_item("a", "alpha", ("t",)), _item("b", "bravo", ("t",)))
     records = [
@@ -718,6 +730,60 @@ def test_a_shortfall_on_the_second_side_is_caught_too():
 
     assert result.available is False
     assert "4" in result.reason
+
+
+def test_imputed_and_parse_failed_records_are_subtracted_from_the_expected_count():
+    """``graded`` counts records, not verdicts, so the guard must subtract.
+
+    ``judging.py:653-659`` increments ``graded`` for every ``JudgeRecord``
+    written, including imputed ones and parse failures. An imputed record
+    returns before ``evaluate()`` is called and a parse failure writes
+    ``judge.parse_failure`` and raises, so neither emits a ``judge.verdict``.
+    The verdicts a log should hold are therefore
+    ``graded - imputed - parse_failures``.
+
+    Comparing against raw ``graded`` declines the whole matrix the moment one
+    completion fails -- which is exactly the case the failed-completion rule
+    exists to handle, making the two rules mutually exclusive. This log is the
+    ordinary shape of a run with one timeout and one unintelligible judge reply,
+    and it must come back available.
+    """
+    items = _by_id(
+        _item("a", "alpha", ("t",)),
+        _item("b", "bravo", ("t",)),
+        _item("c", "charlie", ("t",)),
+    )
+    records = [
+        _verdict("alpha", True),
+        _parse_failure(),
+        _completion(BASELINE, "c", ok=False),
+        _completed(BASELINE, {JUDGE: 3}, parse_failures={JUDGE: 1}, imputed={JUDGE: 1}),
+    ]
+
+    result = _counts(records, items)
+
+    assert result.available is True, result.reason
+    assert _cell(result, BASELINE, "t") == (1, 2, 2), (
+        "one verdict that passed, plus the failed completion as a non-pass; the "
+        "parse failure is in neither numerator nor denominator"
+    )
+
+
+def test_a_missing_imputed_or_parse_failures_key_degrades_to_plain_graded():
+    """A synthetic log may omit those keys entirely. Do not crash on it."""
+    items = _by_id(_item("a", "alpha", ("t",)))
+    records = [
+        _verdict("alpha", True),
+        _record(
+            EVENT_JUDGING_COMPLETED,
+            {"model_id": BASELINE, "graded": {JUDGE: 1}},
+        ),
+    ]
+
+    result = _counts(records, items)
+
+    assert result.available is True, result.reason
+    assert _cell(result, BASELINE, "t") == (1, 1, 1)
 
 
 def test_verdicts_still_open_at_the_end_of_the_stream_are_a_refusal():
@@ -771,7 +837,7 @@ def test_an_empty_stream_is_a_refusal_and_not_an_empty_matrix():
 
 
 def test_a_refusal_reason_is_a_sentence_and_not_a_code():
-    """"A sentence a reader can act on" -- not a two-word error code."""
+    """ "A sentence a reader can act on" -- not a two-word error code."""
     items = _by_id(
         _item("dup-alpha", "the very same question", ("t",)),
         _item("dup-bravo", "the very same question", ("u",)),
@@ -808,13 +874,24 @@ def test_dimension_counts_result_is_a_frozen_dataclass():
 
 
 def test_reason_is_empty_exactly_when_available():
+    """Both directions, and an available result must also carry a matrix.
+
+    Asserting only ``available is True, reason == ""`` on the happy path is a
+    test a do-nothing function passes, so the populated matrix is asserted in
+    the same breath.
+    """
     items = _by_id(_item("a", "alpha", ("t",)))
-    records = [_verdict("alpha", True), _completed(BASELINE, {JUDGE: 1})]
+    good = _counts([_verdict("alpha", True), _completed(BASELINE, {JUDGE: 1})], items)
 
-    result = _counts(records, items)
+    assert good.available is True
+    assert good.reason == ""
+    assert good.by_model, "available with an empty matrix is not available"
+    assert _cell(good, BASELINE, "t") == (1, 1, 1)
 
-    assert result.available is True
-    assert result.reason == ""
+    bad = _counts([_verdict("alpha", True)], items)
+
+    assert bad.available is False
+    assert bad.reason != ""
 
 
 def test_the_signature_is_the_one_the_contract_names():
@@ -824,9 +901,9 @@ def test_the_signature_is_the_one_the_contract_names():
     assert [one.name for one in parameters] == ["records", "items", "judge"]
     assert parameters[0].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
     assert parameters[1].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
-    assert (
-        parameters[2].kind is inspect.Parameter.KEYWORD_ONLY
-    ), "``judge`` is keyword-only in the contract"
+    assert parameters[2].kind is inspect.Parameter.KEYWORD_ONLY, (
+        "``judge`` is keyword-only in the contract"
+    )
 
 
 def test_the_function_opens_no_file(monkeypatch):
@@ -841,7 +918,10 @@ def test_the_function_opens_no_file(monkeypatch):
 
     result = _counts(records, items)
 
+    # The real matrix, computed with ``open`` taken away: a function that opens
+    # nothing *because it does nothing* does not pass this.
     assert result.available is True, result.reason
+    assert _cell(result, BASELINE, "t") == (1, 1, 1)
 
 
 # --------------------------------------------------------------------------- #
