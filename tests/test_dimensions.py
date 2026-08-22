@@ -1874,3 +1874,303 @@ def test_nothing_measured_discloses_no_confidence_it_never_consumed() -> None:
     """
     cell = _make_cell(passes=0, n=0, items=0, confidence=None)
     assert cell.note == "Nothing was measured for refusal."
+
+
+# =========================================================================== #
+# C21 -- the two-phase form. ``dimension_counts`` needs the golden set to join a
+# verdict to an item by input text, and ``report.from_evidence`` does not have
+# the golden set until the ``migkit.comparison`` record at the *end* of its one
+# streaming pass. ``DimensionTally`` splits the work: read the log, then join.
+#
+# The two roads that were closed before it are both guarded by merged tests and
+# neither is weakened here: ``test_report.py`` still counts exactly one text-mode
+# open of the log, and ``test_evidence_scale.py`` still asserts peak allocation
+# is flat in the log's size. What follows pins the third road.
+# =========================================================================== #
+
+
+def _tallied(records, items, *, judge: str = JUDGE):
+    """The same counting, driven as two phases instead of one.
+
+    The tally is built with no golden set at all, so every verdict goes past it
+    while the join is still impossible -- which is exactly the position
+    ``report.from_evidence`` is in.
+    """
+    tally = dimensions.DimensionTally()
+    for record in records:
+        tally.add(record)
+    return tally.counts(items, judge=judge)
+
+
+def _two_run_log():
+    """Two nights in one log: an earlier run, its comparison, then a later run."""
+    return [
+        _verdict("alpha", True),
+        _verdict("alpha", True),
+        _completed(BASELINE, {JUDGE: 2}),
+        _record("migkit.comparison", {"goldenset_hash": "aaaa"}),
+        _verdict("alpha", False),
+        _completed(BASELINE, {JUDGE: 1}),
+        _record("migkit.comparison", {"goldenset_hash": "aaaa"}),
+    ]
+
+
+def test_the_deferred_join_agrees_with_the_join_that_had_the_golden_set_all_along():
+    """The two phases are one function split, not a second implementation.
+
+    Everything else here pins a property of the deferred phase. This pins the
+    only thing that makes those properties worth having: that a caller who could
+    not have the golden set in time gets the same matrix as one who could.
+    """
+    items = _by_id(
+        _item("a", "alpha", ("t",)),
+        _item("b", "bravo", ("t", "u")),
+        _item("c", "charlie", ()),
+    )
+    records = [
+        _verdict("alpha", True),
+        _verdict("alpha", False),
+        _verdict("bravo", True),
+        _completion(BASELINE, "c", ok=False),
+        _completed(BASELINE, {JUDGE: 3}),
+        _verdict("bravo", False),
+        _verdict("charlie", True),
+        _completed(CANDIDATE, {JUDGE: 2}),
+    ]
+
+    one_phase = _counts(records, items)
+    two_phase = _tallied(records, items)
+
+    assert one_phase.available is True, one_phase.reason
+    assert two_phase.available is True, two_phase.reason
+    assert two_phase.by_model == one_phase.by_model
+    assert _cell(two_phase, BASELINE, "t") == (2, 3, 2)
+    assert _cell(two_phase, BASELINE, dimensions.UNTAGGED) == (0, 1, 1)
+    assert _cell(two_phase, CANDIDATE, "u") == (0, 1, 1)
+
+
+def test_the_deferred_join_refuses_an_unjoinable_input_in_the_same_words():
+    """The excerpt survives the deferral, so the disclosure was not traded away.
+
+    A digest cannot be turned back into the text a reader has to recognise, so
+    the obvious deferred implementation refuses with something weaker -- an
+    ordinal, or nothing. Eighty characters of the input is bounded for exactly
+    the reason the digest is, so it is kept and the sentence does not change.
+    """
+    long_input = "tell me at length about " + ("the sorrows of young werther " * 20)
+    items = _by_id(_item("a", "alpha", ("t",)))
+    records = [
+        _verdict("alpha", True),
+        _verdict(long_input, False),
+        _completed(BASELINE, {JUDGE: 2}),
+    ]
+
+    two_phase = _tallied(records, items)
+
+    assert two_phase.available is False
+    assert two_phase.reason == _counts(records, items).reason, (
+        "the deferred join refused in different words than the immediate one"
+    )
+    assert long_input not in two_phase.reason
+    assert repr(long_input[:80] + "...") in two_phase.reason
+
+
+def test_the_deferred_phase_holds_a_digest_of_the_input_and_never_the_input():
+    """The amplification ``evidence.py`` measured, from the one angle left open.
+
+    The immediate join files a verdict under its item id and is already pinned
+    not to hold the input. The deferred join has no item id to file under, so
+    this is the test that says what it files under instead: not the input, and
+    not a projection of the record that quietly contains it.
+    """
+    items = _by_id(_item("a", "alpha", ("t",)), _item("b", "bravo", ("t",)))
+    held: list[weakref.ref] = []
+    tally = dimensions.DimensionTally()
+
+    tracked = _TrackedInput("alpha" + "x" * 4000)
+    held.append(weakref.ref(tracked))
+    tally.add(_verdict(tracked, True))
+    del tracked
+    gc.collect()
+
+    assert held[0]() is None, (
+        "the input text of a verdict is still alive after the deferred tally read "
+        "it: the tally is holding inputs rather than digests of them"
+    )
+
+
+def test_a_second_run_in_the_log_replaces_the_first_rather_than_adding_to_it():
+    """The multi-run ruling: the matrix is one run's, and it is the last one's.
+
+    A log of fourteen nightly runs holds fourteen judging passes. Summing them
+    would print a matrix of fourteen nights under a banner reporting the last,
+    with nothing on the page able to reconcile the two numbers -- and it would
+    add verdicts taken against golden sets nobody checked against each other,
+    since the hash gate above this only ever checks the last comparison's.
+    """
+    items = _by_id(_item("a", "alpha", ("t",)))
+
+    result = _tallied(_two_run_log(), items)
+
+    assert result.available is True, result.reason
+    assert _cell(result, BASELINE, "t") == (0, 1, 1), (
+        "the matrix summed both nights; it is the last run's alone"
+    )
+
+
+def test_the_per_run_ruling_holds_for_the_one_phase_form_too():
+    """One implementation, so one ruling. ``dimension_counts`` resets the same way."""
+    items = _by_id(_item("a", "alpha", ("t",)))
+
+    assert _cell(_counts(_two_run_log(), items), BASELINE, "t") == (0, 1, 1)
+
+
+def test_a_log_with_no_comparison_in_it_is_one_run_and_is_counted_whole():
+    """Which is what a hand-built stream of judging records is, and always was."""
+    items = _by_id(_item("a", "alpha", ("t",)))
+    records = [
+        _verdict("alpha", True),
+        _completed(BASELINE, {JUDGE: 1}),
+        _verdict("alpha", True),
+        _completed(CANDIDATE, {JUDGE: 1}),
+    ]
+
+    result = _tallied(records, items)
+
+    assert result.available is True, result.reason
+    assert _cell(result, BASELINE, "t") == (1, 1, 1)
+    assert _cell(result, CANDIDATE, "t") == (1, 1, 1)
+
+
+def test_a_comparison_with_no_run_under_it_does_not_erase_the_run_before_it():
+    """An empty stretch between two comparisons is the tail of the night before.
+
+    Read the other way, a ``migkit.comparison`` appended to a log would erase a
+    matrix that is still the right one -- and ``test_report.py`` asserts, for
+    every other field on the model, that history in front of a run changes
+    nothing but the series. The matrix is the last run that actually judged.
+    """
+    items = _by_id(_item("a", "alpha", ("t",)))
+    records = [
+        _verdict("alpha", True),
+        _completed(BASELINE, {JUDGE: 1}),
+        _record("migkit.comparison", {"goldenset_hash": "aaaa"}),
+        _record("migkit.verdict", {"verdict": "GO"}),
+        _record("migkit.comparison", {"goldenset_hash": "aaaa"}),
+    ]
+
+    result = _tallied(records, items)
+
+    assert result.available is True, result.reason
+    assert _cell(result, BASELINE, "t") == (1, 1, 1)
+
+
+def test_verdicts_after_the_last_comparison_belong_to_a_run_nobody_compared():
+    """A night still running, or one that died before deciding. Read and dropped.
+
+    Not merely tidiness: this is what keeps the deferred store bounded on a log
+    whose tail is a judging pass with no close and no comparison behind it.
+    """
+    items = _by_id(_item("a", "alpha", ("t",)), _item("b", "bravo", ("t",)))
+    records = [
+        _verdict("alpha", True),
+        _completed(BASELINE, {JUDGE: 1}),
+        _record("migkit.comparison", {"goldenset_hash": "aaaa"}),
+        _verdict("bravo", True),
+        _verdict("bravo", True),
+    ]
+
+    result = _tallied(records, items)
+
+    assert result.available is True, result.reason
+    assert _cell(result, BASELINE, "t") == (1, 1, 1), (
+        "verdicts written after the last comparison were counted into the run "
+        "that comparison had already closed"
+    )
+
+
+def test_the_tally_counts_every_judge_and_is_told_which_one_at_the_end():
+    """``report`` reads the judge's name off the same record that names the set.
+
+    So the panel filter cannot be applied on the way past either, and one pass
+    has to serve whichever judge the document turns out to want.
+    """
+    items = _by_id(_item("a", "alpha", ("t",)), _item("b", "bravo", ("t",)))
+    records = [
+        _verdict("alpha", True),
+        _verdict("bravo", False, judge=OTHER_JUDGE),
+        _completed(BASELINE, {JUDGE: 1, OTHER_JUDGE: 1}),
+    ]
+    tally = dimensions.DimensionTally()
+    for record in records:
+        tally.add(record)
+
+    assert _cell(tally.counts(items, judge=JUDGE), BASELINE, "t") == (1, 1, 1)
+    assert _cell(tally.counts(items, judge=OTHER_JUDGE), BASELINE, "t") == (0, 1, 1)
+
+
+def test_asking_for_counts_with_no_golden_set_anywhere_raises():
+    """The alternative is a matrix built against an empty set: a table of zeros.
+
+    Which is the "missing data stated as zero" failure this codebase has shipped
+    once, arrived at by a caller who simply forgot an argument.
+    """
+    tally = dimensions.DimensionTally()
+    tally.add(_verdict("alpha", True))
+
+    with pytest.raises(ValueError, match="needs the golden set"):
+        tally.counts(judge=JUDGE)
+
+
+def test_a_tally_built_with_the_golden_set_does_not_need_it_again():
+    """Which is what ``dimension_counts`` does, and it re-indexes nothing."""
+    items = _by_id(_item("a", "alpha", ("t",)))
+    tally = dimensions.DimensionTally(items)
+    for record in (_verdict("alpha", True), _completed(BASELINE, {JUDGE: 1})):
+        tally.add(record)
+
+    assert _cell(tally.counts(judge=JUDGE), BASELINE, "t") == (1, 1, 1)
+
+
+def test_the_deferred_join_refuses_a_duplicated_input_as_a_precondition_too():
+    """Ruling 2 survives the split. The guard is on the set, not on the sampling.
+
+    It moves from "before a record is read" to "before a count is produced",
+    which is the earliest the deferred phase can ask the question -- and the
+    answer does not depend on which items were sampled either way.
+    """
+    items = _by_id(
+        _item("dup-a", "the very same question", ("t",)),
+        _item("dup-b", "the very same question", ("u",)),
+        _item("real", "a question with one owner", ("t",)),
+    )
+    records = [
+        _verdict("a question with one owner", True),
+        _completed(BASELINE, {JUDGE: 1}),
+    ]
+
+    result = _tallied(records, items)
+
+    assert result.available is False
+    assert "dup-a" in result.reason
+    assert "dup-b" in result.reason
+
+
+def test_a_failed_completion_for_an_unknown_item_is_refused_by_the_deferred_join():
+    """The membership check the immediate join makes on the way past.
+
+    Deferred, the item id is all that was held -- which is small, so the sentence
+    is the same one and names the same two things.
+    """
+    items = _by_id(_item("a", "alpha", ("t",)))
+    records = [
+        _verdict("alpha", True),
+        _completion(BASELINE, "item-nobody-has", ok=False),
+        _completed(BASELINE, {JUDGE: 1}),
+    ]
+
+    result = _tallied(records, items)
+
+    assert result.available is False
+    assert result.reason == _counts(records, items).reason
+    assert "item-nobody-has" in result.reason
