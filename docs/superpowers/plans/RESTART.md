@@ -387,6 +387,38 @@ not just the id, so an agent that is later resumed — its transcript moving aga
 *after* that time — is watched normally instead of being suppressed forever. That
 case is real: C4's implementer was resumed to act on a ruling.
 
+**Write the line every time, including after a resume.** The design above is
+correct and it still produced a false alarm, because the completion line was
+written *before* a resume and never again after it — so the second completion
+looked like a revival that then went quiet. The watchdog was right; the
+bookkeeping was late. Append the line in the same breath as reading the
+completion, and append one **per completion**, not one per agent.
+
+**A dead agent needs a line too.** Four agents were lost to an infrastructure
+stall in one minute; without a line each, all four would have crossed the
+45-minute mark and announced themselves as newly stalled, long after there was
+anything left to salvage.
+
+### Dispatch two at a time, and the second data point for it
+
+2026-08-24: four agents went out in two back-to-back calls — the C5 pair and the
+C7 pair. **All four died within about a minute of starting**, three with the
+harness's own "no progress for 600s, stream watchdog did not recover" and one
+with an API error. None had done any work: every worktree clean, no commits, no
+uncommitted files. The two agents that had been running for half an hour were
+untouched.
+
+So the failure hits agents *at start-up*, and starting four at once is what met
+it. This page already said "re-dispatch two at a time, not four" from an earlier
+incident; that now has a second and sharper data point, and a better reason. It
+is not about the orchestrator's attention — it is about the blast radius of one
+bad minute.
+
+**Re-dispatching cost nothing**, which is the useful half: with no commits and no
+partial state there was nothing to reconcile and no way to be wrong about what
+had been done. That is what "commit early and commit often" buys, arrived at
+from the other end.
+
 **A self-imposed bound in every brief.** "If one problem resists three genuine
 attempts, commit what you have, write down the blocker, and return." The watchdog
 catches agents that hang; this catches agents that grind, and grinding is the
