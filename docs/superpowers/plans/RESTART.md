@@ -32,54 +32,30 @@ agent that checked rather than assumed, so treat that one as suspect.
 
 ## Where things stand
 
-**`main` is `baf349a`, 1607 tests, all seven gates green.** Merged and reviewed:
-**C1, C2, C3, C8, C9, C12, C13, C15, C19, C20**. Every one had a blind tester and
-a reviewer that mutation-tested it, and every review found something the other
-two roles missed.
+**The ordering mistake is fixed and the document renders.** That was this page's
+headline problem for three sessions: C14, the template that renders everything,
+was scheduled after all nine of its inputs, so ten chunks landed out of sight and
+`migkit demo` produced the same document it produced before any of the work
+started. C14a is merged. The two SVG helpers draw, and every chunk from here
+lands visibly instead of accumulating where nobody can steer on it.
 
-**C21 is merged and NOT yet reviewed**, and that distinction is the whole of
-rule 1 below. It is listed separately here rather than folded into the line
-above precisely because folding it in is how the trap gets sprung: a reader
-scanning for "what is safe to build on" sees one list and types names that
-review has not finalised yet.
+**What has NOT changed is the reason that mistake mattered**, so keep the rule
+that came out of it: **order the chunks so the artifact moves.** A chunk whose
+output nobody can see is a chunk nobody can correct, and this project spent ten
+of them finding that out.
 
-**Nothing any of that built is visible in the rendered document.** That is the
-single most important fact on this page. `interval_bar_svg` and `timeline_svg`
-are merged, reviewed and mutation-tested — 115 and 23 mutants, zero survivors —
-and **nothing calls them**. Render `migkit demo` and you get the same document
-you got before any of this started.
+Merged, each through all four roles -- blind pair, mutation-testing review, fix
+pass: **C1, C2, C3, C4, C8, C9, C11, C12, C13, C14a, C15, C19, C20, C21**.
 
-Measured on `main` at `294457b`, 2026-08-24, after C21 merged — so this is the
-current state and not a remembered one:
+**Seven of seven reviews found defects both other roles missed**, and three found
+defects in code that had already been merged. Budget for a fix pass on every
+chunk; the review is not the end of the chunk, it is the middle.
 
-| | |
-|---|---|
-| `<svg>` elements | **0** |
-| the word "dimension" | **0** |
-| `id="timeline"` present | **no** |
-| `<pre>` blocks | 44 |
-| absolute drive paths | 11 |
-| `<details>` open / closed | **0 / 4** |
-| table cells reading `0.000` | 4 |
-| the string `98.10` | 6 |
-
-Two charts that exist and are mutation-tested draw **nothing**. Every dimension
-chunk — C8, C9, C21 — contributes **not one word** to the page. All four
-reader-reported defects below are present, in the numbers: the finding sits
-behind a closed triangle, `extract-01` prints the same draw five times, an
-absolute path appears eleven times, and latency prints `0.000` in four cells on
-scripted adapters.
-
-One caution about that table, because it nearly misled me. The latency row was
-first probed as the string `"0.000 / 0.000"` — the shape the defect is
-*described* in — and came back **0**, which reads as "already fixed". The defect
-renders as four separate table cells. **A probe written from the prose
-description of a defect can report the defect gone.** Measure the artifact, not
-the sentence about it.
-
-The cause is an ordering mistake, not a defect: C14, the template that renders
-everything, was scheduled after all nine of its inputs. Ten chunks landed out of
-sight. **C14a exists to fix that** — see below.
+The measured before-and-after, and what still does not render, are two sections
+down. Read those numbers rather than this prose if the two ever disagree -- and
+if they do, that is a defect in this file and worth fixing on sight. This
+paragraph replaced a preamble that had gone stale enough to contradict a table
+forty lines below it.
 
 | Branch | Contains | State |
 |---|---|---|
