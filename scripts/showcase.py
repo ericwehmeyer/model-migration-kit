@@ -90,16 +90,28 @@ rule 3.
 And REVIEW must not be outranked by NO-GO. Rule 1 -- a Mann-Whitney regression
 significant after Holm-Bonferroni -- comes first, so candidate C's night-6 deficit
 has to be large enough to miss the floor and small enough not to reach
-significance. Measured on the 480-vs-480 score arrays this file produces, one-
-sided p against the baseline is:
+significance. Sizing that, over 480-vs-480 arrays of judge scores, one-sided p
+against the baseline comes out at:
 
     baseline failing 6, candidate 8  ->  p = 0.107
     baseline failing 7, candidate 8  ->  p = 0.274   <- what night 6 uses
     baseline failing 6, candidate 9  ->  p = 0.036   <- would be NO-GO, not REVIEW
 
 Night 6 therefore pairs a baseline that fails 7 items with a candidate C that
-fails 8. p = 0.274 is not a margin that a rounding change can cross, and the
-alternative one item down is on the wrong side of alpha.
+fails 8. Those three are the sizing arithmetic, taken with every failure scored
+2; the run itself reports **p = 0.2617**, a little lower because two of the eight
+are summarisation items and a summariser that declines scores 1 rather than 2.
+Either number is five times alpha, which is the margin the choice was made for --
+one item further down is 0.036, on the wrong side of it.
+
+All fourteen nights were then run end to end through ``run_goldenset`` ->
+``judge_artifact`` -> ``compare`` -- 56 runs and 42 comparisons -- and the 42
+verdicts are: GO on every candidate on every night, except candidate C on night 6
+(**REVIEW, rule 3**, 440/480, lower bound 0.8935, ``runs_needed`` 931, p = 0.2617,
+``mw_powered`` true) and candidate B on night 14 (**NO-GO, rule 1**, 380/480,
+lower bound 0.7596, p < 1e-15). The dimension matrix on nights 1-13 has every one
+of the six capabilities between 75/85 and 85/85 for all four models; on night 14
+the only cell outside that range is candidate B's ``#refusal`` at 5/85.
 
 What holds the collapse honest
 ------------------------------
