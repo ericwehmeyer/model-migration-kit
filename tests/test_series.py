@@ -4690,7 +4690,13 @@ _FOURTEEN_NIGHTS = (
 #: The six tracked parameters, in the order the contract's table lists them and the
 #: order its `ParameterChange.name` comment repeats. Two independent statements of
 #: one order, so the order is asserted and not merely the membership.
-_TRACKED = ("model_id", "n_per_item", "items", "judges", "golden set", "config")
+#:
+#: **`goldenset`, not `golden set`, since R24.6.** The contract spelled it with a
+#: space and five of the six names were identifier-safe while exactly one was not,
+#: so a template deriving a CSS class, an anchor id or a dict key from `row.name`
+#: broke on one row in six -- rare enough to ship and systematic enough to be wrong
+#: every time. These strings are keys; the display label is the template's job.
+_TRACKED = ("model_id", "n_per_item", "items", "judges", "goldenset", "config")
 
 #: Two hashes sharing their first sixteen characters and differing at the
 #: seventeenth. **This pair is the whole point of one test below.** On C4 the
@@ -4709,7 +4715,7 @@ _TWIN_B = _TWIN_PREFIX + "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 #: transcription against the full strings before it checks anything of the code's.
 _HASH_ROWS = (
     ("judges_hash", "judges", "bb624f0ed1781d85"),
-    ("goldenset_hash", "golden set", "5fef50364057cad8"),
+    ("goldenset_hash", "goldenset", "5fef50364057cad8"),
     ("config_hash", "config", "1ad89c46dcbd426d"),
 )
 
@@ -4761,6 +4767,26 @@ def test_the_parameter_strip_lists_every_tracked_parameter_including_the_ones_th
         "1ad89c46dcbd426d",
     ]
     assert [row.after for row in rows] == [row.before for row in rows]
+
+
+def test_every_tracked_parameter_name_is_usable_as_an_identifier():
+    """R24.6, and the shape of the defect is what makes it a ruling rather than a
+    tidy: five of the six names were identifier-safe and exactly one was not, so a
+    template deriving a CSS class, an anchor id or a dict key from `row.name` worked
+    on five rows and broke on the sixth. Rare enough to ship, systematic enough to be
+    wrong every time it renders.
+
+    These strings are keys. The display label -- "golden set", with the space and the
+    capital if the page wants one -- is the template's job, which is where labels
+    belong, and `ParameterChange` stays at four fields rather than growing a second
+    one for the same fact."""
+    rows = series.parameter_strip(None, _point())
+    assert [row.name for row in rows] == list(_TRACKED)
+    for row in rows:
+        assert row.name.isidentifier(), (
+            f"{row.name!r} cannot be a CSS class, an anchor id or a dict key, and one "
+            f"row in six that cannot is worse than none of them being able to"
+        )
 
 
 def test_a_parameter_change_is_a_frozen_record_of_a_name_two_values_and_a_verdict():
@@ -4889,10 +4915,10 @@ def test_two_hashes_that_differ_only_after_the_sixteenth_character_are_still_a_c
     [
         ("candidate_model", "model_id", "claude-candidate-v2"),
         ("judges_hash", "judges", "bb624f0ed1781d85"),
-        ("goldenset_hash", "golden set", "5fef50364057cad8"),
+        ("goldenset_hash", "goldenset", "5fef50364057cad8"),
         ("config_hash", "config", "1ad89c46dcbd426d"),
     ],
-    ids=["model_id", "judges", "golden set", "config"],
+    ids=["model_id", "judges", "goldenset", "config"],
 )
 def test_a_value_that_one_of_the_two_runs_never_recorded_never_renders_as_unchanged(
     field, name, recorded
@@ -5318,9 +5344,27 @@ def test_the_trend_and_the_succession_are_named_tuples_with_the_fields_r15_names
 def test_the_new_names_are_exported_so_the_rendering_chunks_can_reach_them():
     """C10 and C14 render these. A name that works under `series.Trend` and is
     missing from `__all__` is a name a star-import consumer cannot see, and the
-    module has been strict about this since C1."""
-    for name in ("ParameterChange", "Succession", "Trend", "parameter_strip", "trend"):
+    module has been strict about this since C1.
+
+    **The two markers are here since R24.6, and they are the point of the ruling.**
+    A template styling a first-run cell differently from an unrecorded one has to
+    name both; while they were private its only options were reaching into a private
+    name or hard-coding the literal, which `UNRECORDED`'s own comment forbids and
+    R7 ruled on generally -- import the constant, never hard-code its value. They
+    are constants rather than callables, so `check_merge.py`'s `__all__` check does
+    not cover them by design and this does."""
+    for name in (
+        "NO_PREVIOUS_RUN",
+        "ParameterChange",
+        "Succession",
+        "Trend",
+        "UNRECORDED",
+        "parameter_strip",
+        "trend",
+    ):
         assert name in series.__all__, f"{name} is not exported"
+    assert not hasattr(series, "_NO_PREVIOUS_RUN"), "the private spelling outlived the rename"
+    assert not hasattr(series, "_UNRECORDED"), "the private spelling outlived the rename"
 
 # ==================================================================================
 # Chunk C5 -- the candidate field

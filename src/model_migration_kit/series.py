@@ -63,6 +63,8 @@ from .contracts import EVENT_COMPARISON, EVENT_VERDICT
 from .evidence import resolve_evidence, stream_records
 
 __all__ = [
+    "NO_PREVIOUS_RUN",
+    "UNRECORDED",
     "Candidate",
     "CandidateField",
     "Caveat",
@@ -455,7 +457,17 @@ _HASH_WIDTH = 16
 #: because these strings are read by a person: "against the group's " with
 #: nothing after it looks like a formatting bug, not like a missing fact. One
 #: word for all three so that a page cannot describe the same absence three ways.
-_UNRECORDED = "unrecorded"
+#:
+#: **Public, and it was private until R24.6.** A template that wants to style an
+#: unrecorded cell differently from a recorded one -- greyed, italic, given a
+#: title attribute -- had two options, importing a private name or hard-coding
+#: the literal, and the paragraph above forbids the second: the whole point of
+#: one word for every absence is lost the moment a second file spells it itself
+#: and the two drift. ``report.py`` sets the opposite precedent deliberately with
+#: ``THRESHOLD_SOURCE_UNRECORDED`` and ``INTERVAL_BAR_NO_RATE``, and R7 ruled the
+#: general case: import the constant, never hard-code its value. Promoted before
+#: C14 types against it, because a rename after that is a rename across chunks.
+UNRECORDED = "unrecorded"
 
 
 @dataclass(frozen=True)
@@ -721,8 +733,8 @@ def _incomparable(key: ComparabilityKey, against: ComparabilityKey) -> str | Non
         return (
             f"excluded: no baseline model recorded for "
             f"{_silent_side(_recorded(key.baseline_model), _recorded(against.baseline_model))}"
-            f" -- {key.baseline_model.strip() or _UNRECORDED} against the group's "
-            f"{against.baseline_model.strip() or _UNRECORDED}. Two runs whose baseline "
+            f" -- {key.baseline_model.strip() or UNRECORDED} against the group's "
+            f"{against.baseline_model.strip() or UNRECORDED}. Two runs whose baseline "
             f"nobody wrote down were not shown to have been measured from the same one, "
             f"and a column of deltas is a column only if they were."
         )
@@ -891,7 +903,7 @@ def _recorded(value: str) -> bool:
 
 def _depth(draws: int) -> str:
     """``n_per_item`` as it is printed, with ``0`` spelled out as the absence it is."""
-    return str(draws) if draws > 0 else _UNRECORDED
+    return str(draws) if draws > 0 else UNRECORDED
 
 
 def _silent_side(mine: bool, theirs: bool) -> str:
@@ -903,7 +915,7 @@ def _silent_side(mine: bool, theirs: bool) -> str:
 
 def _hash(value: str) -> str:
     """One hash as it is printed: 16 characters, or the word for having none."""
-    return value[:_HASH_WIDTH] if _recorded(value) else _UNRECORDED
+    return value[:_HASH_WIDTH] if _recorded(value) else UNRECORDED
 
 
 def _decided(point: RunPoint, verdict: Mapping[str, Any]) -> RunPoint:
@@ -1353,7 +1365,7 @@ def _unnamed_candidate(point: RunPoint) -> str:
         f"excluded: this run records no candidate model, so it has no row in a table "
         f"whose rows are candidate models. It is comparable to the group -- "
         f"{_hash(point.goldenset_hash)} over {_depth(point.n_per_item)} draws per item "
-        f"against {point.baseline_model or _UNRECORDED} -- but an unrecorded candidate "
+        f"against {point.baseline_model or UNRECORDED} -- but an unrecorded candidate "
         f"cannot be folded in with another unrecorded one: that would print one run's "
         f"numbers under both runs' authority and lose the other run entirely."
     )
@@ -2066,27 +2078,44 @@ class Succession(NamedTuple):
     after: str
     #: The new run's ``created``, verbatim, so a caption can date the change
     #: without indexing back into ``points`` and re-deciding what "at" means.
+    #: **A raw string and it stays one**: normalising here would make this the
+    #: second place in the package that decides what a timestamp is, and
+    #: :func:`parse_created` is public precisely so the caption can parse it
+    #: itself and get the same answer the line was sorted by.
     created: str
 
 
 class Trend(NamedTuple):
     """One candidate lineage as one line, plus everything that did not make it.
 
-    Five fields rather than the bare ``tuple[RunPoint, ...]`` C7 first specified,
-    because a bare tuple has room only for presences. C7's contract said the
-    caller "learns of [undated points] separately" and then returned a type
-    through which nothing whatever could be learned; R15.3 names that as the
-    third instance of one defect class in this plan (C4's flag with no field,
-    C13's counts, this). A contract that promises to report an absence needs
-    somewhere to report it.
+    Seven fields rather than the bare ``tuple[RunPoint, ...]`` C7 first
+    specified, because a bare tuple has room only for presences. C7's contract
+    said the caller "learns of [undated points] separately" and then returned a
+    type through which nothing whatever could be learned; R15.3 names that as
+    the third instance of one defect class in this plan (C4's flag with no
+    field, C13's counts, this). A contract that promises to report an absence
+    needs somewhere to report it.
 
     :attr:`caveats` is the fourth instance, caught in the type R15.3 wrote to
     close the class: :func:`partition_comparable` returns three tuples and the
     first draft of this one had room for two, so the A/A-calibration and
-    uneven-coverage notes were computed and dropped on the floor. It is appended
-    **last**, deliberately -- prefix unpacking and every four-element comparison
-    written against the earlier shape still hold, which is the same
-    backward-compatible discipline R15.5 applies to ``timeline_svg``.
+    uneven-coverage notes were computed and dropped on the floor.
+
+    :attr:`outside_lineage` and :attr:`absent_models` are the fifth and sixth,
+    and R24.1 found them by declaring the lineage one character wrong: the run
+    that fell out of the declaration appeared in *none* of the five fields
+    above, so a fourteen-night log rendered as a clean thirteen-night line
+    stating that nothing moved and night 14 was mentioned nowhere on the page.
+    R15.1 created that hole and said so without noticing -- it replaced suffix
+    inference with operator declaration and observed that a wrong split now
+    "requires the operator to declare it wrong... precisely the case where a
+    reader most needs to notice", and there was no field in which to notice it.
+
+    Every field after the fourth is appended **last** as it arrives, and that is
+    deliberate rather than incidental: this is a :class:`NamedTuple`, so prefix
+    unpacking and every comparison written against an earlier shape still read,
+    which is the same backward-compatible discipline R15.5 applies to
+    ``timeline_svg``. Nothing is ever inserted in the middle.
     """
 
     #: Ascending by parsed ``created``; points sharing an instant keep input order.
@@ -2274,12 +2303,22 @@ class ParameterChange:
 #: The tracked parameters, in the order they render. A tuple and not a set: the
 #: strip's argument is that the *whole* list appears every time, and a list whose
 #: order shifts between renders of one log is a list a reader cannot diff by eye.
+#:
+#: **Every one of them is identifier-safe, and ``"golden set"`` was not.** These
+#: strings are keys, not labels: a template deriving a CSS class, an anchor id or
+#: a dict key from ``row.name`` worked on five rows and broke on the sixth, which
+#: is the worst shape a defect can have -- rare enough to ship and systematic
+#: enough to be wrong every time. So the golden-set row is ``goldenset``, matching
+#: ``RunPoint.goldenset_hash``, and the space is gone (R24.6). The contract fixed
+#: these strings, so this is a ruling and not a drift; **the display label is the
+#: template's job**, which is where labels belong, and
+#: :class:`ParameterChange` stays at four fields.
 _TRACKED_PARAMETERS = (
     "model_id",
     "n_per_item",
     "items",
     "judges",
-    "golden set",
+    "goldenset",
     "config",
 )
 
@@ -2303,7 +2342,7 @@ class _Cell(NamedTuple):
 
 
 #: What a ``before`` cell reads when there was no previous run at all. Display
-#: text in a value position, on :data:`_UNRECORDED`'s precedent and for its
+#: text in a value position, on :data:`UNRECORDED`'s precedent and for its
 #: reason: an absence a reader has to act on is spelled out in words, because a
 #: blank cell in a table of values reads as "same as the row above" and this one
 #: is not.
@@ -2324,12 +2363,18 @@ class _Cell(NamedTuple):
 #: split need a wrong declaration from the operator rather than a version
 #: suffix, which makes it rare -- and rare is exactly when a reader needs the
 #: cell to say something rather than nothing.
-_NO_PREVIOUS_RUN = "no previous run"
+#:
+#: **Public for :data:`UNRECORDED`'s reason (R24.6).** A first-run cell and an
+#: unrecorded cell are the two absences this constant exists to keep apart, and a
+#: template cannot style them apart without naming both -- which, private, meant
+#: reaching into a private name or hard-coding a literal the comment above
+#: forbids. Promoted before C14 types against it.
+NO_PREVIOUS_RUN = "no previous run"
 
 #: The whole ``before`` side of a first run. ``value`` stays ``""`` so that
 #: :func:`_parameter_change` reads it as nothing to compare: the marker is a
 #: rendering and must never become a value two runs could be found equal on.
-_BEFORE_FIRST_RUN = _Cell("", _NO_PREVIOUS_RUN)
+_BEFORE_FIRST_RUN = _Cell("", NO_PREVIOUS_RUN)
 
 
 def parameter_strip(previous: RunPoint | None, current: RunPoint) -> tuple[ParameterChange, ...]:
@@ -2353,7 +2398,7 @@ def parameter_strip(previous: RunPoint | None, current: RunPoint) -> tuple[Param
 
     ``previous is None`` yields every row with ``changed=False`` -- the first run
     of a line changed nothing because there was nothing to change from -- and a
-    ``before`` of :data:`_NO_PREVIOUS_RUN`, which is a *word* and not a blank.
+    ``before`` of :data:`NO_PREVIOUS_RUN`, which is a *word* and not a blank.
     See that constant: a blank there is true and illegible, and it renders a
     first run identically to a wrongly-split one. After R15 that case is rare and
     means what it says; before R15 it fired on every model succession, which is
@@ -2410,7 +2455,7 @@ def _parameter_change(name: str, before: _Cell, after: _Cell) -> ParameterChange
 
 def _text_cell(value: str) -> _Cell:
     """A recorded string, or the word for having none."""
-    return _Cell(value, value if _recorded(value) else _UNRECORDED)
+    return _Cell(value, value if _recorded(value) else UNRECORDED)
 
 
 def _count_cell(value: int) -> _Cell:
@@ -2420,7 +2465,7 @@ def _count_cell(value: int) -> _Cell:
     zero printed as ``0`` would be a measurement this run never made -- and, sat
     beside a previous run's ``0``, would read as a parameter that held.
     """
-    return _Cell(str(value), str(value)) if value > 0 else _Cell("", _UNRECORDED)
+    return _Cell(str(value), str(value)) if value > 0 else _Cell("", UNRECORDED)
 
 
 def _hash_cell(value: str) -> _Cell:
