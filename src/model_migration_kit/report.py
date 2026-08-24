@@ -3913,7 +3913,7 @@ def render_html_string(
     stored evidence log and get the file they were sent.
     """
     generated = now or model.generated
-    heading = title or _default_title(model)
+    heading = _warned_title(model, title) if title else _default_title(model)
     template = _environment().get_template(_TEMPLATE_NAME)
     return template.render(
         model=model,
@@ -3967,13 +3967,41 @@ _VERDICT_CLASS = {
 }
 
 
+#: The ``<title>``'s half of the scripted-models warning. Session 3 §5.3 names
+#: five places that say it and calls none of them a footnote; this is the first
+#: of the five, and the only one that survives being pasted into a chat window as
+#: a link preview or read out by a screen reader announcing the tab.
+_FAKE_TITLE_PREFIX = "FAKE MODELS"
+
+
+def _warned_title(model: ReportModel, head: str) -> str:
+    """``head``, carrying the scripted-models warning whenever the report is one.
+
+    Applied to a caller's ``title=`` and not only to :func:`_default_title`,
+    because the two are the same surface and only one of them was covered. §5.3
+    lists the ``<title>`` among the five places that say the models are scripted;
+    ``render_html_string(model, title="Nightly quality report")`` removed it, and
+    the removal is invisible in the body, which still bands. That is the exact
+    failure the rule is written against -- the warning going missing from the
+    thing someone pastes into a deck -- reached through an argument rather than
+    through a flag, which is why the "no ``demo=``/``fake=`` keyword" test never
+    saw it.
+
+    The guard is a *prefix* check and deliberately not a substring one. A title
+    that merely contains the words -- "what our FAKE MODELS review found" -- must
+    still be prefixed, or the suppression vector is spelled out in the docstring
+    of the function that closes it.
+    """
+    if not model.is_demo or head.upper().startswith(_FAKE_TITLE_PREFIX):
+        return head
+    return f"{_FAKE_TITLE_PREFIX} {EM_DASH} {head}"
+
+
 def _default_title(model: ReportModel) -> str:
     base = model.baseline.model_id or "baseline"
     cand = model.candidate.model_id or "candidate"
     head = f"{model.verdict_word} {EM_DASH} {base} to {cand} {EM_DASH} model-migration-kit"
-    if model.is_demo:
-        return f"FAKE MODELS {EM_DASH} {head}"
-    return head
+    return _warned_title(model, head)
 
 
 # --------------------------------------------------------------------------- #
