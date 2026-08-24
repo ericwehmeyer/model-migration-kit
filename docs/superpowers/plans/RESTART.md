@@ -59,22 +59,24 @@ forty lines below it.
 
 | Branch | Contains | State |
 |---|---|---|
-| `main` | C1-C17, C19-C21, C22a part one, R1-R27 | all seven gates green, **2123 passed** |
+| `main` | C1-C17, C19-C21, C22a, C7's lineage follow-up, R1-R30 | all seven gates green, **2154 passed** |
 | `chunk/c10-fix` | R27's eighteen survivors | in flight (stage 5/5) |
-| `chunk/c18-impl` | the synthetic band | in flight (stage 1/5) |
-| `chunk/c22a-impl` | `spot_check` on the model | in flight -- **resumed**, not re-dispatched |
-| `chunk/c22a-test` | 15 blind tests for C22a | **waiting to merge** with part two |
+| `chunk/c18-impl` | the synthetic band, R29's four rulings | in flight (stage 1/5, round two) |
+| `chunk/c22b-impl` | `trend`, `parameter_strip`, `multiplicity` on the model | in flight (stage 1/5) |
+| `chunk/c22b-test` | blind tests for the same | in flight (stage 2/5) |
 
-Updated 2026-08-24, main at `347f4e6`. **17 of 22 chunks merged.** Remaining:
-C10's fix, C14's remaining elements, C18, C22a part two, C22b.
+Updated 2026-08-24, main at `0b26845`. **18 of 22 chunks merged.** Remaining:
+C10's fix, C14's remaining elements (C14b's briefs are written), C18, C22b.
 `chunk/c10-impl` and `chunk/c10-test` (no `2`) are **dead**; ignore them.
 
-**One process debt, taken deliberately.** C22a part one was merged **without its
-blind tests**, because several target `spot_check`, which does not exist yet.
-`chunk/c22a-test` holds all 15 -- merge them the moment part two lands. Until
-then the `candidates` wiring is covered only by the existing suite. I verified
-the two riskiest claims by hand (`None` passes through uncoerced, no `excluded`
-field exists), which is not the same as having the blind pair.
+**The C22a process debt is paid.** Part one was merged without its blind tests
+because several targeted a `spot_check` that did not exist yet; all 15 landed
+with part two. One of them needed a one-line adaptation -- the tester's branch
+predated C11's follow-up making `subject` required -- and the adaptation is
+commented in place with the argument for why it preserves the test's intent.
+The lesson is not "do not take the debt": it is that a blind test written against
+a signature in flight will need adapting, and the adaptation is the merger's job
+to argue rather than to perform quietly.
 
 **Three consecutive blind pairs produced zero disagreement** -- C7 (33 tests),
 C10 (22), C6 (31) -- and it still meant nothing about defect-freedom: C10's
@@ -124,24 +126,38 @@ than none.
 
 ## Do these next, in this order
 
-1. **Land the five in flight** -- C22a's tester, C7's fix, C17, C11's subject
-   follow-up, C10's reviewer.
-2. **Merge `chunk/c22a-impl`'s `candidates` half.** It is complete and green on
-   its own. Its `spot_check` half is blocked on `chunk/c11-subject` (R26.4).
-3. **C22a part two** -- `spot_check` on the model, once C11's subject lands.
-   Rulings are made: `judges[0]` and refuse rather than aggregate (R26.3), the
-   **candidate** side, and the subject named in the producer's own sentence.
-4. **C14's remaining elements** for whatever is then on the model.
-   **Two things to know before scheduling the spot-check element:** its section
-   will be **empty on the bundled demo** whatever we do -- 12 items and `k=12`
-   means `spot_check` correctly returns `None` -- and per R23.2 a report with no
-   candidate table cannot say *why*, so the excluded list's empty state must say
-   runs may have been excluded without naming them.
-5. **C22b** -- `trend` and `parameter_strip` (after C7's fix lands R21.5's
-   lineage caveat) and `multiplicity` (C6 is merged; R25.4 lists four contract
-   points still unruled, cheap now and expensive once rendered).
-6. **C18**, and the deferred repo-wide `ruff format` drift (tree at 88,
-   `pyproject.toml` says 100, ~26 files). Its own chunk, when the tree is quiet.
+Rewritten 2026-08-24 after the C7 lineage merge. `main` is at **2154 passing**,
+seven gates green, and **18 of 22 chunks are merged**.
+
+1. **Land the three in flight** -- C10's fix pass (R27's 18 survivors), C18
+   round two (R29's four rulings), and C22b's blind pair, dispatched together
+   from `0b26845`.
+2. **C14b** -- the four template elements: candidate table, excluded list,
+   dimension matrix, unavailability note. **Briefs are already written**
+   (`scratchpad/c14b_impl_brief.md` and `c14b_test_brief.md`) and it is blocked
+   only on C10's fix, because R27.5 changes the zero-column note and typing a
+   renderer against a note that is about to move is producer-beside-consumer.
+   **This is the chunk that finally moves the artifact** -- the render has been
+   24,564 bytes and the word "dimension" has appeared **0** times across three
+   merges.
+3. **C14c** -- the trend chart, the parameter strip and the multiplicity note,
+   once C22b puts them on the model. Read **R30** first: it decides all five of
+   C22b's open joins, and R30.5 carries the rule the renderer needs --
+   `Caveat.point` is now `RunPoint | None`, and a renderer walking caveats into
+   rows must ask before it indexes.
+4. **`candidate_field`'s point-less caveat filter** (R30.5). One line, in C5's
+   code, currently unreachable and a trap. Goes to whichever chunk next opens
+   that function.
+5. **The deferred repo-wide `ruff format` drift** -- tree at 88,
+   `pyproject.toml` says 100, ~26 files. Its own chunk, when the tree is quiet.
+   It is the last thing, not the next thing: it touches every file and would
+   conflict with every branch in flight.
+
+**Before dispatching any brief, grep the merged code for the ruling it is
+supposed to implement** (R28.1). A ruling in the plan with no brief behind it is
+a ruling nobody will execute, and this project shipped that failure twice in one
+session -- R21.5 sat in the plan and in this file's blocking list for four hours
+with no brief, and R25.5's contract-table edit was never made either.
 
 ### Two errors of mine, both caught by agents, both the same shape
 
