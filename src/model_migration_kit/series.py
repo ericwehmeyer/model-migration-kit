@@ -819,8 +819,8 @@ def spot_check(
     random draw: an engineer picks twelve prompts they believe are
     representative, and nobody can model that. So the sentence says "drawn at
     random" out loud and lets the reader discount it, rather than quietly
-    claiming to have modelled a human's judgement. It also says *spot checks*
-    and not *runs*: nothing here is distributed over runs, and a director who
+    claiming to have modelled a human's judgement. What it counts is *checks*
+    and never *runs*: nothing here is distributed over runs, and a director who
     reads "in X% of runs" and asks what a run is has found a hole.
 
     Two further things the wording has to get right. It ends "in X% **of such
