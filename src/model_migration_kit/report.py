@@ -187,7 +187,13 @@ from .evidence import resolve_evidence, stream_records
 from .goldenset import GoldenSet
 from .judging import JudgedArtifact
 from .runner import RunArtifact
-from .series import RunPoint, SeriesBuilder, parse_created
+from .series import (
+    CandidateField,
+    RunPoint,
+    SeriesBuilder,
+    candidate_field,
+    parse_created,
+)
 
 __all__ = [
     "DEFAULT_MAX_REPORT_CHARS",
@@ -1052,6 +1058,47 @@ class ReportModel:
             min_items=MIN_ITEMS_FOR_A_VERDICT,
         )
     )
+    #: The one candidate table this log can render, or ``None`` -- see
+    #: :func:`~model_migration_kit.series.candidate_field`, which is called on
+    #: :attr:`series` and reads nothing else.
+    #:
+    #: **``None`` is carried through, and is not an empty field.** The producer
+    #: returns ``None`` when no comparability key holds two distinct candidate
+    #: models, which is a different claim from "a field of no candidates": the
+    #: first says this log cannot be tabled, the second says it was tabled and
+    #: came out empty. A view model that substituted a default here would publish
+    #: the second sentence on the evidence for the first, which is the failure
+    #: C7's first-run marker, C4's exclusions, C5's superseded exclusion and
+    #: C10's zero column each exist to prevent, one layer up. The renderer gates
+    #: on ``is not None`` and says why there is no table; nothing here decides
+    #: that for it.
+    #:
+    #: **The excluded-runs list is this field's own**
+    #: :attr:`~model_migration_kit.series.CandidateField.excluded`, per R23.2, and
+    #: there is deliberately no second top-level ``partition_comparable`` call.
+    #: Two partitions would put the same facts on the model twice, computed
+    #: against possibly different keys, and a disagreement between them could not
+    #: be adjudicated from the model. One partition, one source -- so the list and
+    #: the table it explains are guaranteed to be about the same set of runs.
+    #:
+    #: The consequence, flagged in R23.2 and accepted: when this is ``None`` the
+    #: exclusion sentences computed along the way die with it, so the document
+    #: cannot say *why* there is no table. That is the right trade -- a
+    #: wrong-but-present list is worse than an absent one -- but it means the
+    #: renderer's empty state must say that runs may have been excluded without
+    #: being able to name them, rather than printing an empty list that reads as
+    #: "nothing was excluded".
+    #:
+    #: Built with :func:`~model_migration_kit.series.candidate_field`'s own
+    #: default window. Nothing in the evidence log, the thresholds or the config
+    #: records a staleness window, so there is no recorded number to prefer; the
+    #: field carries whatever window it was built with on
+    #: :attr:`~model_migration_kit.series.CandidateField.stale_after_days`, so a
+    #: renderer can name it instead of guessing.
+    #:
+    #: Defaulted for the reason :attr:`series` and :attr:`dimensions` are: every
+    #: existing constructor of a ``ReportModel`` predates the field.
+    candidates: CandidateField | None = None
 
     # -- construction ------------------------------------------------------- #
 
@@ -1262,6 +1309,12 @@ class ReportModel:
             confidence=_number(thresholds.get("confidence")),
             floor=_number(thresholds.get("pass_rate_floor")),
         )
+        # Pure arithmetic over the series the loop above already built, so this
+        # opens no file and re-reads nothing -- see :attr:`candidates`. ``None``
+        # is passed straight through: there is no ``or CandidateField(...)`` here
+        # and there must never be one, because the absence is the finding and a
+        # default would publish it as a measurement.
+        candidates = candidate_field(series)
         config_path = str(payload.get("config_path", "") or "")
         # Per-threshold provenance -- CLI flag versus config file versus built-in
         # default -- is not carried in the comparison payload (contract §1.2), and
@@ -1306,6 +1359,7 @@ class ReportModel:
             artifact_dir="" if artifact_dir is None else str(artifact_dir),
             series=series,
             dimensions=dimensions,
+            candidates=candidates,
         )
 
     # -- derived ------------------------------------------------------------ #
