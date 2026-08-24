@@ -2016,10 +2016,26 @@ C12's `data-value` is also pinned, for the same reason the constant is: the
 to check the model's number reached the drawing without re-deriving the
 projection, and a rounded one would make the check circular.
 
-### R8 — OPEN: the headline verdict and `series[-1].verdict` can disagree
+### R8 — CLOSED by C19: the headline verdict and `series[-1].verdict` can disagree
 
-Not settled. Raised by C3's implementer and recorded here so the reviewer arrives
-at it with the evidence rather than rediscovering it.
+**Closed. This header read "OPEN" for three days after it stopped being true**,
+and `RESTART.md` and this plan disagreed about it the whole time — RESTART said
+closed, this said open, and nothing reconciled them until 2026-08-24, when the
+stale half got repeated into R15 before being caught. Recorded rather than
+quietly fixed, because two documents disagreeing about whether a question is
+settled is worse than either answer.
+
+C19 replaced FIFO pairing with "the verdict belongs to the comparison before it"
+— `SeriesBuilder.add` now updates *the most recently opened point*. Re-run R8's
+own counterexample under that rule: given `C1 C2 V1`, `V1` attaches to `C2`, so
+`series[-1].verdict` is `V1` and the headline is `V1`. They agree. The shape that
+produced the disagreement can no longer produce it.
+
+The original entry follows, unedited, because the reasoning in it is still the
+reasoning that justified C19.
+
+Raised by C3's implementer and recorded here so the reviewer arrives at it with
+the evidence rather than rediscovering it.
 
 C3's Edges table requires that "`series[-1]` describes the same run as the
 headline fields". Its "Must not" requires that no existing field change value. On
@@ -3324,9 +3340,99 @@ candidate B is fourteen points on one line with one succession at index 13, and
 the strip's `model_id` row reads `changed=True` with both ids — **exactly one
 `changed=True` row**, and now actually observable rather than merely required.
 
-**R8 remains open.** It was grouped with R14.6 as "two identity-field conflicts",
-and that grouping was loose: R8 is about verdict pairing — whether the headline
-and `series[-1]` may disagree on a log shape this pipeline cannot currently
-write — and nothing in this ruling reaches it. It still wants its own decision,
-and per its own text, if the answer is "documented limitation" then the document
-is `report.py`'s docstring and not this plan.
+**Correction, same day: R8 does not remain open.** This paragraph originally said
+it did, on the strength of R8's own "OPEN" header — which had been stale for
+three days. C19 closed it: pairing now attaches a verdict to the most recently
+opened point, so R8's counterexample `C1 C2 V1` gives `series[-1].verdict == V1`
+and a headline of `V1`, in agreement. `RESTART.md` had this right and this plan
+did not, and the disagreement was repeated here before it was caught.
+
+The grouping was loose in the other direction too: R14.6 is about an identity
+field splitting a series, R8 was about verdict pairing, and they were never two
+halves of one question. Nothing in R15 reaches R8 because there is nothing left
+of R8 to reach.
+
+---
+
+### R16 — C10 is unblocked; three corrections to its restated contract
+
+C10 has been blocked since its first dispatch and the reason was never written
+down anywhere an implementer would find it. It is written down now, and it is
+closed. Everything below was checked against `dimensions.py` on main after C21
+merged, not read off this plan.
+
+#### R16.1 — the blocker, named, and the call that replaces it
+
+C10's contract tells the implementer to consume:
+
+```python
+dimension_counts(records, items, *, judge) -> DimensionCounts
+```
+
+**That call cannot be made inside `from_evidence`.** It needs the records and the
+golden set *at the same moment*, and the golden set's path lives in the
+`migkit.comparison` payload, which is written after judging and is therefore
+among the last records the pass sees. Both ways around it are closed by merged
+tests that may not be weakened: reading the log twice fails
+`test_the_log_is_read_once_for_both_the_headline_and_the_series`, and buffering
+the verdicts fails `test_rebuilding_the_report_does_not_hold_the_log_either`.
+
+That is the whole blocker. C10's implementer was correctly forbidden from
+touching a merged module, so it could not solve it from where it stood, and the
+contract still prescribes the impossible call.
+
+**C21 split the phases.** Use the two-phase form:
+
+```python
+tally = DimensionTally()            # no golden set yet, and that is the point
+for record in records:              # the single streaming pass
+    tally.add(record)
+...                                 # migkit.comparison arrives, golden set resolves
+counts = tally.counts(items, judge=judge)
+```
+
+`dimension_counts` still exists and is still correct — it is this class with both
+phases run back to back, and remains the shape to reach for **whenever the golden
+set is already in hand**. It is simply not the shape `from_evidence` can use.
+
+#### R16.2 — the public surface C10 quotes is stale
+
+C10 states the surface is "exactly" an `__all__` that does not contain
+`DimensionTally`. It does now:
+
+```python
+__all__ = ["DimensionCell", "DimensionCounts", "DimensionTally",
+           "MIN_ITEMS_FOR_A_VERDICT", "MIN_N_FOR_A_VERDICT", "TagCount",
+           "UNTAGGED", "dimension_cell", "dimension_counts"]
+```
+
+Read `dimensions.py` rather than that list — the same instruction C10 already
+gives, which is worth obeying twice over now that the list has been wrong once.
+
+#### R16.3 — C21 did not deliver C10, and left one field for C10 to absorb
+
+C21 delivers raw counts and wires `ReportModel.dimension_counts:
+DimensionCounts`. C10's real work — the matrix: cells, golden-set tag order with
+`UNTAGGED` last, baseline against candidates, both floors, and the six ways to be
+unavailable — is untouched and still C10's.
+
+**Ruling: `dimensions: DimensionMatrix` replaces `dimension_counts` on
+`ReportModel`; it does not sit beside it.** `DimensionCell` carries `tag`,
+`passes`, `n` and `items`, so the matrix subsumes every fact `TagCount` held and
+nothing is lost. Keeping both would put the same facts on the model at two
+fidelities, which is two chances for them to disagree — the identical reasoning
+C10's own contract already gives for never re-wording a decline reason: "three
+copies of a disclosure are three chances for one to go stale."
+
+C21's wiring tests in `test_report.py` section 20 cover the tally being fed and
+the per-run reset. They will need re-pointing at the new field. **Re-point them;
+do not delete them.** They exist because deleting `tally.add(record)` from the
+loop once left the entire suite green.
+
+#### One contingency
+
+C21 is merged and its review is in flight as this is written. Reviews on this
+project have demanded renames three times out of three, so **every name above is
+provisional until that review lands**, and C10 must not be dispatched before it
+does. That is not caution for its own sake: it is the exact sequence that cost
+C2 a rewrite, when C1's review renamed fields after C2 had started typing them.

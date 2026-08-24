@@ -32,10 +32,16 @@ agent that checked rather than assumed, so treat that one as suspect.
 
 ## Where things stand
 
-**`main` is `1cfbf54`, 1585 tests, all seven gates green.** Merged and reviewed:
+**`main` is `baf349a`, 1607 tests, all seven gates green.** Merged and reviewed:
 **C1, C2, C3, C8, C9, C12, C13, C15, C19, C20**. Every one had a blind tester and
 a reviewer that mutation-tested it, and every review found something the other
 two roles missed.
+
+**C21 is merged and NOT yet reviewed**, and that distinction is the whole of
+rule 1 below. It is listed separately here rather than folded into the line
+above precisely because folding it in is how the trap gets sprung: a reader
+scanning for "what is safe to build on" sees one list and types names that
+review has not finalised yet.
 
 **Nothing any of that built is visible in the rendered document.** That is the
 single most important fact on this page. `interval_bar_svg` and `timeline_svg`
@@ -49,53 +55,90 @@ sight. **C14a exists to fix that** — see below.
 
 | Branch | Contains | State |
 |---|---|---|
-| `main` | C1-C3, C8, C9, C12, C13, C15, C19, C20, R1-R13, tooling, `conftest.py` | 1585 passed |
-| `chunk/c21-unblock` | the C10 blocker | in flight, see below |
-| `chunk/c10-impl` / `c10-test` | matrix wired into `ReportModel` | written, **blocked**, 1 test red |
-| `chunk/c14a-impl` / `c14a-test` | the two charts | **contract written, not built** |
-| `chunk/c16-impl` / `c16-test` | narrative adapters | **contract written, not built** |
+| `main` | C1-C3, C8, C9, C12, C13, C15, C19, C20, **C21**, R1-R16, tooling | 1607 passed |
+| `chunk/c14a-impl` | the two charts, the evidence made legible | **green on all seven gates**, review in flight |
+| `chunk/c4-impl` | comparability key and partition | **green**, 138 in `test_series.py`, review in flight |
+| `chunk/c11-impl` | the spot-check line | **green**, 120 in `test_series.py`, review in flight |
+| `chunk/c16-impl` | narrative adapters | 86/88, fix pass in flight (R16 note below) |
+| `chunk/c10-impl` / `c10-test` | matrix wired into `ReportModel` | written, **unblocked by C21**, needs redoing against R16 |
+
+Updated 2026-08-24. The three "review in flight" rows are the ones that matter:
+on this project a review has demanded changes three times out of three, so none
+of them is finished, and nothing that types their names may be dispatched yet.
 
 ## Do these next, in this order
 
-1. **C14a — the two charts and the evidence made legible.** Contract at
-   `### C14a`. Worktrees exist. This is the chunk that puts something on the page,
-   and after it every later chunk lands visibly instead of accumulating out of
-   sight. **Do this first even though it is not the critical path**, because the
-   person paying for this cannot steer on chunks they cannot see.
-2. **The C10 blocker** — `chunk/c21-unblock`, detail below. Then merge C10.
-3. **C16** — narrative adapters, contract settled by R13, worktrees exist.
-4. Then C4-C7, C11, C14's remaining seven elements, C17, C18.
+1. **Land the four reviews in flight** — C14a, C4, C11, C21 — and act on them.
+   Merging any of these before its review is the mistake this project already
+   paid for once: C1's review renamed fields after C2 had started typing them,
+   nothing collided, and the work simply had to be redone.
+2. **C16's fix pass.** Its blind pair found that night 14 rotates the ordinary
+   failing items as well as collapsing the refusals, so `#classification` gets
+   *better* on the night whose story is the model getting worse. Ruled: freeze
+   night 14's ordinary failing set at night 13's. The strip claims an
+   attribution and the matrix must not contradict it.
+3. **C10** — unblocked. `DimensionTally`'s two-phase form is the answer and R16
+   spells it out. Do **not** dispatch before C21's review lands, because C10
+   types C21's names.
+4. **C5, C6, C7** — all consume C4's `ComparabilityKey` and `Exclusion`, and
+   R15 added C7's dependency on `partition_comparable`. All wait on C4's review.
+5. **C17** — owes `showcase.toml` and a showcase rubric. Note that
+   `demo_rubric.md` describes decline-based grading, which is *inverted* for the
+   16 summarisation items; a rubric that does not describe the primary-tag split
+   will be hashed into the provenance footer while not matching the judge.
+6. Then C14's remaining seven elements, C18.
 
-## The C10 blocker, in full
+**Deferred deliberately:** the repo-wide `ruff format` drift. Three separate
+agents reported it independently — the tree is formatted at 88 while
+`pyproject.toml` sets `line-length = 100`, and roughly 26 files are affected.
+It looks like the ideal safe filler task and it is the opposite: a repo-wide
+reformat with several chunks in flight conflicts with every one of them. Do it
+when the tree is quiet, in its own chunk, touching nothing else.
 
-`from_evidence` must build a per-tag matrix. The matrix joins a `judge.verdict` to
-a golden-set item **by input text** (a verdict carries no `item_id`), so it needs
-the golden set. The golden set's path lives in the `migkit.comparison` payload,
-written *after* judging, so it is only in hand once the single streaming pass has
-finished. Both ways out are closed by merged tests:
+## The C10 blocker, in full -- RESOLVED by C21, 2026-08-24
 
-- **read the log twice** → `tests/test_report.py::test_the_log_is_read_once_for_both_the_headline_and_the_series` counts opens and asserts exactly 1.
-- **buffer the verdicts** → `tests/test_evidence_scale.py::test_rebuilding_the_report_does_not_hold_the_log_either` asserts peak allocation stays flat in log size. A `judge.verdict` embeds the input; the fixture's inputs are unique 4 KB strings.
+Kept because the shape of the problem is the useful part, and because it took
+three sessions to state it clearly enough to solve.
 
-Neither test may be weakened; `evidence.py` records the measurement behind them
-(an 86 MB log cost 502 MB extra resident).
+`from_evidence` must build a per-tag matrix. The matrix joins a `judge.verdict`
+to a golden-set item **by input text** (a verdict carries no `item_id`), so it
+needs the golden set. The golden set's path lives in the `migkit.comparison`
+payload, written *after* judging, so it is only in hand once the single
+streaming pass has finished. Both ways out are closed by merged tests, and
+neither may be weakened:
 
-**The unexplored option is a digest.** C10's implementer rejected buffering a
-digest per verdict because `dimension_counts`' refusal quotes the unjoinable
-input. That is a *message* objection to a *memory* problem. A digest is ~32 bytes
-against a 4 KB input — under 1% of the log's growth — and a refusal naming the
-verdict's ordinal position ("the 47th verdict's input matches no item") is
-arguably more actionable than a truncated quote. **Measure it before accepting or
-rejecting it.**
+- **read the log twice** -> `tests/test_report.py::test_the_log_is_read_once_for_both_the_headline_and_the_series` counts opens and asserts exactly 1.
+- **buffer the verdicts** -> `tests/test_evidence_scale.py::test_rebuilding_the_report_does_not_hold_the_log_either` asserts peak allocation stays flat in log size. A `judge.verdict` embeds the input; the fixture's inputs are unique 4 KB strings. `evidence.py` records the measurement behind it: an 86 MB log cost 502 MB extra resident.
 
-The fix needs a change to a merged module — either `dimension_counts` gains a
-two-phase form, or the golden set resolves before the loop — which is why C10's
-implementer, correctly forbidden from touching them, could not solve it.
+**The digest was the answer, and it was measured before being accepted.** Both
+guard tests are byte-identical to their pre-C21 versions and
+`test_evidence_scale.py` is untouched. blake2b at **16** bytes, not the ~32 this
+section guessed, and the cost is **per distinct input, not per verdict**: 317
+bytes per entry, so 1000 items costs ~311 KiB at 1 draw and ~311 KiB at 50.
+Flat in draws is the property; the 817x saving at 50 draws is a consequence of
+it. Peak allocation reads 2.48 MB at 8 MB of log and 2.68 MB at 24 MB, against a
+3.72 MB limit and an 8 MB ceiling -- two thirds of the ceiling unused.
 
-**Also unsettled:** `dimension_counts` counts *every* `migkit.judging_completed`
-group, so a log of fourteen nightly runs yields a matrix summing all fourteen
-while the banner reports only the last. Nobody can reconcile those two numbers.
-Decide per-run or cumulative, and put the reasoning in the code.
+**One caveat that was not in the original framing.** The bound holds for inputs
+that *join*. The deferred phase cannot recognise an unjoinable input -- that is
+what deferred means -- so a log of non-joining inputs grows linearly at 317
+B/entry with no bound but the log, reaching the ceiling at roughly 18,000 such
+verdicts. The docstring claiming "bounded by the golden set, not by the log" was
+false and is corrected in the code.
+
+**"Also unsettled: per-run or cumulative" is settled: per-run.** Proven over a
+two-run log at both levels; the cumulative mutant fails with exactly the
+irreconcilable pair, `(30, 60, 6)` vs `(30, 30, 6)`. The reasoning lives in
+`DimensionTally.add`, in `ReportModel.dimension_counts`, and in the report-level
+test docstrings -- in the code, as this section asked.
+
+**What C21 did NOT do is deliver C10.** It delivers raw counts. The matrix --
+cells, tag order, baseline against candidates, both floors, six ways to be
+unavailable -- is still C10's work, and C10's contract had a second defect that
+would have re-blocked it: it prescribes `dimension_counts(records, items, *,
+judge)`, which cannot be called inside a single pass. **See R16 in the plan**
+for the two-phase form that replaces it, and for two further corrections to
+C10's contract. Do not dispatch C10 until C21's review lands.
 
 ## Four defects a reader found in the rendered report
 
