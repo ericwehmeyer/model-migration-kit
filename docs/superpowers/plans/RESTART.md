@@ -59,20 +59,27 @@ forty lines below it.
 
 | Branch | Contains | State |
 |---|---|---|
-| `main` | C1-C16, C19-C21, R1-R26 | all seven gates green, **2083 passed** |
-| `chunk/c22a-impl` | `ReportModel.candidates` -- the **first production caller of C5** | green; `spot_check` half deliberately not built (R26) |
-| `chunk/c7-fix` | R24's eleven survivors | in flight |
-| `chunk/c17-impl` | `showcase.toml`, `showcase_rubric.md` | in flight |
-| `chunk/c11-subject` | `spot_check` gains a caller-supplied subject (R26.4) | in flight |
-| `mk-c10-review` | detached at `60a3fed` | reviewer in flight |
+| `main` | C1-C17, C19-C21, C22a part one, R1-R27 | all seven gates green, **2123 passed** |
+| `chunk/c10-fix` | R27's eighteen survivors | in flight (stage 5/5) |
+| `chunk/c18-impl` | the synthetic band | in flight (stage 1/5) |
+| `chunk/c22a-impl` | `spot_check` on the model | in flight -- **resumed**, not re-dispatched |
+| `chunk/c22a-test` | 15 blind tests for C22a | **waiting to merge** with part two |
 
-Updated 2026-08-24, main at `cbea6bc`. `chunk/c10-impl` and `chunk/c10-test`
-(no `2`) are **dead**; ignore them.
+Updated 2026-08-24, main at `347f4e6`. **17 of 22 chunks merged.** Remaining:
+C10's fix, C14's remaining elements, C18, C22a part two, C22b.
+`chunk/c10-impl` and `chunk/c10-test` (no `2`) are **dead**; ignore them.
+
+**One process debt, taken deliberately.** C22a part one was merged **without its
+blind tests**, because several target `spot_check`, which does not exist yet.
+`chunk/c22a-test` holds all 15 -- merge them the moment part two lands. Until
+then the `candidates` wiring is covered only by the existing suite. I verified
+the two riskiest claims by hand (`None` passes through uncoerced, no `excluded`
+field exists), which is not the same as having the blind pair.
 
 **Three consecutive blind pairs produced zero disagreement** -- C7 (33 tests),
-C10 (22), C6 (31). That is a good sign about the contracts and **not** a reason
-to skip review: C5's pair agreed too, and its 269-test green suite was hiding
-the chunk's own named failure mode.
+C10 (22), C6 (31) -- and it still meant nothing about defect-freedom: C10's
+review then found **18** surviving mutants and C7's found **11**. Agreement
+between two roles given one contract is not independent evidence.
 
 ### The watchdog was right and I was wrong -- a correction
 
@@ -155,26 +162,42 @@ Both were caught by agents, both because the agent **needed the actual value to
 do its job** and so could not take the sentence on trust. That is an argument
 for briefs that make an agent derive a number rather than accept one.
 
-### Running anything at all: there is no venv in the worktrees
+### The environment is fixed at the source -- follow `CLAUDE.md`, not old habits
 
-The only interpreter is `C:\Users\ewehm\repos\migration-kit\.venv\Scripts\
-python.exe`, in the **main checkout**. A bare `python` on PATH is a bare 3.14
-with no pytest installed, which fails loudly and is therefore harmless. The
-dangerous half is the editable install's `.pth`, which hardcodes the main
-checkout's `src`: run that venv's python from a worktree and you silently import
-**the main checkout's code**. `conftest.py` corrects this for pytest only.
+Two changes landed 2026-08-24 and they make this file's older advice obsolete.
 
-So for anything ad-hoc, both halves are needed:
+**The `.pth` trap is gone.** `scripts/worktree_path.py` is installed into the
+shared venv as an import hook, so a bare `python -c` from **any** worktree
+imports that worktree's code with **no `PYTHONPATH`**. Verified from four
+worktrees simultaneously; outside any checkout it still falls back to the main
+checkout, so nothing that worked before stopped working. `--uninstall` reverts.
 
-```
-PYTHONPATH="C:/Users/ewehm/repos/<worktree>/src" \
-  /c/Users/ewehm/repos/migration-kit/.venv/Scripts/python.exe -c ...
-```
-
-and print `model_migration_kit.__file__` before trusting the output. This was
-warned about six times and then walked into anyway, and the symptom is a render
-that comes back byte-identical to the before-state -- which reads exactly like
+This closed the failure that caught the orchestrator and six agents, whose
+symptom was a result identical to the before-state -- indistinguishable from
 "the merge did nothing".
+
+> One bug was fixed before installing: `FALLBACK` was derived from `__file__`,
+> which is right in `scripts/` and resolves to a nonexistent `<venv>/Lib/src`
+> once the module lives in `site-packages`. It now bakes the path from the
+> `.pth` it replaces, so the fallback cannot depend on which worktree happened
+> to run `--install`.
+
+**`pytest-xdist` is installed** and is in the `dev` extra so CI can honour a
+`-n` without failing on an unknown flag. `-n 8` takes the suite from ~136 s to
+~97 s. **Pick the worker count from the load**: wall-clock here is dominated by
+other agents, not by the code, and four agents each running `-n 8` on 16 cores
+make each other slower. `-n 4` when the board is busy.
+
+The interpreter is still only in the main checkout:
+`C:\Users\ewehm\repos\migration-kit\.venv\Scripts\python.exe`. A bare
+`python` on PATH is a bare 3.14 with no pytest, which fails loudly and is
+therefore harmless.
+
+**`docs/superpowers/plans/METRICS.md` is where process measurements now go.** It
+carries what each role costs (implementer ~110k tokens, reviewer ~150k, blind
+tester ~169k, fix pass ~198k; a full chunk 600-650k), the evidence that **tokens
+predict work and wall-clock does not**, and the orchestrator's error taxonomy.
+Append to it; do not rewrite it.
 
 ### The merge map, measured rather than guessed
 
