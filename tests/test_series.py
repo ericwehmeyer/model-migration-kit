@@ -2661,8 +2661,7 @@ def test_a_run_judged_against_a_different_golden_set_is_excluded_showing_both_ha
     assert _GROUP_GOLDENSET[:17] not in reason, f"truncated at more than 16: {reason!r}"
     assert _OTHER_GOLDENSET[:17] not in reason, f"truncated at more than 16: {reason!r}"
     assert "golden" in reason.lower(), (
-        f"two bare hashes name neither the field nor what a reader should do about "
-        f"it: {reason!r}"
+        f"two bare hashes name neither the field nor what to do about it: {reason!r}"
     )
 
 
@@ -2698,9 +2697,7 @@ def test_a_run_that_differs_in_more_than_one_field_is_excluded_once_and_not_twic
         [_point(candidate_model="ordinary"), odd], against=_group_key()
     )
     assert [point.candidate_model for point in kept] == ["ordinary"]
-    assert [exclusion.point.candidate_model for exclusion in excluded] == [
-        "different-everything"
-    ]
+    assert [exclusion.point.candidate_model for exclusion in excluded] == ["different-everything"]
 
 
 # ----------------------------------------------------------------------------------
@@ -2785,11 +2782,11 @@ def test_two_runs_that_both_recorded_no_judges_hash_are_not_comparable_either():
 
 
 def test_the_kept_points_come_back_in_the_order_they_were_given():
-    """"Ordering must be stable so the rendered list is stable." The dates below are
-    out of order, and out of order in a way no sort would leave alone, so a
-    partition that grouped through anything that reorders is visible here rather
-    than in a table that changes row order between two runs over one unchanged
-    log."""
+    """The contract's words: "ordering must be stable so the rendered list is
+    stable". The dates below are out of order, and out of order in a way no sort
+    would leave alone, so a partition that grouped through anything that reorders
+    is visible here rather than in a table that changes its row order between two
+    runs over one unchanged log."""
     created = [
         "2026-08-21T23:00:00.000000+00:00",
         "2026-08-19T09:00:00.000000+00:00",
@@ -3134,9 +3131,7 @@ def test_grouping_never_admits_a_pair_that_require_comparable_would_have_refused
         [monday, friday], against=series.comparability_key(monday)
     )
     assert [point.candidate_model for point in kept] == ["claude-candidate-v2"]
-    assert [exclusion.point.candidate_model for exclusion in excluded] == [
-        "claude-candidate-v3"
-    ]
+    assert [exclusion.point.candidate_model for exclusion in excluded] == ["claude-candidate-v3"]
 
 
 def test_grouping_also_refuses_the_pair_require_comparable_refuses_for_uneven_coverage():
@@ -3171,6 +3166,4 @@ def test_grouping_also_refuses_the_pair_require_comparable_refuses_for_uneven_co
         [monday, thrifty], against=series.comparability_key(monday)
     )
     assert [point.candidate_model for point in kept] == ["claude-candidate-v2"]
-    assert [exclusion.point.candidate_model for exclusion in excluded] == [
-        "claude-candidate-v3"
-    ]
+    assert [exclusion.point.candidate_model for exclusion in excluded] == ["claude-candidate-v3"]
