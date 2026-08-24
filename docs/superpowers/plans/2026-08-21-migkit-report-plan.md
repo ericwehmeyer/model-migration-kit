@@ -1539,6 +1539,30 @@ is asserted where it matters.
 
 #### C17 — the driver
 
+> **AMENDED — C17 owes a showcase rubric, and the demo's rubric is actively
+> wrong for the showcase set. Counted, not inferred:**
+>
+> | | demo golden set | showcase golden set |
+> |---|---|---|
+> | items | 12 | 96 |
+> | reference-less | 4 | 32 |
+> | their primary tags | **refusal ×4** | **refusal ×16, summarisation ×16** |
+>
+> The demo's judge grades every reference-less item by "did it decline". On the
+> demo set that is correct for all four, so **the shipped 0.1.1 demo is not
+> affected** — worth stating plainly, because "the judge is wrong" invites that
+> question first. On the showcase set it is correct for exactly half and
+> **inverted for the other half**: every summarisation item would score 1 for
+> declining to summarise, `#summarisation` would read ~0% on all fourteen
+> nights, and the document would be silently, plausibly wrong.
+>
+> C16's implementer wrote a judge that splits on the item's primary tag. It is
+> uncontracted and load-bearing. **C17 must ship `showcase.toml` and a rubric
+> describing that split** — `demo_rubric.md` describes the decline-based
+> grading, so shipping it unchanged hashes a rubric into the provenance footer
+> that does not match the judge that ran. A provenance footer attesting to the
+> wrong rubric is worse than none.
+
 **Files.** as C16, plus `tests/test_showcase.py`.
 
 **Contract.**
