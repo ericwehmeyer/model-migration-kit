@@ -5433,6 +5433,11 @@ Two consequences, both accepted:
 
 #### R30.4 — the shapes, the defaults, and the one field that mirrors another
 
+> **PARTLY CORRECTED by R32.1.** The `baseline_model` paragraph below is wrong:
+> both of its reasons were measured false. `series` cannot be empty here, and
+> `baseline` is the reader that loses a recorded value. The source is
+> `series[-1].baseline_model`. Everything else in this section stands.
+
 Decided together, because the pattern matters more than any of them:
 
 | Field | Type | Default | `None`/empty means |
@@ -5617,3 +5622,127 @@ The consequence to carry forward: **R21.5's assumed-lineage caveat now exists on
 every model and reaches no reader.** It is on `ReportModel.trend.caveats[0]`,
 with `point=None`, and no template renders it. That is C14c's to fix, and it is
 the first item in C14c's brief.
+
+### R32 — C22b is merged, and one of R30's rulings was wrong where it counts
+
+Both halves of C22b are in. `main` is at **2190 passing**, seven gates green.
+The view model is complete: every producer this rebuild wrote now has a field on
+`ReportModel`, and what remains is rendering.
+
+#### R32.1 — CORRECTS R30.4. `baseline_model` comes from `series`, not `baseline`
+
+R30.4 ruled that `trend`'s `baseline_model` should come from
+`ReportModel.baseline.model_id` rather than `series[-1].baseline_model`, and
+gave one reason: they are the same fact, so the tie breaks on which one is
+always there — `baseline` is read from the records and always present, `series`
+can be empty.
+
+**Both halves of that reason are false, and C22b's blind tester measured both.**
+
+*The empty-series case does not exist.* `from_evidence` raises `ArtifactError`
+on a log with no `migkit.comparison` record, so `series` is never empty by the
+time these fields are computed. The special case R30.4 was avoiding is
+unreachable.
+
+*And `baseline` is not the more faithful reader.* The two are the same JSON
+field of the same headline payload — `comparison["baseline"]["model_id"]` — and
+differ only in coercion:
+
+```
+series._text        -> "" if value is None else str(value)
+report._run_summary -> str(side.get("model_id", "") or "")
+```
+
+They part company on exactly one class of value: falsy and not `None`. Measured
+with `model_id: 0` in the payload:
+
+```
+baseline.model_id          == ''
+series[-1].baseline_model  == '0'
+```
+
+Under R30.4's ruling the report then draws **no line at all** — nothing is
+measured against `""` — and `_assumed_lineage(())` prints *"this baseline
+recorded no candidate the log could name"*, which is false: the log recorded
+`model-b-20260101`. **A recorded value renders as an absence, and the absence
+then renders as a finding.** That is this document's central rule inverted
+twice, in the one case where the choice is observable at all.
+
+**Ruling: `series[-1].baseline_model`.** The tie-break is not "which is always
+there" — neither can be missing — but **which preserves what the log
+recorded**, and only one of them does.
+
+Scheduled, not merely recorded (R28.1): this goes to **C22b's fix pass**, one
+line in `from_evidence` plus the tester's expectation, which is currently
+written against the ruling as issued and says so in its own docstring. The
+tester tested the contract as written and flagged the wart rather than quietly
+implementing the better answer — which is right, and is why this is a
+correction rather than a defect.
+
+#### R32.2 — the gate skipped constants, and that cost the second collision
+
+R31.3 named the class: a defect that exists in neither branch, only in their
+sum, visible only at the merge. It recurred within the hour, in the same file,
+and the check written for it said **PASS**.
+
+C10's dimension fixtures define a module-level `THIRD_MODEL`; C22b's blind
+tester, cut from the same commit and forbidden from reading the other branch,
+defined another 2,300 lines later. The later won for every reference in the
+module. It was caught only because one of C10's tests happens to assert
+`FOURTH_MODEL < THIRD_MODEL < CANDIDATE_MODEL` — a guard written for a different
+purpose, which went red on a string comparison.
+
+`check_no_shadowed_top_level_names` skipped `UPPER_CASE` names, commented:
+*"An upper-case rebind is usually a deliberate constant edit."* Measured before
+removing the exclusion:
+
+```
+0 upper-case module-level rebind(s) across the tracked tree
+```
+
+**The premise cost a real catch and bought nothing.** A deliberate constant edit
+rebinds a constant in one branch's working copy; it does not leave two
+module-level assignments standing in one file. Exclusion removed, and
+`ast.AnnAssign` added while there — `NAME: Final = ...` binds exactly as
+`NAME = ...` does and was invisible to the walker. Same measurement, zero new
+reports.
+
+Unfixed to confirm, per this project's own rule for fixes: with the rename
+reverted the check reports `'THIRD_MODEL' defined at 8215, 10539 -- the later
+one wins`, and the file was restored from a byte-verified backup with an
+identical sha256.
+
+**The lesson is about the exclusion, not the check.** Every gate here has one:
+`check_all_is_complete` deliberately skips constants too, and argues for it at
+length — correctly, because flagging them would report eight pre-existing style
+decisions as merge defects. That argument is about *false positives it would
+create*. This one was about *what a rebind usually means*, which is a guess
+about intent rather than a measurement of the tree. **A gate's exclusion needs
+the same evidence as its rule**, and the cheap check is the one run here: count
+what removing it would report.
+
+#### R32.3 — two contract questions C14b's tester raised and correctly did not answer
+
+Recorded now so C14b's merge does not have to invent them:
+
+1. **C14's element order table is already violated by merged code.** The table
+   lists `timeline` before "What was compared"; C14a shipped
+   `verdict, compared, timeline, …`. The tester asserted only the relative order
+   of the three elements its own chunk adds, and said so in the docstring rather
+   than picking a reading. Someone must decide whether the table or the shipped
+   order is authoritative — **it is not C14b's to decide**, and nothing in C14b
+   depends on the answer.
+2. **R23.2's empty state has no anchor.** The section is gated on "any
+   exclusion", and when `candidate_field` returns `None` there are none to gate
+   on — yet R23.2 requires the page to hedge anyway. Where that sentence lives
+   (under `candidates`, as a same-id branch of `excluded`, or unanchored) was
+   never ruled. The tester asserted the *claim* and not the location, which
+   leaves the implementer free. If the merge wants an anchor pinned, that ruling
+   has to be written first.
+
+And one thing the tester flagged about its own tests, which is the kind of
+disclosure that makes a blind pair worth having: its hedge test matches an
+"exclud" stem plus one of a fixed list of hedging words, so a phrasing like
+*"some runs are not shown here"* would go red **for wording rather than for
+substance**. Deliberate, R23.2's own phrasing, and declared — so the merge can
+tell a wording disagreement from a defect finding without re-deriving it.
