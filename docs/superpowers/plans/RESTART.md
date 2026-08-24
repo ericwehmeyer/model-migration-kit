@@ -74,80 +74,46 @@ C10 (22), C6 (31). That is a good sign about the contracts and **not** a reason
 to skip review: C5's pair agreed too, and its 269-test green suite was hiding
 the chunk's own named failure mode.
 
-### The watchdog raises false alarms -- verify before acting
+### The watchdog was right and I was wrong -- a correction
 
-The stall monitor has now fired **four** alerts naming agents that had already
-**completed and been merged** (`C5 fix pass` twice, `C7 reviewer`, `C6
-implementer`). One escalated to *"Stop it and salvage its commits"* for work
-that had been on `main` for ninety minutes.
+An earlier version of this section said the stall monitor "raises false alarms"
+and told the next session to distrust it. **That was wrong, and it is worth
+leaving the correction visible.**
 
-It tracks agents by name and does not observe completion. **Before acting on any
-stall alert**, check `ListAgents` for a live agent and `git log`/`git branch
---contains` for the work. Salvaging a merged branch is wasted effort; stopping a
-live agent on a false alarm costs its context.
+The monitor fired seven times naming agents that had already completed. Every
+one of those alerts traced to **my own bookkeeping**, not to the tool. The
+watchdog is `scratchpad/agent_watchdog.sh`; it reads liveness from transcript
+mtime and completion from `scratchpad/completed_agents.txt`, **a file the
+orchestrator writes**. The rule was written down here in as many words -- *one
+line per completion, including after a resume and for dead agents* -- and then:
 
-Genuine stalls do happen -- three agents died in one window (two 600s stalls,
-one API error). The user later found these correlated with **machine power and
-sleep settings**, and changing them appears to have stopped the clustering. When
-a real stall happens, **resume with `SendMessage` rather than re-dispatching**:
-it preserves partial findings, and one reviewer came back with four surviving
-mutants intact. Check every worktree first -- reviewers had restored cleanly,
-but one fix pass had 950 lines of green work uncommitted.
+- four agents (C6's pair, C22a's pair) were **never recorded at all**;
+- two more were recorded as `DIED`, then **resumed and completed
+  successfully**, and never re-recorded.
 
-**Merged and reviewed** means the blind pair ran, a reviewer mutation-tested it,
-and a fix pass acted on the review. Every chunk on `main` above has been through
-all four. **Seven of seven reviews found defects both other roles missed**, and
-three found defects in code that was already merged.
+So the file said those agents were dead or unfinished. The monitor read it and
+reported exactly that. It was correct on every alert.
 
-### What the document renders today
+**The lesson is not about watchdogs.** A tool fed by a side-channel the operator
+must maintain by hand will silently degrade the moment the operator gets busy --
+and the busiest moments are precisely when its output matters. It then produces
+confident wrong signals, one of which here escalated to *"stop it and salvage
+its commits"* against work that had been merged for ninety minutes. Acting on
+that would have been destructive on the tool's advice and my data.
 
-Measured on `main` at `60a3fed`, after C14a, C10 and C16:
+It is also the third instance this session of one shape: **a conclusion drawn
+from a source nobody re-checked.** R25 (a mechanism inferred, not run), R26 (a
+field's keys assumed from a function's keys), and this. In all three the output
+looked authoritative and the input was never verified.
 
-| | before C14a | now |
-|---|---|---|
-| bytes | 25,901 | **24,564** |
-| `<svg>` elements | 0 | **2** |
-| `id="timeline"` | no | **yes** |
-| `<pre>` blocks | 44 | **12** |
-| `<details>` open / closed | 0 / 4 | **3 / 1** |
-| absolute drive paths | 11 | **5** |
-| cells reading `0.000` | 4 | **0** |
-| the string `98.10` | 6 | **2** |
-| the word "dimension" | 0 | **0** |
-| the words "spot check" | 0 | **0** |
-
-**C10 merged and this table did not move by a single byte.** The render after
-C10 is byte-identical to the render before it -- 24,564 both times, "dimension"
-still zero. That is not a defect in C10, which does exactly what its contract
-says: it puts `dimensions: DimensionMatrix` on `ReportModel`. It is the
-scheduling mistake this page was written about, in miniature, on a plan that
-already learned the lesson once.
-
-**Nothing renders the matrix.** `C14's remaining seven elements` do, and until
-they land C10, C11 and C5 are three merged chunks a reader cannot see.
-
-So the next visible work is C14, not another upstream chunk -- with one
-constraint that outranks the impulse: **C14 types C10's names, and a name must
-be through review, not merely merged.** That is why both outstanding reviewers
-were dispatched ahead of it rather than after. The review is the bottleneck on
-the artifact moving, which is an unusual thing to be able to say and worth
-saying out loud, because the tempting shortcut here is to dispatch C14 beside
-C10's reviewer and let the producer and consumer race.
-
-Re-measure with `scratchpad/measure_report.py`, passing the rendered file:
-
-```
-PYTHONPATH="C:/Users/ewehm/repos/mk-main/src" \
-  /c/Users/ewehm/repos/migration-kit/.venv/Scripts/python.exe \
-  -m model_migration_kit.cli demo --out <file>
-```
-
-`--out` is a **file**, not a directory. And export `PYTHONPATH` first: a bare
-`migkit demo` renders the *main checkout's* code and hands you the wrong numbers
-with no warning. That mistake was made here once already, and its symptom is a
-render that comes back byte-identical to the before-state -- which is also,
-confusingly, exactly what a correct C10 render looks like. Print
-`model_migration_kit.__file__` so the two cannot be confused.
+The monitor is currently **stopped**, for a reason unrelated to the above: the
+three genuine agent deaths this session all arrived as ordinary `failed`
+task-notifications from the harness, with the stall reason attached. The
+watchdog's unique value -- catching an agent that hangs without notifying -- was
+never actually demonstrated. If you restart it, **either maintain
+`completed_agents.txt` on every single completion or derive completion from
+something the orchestrator cannot forget.** A half-maintained signal is worse
+than none.
 
 ## Do these next, in this order
 
