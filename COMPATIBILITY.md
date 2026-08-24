@@ -191,6 +191,7 @@ table — so the completeness claim is checkable rather than asserted.
 | `tests/test_report_scale.py` | `EvidenceLog`, `FakeAdapter` |
 | `tests/test_runner.py` | `EvidenceLog`, `FakeAdapter`, `PassRateError`, `assert_pass_rate`, `sample_of` |
 | `tests/test_series.py` | `EvidenceError`, `EvidenceLog`, `EvidenceRecord` |
+| `tests/test_showcase.py` | `EvidenceLog`, `FakeAdapter`, `PassRateError`, `assert_pass_rate` |
 | `tests/test_stranger_path.py` | `EvidenceLog`, `anthropic`, `openai_compat` |
 | `tests/test_thresholds_confidence_contract.py` | `assert_pass_rate`, `wilson_lower_bound` |
 
