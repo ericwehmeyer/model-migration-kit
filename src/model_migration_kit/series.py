@@ -77,6 +77,7 @@ __all__ = [
     "RunPoint",
     "SeriesBuilder",
     "SpotCheck",
+    "SpotCheckSubject",
     "Succession",
     "Trend",
     "candidate_field",
@@ -2254,6 +2255,98 @@ def _multiplicity_caveats(
 # C11: the counterfactual spot check
 # --------------------------------------------------------------------------- #
 
+#: The two sides a spot check can be about, spelled the way the rest of the
+#: report spells them. Closed rather than free: a side is not a label the caller
+#: invents, it is one of the two columns every comparison in this document has,
+#: so a third value is a miswired caller and never a new kind of side.
+_SIDES = ("baseline", "candidate")
+
+#: What the sentence says where a judge's name would go when the run recorded
+#: none. Spelled out for :data:`_UNRECORDED`'s reason -- "under judge " with
+#: nothing after it reads as a formatting bug rather than as a missing fact --
+#: and said *inside the sentence*, because a reader who cannot see the absence
+#: where they read the number will read the number as though it had a subject.
+_JUDGE_UNNAMED = "a judge whose name the run did not record"
+
+
+@dataclass(frozen=True)
+class SpotCheckSubject:
+    """Which judge's grading, and which side's items, a spot check speaks about.
+
+    **Two fields rather than one string, and the reason is not tidiness.**
+
+    The caller holds two separate facts -- a judge name lifted from
+    ``item_counts["per_judge"]``, and the side whose counts it just passed in --
+    and a single free-text label would make the caller turn those two facts into
+    English. Composing this producer's prose anywhere but here is the thing
+    R21.5 refused for ``trend``'s caveat and R26.4 refused again for this
+    sentence: if the plumbing may write the producer's words once, nothing
+    downstream is obliged to say them the same way twice, and no reviewer reads
+    the wiring for claims about the data. So the caller supplies facts and this
+    module supplies the wording. That is the whole of the split.
+
+    Three consequences follow from the structure that a string could not give:
+
+    * **The side can be checked.** ``side`` has exactly two legal values, so
+      ``"cand"``, ``"the candidate model"`` or a judge name in the side slot is
+      refused at construction. A free label is unfalsifiable -- whatever the
+      caller passes is printed, and a sentence naming the wrong side is worse
+      than one naming none.
+    * **The two absences are not the same absence, and must not be handled
+      alike.** A missing *side* is a wiring bug: the caller chose which side's
+      counts to pass and therefore cannot fail to know which it chose, so it is
+      refused. A missing *judge name* is a fact about the log -- ``report.py``
+      reads ``counting_judge = judges[0].name if judges else ""`` and judge rows
+      carry ``name=str(raw.get("name", "") or "")``, so a blank is reachable
+      from real evidence -- and refusing it would take the sentence away from
+      the reader to protect them from a gap the sentence can simply state. It is
+      said out loud instead, in :data:`_JUDGE_UNNAMED`. One string could not tell
+      those two cases apart, and so would have to get one of them wrong.
+    * **The facts travel, not just the prose.** :class:`SpotCheck` carries this
+      object, so a reader who wants to know what the sentence is about can read
+      the fields rather than parse the sentence -- the same reason ``SpotCheck``
+      carries the counts it computed from.
+
+    Never inferred, on R15's rule: nothing here reads a model id, guesses a side
+    from a count, or picks the judge when several graded. Which judge is C10's
+    ``judges[0]`` decision and which side is R26.3's ruling, and both belong to
+    the caller that has the panel in front of it.
+    """
+
+    #: The judge whose grading produced these counts. May be empty when the run
+    #: recorded no name; see :data:`_JUDGE_UNNAMED`. Never guessed.
+    judge: str
+    #: ``"baseline"`` or ``"candidate"``. Anything else raises.
+    side: str
+
+    def __post_init__(self) -> None:
+        """Refuse a side that is not one of the two, at construction.
+
+        Here rather than in :func:`spot_check` so that a ``SpotCheckSubject``
+        which exists is a ``SpotCheckSubject`` that can be printed. A validating
+        function leaves a half-legal value sitting in a variable for anything
+        else to read; a validating constructor does not.
+        """
+        if self.side not in _SIDES:
+            raise ValueError(
+                "side must be one of "
+                + " or ".join(repr(one) for one in _SIDES)
+                + f", got {self.side!r}. The caller chose which side's counts it "
+                "passed, so a side it cannot name is a miswired caller and not a "
+                "run that failed to record one."
+            )
+
+
+def _judge_phrase(judge: str) -> str:
+    """``"judge accuracy"``, or a plain admission that the run named none.
+
+    ``.strip()`` through :func:`_recorded`, sharing the module's one emptiness
+    test, because a padded name recorded nothing either and this is a place where
+    the difference between ``""`` and ``"  "`` would decide whether an absence
+    renders as a name.
+    """
+    return f"judge {judge.strip()}" if _recorded(judge) else _JUDGE_UNNAMED
+
 
 @dataclass(frozen=True)
 class SpotCheck:
@@ -2268,8 +2361,18 @@ class SpotCheck:
     :class:`RunPoint` is: the sentence and the counts it was computed from must
     travel together. A reader who wants to redo the arithmetic can, from this
     object alone, without trusting the prose.
+
+    ``subject`` is one of those inputs and is listed first, because a number
+    computed per judge and per side identifies nothing until it says which. It is
+    in the sentence as well as in this field, and the sentence is the copy that
+    matters: a renderer must not caption around this record to supply a subject
+    the sentence already carries. Two renderings deriving one fact two ways is
+    how they come to disagree.
     """
 
+    #: Which judge's grading and which side's items this is about. Supplied by
+    #: the caller, never inferred; see :class:`SpotCheckSubject`.
+    subject: SpotCheckSubject
     #: How many prompts the hypothetical spot check tries.
     k: int
     #: ``N`` -- every item in the set, failing and unstable ones included.
@@ -2286,7 +2389,12 @@ class SpotCheck:
 
 
 def spot_check(
-    items_passing: int, items_failing: int, items_unstable: int, *, k: int = 12
+    items_passing: int,
+    items_failing: int,
+    items_unstable: int,
+    *,
+    subject: SpotCheckSubject,
+    k: int = 12,
 ) -> SpotCheck | None:
     """The chance a ``k``-prompt hand check of this set would have seen nothing.
 
@@ -2342,6 +2450,28 @@ def spot_check(
     more quotable one. The reason it is not done is that it would assert eight
     plus three regressions on evidence for eight.
 
+    **The sentence names its subject, and the subject is required.** These
+    counts are per judge and per side, so ``33%`` on its own is a number about
+    nothing: a reader cannot tell whether it describes the candidate the decision
+    turns on or the baseline it is measured against, nor which judge graded, and
+    this is the number a sceptical reader checks first. So ``subject`` is a
+    keyword argument with **no default**. Omitting it is a ``TypeError`` at the
+    call site, for the reason ``k == 0`` raises rather than returning ``None``:
+    an unlabelled sentence is a miswired caller, and a miswired caller must fail
+    where it is written rather than reach a reader wearing a result's clothes.
+    A subject that is not a :class:`SpotCheckSubject` is refused the same way and
+    for the same reason -- a bare string is the shape of a caller composing this
+    module's prose for it, which R26.4 ruled out.
+
+    What the sentence must never do is *look* labelled when it is not. An
+    unnamed judge is stated in words (:data:`_JUDGE_UNNAMED`) rather than left as
+    a gap, because an absence rendered as blank space reads as a measurement with
+    a formatting bug; and a side that is not one of the two is refused outright.
+    Which judge and which side are the caller's facts and are never guessed here:
+    R26.3 rules them to be the counting judge -- ``judges[0]``, C10's choice for
+    the tag matrix, because one document must not select its judge two ways --
+    and the candidate, whose failures are the ones the decision turns on.
+
     **The sentence names the assumption it made.** A real spot check is not a
     random draw: an engineer picks twelve prompts they believe are
     representative, and nobody can model that. So the sentence says "drawn at
@@ -2381,6 +2511,13 @@ def spot_check(
     nothing, and silently returning ``None`` would hide a miswired caller behind
     a result the report already knows how to render as an absence.
     """
+    if not isinstance(subject, SpotCheckSubject):
+        raise TypeError(
+            "subject must be a SpotCheckSubject naming the judge and the side "
+            f"these counts come from, got {type(subject).__name__}. A spot check "
+            "is computed per judge and per side, so a sentence without one says "
+            "nothing a reader can check."
+        )
     if k <= 0:
         raise ValueError(f"k must be a positive number of prompts, got {k!r}")
     if items_passing < 0 or items_failing < 0 or items_unstable < 0:
@@ -2399,11 +2536,13 @@ def spot_check(
     # textbook expression rather than something they have to re-derive.
     probability = math.comb(items - items_failing, k) / math.comb(items, k)
     sentence = (
-        f"A {k}-prompt spot check drawn at random from these {items} items, "
-        f"{items_failing} of which failed, would have shown no failures at all "
-        f"in {_percent(probability)} of such checks."
+        f"A {k}-prompt spot check of the {subject.side} under "
+        f"{_judge_phrase(subject.judge)}, drawn at random from these {items} "
+        f"items, {items_failing} of which failed, would have shown no failures "
+        f"at all in {_percent(probability)} of such checks."
     )
     return SpotCheck(
+        subject=subject,
         k=k,
         items=items,
         failing=items_failing,

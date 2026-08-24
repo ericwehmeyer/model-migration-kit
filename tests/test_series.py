@@ -2482,6 +2482,31 @@ def test_a_number_the_reader_cannot_use_is_not_a_malformed_line(tmp_path: Path):
 # collection while C11 is unwritten, taking every pre-existing test in this file with
 # it. Attribute access fails in the test that uses it and nowhere else, which is the
 # same guarantee scoped to the tests that make the claim.
+#
+# **The subject, added by the C11 follow-up under R26.3 and R26.4.** `spot_check`
+# now takes a required `subject` naming the judge and the side its counts came
+# from, because the number is computed per judge and per side and a sentence that
+# says neither is a number about nothing. Every call below gained
+# `subject=_subject()` and nothing else; no assertion in this section was relaxed,
+# and the two that had to move -- the literal sentence and the field list -- moved
+# by *adding* what the subject put there, argued at each of them.
+
+
+def _subject(judge="accuracy", side="candidate"):
+    """A subject for the calls whose claim is about something other than it.
+
+    A function rather than a module-level constant so `series.SpotCheckSubject` is
+    still reached by attribute access at call time, keeping this section's rule: a
+    missing name fails the tests that use it and not the whole module at
+    collection.
+
+    One shared subject through the section is deliberate for the calls that are not
+    about the subject -- several of them assert that two calls produce the *same*
+    sentence, which a varying subject would break for a reason having nothing to do
+    with what they test. The subject's own rendering is varied in pairs by the
+    tests that make claims about it, at the end of this section.
+    """
+    return series.SpotCheckSubject(judge=judge, side=side)
 
 
 def test_no_spot_check_sentence_is_offered_when_nothing_was_failing():
@@ -2492,13 +2517,13 @@ def test_no_spot_check_sentence_is_offered_when_nothing_was_failing():
 
     This is the row an implementation optimising for "always show the persuasive
     line" gets wrong, which is why it is first."""
-    assert series.spot_check(96, 0, 0) is None
+    assert series.spot_check(96, 0, 0, subject=_subject()) is None
     # Unstable items are counted as passing, so they do not rescue the sentence
     # either: a set with instability but no outright failure is still F == 0.
-    assert series.spot_check(90, 0, 6) is None
+    assert series.spot_check(90, 0, 6, subject=_subject()) is None
     # And at a k the set is large enough for, so `None` here is the F == 0 rule
     # and not the N < k rule standing in for it.
-    assert series.spot_check(96, 1, 0, k=12) is not None
+    assert series.spot_check(96, 1, 0, k=12, subject=_subject()) is not None
 
 
 def test_the_spot_check_counts_unstable_items_as_passing_so_f_is_only_established_regressions():
@@ -2517,8 +2542,8 @@ def test_the_spot_check_counts_unstable_items_as_passing_so_f_is_only_establishe
     what defends it is that `F` names only established regressions.
     `test_excluding_unstable_items_from_f_raises_the_probability_and_the_docstring_says_that`
     holds the direction against the arithmetic."""
-    without = series.spot_check(88, 8, 0, k=12)
-    with_unstable = series.spot_check(85, 8, 3, k=12)
+    without = series.spot_check(88, 8, 0, k=12, subject=_subject())
+    with_unstable = series.spot_check(85, 8, 3, k=12, subject=_subject())
 
     assert without is not None
     assert with_unstable is not None
@@ -2540,7 +2565,7 @@ def test_the_probability_is_the_hypergeometric_one_and_not_the_with_replacement_
     plausible printed in a sentence. Only one of them is the probability that a
     twelve-item sample drawn from ninety-six contains none of the eight bad
     ones -- you cannot inspect the same prompt twice and call it two prompts."""
-    check = series.spot_check(88, 8, 0, k=12)
+    check = series.spot_check(88, 8, 0, k=12, subject=_subject())
     assert check is not None
     assert check.probability == pytest.approx(0.3287693171387045, rel=1e-12)
     assert check.probability == pytest.approx(0.32877, abs=5e-6)
@@ -2574,7 +2599,7 @@ def test_the_draw_is_of_items_without_replacement_and_not_a_completion_rate_rais
     there is exactly one clean twelve-item sample out of `comb(16, 12)` -- 1/1820.
     Any implementation treating the twelve draws as independent cannot produce
     that number by accident."""
-    check = series.spot_check(passing, failing, 0, k=12)
+    check = series.spot_check(passing, failing, 0, k=12, subject=_subject())
     assert check is not None
     assert check.probability == pytest.approx(expected, rel=1e-12)
     assert check.probability != pytest.approx(with_replacement, rel=1e-3)
@@ -2594,7 +2619,7 @@ def test_the_docstring_describes_the_with_replacement_error_at_its_actual_size()
     The 7% is the finding, not a footnote to it. An error of ten times announces
     itself; an error of 7% does not, and 35% and 33% read identically in a
     sentence."""
-    check = series.spot_check(88, 8, 0, k=12)
+    check = series.spot_check(88, 8, 0, k=12, subject=_subject())
     assert check is not None
     with_replacement = (88 / 96) ** 12
     assert with_replacement == pytest.approx(0.3519956280141369, rel=1e-12)
@@ -2621,7 +2646,7 @@ def test_the_sentence_names_the_assumption_it_made_rather_than_leaving_it_implie
     the sentence has to say "drawn at random" out loud and let the reader discount
     it. A sentence that omits the phrase is claiming something about real spot
     checks that this function did not compute."""
-    check = series.spot_check(88, 8, 0, k=12)
+    check = series.spot_check(88, 8, 0, k=12, subject=_subject())
     assert check is not None
     assert "drawn at random" in check.sentence
 
@@ -2632,7 +2657,7 @@ def test_the_sentence_is_about_spot_checks_and_never_about_runs():
     being counted is samples of them. "in 34% of runs" invites the question "what
     is a run", and the honest answer -- that a run is not the unit here at all --
     is a hole in the most-quoted sentence in the document."""
-    check = series.spot_check(88, 8, 0, k=12)
+    check = series.spot_check(88, 8, 0, k=12, subject=_subject())
     assert check is not None
     lowered = check.sentence.lower()
     assert "spot check" in lowered
@@ -2672,7 +2697,7 @@ def test_the_percentage_in_the_sentence_is_the_probability_that_was_computed(
     The `34pct-at-N=52` row is deliberately the plan's old wrong answer arrived
     at honestly: 52 items with 4 failing really is 34%, so a suite that forbids
     the digits "34" everywhere would be forbidding a correct output."""
-    check = series.spot_check(passing, failing, 0, k=k)
+    check = series.spot_check(passing, failing, 0, k=k, subject=_subject())
     assert check is not None
     expected = f"{round(check.probability * 100)}%"
     assert expected in check.sentence
@@ -2692,7 +2717,7 @@ def test_no_other_percentage_appears_in_the_demo_sentence():
     number the plan twice got wrong. 0.32877 is 33%; "34" or "35" in this
     particular sentence means the prose was written from the contract's struck
     numbers rather than from the arithmetic."""
-    check = series.spot_check(88, 8, 0, k=12)
+    check = series.spot_check(88, 8, 0, k=12, subject=_subject())
     assert check is not None
     assert "33%" in check.sentence
     assert "34" not in check.sentence
@@ -2710,7 +2735,7 @@ def test_the_sentence_counts_items_and_never_completions_or_prompts():
     prompts in this sentence, and reusing the word for `N` would make the line
     read as twelve prompts drawn from ninety-six prompts, which is the
     completion-level reading wearing the right noun."""
-    check = series.spot_check(88, 8, 0, k=12)
+    check = series.spot_check(88, 8, 0, k=12, subject=_subject())
     assert check is not None
     sentence = check.sentence
     assert "96 items" in sentence
@@ -2732,13 +2757,21 @@ def test_the_sentence_says_the_check_would_have_seen_nothing_not_caught_somethin
     Nothing else in the suite constrained the verb, so the whole rendered
     sentence is pinned here as a literal. It is the one string in this module
     quoted directly into a document a director reads, and a change to it should
-    have to be made on purpose."""
-    check = series.spot_check(88, 8, 0, k=12)
+    have to be made on purpose.
+
+    **Updated by the C11 follow-up, and this is the change it was made on purpose
+    for.** The literal gained "of the candidate under judge accuracy" and lost
+    nothing: every word the old literal pinned is still pinned, in the same order,
+    and the clause the test exists to guard -- "would have shown no failures at
+    all" -- is untouched. The old sentence named no subject at all, which is the
+    defect R26.4 ruled on: the number is computed per judge and per side, so the
+    line a director quotes has to say which."""
+    check = series.spot_check(88, 8, 0, k=12, subject=_subject())
     assert check is not None
     assert check.sentence == (
-        "A 12-prompt spot check drawn at random from these 96 items, 8 of "
-        "which failed, would have shown no failures at all in 33% of such "
-        "checks."
+        "A 12-prompt spot check of the candidate under judge accuracy, drawn "
+        "at random from these 96 items, 8 of which failed, would have shown no "
+        "failures at all in 33% of such checks."
     )
     # And the inversion named explicitly, for the next reader of this test.
     lowered = check.sentence.lower()
@@ -2754,12 +2787,12 @@ def test_the_sentence_says_how_many_items_failed_so_the_number_is_checkable_in_p
     sentence dropped it. A reader who cannot verify a claim where they read it
     has to take it on trust, which is the posture this whole chunk is written
     against."""
-    check = series.spot_check(88, 8, 0, k=12)
+    check = series.spot_check(88, 8, 0, k=12, subject=_subject())
     assert check is not None
     assert "8 of which failed" in check.sentence
     assert str(check.failing) in check.sentence
     # A different F must move the sentence, not just the field.
-    other = series.spot_check(80, 16, 0, k=12)
+    other = series.spot_check(80, 16, 0, k=12, subject=_subject())
     assert other is not None
     assert "16 of which failed" in other.sentence
 
@@ -2769,7 +2802,7 @@ def test_the_sentence_does_not_put_a_spot_check_inside_its_own_plural_denominato
     subject inside the plural set it is a member of, which eats its own tail. "of
     such checks" closes it while keeping the words the contract requires: the
     subject is still a *spot check* and the sentence still never says "runs"."""
-    check = series.spot_check(88, 8, 0, k=12)
+    check = series.spot_check(88, 8, 0, k=12, subject=_subject())
     assert check is not None
     lowered = check.sentence.lower()
     assert "of such checks" in lowered
@@ -2801,24 +2834,24 @@ def test_a_set_no_larger_than_the_check_offers_no_sentence_because_that_is_a_cen
 
     This is a contract amendment out of review. `N < k` in the plan becomes
     `N <= k` here."""
-    assert series.spot_check(8, 1, 0, k=12) is None
+    assert series.spot_check(8, 1, 0, k=12, subject=_subject()) is None
     # N == k: a census. Excluded, and this is the amendment.
-    assert series.spot_check(11, 1, 0, k=12) is None
-    assert series.spot_check(0, 12, 0, k=12) is None
-    assert series.spot_check(6, 3, 3, k=12) is None
+    assert series.spot_check(11, 1, 0, k=12, subject=_subject()) is None
+    assert series.spot_check(0, 12, 0, k=12, subject=_subject()) is None
+    assert series.spot_check(6, 3, 3, k=12, subject=_subject()) is None
     # N == k + 1 is the smallest genuine sample and is still offered, so the
     # guard is `<=` and has not slid to `<= k + 1`.
-    smallest = series.spot_check(11, 1, 0, k=11)
+    smallest = series.spot_check(11, 1, 0, k=11, subject=_subject())
     assert smallest is not None
     assert smallest.items == 12
-    assert series.spot_check(12, 1, 0, k=12) is not None
+    assert series.spot_check(12, 1, 0, k=12, subject=_subject()) is not None
 
 
 def test_an_empty_set_offers_no_sentence():
     """N == 0. There is nothing to draw from, and `comb(0, 12)` over `comb(0, 12)`
     is a zero-over-zero the caller should never be shown the result of."""
-    assert series.spot_check(0, 0, 0) is None
-    assert series.spot_check(0, 0, 0, k=1) is None
+    assert series.spot_check(0, 0, 0, subject=_subject()) is None
+    assert series.spot_check(0, 0, 0, k=1, subject=_subject()) is None
 
 
 def test_a_set_that_fails_everywhere_still_gets_its_sentence_and_the_probability_is_zero():
@@ -2826,7 +2859,7 @@ def test_a_set_that_fails_everywhere_still_gets_its_sentence_and_the_probability
     no spot check of any size can come back clean, and 0.0 is the strongest
     version of the argument this line exists to make. Returning `None` here would
     suppress the sentence precisely where it is most earned."""
-    check = series.spot_check(0, 96, 0, k=12)
+    check = series.spot_check(0, 96, 0, k=12, subject=_subject())
     assert check is not None
     assert check.probability == 0.0
     assert check.items == 96
@@ -2847,13 +2880,13 @@ def test_a_spot_check_of_no_prompts_is_a_caller_error_and_not_a_certainty():
     naming `comb`, not a message naming `k`. The guard is `k <= 0` and both
     sides of it are pinned here."""
     with pytest.raises(ValueError, match="positive number of prompts"):
-        series.spot_check(88, 8, 0, k=0)
+        series.spot_check(88, 8, 0, k=0, subject=_subject())
     with pytest.raises(ValueError, match="positive number of prompts"):
-        series.spot_check(88, 8, 0, k=-1)
+        series.spot_check(88, 8, 0, k=-1, subject=_subject())
     with pytest.raises(ValueError, match="positive number of prompts"):
-        series.spot_check(88, 8, 0, k=-12)
+        series.spot_check(88, 8, 0, k=-12, subject=_subject())
     # k == 1 is the smallest legitimate check and must not be caught by it.
-    single = series.spot_check(88, 8, 0, k=1)
+    single = series.spot_check(88, 8, 0, k=1, subject=_subject())
     assert single is not None
     assert single.k == 1
     assert single.probability == pytest.approx(88 / 96, rel=1e-12)
@@ -2880,7 +2913,7 @@ def test_negative_item_counts_are_a_caller_error_and_never_a_probability(
     once the three counts are added, -8 failing and 96 passing is
     indistinguishable from 88 passing."""
     with pytest.raises(ValueError, match="cannot be negative"):
-        series.spot_check(passing, failing, unstable, k=12)
+        series.spot_check(passing, failing, unstable, k=12, subject=_subject())
 
 
 def test_the_default_check_is_twelve_prompts_and_the_default_is_what_gets_used():
@@ -2893,8 +2926,8 @@ def test_the_default_check_is_twelve_prompts_and_the_default_is_what_gets_used()
     report's sentence is written around, and a default that silently disagreed
     with the prose would produce a document whose sentence and whose arithmetic
     describe different checks."""
-    default = series.spot_check(88, 8, 0)
-    explicit = series.spot_check(88, 8, 0, k=12)
+    default = series.spot_check(88, 8, 0, subject=_subject())
+    explicit = series.spot_check(88, 8, 0, k=12, subject=_subject())
     assert default is not None
     assert explicit is not None
     assert default.k == 12
@@ -2904,18 +2937,26 @@ def test_the_default_check_is_twelve_prompts_and_the_default_is_what_gets_used()
     # And it is genuinely the default rather than a coincidence of this set:
     # neighbouring k give different answers, so 11 or 13 would have shown.
     for neighbour in (11, 13):
-        other = series.spot_check(88, 8, 0, k=neighbour)
+        other = series.spot_check(88, 8, 0, k=neighbour, subject=_subject())
         assert other is not None
         assert other.probability != default.probability
 
 
-def test_the_spot_check_carries_the_six_fields_the_contract_names_and_is_frozen():
+def test_the_spot_check_carries_the_seven_fields_the_contract_names_and_is_frozen():
     """Transcribed from the contract's dataclass, asserted with `==` rather than
     a subset check so any addition or rename has to be made here on purpose.
     Frozen because a `SpotCheck` is a record of a computation that already
     happened; a `probability` that can be reassigned after the sentence naming it
-    has been built is two numbers that can disagree."""
+    has been built is two numbers that can disagree.
+
+    **The addition being made here on purpose, which is what this assertion is
+    for.** The C11 follow-up adds `subject`, first, under R26.4: the counts are
+    per judge and per side, so the record identifies nothing until it says which.
+    The six the contract named are all still here, in their original order, and
+    the test's name moved from "six" to "seven" with the list rather than the list
+    being loosened to a subset check to spare the rename."""
     assert [field.name for field in dataclasses.fields(series.SpotCheck)] == [
+        "subject",
         "k",
         "items",
         "failing",
@@ -2923,7 +2964,7 @@ def test_the_spot_check_carries_the_six_fields_the_contract_names_and_is_frozen(
         "probability",
         "sentence",
     ]
-    check = series.spot_check(88, 8, 0, k=12)
+    check = series.spot_check(88, 8, 0, k=12, subject=_subject())
     assert check is not None
     assert isinstance(check, series.SpotCheck)
     with pytest.raises(dataclasses.FrozenInstanceError):
@@ -2949,8 +2990,8 @@ def test_excluding_unstable_items_from_f_raises_the_probability_and_the_docstrin
     not claim regressions it has not established -- and on nothing else, and a
     docstring that sells it as restraint is selling the opposite of what it is.
     """
-    by_the_rule = series.spot_check(85, 8, 3, k=12)
-    as_failures = series.spot_check(85, 11, 0, k=12)
+    by_the_rule = series.spot_check(85, 8, 3, k=12, subject=_subject())
+    as_failures = series.spot_check(85, 11, 0, k=12, subject=_subject())
     assert by_the_rule is not None
     assert as_failures is not None
     # Same set of 96 items either way; only F moves.
@@ -3057,6 +3098,280 @@ def test_the_small_probability_hedge_says_less_and_not_fewer():
     for probability in (0.0001, 0.004, 0.005):
         assert series._percent(probability) == "less than 1%"
         assert "fewer" not in series._percent(probability)
+
+
+# ----------------------------------------------------------------------------------
+# The subject: the C11 follow-up, per R26.3 and R26.4
+# ----------------------------------------------------------------------------------
+#
+# The defect: `item_counts["per_judge"]` is keyed by judge and split by side, so
+# every number this function returns is *about* a particular judge and a particular
+# side -- and the sentence named neither. "33% of such checks" with no subject is a
+# number about nothing, in the one line `SpotCheck`'s own docstring calls "the number
+# a sceptical reader will check first".
+#
+# The two constraints these tests hold, and neither is negotiable downstream:
+#
+# 1. **Caller-supplied, never inferred**, on R15's rule for `trend`'s lineage. There
+#    is no judge-guessing and no side-guessing here to test, and the tests below are
+#    written so that adding some would go red: the same counts under two subjects
+#    must give two sentences, which an implementation deriving the subject from the
+#    counts cannot do.
+# 2. **An absence must not render as a measurement.** The two absences are not the
+#    same absence and are tested apart: a missing *side* is refused, because the
+#    caller chose which side's counts it passed; a missing *judge name* is said in
+#    words, because `report.py`'s `counting_judge = judges[0].name if judges else ""`
+#    makes a blank reachable from real evidence and a report that withheld the
+#    sentence over it would be protecting the reader from a gap the sentence can
+#    state.
+
+
+@pytest.mark.parametrize(
+    ("judge", "side"),
+    [
+        ("accuracy", "candidate"),
+        ("accuracy", "baseline"),
+        ("answer relevance", "candidate"),
+        ("answer relevance", "baseline"),
+    ],
+)
+def test_the_sentence_names_the_judge_and_the_side_its_number_is_about(judge, side):
+    """Both facts, in the sentence itself and not only in a field beside it.
+
+    Varied in pairs rather than one at a time: two judges across two sides, so an
+    implementation that renders the judge and ignores the side (or the reverse)
+    cannot pass on a fixture set where only one of them ever moves. That is this
+    project's fixture rule, and the sentence is exactly the kind of composition it
+    was written for -- both facts pass through one f-string.
+
+    The renderer must never caption around this. A subject supplied to the producer
+    and printed by the consumer is two renderings of one fact, and two renderings of
+    one fact are two things that can come to disagree."""
+    check = series.spot_check(88, 8, 0, k=12, subject=_subject(judge, side))
+    assert check is not None
+    assert judge in check.sentence
+    assert side in check.sentence
+    # And they are attached to each other and to the check, not scattered: the
+    # opening clause carries both, so the sentence is readable when it is quoted
+    # alone -- which is the only way this line is ever read.
+    assert f"spot check of the {side} under judge {judge}," in check.sentence
+    # The other side's word must not also be in there. "of the candidate ... 8 of
+    # which failed under the baseline" would name two subjects and mean neither.
+    other = "baseline" if side == "candidate" else "candidate"
+    assert other not in check.sentence
+
+
+def test_the_same_counts_under_two_subjects_give_two_sentences_and_one_probability():
+    """The defect, stated as a relation rather than as a word list.
+
+    R26.3 rules that the number is the candidate's under the counting judge, which
+    means a baseline number and a candidate number can both exist for one run and
+    can be numerically identical. If the subject did not reach the sentence, those
+    two would be indistinguishable strings claiming different things -- and the
+    reader has no third place to look, because a producer's sentence is the whole of
+    what the renderer is allowed to print.
+
+    Both halves are asserted: the sentences differ, and the arithmetic does not. A
+    subject that changed the probability would be a subject leaking into the
+    calculation, which is a worse defect than the one being fixed."""
+    subjects = [
+        _subject("accuracy", "candidate"),
+        _subject("accuracy", "baseline"),
+        _subject("answer relevance", "candidate"),
+    ]
+    checks = [series.spot_check(88, 8, 0, k=12, subject=one) for one in subjects]
+    assert all(check is not None for check in checks)
+    sentences = {check.sentence for check in checks}
+    assert len(sentences) == len(subjects), f"subjects collapsed onto one sentence: {sentences}"
+    probabilities = {check.probability for check in checks}
+    assert len(probabilities) == 1
+    assert checks[0].probability == pytest.approx(0.3287693171387045, rel=1e-12)
+
+
+def test_the_subject_is_required_and_omitting_it_fails_at_the_call_site():
+    """No default, so an unlabelled sentence cannot be produced at all.
+
+    The same ruling `k == 0` got, for the same reason: a miswired caller must fail
+    where it is written rather than reach a reader wearing a result's clothes. A
+    `subject=None` default that rendered a hedge would let a caller that simply
+    forgot look, on the page, exactly like a run whose evidence was thin -- and the
+    caller cannot forget what a judge and a side are, since it read the counts out
+    of a per-judge, per-side mapping to get here.
+
+    A bare string is refused too, and that is not type pedantry: a string is the
+    shape of a caller composing this module's prose on its behalf, which R26.4
+    refused for `spot_check` exactly as R21.5 refused it for `trend`'s caveat."""
+    with pytest.raises(TypeError, match="subject"):
+        series.spot_check(88, 8, 0, k=12)  # type: ignore[call-arg]
+    with pytest.raises(TypeError, match="SpotCheckSubject"):
+        series.spot_check(88, 8, 0, k=12, subject="the candidate")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="SpotCheckSubject"):
+        series.spot_check(88, 8, 0, k=12, subject=("accuracy", "candidate"))  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="SpotCheckSubject"):
+        series.spot_check(88, 8, 0, k=12, subject=None)  # type: ignore[arg-type]
+    # It is keyword-only, so it cannot be supplied by position either and a caller
+    # cannot slide it into `items_unstable` by miscounting arguments.
+    with pytest.raises(TypeError):
+        series.spot_check(88, 8, 0, _subject())  # type: ignore[misc]
+
+
+@pytest.mark.parametrize("side", ["candidate", "baseline"])
+def test_a_judge_the_run_did_not_name_is_said_in_words_and_never_left_blank(side):
+    """The absence that is a fact about the log rather than a bug in the caller.
+
+    `report.py` reads `counting_judge = judges[0].name if judges else ""` and every
+    judge row takes `name=str(raw.get("name", "") or "")`, so an empty judge name is
+    reachable from real evidence. Refusing it would take the sentence away from the
+    reader to protect them from a gap the sentence can simply state, which is the
+    trade this project has ruled against three times.
+
+    What it must not do is render as a labelled sentence. "under judge ," with
+    nothing between is an absence dressed as a formatting bug, and this document's
+    central rule is that an absence must not render as a measurement. So the words
+    are there, they are legible without the field beside them, and the phrase
+    "under judge" -- which would be a claim that a judge was named -- is gone."""
+    named = series.spot_check(88, 8, 0, k=12, subject=_subject("accuracy", side))
+    unnamed = series.spot_check(88, 8, 0, k=12, subject=_subject("", side))
+    padded = series.spot_check(88, 8, 0, k=12, subject=_subject("   ", side))
+    assert named is not None and unnamed is not None and padded is not None
+
+    assert "a judge whose name the run did not record" in unnamed.sentence
+    # Not blank, not doubled, and not claiming a name it does not have.
+    assert "under judge" not in unnamed.sentence
+    assert "under ," not in unnamed.sentence
+    assert "  " not in unnamed.sentence
+    assert unnamed.sentence != named.sentence
+
+    # A padded name recorded nothing either, and the two absences must render as
+    # one -- `""` and `"   "` deciding a sentence differently is the difference
+    # this module's one emptiness test exists to remove.
+    assert padded.sentence == unnamed.sentence
+
+    # The half of the subject that *is* known is still said. An unnamed judge does
+    # not take the side down with it.
+    assert side in unnamed.sentence
+    # And a padded name that is real is stripped rather than rendered with its
+    # padding, which would read as a typo in the most-quoted line in the document.
+    spaced = series.spot_check(88, 8, 0, k=12, subject=_subject("  accuracy ", side))
+    assert spaced is not None
+    assert spaced.sentence == named.sentence
+
+    # Everything the merged section pins about the sentence still holds when the
+    # judge is unnamed -- the hedge is a clause, not a second kind of sentence.
+    lowered = unnamed.sentence.lower()
+    assert "drawn at random" in lowered
+    assert "would have shown no failures at all in 33% of such checks." in lowered
+    assert "runs" not in lowered
+    assert lowered.count("spot check") == 1
+    assert unnamed.sentence.count("prompt") == 1
+
+
+@pytest.mark.parametrize(
+    "side",
+    ["", "   ", "Candidate", "CANDIDATE", "cand", "candidate model", "both", "accuracy"],
+)
+def test_a_side_that_is_not_one_of_the_two_is_refused_when_the_subject_is_built(side):
+    """The absence that *is* a bug in the caller, and the one place the two differ.
+
+    A caller selected one side's counts out of the per-judge mapping and passed
+    them; it cannot then be unable to say which it selected. So there is nothing to
+    disclose and nothing to hedge -- an empty side is a miswired caller, and a
+    misspelled one is worse than empty, because "cand" or "Candidate" would print
+    unchallenged and a free-text label is unfalsifiable by construction.
+
+    Refused at construction rather than inside `spot_check`, so a `SpotCheckSubject`
+    that exists is one that can be printed: a validating function leaves a half-legal
+    value in a variable for anything else to read.
+
+    Case matters. "Candidate" is refused rather than normalised because the two
+    spellings are one fact, and a producer that quietly accepts a second spelling of
+    a closed value has a third one coming."""
+    with pytest.raises(ValueError, match="side must be one of"):
+        series.SpotCheckSubject(judge="accuracy", side=side)
+
+
+def test_the_two_legal_sides_are_the_two_the_rest_of_the_report_uses():
+    """The other half of the guard: the closed set is not closed so tightly that
+    the words the caller actually holds are refused. `item_counts["per_judge"]`
+    keys its two inner mappings `"baseline"` and `"candidate"`, and those exact
+    strings must construct."""
+    for side in ("baseline", "candidate"):
+        subject = series.SpotCheckSubject(judge="accuracy", side=side)
+        assert subject.side == side
+    assert set(series._SIDES) == {"baseline", "candidate"}
+
+
+def test_the_subject_travels_on_the_record_beside_the_sentence_it_composed():
+    """`SpotCheck` carries its inputs so the arithmetic can be redone from the
+    object alone; the subject is an input, and a record saying which judge and which
+    side is what lets a reader check that the sentence is about what they think.
+
+    The agreement between field and sentence is asserted by interpolation rather
+    than against a literal, which is the technique R19.4 credited: prose and fact
+    cannot drift apart if the expected string is built from the fact."""
+    subject = _subject("answer relevance", "baseline")
+    check = series.spot_check(88, 8, 0, k=12, subject=subject)
+    assert check is not None
+    assert check.subject == subject
+    assert check.subject.judge == "answer relevance"
+    assert check.subject.side == "baseline"
+    assert f"of the {check.subject.side} under judge {check.subject.judge}," in check.sentence
+    # Frozen for `SpotCheck`'s own reason: a subject reassigned after the sentence
+    # naming it was built is two claims about what the number is about.
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        check.subject = _subject()  # type: ignore[misc]
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        subject.side = "candidate"  # type: ignore[misc]
+
+
+def test_the_subject_is_exported_because_a_caller_has_to_be_able_to_build_one():
+    """A required argument whose type is not in `__all__` is a required argument a
+    star-import consumer cannot construct. The renderer needs the type and only the
+    type: it supplies the two facts and prints the sentence it gets back."""
+    assert "SpotCheckSubject" in series.__all__
+    assert "SpotCheck" in series.__all__
+
+
+def test_the_docstring_says_why_the_subject_is_two_fields_and_not_one_label():
+    """The brief asked for the choice to be written down where the next reader
+    finds it, and a docstring claim is checkable. Two fields exist so the caller
+    supplies *facts* and this module supplies the *words* -- the split R21.5 and
+    R26.4 both ruled -- and so the side can be checked against a closed set, which
+    a free label cannot be."""
+    doc = " ".join((series.SpotCheckSubject.__doc__ or "").split())
+    lowered = doc.lower()
+    assert "two fields rather than one string" in lowered
+    assert "r21.5" in lowered and "r26.4" in lowered
+    # The two absences, named as different absences.
+    assert "a missing *side* is a wiring bug" in lowered
+    assert "reachable from real evidence" in lowered
+    # And the inference ban, which is the constraint that is not the caller's to
+    # relax.
+    assert "never inferred" in lowered
+
+    call = " ".join((series.spot_check.__doc__ or "").split())
+    assert "subject`` is a keyword argument with **no default**" in call
+    assert "which judge and which side are the caller's facts and are never guessed" in call.lower()
+
+
+def test_the_demo_sized_set_still_says_nothing_and_the_subject_does_not_change_that():
+    """R26.5's measured fact, kept where the next agent will trip over it. The
+    bundled demo's golden set is twelve items and `k` defaults to twelve, so `N <=
+    k` and both sides return `None`. Adding a subject does not and must not rescue
+    that: a subject is a label for a number, not a reason to invent one, and a
+    labelled census would be the same overclaim with better manners.
+
+    The `k=6` row is here so the `None`s above are the census rule and not a
+    swallowed error in the new argument."""
+    candidate = _subject("accuracy", "candidate")
+    baseline = _subject("accuracy", "baseline")
+    assert series.spot_check(9, 3, 0, subject=candidate) is None
+    assert series.spot_check(11, 1, 0, subject=baseline) is None
+    smaller = series.spot_check(9, 3, 0, k=6, subject=candidate)
+    assert smaller is not None
+    assert smaller.probability == pytest.approx(0.09090909090909091, rel=1e-12)
+    assert "of the candidate under judge accuracy," in smaller.sentence
+    assert "6-prompt" in smaller.sentence
 
 
 # ==================================================================================
