@@ -1069,7 +1069,7 @@ class ReportModel:
                 )
 
         judges = tuple(_judge_row(one) for one in payload.get("judges", ()))
-        counts = _dimension_counts(tally, gs_view, judges[0].name if judges else "")
+        counts = _close_the_tally(tally, gs_view, judges[0].name if judges else "")
         rows = _ChangeContext(
             goldenset=gs_view,
             base_run=base_run,
@@ -1440,14 +1440,35 @@ def _load_goldenset(
     return view
 
 
-def _dimension_counts(
+def _close_the_tally(
     tally: DimensionTally, gs_view: Mapping[str, Any], judge: str
 ) -> DimensionCounts:
     """Close the tally against the golden set, or hand back the golden set's own words.
 
+    **Named for what it does rather than for what it looked like.** This was
+    ``_dimension_counts``, which reads as a wrapper around
+    :func:`~model_migration_kit.dimensions.dimension_counts` and is not one: that
+    function takes a stream and a golden set and runs both phases back to back,
+    while this one takes a :class:`~model_migration_kit.dimensions.DimensionTally`
+    whose first phase already ran on ``from_evidence``'s single pass and calls
+    :meth:`~model_migration_kit.dimensions.DimensionTally.counts` on it. The two
+    are not interchangeable and the old name said they were. ``_close_the_tally``
+    is the second phase, which is the thing C10 will reach for by name.
+
     Nothing here opens a file and nothing here reads the log a second time: the
-    tally already holds everything the log had to say, in a form bounded by the
-    golden set rather than by the log.
+    tally already holds everything the log had to say, in a form keyed by distinct
+    input rather than by record -- so repeated draws of one item collapse onto one
+    entry and a set sampled fifty times costs what the same set sampled once costs.
+
+    That is *not* "bounded by the golden set rather than by the log", which is what
+    this sentence used to claim and which
+    :class:`~model_migration_kit.dimensions.DimensionTally` had already corrected
+    on its own copy in the same commit series. Distinct inputs are the golden set's
+    size only while the inputs come from the golden set. On the single pass this
+    function closes, the join has not happened yet, so an input that joins to
+    nothing cannot be recognised and is filed like any other: a log full of them
+    grows the tally linearly, with no bound but the log. The tally's own docstring
+    carries the measured constant and the ceiling it implies.
 
     **A golden-set refusal is quoted, never re-worded.** ``gs_view["reason"]``
     already explains a missing, unreadable, unrecorded or changed golden set in the

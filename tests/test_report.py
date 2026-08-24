@@ -6614,7 +6614,7 @@ def test_the_label_opens_the_accessible_name_rather_than_trailing_it() -> None:
 # `dimensions.py` is tested exhaustively in `tests/test_dimensions.py`, against
 # hand-built record streams. Nothing there touches `report.py`, and until this
 # section existed nothing anywhere did: the field, the `tally.add(record)` in
-# `from_evidence`'s loop, and `_dimension_counts`'s two branches were carried
+# `from_evidence`'s loop, and `_close_the_tally`'s two branches were carried
 # entirely by tests that never imported `report`. These are the tests for the
 # wiring, and only for the wiring -- the arithmetic is not re-litigated here.
 #
@@ -6876,6 +6876,161 @@ def test_the_counts_survive_a_log_whose_artifacts_moved_away(tmp_path: Path) -> 
         ARITHMETIC_N,
         ARITHMETIC_N,
         ARITHMETIC_ITEMS,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Which judge the matrix is counted under
+#
+# A panel writes one verdict per judge per completion, so the matrix has to pick
+# one -- ``_close_the_tally``'s docstring says "``judge`` is the panel's first
+# judge" and ``from_evidence`` spells that ``judges[0].name``. Nothing tested it.
+# Every log in this file until now carried a one-judge panel, where the first
+# judge and the last judge are the same judge and the selection cannot be seen at
+# all: ``judges[0].name`` mutated to ``judges[-1].name`` survived the whole file.
+#
+# The panel below is deliberately asymmetric. The first judge passes every draw
+# and the second fails every draw, so the two selections do not merely differ,
+# they are each other's opposite -- and a cell counted under the wrong one is a
+# model that got everything wrong reported as a model that got everything right.
+# --------------------------------------------------------------------------- #
+
+#: The second judge on the panel. Never equal to :data:`J`, so a matrix counted
+#: under the wrong one cannot coincidentally agree with the right answer.
+SECOND_JUDGE = "strictness"
+
+
+def _panel_judging_pass(
+    model_id: str,
+    item_ids: Sequence[str],
+    *,
+    passed_by: Mapping[str, bool],
+    draws: int = N_PER_ITEM,
+) -> list[dict[str, Any]]:
+    """One side judged by a whole panel: every judge's verdicts, then one close.
+
+    A real panel writes one ``migkit.judging_completed`` per *model*, whose
+    ``graded`` names every judge -- not one close per judge. Getting that wrong
+    would show up as the counter refusing the run rather than as a wrong cell,
+    which is the shape ``_judging_pass`` above is careful about for the same
+    reason.
+    """
+    records = [
+        _dim_verdict(item_id, passed=passed, judge=judge)
+        for judge, passed in passed_by.items()
+        for item_id in item_ids
+        for _ in range(draws)
+    ]
+    records.append(
+        _record(
+            EVENT_JUDGING_COMPLETED,
+            {
+                "model_id": model_id,
+                "graded": {judge: len(item_ids) * draws for judge in passed_by},
+                "imputed": {},
+                "parse_failures": {},
+            },
+            TS_JUDGING,
+        )
+    )
+    return records
+
+
+def _panel_scenario(root: Path) -> Scenario:
+    """The standard run, judged by two judges that disagree about everything."""
+    return _scenario(
+        root,
+        judges=[
+            _judge_payload(name=J),
+            _judge_payload(name=SECOND_JUDGE, regressed=False),
+        ],
+    )
+
+
+def _panel_log(scenario: Scenario, name: str) -> Path:
+    """``_counted_log``'s shape, with both judges' verdicts in it.
+
+    The first judge passes every draw for both sides and the second fails every
+    draw for both sides, so which judge was counted is legible from any cell.
+    """
+    passed_by = {J: True, SECOND_JUDGE: False}
+    records: list[Mapping[str, Any]] = [
+        _record(EVENT_RUN_STARTED, {"model_id": BASELINE_MODEL}, TS_JUDGING),
+        *_panel_judging_pass(BASELINE_MODEL, scenario.items, passed_by=passed_by),
+        *_panel_judging_pass(CANDIDATE_MODEL, scenario.items, passed_by=passed_by),
+        _record(EVENT_COMPARISON, scenario.comparison, TS_COMPARISON),
+    ]
+    if scenario.verdict is not None:
+        records.append(_record(EVENT_VERDICT, scenario.verdict, TS_VERDICT))
+    return _write_evidence(scenario.root / name, records)
+
+
+def test_the_matrix_is_counted_under_the_panels_first_judge(tmp_path: Path) -> None:
+    """The selection ``_close_the_tally``'s docstring states, asserted.
+
+    Both judges graded every draw of both sides. The first passed all of them and
+    the second failed all of them, so a matrix counted under the panel's *last*
+    judge reports zero passes everywhere -- a complete, available, plausible
+    matrix saying both models got everything wrong.
+    """
+    scenario = _panel_scenario(tmp_path / "panel")
+    model = _model_from(_panel_log(scenario, "evidence-panel.jsonl"))
+
+    counts = _counts(model)
+    assert counts.available is True, counts.reason
+    assert _tag_cell(model, BASELINE_MODEL, "arithmetic") == (
+        ARITHMETIC_N,
+        ARITHMETIC_N,
+        ARITHMETIC_ITEMS,
+    ), (
+        f"the matrix was not counted under {J!r}, the panel's first judge. "
+        f"{SECOND_JUDGE!r} failed every draw in this log, so a cell of zero "
+        f"passes is the other judge's answer wearing this one's label"
+    )
+    assert _tag_cell(model, CANDIDATE_MODEL, "extraction") == (
+        ARITHMETIC_N,
+        ARITHMETIC_N,
+        ARITHMETIC_ITEMS,
+    )
+
+
+def test_the_second_judges_verdicts_are_read_and_not_counted(tmp_path: Path) -> None:
+    """The other half: the panel's size never reaches a denominator.
+
+    Both judges' verdicts go past the same tally on the same single pass -- the
+    filter cannot be applied on the way past, because which judge the document
+    wants is named on the ``migkit.comparison`` record at the *end*. So the second
+    judge's draws are accumulated and then not counted, and ``n`` is the number of
+    draws rather than the number of draws times the panel size.
+    """
+    scenario = _panel_scenario(tmp_path / "panel-n")
+    model = _model_from(_panel_log(scenario, "evidence-panel-n.jsonl"))
+
+    passes, n, items = _tag_cell(model, BASELINE_MODEL, "arithmetic")
+
+    assert n == ARITHMETIC_N, (
+        f"n is {n} against {ARITHMETIC_N} draws: a two-judge panel doubled the "
+        f"denominator, so both judges' verdicts were counted as one population"
+    )
+    assert (passes, items) == (ARITHMETIC_N, ARITHMETIC_ITEMS)
+
+
+def test_the_panel_the_document_reports_is_the_panel_the_matrix_chose_from(
+    tmp_path: Path,
+) -> None:
+    """The two tests above are only meaningful if the panel really has two judges.
+
+    Asserted through ``model.judges`` rather than through the fixture, because the
+    fixture is the thing that would silently stop building a panel.
+    """
+    scenario = _panel_scenario(tmp_path / "panel-rows")
+    model = _model_from(_panel_log(scenario, "evidence-panel-rows.jsonl"))
+
+    names = [_get(one, "name") for one in _get(model, "judges")]
+
+    assert names == [J, SECOND_JUDGE], (
+        f"the panel is {names}; the judge-selection tests above are asserting "
+        f"nothing unless it holds two judges in this order"
     )
 
 
