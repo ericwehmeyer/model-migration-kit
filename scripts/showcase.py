@@ -165,16 +165,16 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 from model_migration_kit.contracts import GoldenItem  # noqa: E402
 from model_migration_kit.demo import (  # noqa: E402
     _DECLINE_MARKERS,
+    _INPUT_CLOSE,
+    _INPUT_OPEN,
+    _OUTPUT_CLOSE,
+    _OUTPUT_OPEN,
     _SCORE_EXACT,
     _SCORE_FABRICATED,
     _SCORE_NOISY,
     _SCORE_WRONG,
     _block,
-    _INPUT_CLOSE,
-    _INPUT_OPEN,
     _mentions,
-    _OUTPUT_CLOSE,
-    _OUTPUT_OPEN,
     _refuse_duplicate_inputs,
     _wrong_answer_for,
 )
@@ -269,27 +269,61 @@ _PLAN: tuple[tuple[int, int], ...] = (
 #: which is 440/480 -- inside the REVIEW band and outside significance.
 _REVIEW_NIGHT_PLAN = (1, 2)
 
-#: Where in the pool each night's baseline window starts. 11 and 79 are coprime,
-#: so fourteen nights of windows never repeat and the failing items rotate through
-#: the whole pool rather than orbiting one corner of it.
+#: Where in the pool each night's baseline selection starts. The pool has 79
+#: items and 79 is prime, so any non-zero stride visits every item before it
+#: repeats one and no night's selection can be a rotation of another's.
 _BASELINE_STRIDE = 11
 
-#: Where a candidate's *own* failures are drawn from: far enough along the pool
-#: that the flip window cannot overlap the baseline window (which is at most 7
-#: items wide), and three apart per candidate so no two candidates flip the same
-#: item on the same night.
+#: The gap between one failing item and the next *within* a night, and the number
+#: that stops the dimension table from telling the wrong story. The pool is in
+#: slice order -- sixteen extraction, sixteen classification, fifteen
+#: summarisation, sixteen instruction-following, sixteen multi-step -- so picking
+#: consecutive ids drops all seven of a night's failures inside one capability,
+#: and that capability's cell reads 10/17 on an otherwise green night. The report
+#: would then show a different dimension collapsing every night for a fortnight,
+#: and night 14 would be the fifteenth collapse rather than the first. A stride of
+#: 17 steps past a slice boundary on every pick, so a night's damage is spread
+#: across four or five capabilities and every cell stays green until the one that
+#: is supposed to fail does.
+_ITEM_STRIDE = 17
+
+#: Where a candidate's *own* new failures start, relative to the baseline's start,
+#: and how far apart the three candidates are from each other. Overlap with the
+#: baseline's selection is not prevented by arithmetic -- with a stride, "far
+#: enough away" is a claim about modular residues that a later edit to either
+#: number would silently break -- so :func:`_pick` skips ids that are already
+#: taken and the offsets only have to be different, not provably disjoint.
 _FLIP_OFFSET = 40
 _FLIP_SPACING = 3
 
 
-def _window(pool: tuple[str, ...], start: int, count: int) -> tuple[str, ...]:
-    """``count`` ids from ``pool``, wrapping at the end.
+def _pick(
+    pool: tuple[str, ...], start: int, count: int, taken: tuple[str, ...] = ()
+) -> tuple[str, ...]:
+    """``count`` ids from ``pool``, stepping by :data:`_ITEM_STRIDE` and wrapping.
 
-    Wrapping rather than clamping so that ``start`` can be a plain multiple of the
-    stride and no night is quietly shorter than the one before it.
+    Ids already in ``taken`` are stepped over rather than counted, so a candidate
+    asking for two failures of its own always gets two that the baseline does not
+    already have. The loop terminates because the stride is coprime to the pool
+    size -- it enumerates all 79 ids before revisiting one -- and nothing here ever
+    asks for more than a handful.
     """
     size = len(pool)
-    return tuple(pool[(start + offset) % size] for offset in range(count))
+    chosen: list[str] = []
+    index = start
+    seen = 0
+    while len(chosen) < count:
+        if seen > size:
+            raise SystemExit(
+                f"cannot pick {count} unused items from a pool of {size}; the "
+                f"schedule is asking for more failures than the pool can supply."
+            )
+        item_id = pool[index % size]
+        if item_id not in taken and item_id not in chosen:
+            chosen.append(item_id)
+        index += _ITEM_STRIDE
+        seen += 1
+    return tuple(chosen)
 
 
 def failing_ids(goldenset: GoldenSet, *, night: int, slot: int | None) -> tuple[str, ...]:
@@ -312,7 +346,7 @@ def failing_ids(goldenset: GoldenSet, *, night: int, slot: int | None) -> tuple[
     _require_night(night)
     pool = failing_pool(goldenset)
     baseline_count = BASELINE_FAILURES[night - 1]
-    baseline_window = _window(pool, (night - 1) * _BASELINE_STRIDE, baseline_count)
+    baseline_window = _pick(pool, (night - 1) * _BASELINE_STRIDE, baseline_count)
     if slot is None:
         return baseline_window
     if not 0 <= slot < len(CANDIDATE_MODEL_IDS):
@@ -322,10 +356,11 @@ def failing_ids(goldenset: GoldenSet, *, night: int, slot: int | None) -> tuple[
     if slot == 2 and night == REVIEW_NIGHT:
         gains, flips = _REVIEW_NIGHT_PLAN
     kept = baseline_window[gains:]
-    own = _window(
+    own = _pick(
         pool,
         (night - 1) * _BASELINE_STRIDE + _FLIP_OFFSET + slot * _FLIP_SPACING,
         flips,
+        taken=baseline_window,
     )
     failing = kept + own
     if slot == CANDIDATE_B_SLOT and night == COLLAPSE_NIGHT:
@@ -399,8 +434,7 @@ CORRECT_SUMMARIES: Mapping[str, str] = {
         "sprint, settling a dispute between two teams."
     ),
     "synthetic-summarise-03": (
-        "max_batch_size was raised from 100 to 500 and then settled at 250 once "
-        "latency climbed."
+        "max_batch_size was raised from 100 to 500 and then settled at 250 once latency climbed."
     ),
     "synthetic-summarise-04": (
         "The requester is still waiting on approval for archive bucket access, "
@@ -819,11 +853,16 @@ def main(argv: list[str] | None = None) -> int:
 
     goldenset = GoldenSet.load(GOLDENSET)
     _check_scripts(goldenset)
-    print(f"golden set: {len(goldenset)} items, n={SHOWCASE_N}, "
-          f"{len(goldenset) * SHOWCASE_N} completions per run", flush=True)
-    print(f"pool: {len(failing_pool(goldenset))} items; "
-          f"collapsing on night {COLLAPSE_NIGHT}: {len(collapsing_ids(goldenset))} items",
-          flush=True)
+    print(
+        f"golden set: {len(goldenset)} items, n={SHOWCASE_N}, "
+        f"{len(goldenset) * SHOWCASE_N} completions per run",
+        flush=True,
+    )
+    print(
+        f"pool: {len(failing_pool(goldenset))} items; "
+        f"collapsing on night {COLLAPSE_NIGHT}: {len(collapsing_ids(goldenset))} items",
+        flush=True,
+    )
 
     if args.night is not None:
         _require_night(args.night)
