@@ -887,8 +887,34 @@ Tracked parameters and their sources:
 | `config` | `config_hash`, 16 chars |
 
 `previous is None` (the first run in the series) yields every row with
-`before=""`, `after=<value>`, `changed=False` — the first run changed nothing
-because there was nothing to change from.
+`after=<value>`, `changed=False` — the first run changed nothing because there
+was nothing to change from.
+
+> **AMENDED 2026-08-24: `before` is NOT `""` on a first run.** This clause said
+> so twice, and C7's blind tester asserted it literally and then argued against
+> the contract it had just tested. It was right.
+>
+> A blank cell reading as "unchanged" is the failure mode this chunk exists to
+> prevent — and this is not a general tension, it is *the specific rendering R15
+> was written about*: "the `model_id` row reports `changed=False` with an empty
+> `before`." The defence that on a first run the blank is *true* does not save
+> it, because **when the series was wrongly split `previous` was `None` too**, so
+> all six rows were blank in that case as well. A first run and a wrongly-split
+> series render identically — six blanks, six `changed=False` — and a reader
+> cannot tell them apart. That indistinguishability is the bug R15 exists to
+> kill, sitting at the top of every line instead of the middle of one.
+>
+> R15 makes the split much less likely, since the lineage is now declared and a
+> split requires the operator to declare it wrong. That is precisely the case
+> where a reader most needs to notice and can least afford a silent blank.
+>
+> **Ruling: a first-run row must be visibly distinguishable from an unchanged
+> row.** `before` renders a distinct marker behind a named constant in the
+> `_UNRECORDED` style, never an inline literal — `series.py` already sets that
+> precedent deliberately. And the marker must not be the word `"unrecorded"`:
+> "there was no previous run" and "the value was not recorded" are **different
+> absences** and must not print the same word. `changed` stays `False`;
+> `ParameterChange` stays at exactly four fields.
 
 **Edges.**
 
