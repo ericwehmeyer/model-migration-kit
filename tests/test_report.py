@@ -8755,6 +8755,13 @@ def test_a_side_that_was_judged_and_produced_nothing_is_a_column_of_zeros(
     assert _get(_cell(column, "arithmetic"), "verdict_refused") is True
 
 
+#: The tag ``_silent_side_note`` reads. Named rather than repeated because the
+#: note it returns begins "Nothing was measured for <tag>." -- so any caller
+#: comparing another cell's note against it is comparing across tags, which is
+#: how C14b's never-closed test failed at the merge.
+SILENT_NOTE_TAG = "arithmetic"
+
+
 def _silent_side_note(tmp_path: Path) -> str:
     """A side that was judged and graded nothing: its first cell's note.
 
@@ -8781,7 +8788,9 @@ def _silent_side_note(tmp_path: Path) -> str:
         ],
     )
     matrix = _available_matrix(_model_from(log))
-    return str(_get(_cell(_candidate_column(matrix, CANDIDATE_MODEL), "arithmetic"), "note"))
+    return str(
+        _get(_cell(_candidate_column(matrix, CANDIDATE_MODEL), SILENT_NOTE_TAG), "note")
+    )
 
 
 def _never_judged_note(tmp_path: Path) -> tuple[Any, str]:
@@ -11463,3 +11472,846 @@ def test_the_three_new_fields_are_populated_while_the_log_is_still_read_once(
         f"no second read, and all three new fields are arithmetic over what the "
         f"model already holds"
     )
+
+
+# --------------------------------------------------------------------------- #
+# 24. C14b -- the four elements the template gains.
+#
+# C14's contract table, minus the five elements C14a shipped or that have no data
+# path yet: the candidate table (`candidates`), the excluded-runs list
+# (`excluded`), the dimension matrix (`dimensions`) and the dimension
+# unavailability note (`dimensions`, **the same id**, so a link never dangles).
+#
+# Written blind against `_TEMPLATE`, like everything above. What is asserted is
+# what the contract and the rulings fix: the anchors, their order relative to
+# each other, that every row/column/cell the model carries reaches the page, that
+# the sentences the *producers* wrote arrive unrewritten, and that each of the
+# four new conditional sections has an empty state that is not a false statement.
+#
+# The rendered document has not changed by a byte in three merges -- 24,564 bytes
+# before and after C10, and the word "dimension" appears zero times in it. Six
+# merged, reviewed, fully tested chunks are invisible to a reader. These tests
+# are what keep them on the page once they arrive.
+# --------------------------------------------------------------------------- #
+
+
+#: Ids that begin a top-level section of the document, used only to find where
+#: one section's markup stops. The three elements that are out of scope here
+#: (`counterfactual`, `multiplicity`, `parameters`) are listed so that a region
+#: slice stops at them the day they land, rather than swallowing them and turning
+#: an assertion about the candidate table into an assertion about its neighbour.
+SECTION_ANCHORS = frozenset(
+    {
+        "verdict",
+        "counterfactual",
+        "candidates",
+        "multiplicity",
+        "excluded",
+        "dimensions",
+        "timeline",
+        "parameters",
+        "compared",
+        "judges",
+        "latency",
+        "goldenset-mismatch",
+        "flips",
+        "gains",
+        "unstable",
+        "appendix",
+        "provenance",
+    }
+)
+
+
+def _anchor_region(html: str, anchor: str) -> str:
+    """The markup of one section: from its ``id`` to the next section's.
+
+    Tag-agnostic on purpose. The contract fixes each element's ``id`` and fixes
+    nothing about which element carries it, so this finds the attribute and walks
+    back to the start of whatever tag it sits on. Slicing matters because "the
+    excluded run is not a row of the candidate table" is a claim about *where* a
+    string is, and a document-wide substring search cannot make it.
+    """
+    marks = [(one.start(), one.group(1)) for one in re.finditer(r'\bid="([^"]+)"', html)]
+    named = [index for index, (_, name) in enumerate(marks) if name == anchor]
+    assert named, (
+        f"the document carries no id={anchor!r}; C14's contract gives this element "
+        f"that anchor, and its ids are {[name for _, name in marks]}"
+    )
+    start = html.rfind("<", 0, marks[named[0]][0])
+    for position, name in marks[named[0] + 1 :]:
+        if name != anchor and name in SECTION_ANCHORS:
+            return html[start : html.rfind("<", 0, position)]
+    return html[start:]
+
+
+def _anchor_text(html: str, anchor: str) -> str:
+    """One section's visible text, whitespace squeezed."""
+    return _squeeze(_visible(_anchor_region(html, anchor)))
+
+
+def _sentences(text: str) -> list[str]:
+    return [one.strip() for one in re.split(r"(?<=[.!?])\s+", _squeeze(text)) if one.strip()]
+
+
+#: Words that turn "runs were excluded" into "runs may have been excluded". R23.2
+#: requires the hedge and does not fix the wording, so the set is deliberately
+#: wide: what is being asserted is that the sentence does not claim to know.
+HEDGES = ("may", "might", "cannot", "could not", "can not", "unable", "no way", "not able")
+
+
+def _hedged_exclusion_sentences(html: str) -> list[str]:
+    """Sentences that mention exclusion *and* decline to name what was excluded."""
+    return [
+        one
+        for one in _sentences(_visible(html))
+        if "exclud" in one.lower() and any(word in one.lower() for word in HEDGES)
+    ]
+
+
+# -- the fixture that exercises all four elements at once --------------------- #
+
+#: A tag on ten items -- above both floors at five draws an item, so its cells are
+#: *measured*: a rate, an interval, `verdict_refused=False`.
+MEASURED_TAG = "arithmetic"
+#: A tag on one item. Judged, so its cells are real counts, and refused, so they
+#: carry the refusal note. Counts that differ from the measured tag's in every
+#: position: R27.4 records what a fixture whose two tags hold identical numbers
+#: cost -- `TagColumn.cell()` returning the wrong cell survived all 1998 tests.
+THIN_TAG = "extraction"
+#: A tag carried by an item no model produced. The counter zero-fills the whole
+#: tag universe, so this arrives as `(0, 0, 0)` with a note saying nothing was
+#: measured -- the case that must not render as a measured zero.
+UNMEASURED_TAG = "ghost"
+
+RICH_TAGS: Mapping[str, Sequence[str]] = {
+    **{item_id: (MEASURED_TAG,) for item_id in ITEM_IDS[:10]},
+    **{item_id: (THIN_TAG,) for item_id in ITEM_IDS[10:11]},
+    **{item_id: (UNMEASURED_TAG,) for item_id in ITEM_IDS[11:]},
+}
+
+#: Everything but the last item, whose tag is therefore produced by nobody.
+RICH_JUDGED = ITEM_IDS[:11]
+
+
+def _every_element_log(scenario: Scenario, name: str = "evidence-c14b.jsonl") -> Path:
+    """One log that makes all four elements render at once.
+
+    Three judging passes so the matrix has **two** candidate columns beside the
+    baseline -- no fixture in this file rendered a plural `candidates` before
+    R27.4, and a template that reads `matrix.candidates[0]` and stops is the
+    obvious wrong implementation. Four comparisons under one key in front of the
+    headline run so `candidate_field` returns a field with two rows *and* three
+    exclusions: R20.1's pairing rule applied to this chunk, because a fixture
+    whose table renders with an empty exclusion list cannot tell a template that
+    carries the list from one that drops it.
+
+    The three models' outcomes are each other's opposites on the measured tag --
+    all, none and half -- so a column filled from its neighbour's counts is a
+    wrong number rather than the right one by coincidence.
+    """
+    before = [
+        _record(
+            EVENT_COMPARISON,
+            _sibling_comparison(scenario, candidate_model="", created=UNNAMED_CREATED),
+            EARLIER_TS_COMPARISON,
+        ),
+        *_earlier_run(scenario, tag="foreign"),
+        _record(
+            EVENT_COMPARISON,
+            _sibling_comparison(
+                scenario, candidate_model=SIBLING_MODEL, created=SUPERSEDED_CREATED
+            ),
+            EARLIER_TS_COMPARISON,
+        ),
+        _record(
+            EVENT_COMPARISON,
+            _sibling_comparison(
+                scenario, candidate_model=SIBLING_MODEL, created=SIBLING_CREATED_WIDE
+            ),
+            EARLIER_TS_COMPARISON,
+        ),
+    ]
+    return _matrix_log(
+        scenario,
+        name,
+        judging=[
+            *_judging_pass(BASELINE_MODEL, RICH_JUDGED, passed=True),
+            *_judging_pass(CANDIDATE_MODEL, RICH_JUDGED, passed=False),
+            *_mixed_pass(THIRD_MODEL, RICH_JUDGED, passing=RICH_JUDGED[::2]),
+        ],
+        before=before,
+    )
+
+
+def _every_element_model(root: Path) -> Any:
+    """The model built from that log, with every expectation this section rests on.
+
+    Asserted here rather than in each test: a fixture that quietly stopped
+    producing a plural matrix, or a field with exclusions, would turn a dozen
+    assertions below into assertions about nothing, and they would keep passing.
+    """
+    scenario = _counted_scenario(root)
+    _retag(scenario, RICH_TAGS)
+    model = _model_from(_every_element_log(scenario))
+
+    matrix = _available_matrix(model)
+    assert _get(matrix, "tags") == (MEASURED_TAG, THIN_TAG, UNMEASURED_TAG), (
+        f"the fixture's tag universe is {_get(matrix, 'tags')}; these tests need one "
+        f"measured tag, one refused tag with different counts, and one no model "
+        f"produced"
+    )
+    assert len(_candidate_columns(matrix)) == 2, (
+        f"the matrix has {len(_candidate_columns(matrix))} candidate column(s); this "
+        f"fixture judges two models beside the baseline so that a template reading "
+        f"only `candidates[0]` is visible"
+    )
+    field = _model_field(model)
+    assert len(field.candidates) == 2 and len(field.excluded) == 3, (
+        f"the candidate field holds {len(field.candidates)} row(s) and "
+        f"{len(field.excluded)} exclusion(s); this fixture is built so the table "
+        f"renders *and* the exclusion list has something in it"
+    )
+    return model
+
+
+def _never_closed_model(root: Path) -> Any:
+    """A model whose candidate side no ``migkit.judging_completed`` ever named.
+
+    The same shape as `_never_judged_note`'s fixture, built here because these
+    tests need the *document* and that helper hands back the matrix. R27.5's
+    second case: the counter never heard of this model, `by_model` holds only what
+    a close filed, and the payload's own candidate is not in it.
+    """
+    scenario = _scenario(root)
+    log = _matrix_log(
+        scenario,
+        "evidence-c14b-never.jsonl",
+        judging=_judging_pass(BASELINE_MODEL, scenario.items, passed=True),
+    )
+    model = _model_from(log)
+    matrix = _available_matrix(model)
+    assert [_get(one, "model_id") for one in _candidate_columns(matrix)] == [CANDIDATE_MODEL], (
+        "the side the comparison payload names is not a column of this matrix, so "
+        "the fixture cannot show whether the template drops it"
+    )
+    return model
+
+
+# -- the four anchors, and their order --------------------------------------- #
+
+
+def test_each_element_this_chunk_adds_carries_the_anchor_the_contract_names(
+    tmp_path: Path,
+) -> None:
+    """C14's contract table, as three ``id``s on one document.
+
+    The whole reason this chunk exists: six merged chunks put `candidates`,
+    `excluded` and `dimensions` on `ReportModel` and the rendered document does
+    not mention any of them. An anchor is the cheapest possible statement that a
+    section reached the page, and the contract fixes all three by name.
+    """
+    model = _every_element_model(tmp_path / "anchors")
+    ids = _parse(_html(model)).ids
+
+    for anchor, what in (
+        ("candidates", "the candidate table"),
+        ("excluded", "the excluded-runs list"),
+        ("dimensions", "the dimension matrix"),
+    ):
+        assert anchor in ids, (
+            f"{what} does not render: this model carries the data for it and the "
+            f"document's ids are {ids}. C14's contract gives it id={anchor!r}"
+        )
+
+
+def test_the_three_new_sections_appear_in_the_order_the_contract_lists_them(
+    tmp_path: Path,
+) -> None:
+    """Contract order: the candidate table, then the exclusions, then the matrix.
+
+    The exclusion list explains the table above it -- R23.2 binds the two to one
+    partition precisely so they are about the same set of runs -- and a list of
+    reasons a run is missing from a table the reader has not seen yet is a list of
+    answers to an unasked question. Asserted on the ``id`` order, as §6 item 10
+    asserts the existing sections.
+
+    Only the three this chunk adds. The contract's table also puts `timeline`
+    ahead of "What was compared" and the merged document does not; that is C14a's,
+    it is reviewed and shipped, and re-litigating it from here would fail a test
+    for a decision this chunk did not make.
+    """
+    model = _every_element_model(tmp_path / "order")
+    ids = _parse(_html(model)).ids
+    ordered = [one for one in ids if one in ("candidates", "excluded", "dimensions")]
+
+    assert ordered == ["candidates", "excluded", "dimensions"], (
+        f"the new sections render in the order {ordered}; C14's table fixes the "
+        f"candidate table, then the excluded-runs list, then the dimension matrix"
+    )
+
+
+# -- the candidate table ------------------------------------------------------ #
+
+
+def test_the_candidate_table_holds_a_row_for_each_candidate_and_none_for_the_excluded(
+    tmp_path: Path,
+) -> None:
+    """Every row the field carries, in the field's own order, and nothing else.
+
+    Two assertions that only mean something together. A table that renders one row
+    is the tempting wrong implementation -- the headline candidate is on the model
+    twice over and `candidates[0]` is right there -- and a table that renders the
+    exclusions as rows is the other one, because `CandidateField` hands both
+    tuples to the template and they hold the same type of object.
+
+    Order is the field's, never the page's: C5 orders the rows by candidate model
+    so that the table reads the same way twice running, and the log writes them
+    in the other order, so a template that re-derived the order from anything at
+    all lands somewhere else. `SIBLING_MODEL` is both the second row and the
+    subject of the third exclusion, which is why the *foreign* run is what the
+    second half of this test looks for: it is the one run that must not be a row.
+    """
+    model = _every_element_model(tmp_path / "rows")
+    field = _model_field(model)
+    region = _anchor_text(_html(model), "candidates")
+    rows = [row.model for row in field.candidates]
+
+    positions = []
+    for name in rows:
+        assert name in region, (
+            f"the candidate table has no row for {name!r}; the field carries rows "
+            f"for {rows} and the table shows {region!r}"
+        )
+        positions.append(region.index(name))
+    assert positions == sorted(positions), (
+        f"the rows render in a different order from the field's own {rows}; C5 "
+        f"orders them by candidate model and never by result, so a table that "
+        f"re-sorts is a table that disagrees with the model beneath it"
+    )
+
+    foreign = [
+        one.point.candidate_model
+        for one in field.excluded
+        if one.point.candidate_model and one.point.candidate_model not in rows
+    ]
+    assert foreign, "this fixture no longer excludes a named run, so the check below is vacuous"
+    for name in foreign:
+        assert name not in region, (
+            f"{name!r} is an *excluded* run and it has a row in the candidate table; "
+            f"the two tuples on `CandidateField` hold the same type and the table "
+            f"is `candidates`, not `candidates + excluded`"
+        )
+
+
+def test_the_excluded_list_gives_every_exclusion_the_sentence_the_field_wrote(
+    tmp_path: Path,
+) -> None:
+    """Three runs, three rules, three sentences -- each one reaching the page whole.
+
+    R23.2 binds this list to `candidate_field`'s own `excluded` so that the list
+    and the table are guaranteed to be about the same runs. What is left for the
+    template is to print what it was handed: these sentences are written in
+    `series.py`, they are the only thing that says *why* a run is not a row, and a
+    template that summarises them ("3 runs excluded") publishes the count without
+    the reason, which is the shape of list R23.2 calls worse than none.
+
+    Byte-for-byte against the model's own strings rather than against quoted
+    prose: the wording belongs to `test_series.py`, and a second copy here would
+    be a second thing to keep in step. What is pinned here is that nothing between
+    the field and the reader re-wrote it.
+    """
+    model = _every_element_model(tmp_path / "exclusions")
+    field = _model_field(model)
+    region = _anchor_text(_html(model), "excluded")
+
+    for one in field.excluded:
+        assert _squeeze(one.reason) in region, (
+            f"this run's exclusion sentence is not on the page:\n  {one.reason!r}\n"
+            f"the section reads:\n  {region!r}"
+        )
+
+
+def test_a_log_that_can_make_no_candidate_table_still_says_runs_may_have_been_excluded(
+    tmp_path: Path,
+) -> None:
+    """R23.2's accepted consequence, as the empty state it requires.
+
+    `candidate_field` returns ``None`` for a log no group can table, and every
+    exclusion sentence computed on the way died with it -- so the report *cannot*
+    say which runs were left out. The ruling is that it must say so anyway: "the
+    empty state for this section must say that runs may have been excluded without
+    being able to name them, rather than rendering an empty list that reads as
+    'nothing was excluded'."
+
+    An empty list is the plausible wrong implementation and it renders perfectly.
+    It is also a false statement about this log, which is the entire reason the
+    ruling exists: an absence must not render as a measurement.
+
+    The hedge is what is asserted, not the wording -- R23.2 fixes the claim and
+    nothing fixes the sentence. A section that named a run would fail the second
+    half: there is no list to print, and inventing one is the other failure.
+    """
+    scenario = _counted_scenario(tmp_path / "nofield")
+    model = _from_evidence(scenario)
+    assert _candidates(model) is None, (
+        "this fixture is meant to hold one comparison, for which `candidate_field` "
+        "returns None; it built a field, so there is a table and this test is about "
+        "the wrong document"
+    )
+
+    html = _html(model)
+    hedged = _hedged_exclusion_sentences(html)
+    assert hedged, (
+        "no sentence in this document says runs may have been excluded. There is no "
+        "candidate table here and no way to say why: R23.2 accepts that trade and "
+        "requires the page to say so, because a document silent about it reads as a "
+        "document about a log from which nothing was excluded"
+    )
+    named = [one for one in _sentences(_visible(html)) if SIBLING_MODEL in one]
+    assert not named, (
+        f"the document names a run as excluded on a log whose exclusions were never "
+        f"computed: {named}"
+    )
+
+
+def test_a_field_that_excluded_nothing_renders_no_excluded_list_at_all(
+    tmp_path: Path,
+) -> None:
+    """The other side of the pair: present when there is an exclusion, absent when not.
+
+    The contract gates this section on *any exclusion*, and here the field knows
+    that nothing was excluded -- which is a different fact from the one above,
+    where nothing could be known. Rendering the hedge here would be false in the
+    other direction, and rendering an empty list would be the "nothing was
+    excluded" reading that happens, on this log, to be true: neither is a section
+    worth printing.
+
+    R20.1: without this fixture a template that emits the section unconditionally
+    passes every other test in this file.
+    """
+    scenario = _counted_scenario(tmp_path / "narrow")
+    model = _model_from(_narrow_log(scenario))
+    field = _model_field(model)
+    assert field.excluded == (), (
+        f"this log excludes nothing and the field names {len(field.excluded)}; the "
+        f"fixture no longer shows the empty case"
+    )
+
+    ids = _parse(_html(model)).ids
+    assert "candidates" in ids, (
+        f"the candidate table is missing from a model that carries a field with "
+        f"{len(field.candidates)} rows, so this document cannot show that the "
+        f"exclusion list is gated separately from the table; ids are {ids}"
+    )
+    assert "excluded" not in ids, (
+        "the excluded-runs list renders on a log that excluded nothing. The contract "
+        "gates it on `any exclusion`, and an empty list under a heading reads as a "
+        "finding a reader has to go and check"
+    )
+
+
+# -- the dimension matrix ----------------------------------------------------- #
+
+
+def test_the_matrix_renders_every_column_and_every_tag_the_model_carries(
+    tmp_path: Path,
+) -> None:
+    """Three columns and three rows, and the columns in the matrix's own order.
+
+    R27.8.1 tells C14 to read `matrix.candidates[0]` as the comparison's candidate
+    rather than to be given an accessor for it, which makes the order load-bearing
+    in the template: the baseline, then the payload's candidate, then the rest in
+    sorted order. A template that iterates a sorted copy, or that renders the
+    baseline against `candidates[0]` and stops, drops a column of real
+    measurements in silence -- and a dropped column is an absence that renders as
+    nothing at all.
+    """
+    model = _every_element_model(tmp_path / "columns")
+    matrix = _available_matrix(model)
+    region = _anchor_text(_html(model), "dimensions")
+    columns = [_get(one, "model_id") for one in _all_columns(matrix)]
+
+    positions = []
+    for name in columns:
+        assert name in region, (
+            f"the matrix has a column for {name!r} and the document does not show "
+            f"it. The matrix holds {columns} and the section reads:\n  {region!r}"
+        )
+        positions.append(region.index(name))
+    assert positions == sorted(positions), (
+        f"the columns render in a different order from the matrix's own {columns}; "
+        f"R27.8.1 makes `candidates[0]` the comparison's candidate by construction "
+        f"and the template is required to read it that way"
+    )
+    for tag in _get(matrix, "tags"):
+        assert tag in region, (
+            f"the matrix carries a {tag!r} row and the document does not show it; "
+            f"the section reads:\n  {region!r}"
+        )
+
+
+def test_each_matrix_column_shows_its_own_reading_and_not_its_neighbours(
+    tmp_path: Path,
+) -> None:
+    """Three sides, three different rates on one tag: all, none and half.
+
+    R27.4's finding, reached from the template side. `TagColumn.cell()` returning
+    the wrong cell survived all 1998 tests because every fixture gave both tags
+    identical counts, and the same hole is open one layer up: a template that
+    renders the baseline's cells under every column's heading is a table of one
+    reading printed three times, and with a monoculture fixture it is
+    indistinguishable from the right one.
+
+    The half-passing column is the discriminating one -- 25 of 50 is a number no
+    other cell in this document holds.
+    """
+    model = _every_element_model(tmp_path / "readings")
+    matrix = _available_matrix(model)
+    region = _anchor_region(_html(model), "dimensions")
+    text = _squeeze(_visible(region))
+
+    rates = {}
+    for column in _all_columns(matrix):
+        cell = _cell(column, MEASURED_TAG)
+        assert _get(cell, "rate") is not None, (
+            f"{_get(column, 'model_id')!r}'s {MEASURED_TAG!r} cell was measured in "
+            f"this fixture and carries no rate; the fixture has stopped exercising "
+            f"a measured cell"
+        )
+        rates[_get(column, "model_id")] = _get(cell, "rate")
+    assert len(set(rates.values())) == len(rates), (
+        f"the three sides no longer disagree on {MEASURED_TAG!r}: {rates}. A fixture "
+        f"whose columns hold the same numbers cannot tell a table that reads each "
+        f"column from one that reads the first three times"
+    )
+
+    for model_id, rate in rates.items():
+        assert _shows(region, rate), (
+            f"the {MEASURED_TAG!r} rate {rate!r} that {model_id!r} recorded is "
+            f"nowhere in the matrix, in any of the forms {_renderings(rate)}"
+        )
+    passes = _get(_cell(_candidate_column(matrix, THIRD_MODEL), MEASURED_TAG), "passes")
+    assert re.search(rf"\b{passes}\b", text), (
+        f"the third side passed {passes} of its {MEASURED_TAG!r} completions and that "
+        f"count is not in the section; it is the one count in this document that "
+        f"belongs to no other cell"
+    )
+
+
+def test_a_tag_no_model_produced_says_so_rather_than_showing_a_measured_zero(
+    tmp_path: Path,
+) -> None:
+    """The central design rule, in the one cell of the matrix that must obey it.
+
+    A golden-set tag nothing was judged against arrives as ``(0, 0, 0)`` with
+    ``rate=None`` -- the counter zero-fills the whole tag universe, so the row
+    exists and every number in it is zero. A bare ``0`` in that cell reads as a
+    measured zero: a dimension the model failed completely. It is the opposite of
+    what happened, it is the most alarming thing the page could say, and five
+    chunks in a row have turned on this distinction.
+
+    The cell already carries the right sentence. What is asserted is that it
+    reaches the reader, in every column, and that the row is not dropped instead
+    -- a dropped row would be honest and invisible, and the reader would never
+    learn that a dimension went unmeasured.
+    """
+    model = _every_element_model(tmp_path / "unmeasured")
+    matrix = _available_matrix(model)
+    region = _anchor_text(_html(model), "dimensions")
+
+    for column in _all_columns(matrix):
+        cell = _cell(column, UNMEASURED_TAG)
+        assert (_get(cell, "passes"), _get(cell, "n"), _get(cell, "items")) == (0, 0, 0)
+        assert _get(cell, "rate") is None
+        note = _squeeze(_get(cell, "note"))
+        assert note, (
+            f"{_get(column, 'model_id')!r}'s {UNMEASURED_TAG!r} cell carries no note, "
+            f"so the fixture cannot show whether the note reaches the page"
+        )
+        assert note in region, (
+            f"the {UNMEASURED_TAG!r} cell of {_get(column, 'model_id')!r} says\n"
+            f"  {note!r}\nand the page does not. Nothing was measured for this tag; "
+            f"a cell of zeros with nothing beside it says it was measured and failed"
+        )
+
+
+def test_a_side_no_judging_pass_closed_keeps_its_column_and_the_note_it_was_given(
+    tmp_path: Path,
+) -> None:
+    """R27.5's second zero-column case, which is now separated in the cell's note.
+
+    Three genuinely different situations used to render byte-identically. C10's
+    fix pass separated two of them *in the note*: a side no judging pass ever
+    closed carries an extra sentence saying the zeros are a missing judging pass
+    rather than a measurement, so one reader is sent to the judge configuration
+    and the other to whether the run finished at all.
+
+    Two assertions. The column renders -- dropping it leaves a one-column
+    "comparison" with nothing on the page saying where the other side went, which
+    is M6, and it survived all 1998 tests. And the note that reaches the page is
+    the *cell's*, extra sentence included: a template that printed the shorter
+    sentence, or composed its own from the zeros, would put the reader back where
+    R27.5 found them, and the page would look no different.
+    """
+    model = _never_closed_model(tmp_path / "neverclosed")
+    matrix = _available_matrix(model)
+    silent = _squeeze(_silent_side_note(tmp_path / "silent"))
+    region = _anchor_text(_html(model), "dimensions")
+
+    assert CANDIDATE_MODEL in region, (
+        f"the side the comparison names has no column on the page. It was never "
+        f"judged, which is a finding; the section reads:\n  {region!r}"
+    )
+    # `silent` is one *tag's* judged-but-silent note ("Nothing was measured for
+    # arithmetic."), because that is what C10's `_silent_side_note` returns. The
+    # prefix is therefore tag-specific and only the matching cell can be compared
+    # against it directly; every other cell is compared against the *extra*
+    # sentence that cell proved to exist. Written this way after the merge, where
+    # the loop first ran against a rendering template and asserted `extraction`'s
+    # note started with `arithmetic`'s.
+    column = _candidate_column(matrix, CANDIDATE_MODEL)
+    tagged = dict(zip(_get(matrix, "tags"), _cells(column), strict=True))
+    anchor = _squeeze(_get(tagged[SILENT_NOTE_TAG], "note"))
+    assert anchor.startswith(silent) and anchor != silent, (
+        f"the fixture's never-judged cell no longer carries R27.5's extra "
+        f"sentence, so this test cannot tell it from a judged-but-silent side:\n"
+        f"  {anchor!r}"
+    )
+    extra = anchor[len(silent) :]
+    for cell in _cells(column):
+        note = _squeeze(_get(cell, "note"))
+        assert note.endswith(extra) and note != extra, (
+            f"this cell of the never-judged column carries no never-closed "
+            f"sentence, so it reads as a measured zero:\n  {note!r}"
+        )
+        assert note in region, (
+            f"the page does not carry this cell's note:\n  {note!r}\nA judged side "
+            f"that graded nothing and a side no judging pass ever closed have "
+            f"different fixes, and the note is the only thing that separates them"
+        )
+
+
+#: A note nothing could compose: it names the column and the row it belongs to,
+#: and it carries markup that must arrive escaped. R27.5 and R21.5 both refuse a
+#: renderer that writes its own sentence from `passes`/`n`, and this is that
+#: refusal reached from the template side -- there is no arithmetic on this cell
+#: that produces this string.
+NOTE_MARK = 'NOTE-MARK[{model}/{tag}] <img src="https://tracker.example/{tag}.png"> & so on.'
+
+
+def _marked_notes(model: Any) -> tuple[Any, dict[str, str]]:
+    """The model with every non-empty cell note replaced by a marker of its own.
+
+    The matrix is frozen dataclasses all the way down, so this is `replace` three
+    levels deep and nothing about the model's shape changes. Cells whose note is
+    empty keep it: on this fixture every cell carrying a note is a refused cell,
+    so the expectation is exactly "each refusal's own sentence, printed once".
+    """
+    matrix = _get(model, "dimensions")
+    marks: dict[str, str] = {}
+
+    def marked(column: Any) -> Any:
+        cells = []
+        for cell in _cells(column):
+            if not _get(cell, "note"):
+                cells.append(cell)
+                continue
+            key = f"{_get(column, 'model_id')}/{_get(cell, 'tag')}"
+            marks[key] = NOTE_MARK.format(model=_get(column, "model_id"), tag=_get(cell, "tag"))
+            cells.append(dataclasses.replace(cell, note=marks[key]))
+        return dataclasses.replace(column, cells=tuple(cells))
+
+    replaced = dataclasses.replace(
+        matrix,
+        baseline=marked(_baseline_column(matrix)),
+        candidates=tuple(marked(one) for one in _candidate_columns(matrix)),
+    )
+    return dataclasses.replace(model, dimensions=replaced), marks
+
+
+def test_the_matrix_prints_the_note_each_cell_carries_and_composes_none_of_its_own(
+    tmp_path: Path,
+) -> None:
+    """The note is the cell's, byte for byte, and it arrives escaped.
+
+    R27.5 put the never-judged distinction *in the note* rather than in a new
+    field, "because the note is where this document already says such things".
+    That only holds if the note is what renders. A template that rebuilds the
+    sentence from `passes` and `n` looks identical on every fixture in this file
+    -- the notes are derived from those numbers -- and silently drops every
+    distinction the producer drew. It is the shape R21.5 and R26.4 both refused,
+    reached from the template side.
+
+    So each cell's note is replaced with a string no arithmetic can produce, and
+    the page must contain each one. The markers also carry an `<img src>`: the
+    note is model-adjacent text and a `| safe` on this path would turn it into a
+    real fetch, so `external_urls` is asserted in the same breath.
+    """
+    model, marks = _marked_notes(_every_element_model(tmp_path / "notes"))
+    assert len(marks) == 6, (
+        f"this fixture has {len(marks)} cell(s) carrying a note; it is built for six "
+        f"-- two refused tags across three columns"
+    )
+
+    html = _html(model)
+    text = _squeeze(_visible(html))
+    for key, mark in sorted(marks.items()):
+        assert _squeeze(mark) in text, (
+            f"the {key} cell's own note is not on the page:\n  {mark!r}\nEvery note "
+            f"in this fixture was replaced with a string the cell's counts cannot "
+            f"produce, so a note composed at render time cannot satisfy this"
+        )
+    assert _urls(html) == (), (
+        f"a cell note reached the document unescaped: {_urls(html)}. A note is "
+        f"model-adjacent text and the only expressions this document may mark safe "
+        f"are the two hand-rolled SVGs"
+    )
+
+
+def test_the_dimension_section_keeps_its_anchor_when_there_is_no_matrix(
+    tmp_path: Path,
+) -> None:
+    """The same ``id`` on both branches, so a link to it never dangles.
+
+    C14's contract gives the matrix and the unavailability note **one** anchor
+    between them, and the reason is mechanical: whatever links to `#dimensions` --
+    a nav, the methodology appendix, a reader's bookmark -- links to it on every
+    document, and a section that exists only when the data does turns that link
+    into a dead one on exactly the reports where the reader most needs to know
+    why there is nothing there.
+
+    The refusal sentence is asserted verbatim for the reason C10's own tests
+    assert it verbatim: it is written in `dimensions.py`, this is its third copy
+    on the page, and a re-worded copy is one that goes stale without anyone
+    noticing.
+    """
+    scenario = _scenario(tmp_path / "unavailable")
+    model = _model_from(_matrix_log(scenario, "evidence-c14b-none.jsonl", judging=()))
+    matrix = _get(model, "dimensions")
+    assert _get(matrix, "available") is False, (
+        "no judging pass reached this log, so the counter declines and there is no "
+        "matrix; it says the matrix is available, and the fixture is wrong"
+    )
+    reason = _squeeze(_get(matrix, "reason"))
+    assert reason, "the counter declined without saying why, which it may not do"
+
+    html = _html(model)
+    assert "dimensions" in _parse(html).ids, (
+        f"there is no id=dimensions on a document whose matrix is unavailable. The "
+        f"contract gives the note and the matrix the same anchor so that a link to "
+        f"it never dangles; the ids are {_parse(html).ids}"
+    )
+    assert reason in _anchor_text(html, "dimensions"), (
+        f"the section does not carry the reason there is no matrix:\n  {reason!r}\n"
+        f"An unavailable section that does not say why is the empty chart the spec "
+        f"names as this document's failure mode"
+    )
+
+
+def test_no_anchor_this_document_links_to_is_missing_from_it(tmp_path: Path) -> None:
+    """Every ``href="#..."`` resolves, on a document with the matrix and without.
+
+    The same-id rule is only worth having if something checks the links it exists
+    to protect, and the check is general: any section this document gates on data
+    can strand a link the day a report is generated without that data. Both
+    branches are rendered here because a nav written against the available branch
+    is exactly what dangles on the other one.
+    """
+    available = _html(_every_element_model(tmp_path / "links-available"))
+    scenario = _scenario(tmp_path / "links-missing")
+    missing = _html(_model_from(_matrix_log(scenario, "evidence-c14b-links.jsonl", judging=())))
+
+    for label, html in (("with a matrix", available), ("without one", missing)):
+        ids = set(_parse(html).ids)
+        targets = {
+            value[1:]
+            for _tag, attrs in _parse(html).tags
+            for key, value in attrs.items()
+            if key == "href" and value and value.startswith("#") and len(value) > 1
+        }
+        assert targets, (
+            f"the document {label} carries no in-page links at all, so this test is "
+            f"asserting nothing; the nav is where a link to a gated section lives"
+        )
+        dangling = sorted(targets - ids)
+        assert not dangling, (
+            f"the document {label} links to {dangling}, which no element carries. "
+            f"Its ids are {sorted(ids)}"
+        )
+
+
+# -- the two mechanisms this chunk may not weaken ----------------------------- #
+
+
+def test_no_new_section_works_around_strictundefined() -> None:
+    """The raise is the feature, and `is defined` is how it gets turned off.
+
+    `StrictUndefined` is what found six chunks' worth of unrendered work: a
+    `{{ }}` naming a field `ReportModel` does not define raises at render rather
+    than printing nothing. A `{% if model.foo is defined %}` around a new section
+    converts that raise into a silently empty section -- which is this chunk's
+    exact failure mode, since every element here is already gated on a *value*
+    that the model does carry. `| default(...)` is the same edit spelled shorter.
+
+    Parsed, not grepped: R27.2 is the record of a source-text assertion satisfied
+    by the module's own docstrings, and this file's `| safe` test is parsed for
+    the same reason. The template today uses one test, `none`, and no `default`,
+    so a hit here is something this chunk added.
+    """
+    from jinja2 import Environment, nodes
+
+    tree = Environment().parse(_report._CHANGES_MACRO + _report._TEMPLATE)
+    dodges = sorted({one.name for one in tree.find_all(nodes.Test)} & {"defined", "undefined"})
+    defaults = sorted({one.name for one in tree.find_all(nodes.Filter)} & {"default", "d"})
+
+    assert not dodges, (
+        f"the template tests {dodges}; `StrictUndefined` raising on a field the "
+        f"model does not define is the designed behaviour, and a section guarded "
+        f"this way renders empty forever instead"
+    )
+    assert not defaults, (
+        f"the template applies {defaults}; a default substitutes a value for the "
+        f"absence, which is the same workaround with the raise moved one step later"
+    )
+    # Not a re-derivation of the rule -- a proof the parse can see the construct
+    # it is asserting the absence of, so a rename in jinja2 fails here loudly.
+    guarded = Environment().parse("{% if model.nope is defined %}{{ model.nope }}{% endif %}")
+    assert {one.name for one in guarded.find_all(nodes.Test)} == {"defined"}
+
+
+def test_a_document_carrying_every_new_section_is_still_self_contained(
+    tmp_path: Path,
+) -> None:
+    """C14's "Then" clause: the two must-pass tests, on a fixture that exercises
+    all four elements rather than the standard scenario.
+
+    `test_the_rendered_report_has_no_external_url` and
+    `test_the_rendered_report_has_zero_script_and_zero_link_elements` are required
+    to pass *unchanged*, and they render `_scenario`, which carries none of this
+    chunk's sections. Passing them proves nothing about markup that only exists
+    when a matrix and a candidate table do -- so the same two readings are taken
+    here, against the document those sections are actually in.
+
+    The web font is checked as well: `@font-face` with a remote `src` is the one
+    external reference that reaches a page through a `<style>` block rather than
+    through an element, and the contract's Must-not names it separately from
+    `<link>` for that reason.
+    """
+    model = _every_element_model(tmp_path / "selfcontained")
+    html = _html(model)
+    ids = _parse(html).ids
+    for anchor in ("candidates", "excluded", "dimensions"):
+        assert anchor in ids, (
+            f"this document does not carry the {anchor!r} section, so it does not "
+            f"exercise what it is here to check; ids are {ids}"
+        )
+
+    assert _urls(html) == (), f"a document carrying every new section fetches {_urls(html)}"
+    document = _parse(html)
+    for tag in FORBIDDEN_ELEMENTS:
+        assert document.count(tag) == 0, (
+            f"the document contains {document.count(tag)} <{tag}>, which arrived with "
+            f"one of this chunk's sections"
+        )
+    assert "@font-face" not in html, "a web font reached the document"
