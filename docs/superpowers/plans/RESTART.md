@@ -59,30 +59,43 @@ forty lines below it.
 
 | Branch | Contains | State |
 |---|---|---|
-| `main` | C1-C3, **C4**, **C7**, C8, C9, **C11**, C12, C13, **C14a**, C15, C19, C20, **C21** (+fix), R1-R20 | all seven gates green, **1849 passed** |
-| `chunk/c5-impl` | the candidate field | green at 269, **reviewed**, fix pass in flight |
-| `chunk/c16-impl` | narrative adapters | green at 88, fix pass in flight |
-| `chunk/c10-impl2` / `c10-test2` | the matrix wired into `ReportModel` | impl **done and green at 1816**, blind tester in flight |
+| `main` | C1-C3, **C4**, **C7**, C8, C9, **C10**, **C11**, C12, C13, **C14a**, C15, **C16**, C19, C20, **C21**, R1-R20 | all seven gates green, **1998 passed** |
+| `chunk/c5-impl` | the candidate field | green at 269, reviewed, **fix pass in flight** |
+| `mk-c7-review` / `mk-c10-review` | detached review worktrees at `60a3fed` | **two reviewers in flight** |
 
-Updated 2026-08-24, main at `0fb907f`. The old `chunk/c10-impl` and
-`chunk/c10-test` branches are **dead**: they were written against a contract
-prescribing an impossible call and against a `dimensions.py` that C21 has since
-rewritten. Ignore them; `c10-impl2` / `c10-test2` are the live pair.
+Updated 2026-08-24, main at `60a3fed`. The old `chunk/c10-impl` and
+`chunk/c10-test` branches are **dead** -- written against a contract prescribing
+an impossible call and a `dimensions.py` C21 has since rewritten. The live pair
+was `c10-impl2` / `c10-test2`, now merged.
 
-**C7 is merged and needs a reviewer** -- it has had implementer, blind tester
-and merge, but not the mutation-testing pass. Its blind pair produced **zero
-disagreement**, the first time on this plan, and that is a reason to review it
-sooner rather than later: an agreeing pair has never yet meant a defect-free
-chunk, and on C5 a 269-test green suite was hiding its own named failure mode.
+**Two consecutive blind pairs produced zero disagreement** -- C7 (33 tests) and
+C10 (22 tests, 21 of them red until the field landed, then all green on merge).
+On C10 the implementer even predicted the one place a blind tester could
+reasonably have guessed differently (`baseline` as a `TagColumn` rather than a
+bare tuple) and the tester had independently written a helper accepting both.
 
-**When C10's tester reports, expect one likely false red.** Its implementer made
-`baseline` and `candidates` both `TagColumn`, where the amendment offered
-`tuple[DimensionCell, ...]` for `baseline`. It flagged this itself as the one
-place a blind test writer could reasonably have guessed differently. The
-implementer's reasoning is sound -- symmetric shapes, and every `.items` in the
-matrix becomes an `AttributeError` rather than a bound method, which is the
-hazard C10's reviewer note says to close -- so adjudicate on that, not on which
-side wrote first.
+That is a good sign about the contracts, and **not** a signal to skip review:
+C5's pair agreed too, and its 269-test green suite was hiding the chunk's own
+named failure mode. Both are under review now for that reason.
+
+### One agent, one worktree -- reviewers included
+
+Reviewers were being sent to work directly on `main` in `mk-main`, because that
+is where merged code lives. **That is wrong and it nearly cost something here.**
+Two reviewers dispatched into one working tree will overwrite each other's
+mutations and each other's restores, and the orchestrator commits documentation
+to that same tree -- so a live mutant can be captured by a `git add -A` that has
+nothing to do with it.
+
+Give every agent its own worktree, review agents included:
+
+```
+git worktree add --detach /c/Users/ewehm/repos/mk-<chunk>-review <main-sha>
+```
+
+Detached, so several can sit at the same commit without fighting over the
+branch. It also retires the "run `check_merge.py` alone" rule for reviewers --
+that rule was about contention, and a private worktree has none.
 
 **Merged and reviewed** means the blind pair ran, a reviewer mutation-tested it,
 and a fix pass acted on the review. Every chunk on `main` above has been through
@@ -91,10 +104,11 @@ three found defects in code that was already merged.
 
 ### What the document renders today
 
-Measured on `main` at `0b84d52`, after C14a:
+Measured on `main` at `60a3fed`, after C14a, C10 and C16:
 
 | | before C14a | now |
 |---|---|---|
+| bytes | 25,901 | **24,564** |
 | `<svg>` elements | 0 | **2** |
 | `id="timeline"` | no | **yes** |
 | `<pre>` blocks | 44 | **12** |
@@ -105,18 +119,38 @@ Measured on `main` at `0b84d52`, after C14a:
 | the word "dimension" | 0 | **0** |
 | the words "spot check" | 0 | **0** |
 
-The charts draw and all four reader-reported defects are gone, in a document
-that got *smaller* (25,901 to 24,564 bytes). The last two rows are the work that
-remains: **C10** puts the dimension matrix on the page and **C14's remaining
-seven elements** put C11's spot-check line there. Until those land, three merged
-chunks still contribute nothing a reader can see.
+**C10 merged and this table did not move by a single byte.** The render after
+C10 is byte-identical to the render before it -- 24,564 both times, "dimension"
+still zero. That is not a defect in C10, which does exactly what its contract
+says: it puts `dimensions: DimensionMatrix` on `ReportModel`. It is the
+scheduling mistake this page was written about, in miniature, on a plan that
+already learned the lesson once.
 
-Re-measure with the script pattern in `scratchpad/measure_report.py` and
-**export `PYTHONPATH` to the worktree's `src` first** -- a bare `migkit demo`
-renders the *main checkout's* code and will hand you the wrong numbers with no
-warning. That mistake was made here once already, and the render came back
-byte-identical to the before-state, which reads exactly like "the merge did
-nothing".
+**Nothing renders the matrix.** `C14's remaining seven elements` do, and until
+they land C10, C11 and C5 are three merged chunks a reader cannot see.
+
+So the next visible work is C14, not another upstream chunk -- with one
+constraint that outranks the impulse: **C14 types C10's names, and a name must
+be through review, not merely merged.** That is why both outstanding reviewers
+were dispatched ahead of it rather than after. The review is the bottleneck on
+the artifact moving, which is an unusual thing to be able to say and worth
+saying out loud, because the tempting shortcut here is to dispatch C14 beside
+C10's reviewer and let the producer and consumer race.
+
+Re-measure with `scratchpad/measure_report.py`, passing the rendered file:
+
+```
+PYTHONPATH="C:/Users/ewehm/repos/mk-main/src" \
+  /c/Users/ewehm/repos/migration-kit/.venv/Scripts/python.exe \
+  -m model_migration_kit.cli demo --out <file>
+```
+
+`--out` is a **file**, not a directory. And export `PYTHONPATH` first: a bare
+`migkit demo` renders the *main checkout's* code and hands you the wrong numbers
+with no warning. That mistake was made here once already, and its symptom is a
+render that comes back byte-identical to the before-state -- which is also,
+confusingly, exactly what a correct C10 render looks like. Print
+`model_migration_kit.__file__` so the two cannot be confused.
 
 ## Do these next, in this order
 
