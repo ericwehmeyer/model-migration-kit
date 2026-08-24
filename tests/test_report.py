@@ -8283,7 +8283,7 @@ def _baseline_column(matrix: Any) -> Any:
     return _get(matrix, "baseline")
 
 
-def _candidates(matrix: Any) -> tuple[Any, ...]:
+def _candidate_columns(matrix: Any) -> tuple[Any, ...]:
     """The candidate columns, in the order the matrix publishes them.
 
     These three helpers each used to accept a ``Mapping`` of columns and reach
@@ -8295,6 +8295,14 @@ def _candidates(matrix: Any) -> tuple[Any, ...]:
     settled now, so the fallback is gone and
     ``test_the_candidate_columns_are_a_tuple_and_never_a_mapping_of_them`` asserts
     it directly.
+
+    Named ``_candidate_columns`` and not ``_candidates`` because C22a's tests
+    define a module-level ``_candidates(model)`` further down this file, and the
+    later definition wins for every call site in the module -- including the four
+    above it. That shadowing silently removed the ``isinstance`` assertion below
+    from all four, which is the very regression R27.4 added it to catch. Caught by
+    ``check_merge.py``'s shadowed-name check at the merge; the two helpers read
+    different objects and now have different names.
     """
     candidates = _get(matrix, "candidates")
     assert isinstance(candidates, tuple), (
@@ -8306,11 +8314,11 @@ def _candidates(matrix: Any) -> tuple[Any, ...]:
 
 
 def _candidate_ids(matrix: Any) -> list[str]:
-    return sorted(str(_get(one, "model_id")) for one in _candidates(matrix))
+    return sorted(str(_get(one, "model_id")) for one in _candidate_columns(matrix))
 
 
 def _candidate_column(matrix: Any, model_id: str) -> Any:
-    for one in _candidates(matrix):
+    for one in _candidate_columns(matrix):
         if _get(one, "model_id") == model_id:
             return one
     raise AssertionError(
@@ -8319,7 +8327,7 @@ def _candidate_column(matrix: Any, model_id: str) -> Any:
 
 
 def _all_columns(matrix: Any) -> list[Any]:
-    return [_baseline_column(matrix), *_candidates(matrix)]
+    return [_baseline_column(matrix), *_candidate_columns(matrix)]
 
 
 def _counter_reason(log: Path, goldenset: Path, judge: str = J) -> str:
@@ -8662,7 +8670,7 @@ def test_the_first_candidate_column_is_the_one_the_comparison_names(
     """
     scenario = _scenario(tmp_path / "candidate-first")
     matrix = _available_matrix(_model_from(_extra_models_log(scenario, "evidence-first.jsonl")))
-    candidates = _candidates(matrix)
+    candidates = _candidate_columns(matrix)
 
     assert FOURTH_MODEL < THIRD_MODEL < CANDIDATE_MODEL, (
         "the extra models no longer sort in front of the candidate and of each "
