@@ -4395,3 +4395,82 @@ identical observation. The way to tell them apart is to print
 `model_migration_kit.__file__` before believing either — and after C10 the
 correct render genuinely is unchanged, which is the first time on this plan that
 "nothing moved" has been the right answer rather than a mistake.
+
+### R22 — D7 is withdrawn, and two rulings from one review contradicted each other
+
+C5 is merged (`03d979d`, 2052 passing, seven gates green) and has now been
+through all four roles. Its fix pass acted on every ruling but one, and **it was
+right to refuse that one.**
+
+#### R22.1 — the refusal
+
+Ruling 8 told the fix pass to document that
+`CandidateField.baseline_pass_rate` **can never be `None`** from
+`candidate_field`, on the reviewer's D7 reasoning: every rendered point has
+passed `_ungraded`, which requires `judged_baseline > 0`, so the R17.2 zero
+guard is unreachable and C6 would otherwise write a dead branch.
+
+That was true when the reviewer wrote it. **Ruling 4, in the same brief, made it
+false.** D4 added a second refusal ground — `_baseline_pass_rate` returns `None`
+unless `0 <= judge_failures_baseline <= judged_baseline` — and `_ungraded` does
+not screen either bound. Both are reachable, because `_count` passes any JSON
+integer through, which is the whole reason D4 was worth acting on.
+
+So after ruling 4, `None` **is** reachable and C6's branch is **live**.
+
+The fix pass did not pick a reading. It wrote the factual sentence — *"`None`
+when that run's baseline-side counts do not describe a rate"* — left the
+reachability claim unmade, and reported the collision. That is the third time on
+this plan an agent has held a correct argument against the orchestrator, and the
+second time doing so prevented a docstring that would have taught the next
+reader something false.
+
+**Ruling: D7 is withdrawn.** `baseline_pass_rate` is `None` when the baseline
+side's counts do not describe a rate. **C6 must handle `None`; the branch is not
+dead.** The sentence the fix pass wrote stands as shipped and needs no change.
+
+#### R22.2 — the lesson, which is about how rulings are issued
+
+I issued eleven rulings as a numbered list and treated them as independent. They
+were not. Ruling 4 changed the reachability of a value that ruling 8 made a claim
+about, and nothing in the process would have caught it: the reviewer found both
+defects honestly, each finding was correct in isolation, and the brief presented
+them in a table that invites exactly the reading that they can be applied one at
+a time in any order.
+
+**A review's findings are not independent, and a set of rulings has to be
+checked against itself before it is issued.** The specific check that would have
+caught this one: *for every ruling that changes when a value is `None`, empty, or
+absent, re-read every other ruling that makes a claim about that same value's
+range.* D4 and D7 are both about `baseline_pass_rate`; reading them side by side
+takes seconds.
+
+This is the same failure shape as R20.1's fixture monoculture, one level up.
+There, a suite could not see a defect because every fixture agreed. Here, a set
+of rulings could not see its own contradiction because each was judged alone.
+**Correctness in isolation is not correctness in composition** — which is,
+uncomfortably, the exact property this plan's whole chunked structure is built
+on, and R21 is what that assumption cost at the level of the architecture.
+
+#### R22.3 — what C6 now consumes
+
+`CandidateField` as merged, for the brief that dispatches C6:
+
+- **Eight fields**, not seven — `stale_after_days: float` is last (R20.3).
+- **`Candidate.model`** is a property returning `point.candidate_model`. A
+  property rather than a field, so there is no second slot to disagree with the
+  point. C6's `thresholds` mapping is keyed on model strings, so this is the
+  join.
+- **`baseline_pass_rate` can be `None`** (R22.1). It is a header and **not an
+  operand**: the rows' `delta_pp` values are each against their own baseline,
+  and adding the header to a delta is wrong whenever the baseline drifted. The
+  public docstring says so.
+- **`spread_days` is `None` unless at least two rendered rows carry a date**
+  (D3), so a single dated row no longer claims a spread of zero.
+- **A drift caveat** appears on the point supplying the header when the rendered
+  rows' reconstructed baselines are not all equal (D1).
+- **A superseded exclusion** now exists, so a run beaten to its row by a newer
+  run of the same model leaves a sentence behind instead of vanishing (D2).
+- `delta_pp` and `spread_days` are **deliberately unrounded**, now stated on the
+  public attributes rather than only in private docstrings (D5). Assert exact
+  floats, not `pytest.approx`.
