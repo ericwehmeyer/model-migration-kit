@@ -59,43 +59,47 @@ forty lines below it.
 
 | Branch | Contains | State |
 |---|---|---|
-| `main` | C1-C3, **C4**, **C7**, C8, C9, **C10**, **C11**, C12, C13, **C14a**, C15, **C16**, C19, C20, **C21**, R1-R20 | all seven gates green, **1998 passed** |
-| `chunk/c5-impl` | the candidate field | green at 269, reviewed, **fix pass in flight** |
+| `main` | C1-C5, C7-C16, C19-C21, R1-R23 | all seven gates green, **2052 passed** |
+| `chunk/c6-impl` / `c6-test` | multiplicity, corrected and said out loud | **blind pair in flight** |
 | `mk-c7-review` / `mk-c10-review` | detached review worktrees at `60a3fed` | **two reviewers in flight** |
 
-Updated 2026-08-24, main at `60a3fed`. The old `chunk/c10-impl` and
-`chunk/c10-test` branches are **dead** -- written against a contract prescribing
-an impossible call and a `dimensions.py` C21 has since rewritten. The live pair
-was `c10-impl2` / `c10-test2`, now merged.
+Updated 2026-08-24, main at `027bb93`. `chunk/c10-impl` and `chunk/c10-test`
+(without the `2`) are **dead** -- written against a contract prescribing an
+impossible call. Ignore them.
 
-**Two consecutive blind pairs produced zero disagreement** -- C7 (33 tests) and
-C10 (22 tests, 21 of them red until the field landed, then all green on merge).
-On C10 the implementer even predicted the one place a blind tester could
-reasonably have guessed differently (`baseline` as a `TagColumn` rather than a
-bare tuple) and the tester had independently written a helper accepting both.
+**C5 is merged and through all four roles.** Its fix pass produced an unfix
+table in which every revert goes red, and then did something nobody asked for:
+it re-anchored all fourteen named survivors against the fixed tree and confirmed
+each one now dies. M01, the fixture monoculture that survived 269 green tests,
+dies on three; R14, the `_UNDATED` mutant that inverted the sorting ruling in all
+three places it had work to do, dies on three more.
 
-That is a good sign about the contracts, and **not** a signal to skip review:
-C5's pair agreed too, and its 269-test green suite was hiding the chunk's own
-named failure mode. Both are under review now for that reason.
+**Two consecutive blind pairs produced zero disagreement** (C7, C10). Good sign
+about the contracts, not a reason to skip review -- C5's pair agreed too, and its
+269-test green suite was hiding the chunk's own named failure mode.
 
 ### One agent, one worktree -- reviewers included
 
-Reviewers were being sent to work directly on `main` in `mk-main`, because that
-is where merged code lives. **That is wrong and it nearly cost something here.**
-Two reviewers dispatched into one working tree will overwrite each other's
-mutations and each other's restores, and the orchestrator commits documentation
-to that same tree -- so a live mutant can be captured by a `git add -A` that has
-nothing to do with it.
-
-Give every agent its own worktree, review agents included:
+Two reviewers were once dispatched into `mk-main` together. That is wrong: they
+overwrite each other's mutations and each other's restores, and the orchestrator
+commits documentation to that same tree, so a live mutant can be captured by a
+`git add -A` that has nothing to do with it.
 
 ```
 git worktree add --detach /c/Users/ewehm/repos/mk-<chunk>-review <main-sha>
 ```
 
-Detached, so several can sit at the same commit without fighting over the
-branch. It also retires the "run `check_merge.py` alone" rule for reviewers --
-that rule was about contention, and a private worktree has none.
+Detached, so several can sit at one commit without fighting over the branch. It
+also retires "run `check_merge.py` alone" for reviewers -- that rule was about
+contention, and a private worktree has none.
+
+**Agents die in clusters.** Three died in one window (two 600s stalls, one API
+error) and all three were recovered by **resuming** them with `SendMessage`
+rather than re-dispatching, which preserved their partial findings. Before
+resuming, check every worktree: the reviewers had restored cleanly, but a fix
+pass had 950 lines of green work uncommitted, one accident from gone. Commit
+that work yourself, and say in the message that its unfix harness has not run so
+nobody merges on a green suite alone.
 
 **Merged and reviewed** means the blind pair ran, a reviewer mutation-tested it,
 and a fix pass acted on the review. Every chunk on `main` above has been through
@@ -154,46 +158,43 @@ confusingly, exactly what a correct C10 render looks like. Print
 
 ## Do these next, in this order
 
-**Read R21 first.** Six of C14's nine elements cannot be built as written --
-`ReportModel` does not carry C11's spot check, C4's exclusions, C5's candidates,
-C6's multiplicity or C7's parameter strip, and C14's contract gates those
-sections on function calls a template cannot make. **C22, the view model, closes
-it and must land before C14's remaining elements.** R21.5 rules the question
-underneath it (where `trend`'s lineage comes from) so C22 is not blocked on a
-decision.
+**Read R21, R21.6 and R23 first.** `report.py` imports exactly three names from
+`series.py` and all three are C3's; four merged chunks produce values no
+production path reads. That is why the render is byte-identical across three
+merges while every gate stays green. **C22 closes it.**
 
-1. **Land the three in flight** -- C5's fix pass, C7's reviewer, C10's reviewer.
-2. **C22, the view model** -- unblocked the moment C10's and C7's reviews clear,
-   since it types their names. It is small: every producer is pure over
-   `ReportModel.series` (already `tuple[RunPoint, ...]`) or, for `spot_check`,
-   over three integers. It reads nothing, and it must not -- two merged tests
-   forbid a second pass over the log.
-3. **C14's remaining seven elements**, which then have something to render.
-   This is the step that finally moves the measured table above.
-4. **C6** -- consumes C5's `CandidateField`, so it waits for C5's **fix pass**,
-   not merely its review: the fix changes the type C6 reads (an eighth field
-   `stale_after_days`, a new `Candidate.model`, `spread_days` and
-   `baseline_pass_rate` gaining `None` cases, and a superseded exclusion).
+1. **Land the three in flight** -- C6's blind pair, C7's reviewer, C10's
+   reviewer.
+2. **C22a -- the view model, part one. Dispatch this the moment a slot opens;
+   it is the artifact-moving work.** `ReportModel` gains exactly two fields,
+   `spot_check` and `candidates`, both pure over what the model already holds.
+   It renders **three** of C14's nine elements and is what finally moves *"spot
+   check"* off zero.
 
-   **Both briefs are already written**, in the scratchpad as `c6_impl_brief.md`
-   and `c6_test_brief.md`. Re-read them against C5 as merged before dispatching:
-   they were drafted before the fix pass was scoped and say `CandidateField` is
-   "already merged and reviewed", true only once the fix lands.
-
-   R17.1 is the thing to read first: C6's rule for which candidates lost
-   significance is **not** the Holm procedure, and C6's own named first test
-   passes against the broken version. Both briefs carry the correction.
-5. **C17** -- owes `showcase.toml` and `showcase_rubric.md`. C16's fix pass
-   recorded the debt in a block at the foot of `scripts/showcase.py`, including
-   the five thresholds and `model = "synthetic-judge-v1"`. Counted, not guessed:
-   the demo set's 4 reference-less items are all refusals, so the shipped demo
-   is fine; the showcase set's 32 split 16 refusal / 16 summarisation, so the
-   demo's decline-based judge is right for half and inverted for the other half.
-   C16's judge makes three claims `demo_rubric.md` does not contain, one of
-   which moves a published p-value, and `JUDGE_MODEL_ID` is read by **nothing**.
-6. **C18**, and the deferred repo-wide `ruff format` drift (the tree is
-   formatted at 88, `pyproject.toml` says 100, ~26 files). Do the formatting in
-   its own chunk when the tree is quiet, never beside live work.
+   **Both briefs are written**, in the scratchpad as `c22a_impl_brief.md` and
+   `c22a_test_brief.md`. Its producers (C11, C5) are through all four roles with
+   no open rulings, so nothing blocks it but the orchestrator's own capacity.
+3. **C14's remaining elements for those three sections**, which then have
+   something to render. Note R23.2's consequence: a report with no candidate
+   table cannot say *why*, so the empty state must say runs may have been
+   excluded without naming them -- never an empty list, which reads as "nothing
+   was excluded".
+4. **C7's fix pass**, once its review lands. It owes R21.5's lineage caveat:
+   `Trend` must say so when the succession was assumed from the log rather than
+   declared in config. **C22b is blocked on this**, and R21.5 forbids inventing
+   the caveat in the plumbing instead.
+5. **C22b** -- `trend`, `parameter_strip` (after 4) and `multiplicity` (after
+   C6).
+6. **C17** -- owes `showcase.toml` and `showcase_rubric.md`. C16's fix pass
+   recorded the debt at the foot of `scripts/showcase.py` with the five
+   thresholds and `model = "synthetic-judge-v1"`. Counted, not guessed: the demo
+   set's 4 reference-less items are all refusals so the shipped demo is fine;
+   the showcase set's 32 split 16 refusal / 16 summarisation, so the demo's
+   decline-based judge is right for half and inverted for the other half. Three
+   of C16's judge's claims are absent from `demo_rubric.md`, one moves a
+   published p-value, and `JUDGE_MODEL_ID` is read by **nothing**.
+7. **C18**, and the deferred repo-wide `ruff format` drift (tree at 88,
+   `pyproject.toml` says 100, ~26 files). Its own chunk, when the tree is quiet.
 
 ### Running anything at all: there is no venv in the worktrees
 
