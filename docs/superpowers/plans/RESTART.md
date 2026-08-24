@@ -196,6 +196,20 @@ Two things follow, and the second is the one that generalises:
    that actually reaches them. Writing the revision and dispatching against the
    stale copy is the same failure as not writing it.
 
+**The standing fix, applied 2026-08-24: banner the contract, not just the
+revision.** A revision section at the end of an 87KB file does not reach a reader
+who opens their own contract and stops — and "read only the chunk you are on",
+four lines up this page, is what *tells* them to stop. So every amended contract
+now carries a blockquote **immediately under its heading**, above its own text,
+saying what was superseded and pointing at the revision. Six are in place: C4,
+C5, C6, C7, C10, C11.
+
+Keep doing this. When a revision changes a contract, the revision records *why*
+and the banner makes sure the next reader sees *that*. A correction nobody reads
+is indistinguishable from one nobody wrote — and this project has now produced
+both a stale "OPEN" header that survived three days and a struck number that two
+agents read and only dodged because a brief couriered the fix.
+
 ### The blindness leaks through the scratchpad, and what that cost
 
 Found on C4, 2026-08-24. Worktrees isolate the repo. They do **not** isolate the

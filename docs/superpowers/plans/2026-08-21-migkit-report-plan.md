@@ -592,6 +592,17 @@ input, including a series whose adapter strings are empty.
 
 #### C4 — the comparability key and the partition
 
+> **AMENDED — read R14.2, R14.3 and R18.4 before this section.** The signature
+> below is superseded: `partition_comparable` returns a **three-field
+> `Partition` NamedTuple** (`kept`, `excluded`, `caveats`), and the type named
+> `Flag` below is now **`Caveat`** — it collided with `enum.Flag` in two
+> rendering chunks. The coverage flag reads `judged_baseline` /
+> `judged_candidate`, **not `records`**, which `RunPoint` does not carry, and
+> compares the two *sides of one comparison*, not two runs. The edge table below
+> is a **floor, not a ceiling**: review added exclusions for both sides graded
+> zero, for one side graded zero, for `n_per_item == 0` and for an unrecorded
+> `baseline_model`, plus a caveat for self-comparison.
+
 **Files.** `series.py`, `tests/test_series.py`.
 
 **Contract.**
@@ -655,6 +666,17 @@ both failed to record a golden-set hash have equal keys and are not comparable.
 ---
 
 #### C5 — the candidate field
+
+> **AMENDED — read R17.2 through R17.5 before this section.** Four corrections.
+> (1) `Candidate.delta_pp` and `CandidateField.baseline_pass_rate` need a
+> baseline pass rate, and **`RunPoint` has no such field** — its `pass_rate` is
+> the *candidate* side. Reconstruct it exactly as
+> `(judged_baseline - judge_failures_baseline) / judged_baseline`, `None` when
+> the denominator is zero. (2) `CandidateField` gains `caveats` beside
+> `excluded`, following C4's `Partition`. (3) "ignoring `candidate_model`" is
+> stale — `ComparabilityKey` never contained it. (4) The tie-break must be
+> **total**: largest group, then newest point, then the key in sorted order, or
+> the document differs between two renders of one log.
 
 **Files.** `series.py`, `tests/test_series.py`.
 
@@ -728,6 +750,19 @@ machines if it falls back to dict ordering of hashes.
 
 #### C6 — multiplicity, corrected at render and said out loud
 
+> **AMENDED — read R17.1 before this section, and do not implement `changed` as
+> written below.** Holm **steps down**: once a test fails to reject, nothing
+> larger is rejected either, *regardless of its own threshold*. For every
+> candidate after the stop, `holm_bonferroni` returns the uncorrected `alpha` as
+> the threshold, so the rule `p_value >= holm_threshold` goes **vacuously
+> false** and the candidate silently drops out of `changed`. It misses the
+> largest sub-alpha p-value in every family — in the one set whose purpose is to
+> make the correction's effect visible. Correct rule: **`p_value < alpha and not
+> rejected`**, taking `rejected` from `holm_bonferroni`'s own return. Never
+> compare a p-value to the returned threshold to decide significance. **The
+> named first test below passes against the broken rule**; it needs a second
+> assertion.
+
 **Files.** `series.py`, `tests/test_series.py`.
 
 **Contract.**
@@ -799,6 +834,15 @@ the overclaim the spec exists to prevent.
 ---
 
 #### C7 — the trend and the parameter strip
+
+> **AMENDED — R15 replaces `trend`'s signature and return type. Read it first.**
+> `trend` no longer filters by a single `candidate_model` — filtering on the
+> field that moves is what made the change invisible. It takes a
+> **caller-declared `candidate_models` lineage** (never inferred: stripping a
+> version suffix is forbidden), partitions through C4's `partition_comparable`,
+> and returns a **`Trend` NamedTuple** (`points`, `successions`, `excluded`,
+> `undated`). `parameter_strip` below is **unchanged and needs no change** — it
+> was always able to show the model change and was prevented by its own caller.
 
 **Files.** `series.py`, `tests/test_series.py`.
 
@@ -1067,6 +1111,23 @@ stale, which is the reasoning already written at `report.py:645-650`.
 ### Phase 3 — the counterfactual
 
 #### C11 — the spot-check line, with its assumption stated
+
+> **AMENDED — read R14.1, R18.1, R18.2 and R18.3 before this section.** Four
+> corrections, one of which reverses this contract's own argument.
+> (1) The probability for the `88/8/0, k=12` row is **0.32877**, not `0.351`;
+> `0.351` is `(88/96) ** 12`, the with-replacement answer this contract's own
+> "Must not" forbids twelve lines below it.
+> (2) **The claim that counting unstable items as passing means "the tool never
+> inflates its own case" is FALSE.** Folding them into passing gives P=0.3288;
+> counting them as failures gives P=0.2106. Higher P means a blinder spot check,
+> which is a *stronger* argument for this harness. The rule is right for a
+> different reason — the tool does not claim regressions it has not established
+> — and its effect on the quoted number runs the other way. Say both.
+> (3) "Understates by roughly an order of magnitude" describes a different error
+> than the one committed; the with-replacement form **overstates, by 7%**.
+> (4) The sentence names how many items failed and ends "of such checks", and
+> **`N == k` returns `None`** — a draw taking every item is a census, not a spot
+> check.
 
 Read [§7.4](#74-the-counterfactual-line-is-not-a-power-calculation) before
 implementing. This chunk deliberately implements something narrower than the spec
@@ -2819,6 +2880,16 @@ require a rigor release and migkit pins `>=0.2,<0.3`.**
 ---
 
 ### C10 (restated) — wire the matrix into `ReportModel`, with six ways to be unavailable
+
+> **AMENDED — read R16 before this section. The call this contract prescribes
+> cannot be made.** `dimension_counts(records, items, *, judge)` needs the
+> records and the golden set at the same moment, and the golden set is named on
+> a record that arrives last. **That is the C10 blocker.** Use C21's two-phase
+> form instead: construct `DimensionTally()` with no golden set, `add(record)`
+> through the single streaming pass, then `counts(items, judge=judge)` once the
+> comparison record resolves it. The `__all__` quoted below is stale — it has
+> since gained `DimensionTally`. And `dimensions: DimensionMatrix` **replaces**
+> `ReportModel.dimension_counts`; it does not sit beside it.
 
 This replaces the C10 section at line 989 and the `### C10 (amended)` note after
 R9. Read R1, this, and nothing else in the plan.
