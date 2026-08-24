@@ -83,38 +83,66 @@ sight. **C14a exists to fix that** — see below.
 
 | Branch | Contains | State |
 |---|---|---|
-| `main` | C1-C3, C8, C9, C12, C13, C15, C19, C20, **C21**, R1-R16, tooling | 1607 passed |
-| `chunk/c14a-impl` | the two charts, the evidence made legible | **green on all seven gates**, review in flight |
-| `chunk/c4-impl` | comparability key and partition | **green**, 138 in `test_series.py`, review in flight |
-| `chunk/c11-impl` | the spot-check line | **green**, 120 in `test_series.py`, review in flight |
-| `chunk/c16-impl` | narrative adapters | 86/88, fix pass in flight (R16 note below) |
-| `chunk/c10-impl` / `c10-test` | matrix wired into `ReportModel` | written, **unblocked by C21**, needs redoing against R16 |
+| `main` | C1-C3, **C4**, C8, C9, **C11**, C12, C13, **C14a**, C15, C19, C20, **C21** (+fix), R1-R19 | all seven gates green |
+| `chunk/c5-impl` | the candidate field | **green, 269 tests**, review in flight |
+| `chunk/c7-impl` | the trend and the parameter strip | **green**, blind tester in flight |
+| `chunk/c16-impl` | narrative adapters | green at 88, fix pass in flight |
+| `chunk/c10-impl2` / `c10-test2` | the matrix wired into `ReportModel` | **dispatched** -- unblocked at last |
 
-Updated 2026-08-24. The three "review in flight" rows are the ones that matter:
-on this project a review has demanded changes three times out of three, so none
-of them is finished, and nothing that types their names may be dispatched yet.
+Updated 2026-08-24, main at `0b84d52`. The old `chunk/c10-impl` and
+`chunk/c10-test` branches are **dead**: they were written against a contract
+prescribing an impossible call and against a `dimensions.py` that C21 has since
+rewritten. Ignore them; `c10-impl2` / `c10-test2` are the live pair.
+
+**Merged and reviewed** means the blind pair ran, a reviewer mutation-tested it,
+and a fix pass acted on the review. Every chunk on `main` above has been through
+all four. **Seven of seven reviews found defects both other roles missed**, and
+three found defects in code that was already merged.
+
+### What the document renders today
+
+Measured on `main` at `0b84d52`, after C14a:
+
+| | before C14a | now |
+|---|---|---|
+| `<svg>` elements | 0 | **2** |
+| `id="timeline"` | no | **yes** |
+| `<pre>` blocks | 44 | **12** |
+| `<details>` open / closed | 0 / 4 | **3 / 1** |
+| absolute drive paths | 11 | **5** |
+| cells reading `0.000` | 4 | **0** |
+| the string `98.10` | 6 | **2** |
+| the word "dimension" | 0 | **0** |
+| the words "spot check" | 0 | **0** |
+
+The charts draw and all four reader-reported defects are gone, in a document
+that got *smaller* (25,901 to 24,564 bytes). The last two rows are the work that
+remains: **C10** puts the dimension matrix on the page and **C14's remaining
+seven elements** put C11's spot-check line there. Until those land, three merged
+chunks still contribute nothing a reader can see.
+
+Re-measure with the script pattern in `scratchpad/measure_report.py` and
+**export `PYTHONPATH` to the worktree's `src` first** -- a bare `migkit demo`
+renders the *main checkout's* code and will hand you the wrong numbers with no
+warning. That mistake was made here once already, and the render came back
+byte-identical to the before-state, which reads exactly like "the merge did
+nothing".
 
 ## Do these next, in this order
 
-1. **Land the four reviews in flight** — C14a, C4, C11, C21 — and act on them.
-   Merging any of these before its review is the mistake this project already
-   paid for once: C1's review renamed fields after C2 had started typing them,
-   nothing collided, and the work simply had to be redone.
-2. **C16's fix pass.** Its blind pair found that night 14 rotates the ordinary
-   failing items as well as collapsing the refusals, so `#classification` gets
-   *better* on the night whose story is the model getting worse. Ruled: freeze
-   night 14's ordinary failing set at night 13's. The strip claims an
-   attribution and the matrix must not contradict it.
-3. **C10** — unblocked. `DimensionTally`'s two-phase form is the answer and R16
-   spells it out. Do **not** dispatch before C21's review lands, because C10
-   types C21's names.
-4. **C5, C6, C7** — all consume C4's `ComparabilityKey` and `Exclusion`, and
-   R15 added C7's dependency on `partition_comparable`. All wait on C4's review.
-5. **C17** — owes `showcase.toml` and a showcase rubric. Note that
-   `demo_rubric.md` describes decline-based grading, which is *inverted* for the
-   16 summarisation items; a rubric that does not describe the primary-tag split
-   will be hashed into the provenance footer while not matching the judge.
-6. Then C14's remaining seven elements, C18.
+1. **Land the four in flight** -- C5's review, C7's pair, C16's fix, C10's pair.
+2. **C6** -- consumes C5's `CandidateField`, so it waits for C5's review to
+   clear. Producer beside consumer is the one thing width cannot buy. R17.1 is
+   the thing to read first: C6's rule for which candidates lost significance is
+   **not the Holm procedure**, and C6's own named first test passes against the
+   broken version.
+3. **C17** -- owes `showcase.toml` and `showcase_rubric.md`. Counted, not
+   guessed: the demo set's 4 reference-less items are all refusals, so the
+   shipped demo is fine; the showcase set's 32 split 16 refusal / 16
+   summarisation, so the demo's decline-based judge is right for half and
+   inverted for the other half. C16's judge also makes three claims
+   `demo_rubric.md` does not contain, one of which moves a published p-value.
+4. **C14's remaining seven elements**, then **C18**.
 
 ### The merge map, measured rather than guessed
 
