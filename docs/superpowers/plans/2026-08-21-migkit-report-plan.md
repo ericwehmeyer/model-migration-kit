@@ -5346,3 +5346,148 @@ C18's named first-failing test is **largely already passing**: clause 4 ("not by
 a real headline run appended to a seeded log") is C3's third `is_demo` disjunct,
 merged, and covered by two existing tests. A tester that reads a passing test as
 a gap will write around it. Say so in the brief.
+
+### R30 — C22b's contract, decided before dispatch
+
+C7's lineage follow-up is merged (2154 passing, seven gates green), which
+unblocks the half of C22 that R23.3 held back. R21.3 wrote C22's contract before
+three of its four producers had been reviewed, so it names the fields and leaves
+the joins open. Deciding them here rather than in the brief-writing is R28.1's
+standing check applied forwards: **every one of these was verified against the
+merged code, and the output is quoted.**
+
+#### R30.1 — the lineage `from_evidence` passes is *assumed*, on every report
+
+R21.5 said C22 "takes the lineage from config when present". Measured on `main`
+after the C7 merge:
+
+```
+$ grep -rn "candidate_models\|lineage" src/model_migration_kit/*.py \
+    | grep -v series.py
+(no output)
+```
+
+**Nothing outside `series.py` mentions a lineage at all.** No config schema
+carries one, `from_evidence` reads no config, and R21.3 forbids it starting.
+"When present" describes a path that does not exist and may not be built here.
+
+**Ruling: `CandidateLineage.assumed_from(...)`, unconditionally, and the caveat
+it raises is correct.** Every report rendered from today carries a note saying
+the succession was assumed rather than declared. That is not a defect to be
+tuned down before it ships and it is not a placeholder — it is the true sentence
+about every log this project can currently read, and R21.5 chose *render it and
+name the doubt* over *withhold it* precisely so this case would have a page.
+
+Stated for whoever meets it next, because the temptation is obvious and the fix
+is a one-liner: **a caveat that appears on every report is not thereby noise.**
+It becomes noise only when a declaration path exists and reports that use it
+still carry it. Suppressing it now would restore the silent default R21.5
+rejected, and would do it in the wiring, which R21.5 names as "the one shape of
+this defect nobody would find".
+
+#### R30.2 — `candidates` must become the *corrected* field
+
+`correct_field` returns `(CandidateField, Multiplicity)`, and the field is not
+the one that went in:
+
+> What the returned field carries instead is one :class:`Caveat` per candidate
+> in :attr:`Multiplicity.changed`, appended to :attr:`CandidateField.caveats`.
+
+**Ruling: `ReportModel.candidates` is `correct_field`'s field, not
+`candidate_field`'s.** Storing the `Multiplicity` while keeping the uncorrected
+field would leave those caveats computed and dropped — which is R21's finding
+exactly, reproduced inside the chunk written to fix R21. The caveat says a
+candidate's significance did not survive correction; there is no second place it
+is recorded, and `Multiplicity.changed` is a tuple of model ids, not prose.
+
+A merged test asserting `model.candidates == candidate_field(model.series)`
+would now be asserting the uncorrected shape. If one exists, it is wrong and
+says so under this ruling — **report it, do not weaken it silently.**
+
+#### R30.3 — the strip is fed from the line, never from the log
+
+`parameter_strip(previous, current)` takes two points and the contract never
+said which. `trend`'s own docstring settles it:
+
+> This used to filter by the field that moves, and that is what hid the change…
+> The strip was always able to show the change and was prevented by its own
+> caller.
+
+**Ruling: both points come from `Trend.points`** — `current = points[-1]`,
+`previous = points[-2]` when there is one and `None` when there is not. Never
+from `ReportModel.series`, whose order is the log's and whose membership is
+every experiment in it.
+
+Two consequences, both accepted:
+
+1. **`Trend.points[-1]` is the line's newest run, which is not always the
+   headline run.** If the headline was excluded from the line, the strip is not
+   about the banner — and that is right: the strip belongs to the timeline
+   section, where `Trend.excluded`, `outside_lineage` and `undated` already say
+   who is missing and why. A strip silently retargeted at the headline would
+   compare two runs the chart above it does not draw as consecutive.
+2. **The strip is gated on the trend, not on itself.** An empty strip tuple
+   means an empty line, and the reason is in `Trend`. A renderer that gates on
+   `parameter_strip` being non-empty publishes "no parameters tracked" over a
+   log that simply has no line yet.
+
+#### R30.4 — the shapes, the defaults, and the one field that mirrors another
+
+Decided together, because the pattern matters more than any of them:
+
+| Field | Type | Default | `None`/empty means |
+|---|---|---|---|
+| `trend` | `Trend` | empty `Trend` | never `None` — `trend()` has no `None` return |
+| `parameter_strip` | `tuple[ParameterChange, ...]` | `()` | the line is empty; see `trend` |
+| `multiplicity` | `Multiplicity \| None` | `None` | there is no candidate field to correct |
+
+**`baseline_model` comes from `ReportModel.baseline.model_id`, not from
+`series[-1].baseline_model`.** They are the same fact and the rule is R23.2's —
+exactly one source — so the tie is broken on which one is always there:
+`baseline` is read from the records and always present, `series` can be empty,
+and choosing it would need an empty-series special case that exists only to
+answer a question `baseline` already answers.
+
+**`multiplicity` is `None` exactly when `candidates` is `None`, and never
+otherwise.** The two are one fact — the multiplicity is *of* the field — and
+`correct_field` takes a `CandidateField`, not an optional one. A refusal
+`Multiplicity` invented for the no-field case would be this chunk composing a
+producer's prose, which R26.4 refused for `spot_check` and R21.5 refused for the
+lineage caveat. The renderer already has a sentence for `candidates is None`;
+a second one saying "and so nothing was corrected" can only ever agree with it
+or contradict it, and the second outcome is the one that ships.
+
+The defaults exist for `dimensions`' reason and no other: every existing
+`ReportModel` construction predates these fields. **A default is not a
+measurement** — the empty `Trend` default must not carry the assumed-lineage
+caveat, because a `ReportModel` nobody computed a trend for has not assumed
+anything.
+
+#### R30.5 — a point-less caveat is silently dropped one layer over
+
+Flagged by C7's implementer and confirmed. `Caveat.point` is now
+`RunPoint | None`, and `candidate_field` filters the partition's notes at
+`series.py:1231`:
+
+```python
+shown = {id(point) for point in rendered}
+...
+tuple(note for note in partition.caveats if id(note.point) in shown)
+```
+
+`id(None)` is in no `shown` set, so a point-less caveat reaching that filter
+**disappears without a trace**. It cannot reach it today: R21.5's note is minted
+in `trend` and lands on `Trend.caveats`, and `partition_comparable` mints
+nothing point-less. So this is a trap, not a bug.
+
+**Ruling, recorded now so it is not rediscovered from a missing sentence:** that
+filter's intent is *drop notes about points the reader cannot see*. A note about
+no point is not a note about a hidden point — it is a note about the field as a
+whole, and it must be **kept**. The condition is `note.point is None or
+id(note.point) in shown`.
+
+This is C5's code and C22b does not own it, so it is not in C22b's scope. It
+goes to whichever chunk next opens `candidate_field` — and until then, the rule
+that matters downstream is the one `Trend.caveats` already documents: **a
+renderer walking caveats into rows must ask before it indexes.** C14b's brief
+carries it.
