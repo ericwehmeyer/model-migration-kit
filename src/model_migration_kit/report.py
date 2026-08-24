@@ -172,6 +172,7 @@ from rich.table import Table
 from rich.text import Text
 
 from .contracts import EVENT_COMPARISON, EVENT_VERDICT, Verdict, hash_file, utc_now
+from .dimensions import DimensionCounts, DimensionTally
 from .errors import ArtifactError, GoldenSetError, ReportError
 from .evidence import resolve_evidence, stream_records
 from .goldenset import GoldenSet
@@ -822,6 +823,19 @@ class MethodologySection:
     body: tuple[str, ...]  # paragraphs, already substituted with real numbers
 
 
+#: What :attr:`ReportModel.dimension_counts` carries when nothing ever counted.
+#: Only :meth:`ReportModel.from_evidence` counts, so this is the sentence a model
+#: built by any other route hands whoever asks. It is a sentence rather than an
+#: empty mapping for the reason
+#: :class:`~model_migration_kit.dimensions.DimensionCounts` gives for the same
+#: choice, and it is deliberately not one of that module's refusals: those say why
+#: counting declined, and this says counting was never asked for.
+_NO_DIMENSION_COUNTS = (
+    "no dimension counts were taken for this report: ReportModel.from_evidence is "
+    "the only thing that takes them."
+)
+
+
 @dataclass(frozen=True)
 class ReportModel:
     """Everything the two renderers print, reconstructed from disk.
@@ -882,6 +896,25 @@ class ReportModel:
     #: the timeline can gain, lose or re-derive a field without the banner, the
     #: judge table, the flips or the provenance block moving with it.
     series: tuple[RunPoint, ...] = ()
+    #: How each tag in the golden set did, per model, under the panel's first
+    #: judge -- or the sentence saying why there is no such table. Never ``None``:
+    #: a report that has no counts says so in the same place as one that has them.
+    #:
+    #: Counted from the *headline* run and not from the whole log, which is the
+    #: opposite of :attr:`series` and is deliberate on both sides. The timeline is
+    #: about the history; this breaks the banner's number down by tag, so it has to
+    #: be about the banner's run. See
+    #: :meth:`~model_migration_kit.dimensions.DimensionTally.add`.
+    #:
+    #: Defaulted for the reason ``series`` is: every constructor of a
+    #: ``ReportModel`` in this codebase and in anyone else's predates the field, and
+    #: a required argument would break each one. The default is a refusal rather
+    #: than an empty mapping -- ``{}`` is not a sentence anyone can print.
+    dimension_counts: DimensionCounts = field(
+        default_factory=lambda: DimensionCounts(
+            available=False, reason=_NO_DIMENSION_COUNTS, by_model={}
+        )
+    )
 
     # -- construction ------------------------------------------------------- #
 
@@ -952,13 +985,27 @@ class ReportModel:
         # It is accumulated *beside* the three assignments below rather than in
         # place of them: nothing after this loop reads a point, so no later work
         # on the timeline can move which record the banner came from.
+        #
+        # The per-tag counting is accumulated in this loop for a harder reason
+        # than tidiness: it *cannot* be done anywhere else. A ``judge.verdict``
+        # carries no item id, so a verdict joins to a golden-set item by its input
+        # text -- and the golden set's path and hash live in the
+        # ``migkit.comparison`` payload, which is written after judging and is
+        # therefore one of the last records this loop sees. Reading the log again
+        # to do the join is the one-pass rule this comment block opens with;
+        # buffering the verdicts is the amplification ``evidence.py`` measured. So
+        # :class:`~model_migration_kit.dimensions.DimensionTally` splits the work:
+        # it files each verdict under a digest of its input on the way past, and
+        # the join happens below, once the comparison record has named the set.
         comparison = None
         verdict_record = None
         last = None
         builder = SeriesBuilder()
+        tally = DimensionTally()
         for record in _stream_records(path):
             last = record
             builder.add(record)
+            tally.add(record)
             # Last one wins, and a comparison clears the verdict beside it, so
             # these are one reduction over the log and not two independent
             # last-wins variables. Independent, they let a verdict written on an
@@ -1022,6 +1069,7 @@ class ReportModel:
                 )
 
         judges = tuple(_judge_row(one) for one in payload.get("judges", ()))
+        counts = _dimension_counts(tally, gs_view, judges[0].name if judges else "")
         rows = _ChangeContext(
             goldenset=gs_view,
             base_run=base_run,
@@ -1102,6 +1150,7 @@ class ReportModel:
             command=str(payload.get("command", "") or ""),
             artifact_dir="" if artifact_dir is None else str(artifact_dir),
             series=series,
+            dimension_counts=counts,
         )
 
     # -- derived ------------------------------------------------------------ #
@@ -1389,6 +1438,36 @@ def _load_goldenset(
         }
     )
     return view
+
+
+def _dimension_counts(
+    tally: DimensionTally, gs_view: Mapping[str, Any], judge: str
+) -> DimensionCounts:
+    """Close the tally against the golden set, or hand back the golden set's own words.
+
+    Nothing here opens a file and nothing here reads the log a second time: the
+    tally already holds everything the log had to say, in a form bounded by the
+    golden set rather than by the log.
+
+    **A golden-set refusal is quoted, never re-worded.** ``gs_view["reason"]``
+    already explains a missing, unreadable, unrecorded or changed golden set in the
+    words the completeness strip and the warnings list use. A second phrasing here
+    would be a second chance for one of them to go stale, which is the argument
+    :attr:`DetailBudget.sentence` makes for writing a disclosure once. The
+    counting's own refusals arrive the same way, from
+    :attr:`~model_migration_kit.dimensions.DimensionCounts.reason`.
+
+    ``judge`` is the panel's first judge, taken from the comparison payload. A
+    panel writes one verdict per judge per completion, so counting two would
+    multiply every denominator by the panel size. An empty name -- a comparison
+    that recorded no judges at all -- reaches the counter and comes back as its
+    "this judge wrote nothing" refusal, which is the true sentence.
+    """
+    if not gs_view["available"]:
+        return DimensionCounts(
+            available=False, reason=str(gs_view["reason"]), by_model={}
+        )
+    return tally.counts(gs_view["by_id"], judge=judge)
 
 
 def _load_side(
