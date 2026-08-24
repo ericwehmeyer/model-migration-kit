@@ -9251,8 +9251,21 @@ def test_the_spot_check_is_built_from_one_side_of_the_runs_item_counts(
     )
     side = found[0]
     counts = sides[side]
+    # `subject=check.subject` rather than a subject of our own: this assertion is
+    # about the counts and the arithmetic, as its own message says, and the
+    # subject is pinned by its own tests in `test_series.py`. Passing the model's
+    # subject back in isolates the question to "did anything between the counts
+    # and the model change the producer's answer".
+    #
+    # It is here because this test was written blind, against a `spot_check` that
+    # took no subject. C11's follow-up made one required while this branch was in
+    # flight -- so the call needed the new argument, and the intent it was written
+    # to protect is unchanged.
     assert check == spot_check(
-        counts["passing"], counts["failing"], counts["unstable"]
+        counts["passing"],
+        counts["failing"],
+        counts["unstable"],
+        subject=check.subject,
     ), (
         f"the spot check on the model is not the one `spot_check` returns for this "
         f"run's {side} side; something between the counts and the model changed the "
