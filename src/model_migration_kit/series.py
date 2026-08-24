@@ -68,6 +68,7 @@ __all__ = [
     "UNRECORDED",
     "Candidate",
     "CandidateField",
+    "CandidateLineage",
     "Caveat",
     "ComparabilityKey",
     "Exclusion",
@@ -593,9 +594,23 @@ class Caveat:
     with in silence, and it would share a page with ``spread_flagged`` and
     ``RunPoint.warnings`` -- three concepts and one word. ``Exclusion`` names an
     outcome, so its twin should too: removed, versus kept with a note.
+
+    **``point`` is ``None`` when the note is about the comparison as a whole**,
+    which R21.5's assumed-lineage note is and which every note C4 raises is not.
+    The widening is small and the alternative was worse: a claim about *how the
+    line was assembled* pinned to whichever run happened to anchor it renders as
+    a note about that run, and a reader would take a statement about the whole
+    chart for a measurement of one night. That is this document's central rule --
+    an absence must not render as a measurement -- reached from the rendering
+    side, and a field that can say "no one run" is what keeps it. The field stays
+    required and stays first, so no note loses its point by being built with an
+    argument forgotten; a note with no point is one written that way on purpose.
+    A renderer that walks caveats into rows must therefore ask, and print a
+    ``point``-less note where the line is described rather than where a night is.
     """
 
-    point: RunPoint
+    #: The run this note is about, or ``None`` when it is about the line itself.
+    point: RunPoint | None
     reason: str
 
 
@@ -2595,6 +2610,229 @@ def _percent(probability: float) -> str:
 # C7: the trend and the parameter strip
 # --------------------------------------------------------------------------- #
 
+#: How a caller came to hold a lineage, and there are exactly two ways. Either a
+#: person wrote the succession down somewhere it can be reviewed and versioned,
+#: or this module assembled one from the log under a stated policy. There is no
+#: third value and in particular no "partly declared": a declaration that names
+#: some of the ids is still a declaration, and the runs it leaves out are
+#: :attr:`Trend.outside_lineage`'s business (R24.1), not a shade of provenance.
+_LINEAGE_DECLARED = "declared"
+_LINEAGE_ASSUMED = "assumed"
+_LINEAGE_SOURCES = (_LINEAGE_DECLARED, _LINEAGE_ASSUMED)
+
+
+@dataclass(frozen=True)
+class CandidateLineage:
+    """Which candidate ids are one succession, and how the caller came to know.
+
+    **Two fields rather than a bare sequence of ids, for R26.4's reason applied
+    to R21.5's ruling.** R15.1 made the lineage caller-declared and forbade
+    inferring it, and R21.5 then ruled what happens when nobody declared one: the
+    ids are assumed from the log, *and ``Trend`` says out loud that they were
+    assumed.* Only the caller can know which of those two happened -- ``trend``
+    is handed a list of ids and cannot tell a config's declaration from a list
+    somebody built out of the very points it is about to draw. So the caller
+    supplies the fact and this module supplies the words. Exactly the split
+    :class:`SpotCheckSubject` makes, and made for the same reason: **plumbing
+    that quietly patches a producer's honesty is the one shape of this defect
+    nobody would find**, because no reviewer reads the wiring for claims about
+    the data.
+
+    **The two facts travel together because they must agree.** A ``bool`` beside
+    a ``Sequence[str]`` was the smaller change and it puts the two halves in two
+    parameters that can disagree without anything noticing -- a caller that
+    assembles ids from the log and passes ``declared=True`` gets a page missing
+    the one caveat this ruling exists to print, and nothing in the type system,
+    the tests or the rendered document would object. Here the honest pairing is
+    the only easy one: :meth:`assumed_from` is the sole place first-appearance
+    order is computed and it stamps its own provenance, so labelling an assumed
+    lineage as declared takes a deliberate lie rather than a slip.
+
+    **Assembly lives here, not in the caller, and that was a real choice.**
+    ``report.py`` could perfectly well have written the ``dict.fromkeys`` loop
+    itself. Three reasons it does not:
+
+    * **The policy must agree with ``trend``'s own selection, which is here.**
+      An assumed lineage assembled over the *whole* log would name candidates
+      that ran against some other baseline; ``trend`` does not select those, so
+      they would appear in neither :attr:`Trend.points` nor
+      :attr:`Trend.outside_lineage` nor :attr:`Trend.absent_models` -- a run in
+      the log and on no part of the page, which is precisely R24.1. A caller
+      reimplementing the loop cannot see that rule; the method sitting beside
+      ``trend`` shares it.
+    * **Two callers must not assume differently.** R15.4 wants one change said in
+      three places because each is silent in a different failure, and observes
+      that three renderings deriving one fact three ways is three chances to
+      derive three different facts. A lineage is that fact for the whole chart.
+    * **It is the one construction that cannot be mislabelled**, per the
+      paragraph above.
+
+    None of this is inference in R15.1's sense, and the distinction is the whole
+    of R21.5: nothing here reads the *shape* of an id. Stripping ``-v2`` to
+    decide it succeeds ``-v1`` stays forbidden. What :meth:`assumed_from` applies
+    is a policy -- *treat the candidates measured against one baseline as one
+    succession* -- which is a claim that can be wrong, and being wrong is why
+    ``trend`` prints it rather than keeping it.
+    """
+
+    #: The candidate ids on this line, in declaration order or first-appearance
+    #: order. Order carries no meaning to ``trend`` -- time comes from
+    #: ``created`` (R15.1) -- but it is reported back in
+    #: :attr:`Trend.absent_models`, so it is kept as the caller gave it.
+    models: tuple[str, ...]
+    #: ``"declared"`` or ``"assumed"``. Never guessed, and never defaulted:
+    #: see :func:`trend`.
+    source: str
+
+    def __post_init__(self) -> None:
+        """Refuse at construction what would otherwise be printed as a fact.
+
+        :class:`SpotCheckSubject`'s reason: a validating function leaves a
+        half-legal value in a variable for anything else to read, a validating
+        constructor does not. Three refusals, and the first is the one that has
+        already happened on this project -- C7's own keyword-only test exists
+        because ``trend(points, baseline, "gpt-candidate-v2")`` would otherwise
+        build a line from a model id's individual characters. ``tuple(models)``
+        of a ``str`` is that same bug with a nicer error message nobody sees.
+        """
+        if isinstance(self.models, str):
+            raise TypeError(
+                f"models is a sequence of candidate ids, not one id: got {self.models!r}. "
+                f"A single-candidate lineage is ({self.models!r},) -- passed as a bare "
+                "string it is a line built from the id's individual characters."
+            )
+        models = tuple(self.models)
+        if any(not isinstance(one, str) for one in models):
+            raise TypeError(
+                "models holds candidate ids, and one of these is not a string: "
+                f"{[type(one).__name__ for one in models]}. A lineage assembled from "
+                "RunPoints is CandidateLineage.assumed_from(points, baseline_model=...)."
+            )
+        object.__setattr__(self, "models", models)
+        if self.source not in _LINEAGE_SOURCES:
+            raise ValueError(
+                "source must be one of "
+                + " or ".join(repr(one) for one in _LINEAGE_SOURCES)
+                + f", got {self.source!r}. It is how the caller came to hold this "
+                "lineage, which only the caller knows, so trend must be told and "
+                "cannot be left to decide (R21.5)."
+            )
+        if self.source == _LINEAGE_DECLARED and not models:
+            raise ValueError(
+                "a declared lineage names at least one candidate id. An empty "
+                "declaration is a config that declared nothing, which is the case "
+                "R21.5 rules is assumed and said out loud: build it with "
+                "CandidateLineage.assumed_from(points, baseline_model=...)."
+            )
+
+    @classmethod
+    def declared(cls, models: Sequence[str]) -> CandidateLineage:
+        """The succession a config states, taken at its word.
+
+        The ids are kept exactly as declared, duplicates and all: this is the
+        operator's sentence and :attr:`Trend.absent_models` reports against it.
+        Where this is used, :func:`trend` raises no caveat about the lineage --
+        the declaration is the review path, and R21.5's caveat exists to mark its
+        absence, not to second-guess its content.
+
+        ``models`` is handed over uncoerced on purpose: ``tuple`` of a bare
+        ``str`` is that string's characters, so converting here would turn one
+        model id into a fourteen-member lineage before ``__post_init__`` ever saw
+        a string to refuse. One place decides what a lineage is made of, and it
+        is the constructor every path goes through.
+        """
+        return cls(models=models, source=_LINEAGE_DECLARED)  # type: ignore[arg-type]
+
+    @classmethod
+    def assumed_from(
+        cls, points: Sequence[RunPoint], *, baseline_model: str
+    ) -> CandidateLineage:
+        """Every distinct candidate on this baseline, in first-appearance order.
+
+        R21.5's part 2, and the order is the order the log was read in -- which
+        is `read_series`' order, and is a fact about the file rather than about
+        the ids. Nothing here parses an id, ranks a version or sorts.
+
+        **Restricted to ``baseline_model``, which the ruling's "in the series"
+        leaves open and ``trend``'s selection settles.** Assume across the whole
+        log and a candidate that only ever ran against another baseline joins
+        this lineage; ``trend`` then does not select it, and it lands in none of
+        the seven fields of :class:`Trend` -- the R24.1 defect, rebuilt by the
+        fix for a different one. Restricted this way the assumption covers
+        exactly what ``trend`` would draw, so :attr:`Trend.outside_lineage` and
+        :attr:`Trend.absent_models` come back empty for the honest reason that
+        there is nothing outside the assumption and nothing declared that never
+        ran -- not because the fields stopped working.
+
+        **A run whose ``candidate_model`` is unrecorded is not a candidate id
+        and does not enter the lineage.** ``""`` is an absence, and two runs that
+        both recorded nothing are not thereby the same model -- C4's rule that an
+        unrecorded value never matches, not even another unrecorded one, decided
+        this everywhere else in the module and decides it here. Admitting it
+        would draw a :class:`Succession` from ``""`` to a real id, which is an
+        assertion that the model changed made out of a field nobody wrote. Left
+        out, those runs come back in :attr:`Trend.outside_lineage` and the reader
+        is told the line does not cover them. ``.strip()`` through
+        :func:`_recorded`, because a padded field recorded nothing either.
+        """
+        return cls(
+            models=tuple(
+                dict.fromkeys(
+                    point.candidate_model
+                    for point in points
+                    if point.baseline_model == baseline_model
+                    and _recorded(point.candidate_model)
+                )
+            ),
+            source=_LINEAGE_ASSUMED,
+        )
+
+    @property
+    def is_assumed(self) -> bool:
+        """Whether :func:`trend` owes the reader R21.5's caveat for this lineage."""
+        return self.source == _LINEAGE_ASSUMED
+
+
+def _assumed_lineage(models: tuple[str, ...]) -> str:
+    """R21.5's caveat, in the words :func:`trend` owes for an assumed succession.
+
+    Composed here rather than by whoever renders it, and that is the ruling
+    rather than a preference: R21.5 forbids the wiring inventing this sentence
+    and R26.4 refused the same shape a second time for ``spot_check``. If
+    plumbing may write a producer's prose once, nothing downstream is obliged to
+    say it the same way twice.
+
+    It names the ids, on :class:`Exclusion`'s rule that a reason names the field
+    *and both values* -- "the succession was assumed" is a verdict, and the
+    reader needed the evidence. The ``flagged:`` opening is C4's, so a page that
+    already prints caveats prints this one without a second vocabulary for the
+    same idea.
+    """
+    if not models:
+        return (
+            "flagged: no candidate lineage was declared, and this baseline recorded "
+            "no candidate the log could name, so there is no succession here -- "
+            "neither a declared one nor an assumed one. An empty line and a line "
+            "nobody declared are different pages; this is both."
+        )
+    if len(models) == 1:
+        return (
+            f"flagged: no candidate lineage was declared, so {models[0]} -- the one "
+            "candidate this baseline recorded -- was assumed from the log to be the "
+            "whole succession. Nothing states what should have run: a candidate that "
+            "has not run yet, or ran against another baseline, cannot be reported "
+            "missing from a lineage nobody wrote down."
+        )
+    return (
+        "flagged: no candidate lineage was declared, so the "
+        f"{len(models)} candidates this baseline recorded -- "
+        + ", then ".join(models)
+        + " -- were assumed from the log to be one succession, in the order they "
+        "first appear in it. That is a policy and not a reading of the ids: two "
+        "unrelated candidates measured into one log are drawn here as one line, "
+        "and only a declaration in config tells them apart."
+    )
+
 
 class Succession(NamedTuple):
     """One model id giving way to the next, *inside* a single line.
@@ -2671,7 +2909,10 @@ class Trend(NamedTuple):
     undated: int
     #: Notes on points that were **kept**, not reasons for removing any -- C4's
     #: type again, and one point may carry more than one. Unfiltered: see
-    #: :func:`trend`.
+    #: :func:`trend`. **The first may be about the line rather than a point**: an
+    #: assumed lineage is disclosed here (R21.5) and carries ``point=None``,
+    #: because the succession is a property of the whole chart and pinning it to
+    #: one night would read as a note about that night.
     caveats: tuple[Caveat, ...]
     #: Runs on **this baseline** whose ``candidate_model`` the operator did not
     #: declare, in log order. Deliberately not an :class:`Exclusion` and
@@ -2696,9 +2937,9 @@ def trend(
     points: Sequence[RunPoint],
     *,
     baseline_model: str,
-    candidate_models: Sequence[str],
+    lineage: CandidateLineage,
 ) -> Trend:
-    """The one line for a declared candidate lineage, and what it left out.
+    """The one line for a candidate lineage, and what it left out.
 
     Args:
         points: Every point in the log, in the order it was read.
@@ -2708,9 +2949,12 @@ def trend(
             :attr:`Trend.outside_lineage` either, and putting it in
             :attr:`Trend.excluded` would bury the exclusions that matter under
             every other experiment in the log.
-        candidate_models: **Declared by the caller, never inferred.** Every id
-            the operator asserts is the same candidate over time. Order here
-            carries no meaning; time comes from ``created``.
+        lineage: **Supplied by the caller, never inferred.** The ids the operator
+            asserts are one candidate over time, *and* whether anyone actually
+            asserted them -- see :class:`CandidateLineage`. Required, keyword-only
+            and with no default, on :func:`spot_check`'s rule: a default would be
+            this function deciding the very fact R21.5 says only the caller holds.
+            Order carries no meaning; time comes from ``created``.
 
     **The lineage is a fact about the world, and no log records it.** Stripping a
     trailing ``-v2`` to decide it succeeds ``-v1`` is the obvious implementation
@@ -2719,6 +2963,41 @@ def trend(
     ``_require_comparable`` exists to prevent, reached from a new direction. The
     operator knows the lineage; the operator says so. Nothing here parses a model
     id.
+
+    **When nobody said so, the line is still drawn and the assumption is
+    printed.** R21.5: absent a declaration the ids are assumed from the log, and
+    :attr:`Trend.caveats` carries a note saying the succession was assumed and
+    not declared. Three things about that, each of which was ruled rather than
+    chosen here:
+
+    * **This function does not decide which case it is in.** It cannot: a
+      ``Sequence[str]`` from a config and a ``Sequence[str]`` somebody built out
+      of these very points are the same object. :class:`CandidateLineage` carries
+      the fact, and a lineage that is not one is a ``TypeError`` at the call site
+      rather than a silently declared-by-default line. The rejected defaults are
+      worth naming, because both are one line of code: defaulting to *declared*
+      claims a review path that does not exist, and defaulting to *assumed*
+      prints a false caveat over a config that did the right thing.
+    * **The caveat is raised here and nowhere downstream.** R21.5 forbids the
+      wiring inventing it -- "plumbing that quietly patches a producer's honesty
+      is the one shape of this defect nobody would find" -- and R26.4 refused the
+      same shape again for ``spot_check``'s sentence. If plumbing may compose a
+      producer's prose once, the rule is gone.
+    * **It is raised whether or not there is a line to qualify.** The note is
+      about the *lineage*, which exists (or was never written) independently of
+      whether any run matched it, so it survives the empty early return below. A
+      log with nothing in it and a log nobody declared a succession for are two
+      different pages, and the second is the commoner one.
+
+    It goes **first** in :attr:`Trend.caveats`, ahead of the partition's
+    per-point notes, and it is the one entry there with no ``point``: it
+    qualifies the chart, not a night. A renderer walking caveats into rows must
+    ask before it indexes.
+
+    **Rejected, and not to be reopened** (R21.5): defaulting an undeclared
+    lineage to the headline candidate alone -- it rebuilds the exact defect R15
+    removed, since filtering on the field that moves is what made the change
+    invisible -- and inferring the succession from the shape of the ids.
 
     **This used to filter by the field that moves, and that is what hid the
     change.** With ``candidate_model`` in the filter, night 14 under ``-b-v2``
@@ -2781,23 +3060,41 @@ def trend(
     Nothing is de-duplicated, here or anywhere else in this module: two identical
     runs are two runs.
     """
-    lineage = frozenset(candidate_models)
+    if not isinstance(lineage, CandidateLineage):
+        raise TypeError(
+            "lineage must be a CandidateLineage saying which candidate ids are one "
+            "succession and where that succession came from, got "
+            f"{type(lineage).__name__}. Build it with CandidateLineage.declared(...) "
+            "where a config declares it and CandidateLineage.assumed_from(...) where "
+            "nothing does: a bare sequence of ids cannot say which, and R21.5 rules "
+            "that trend must not decide."
+        )
+    declared = frozenset(lineage.models)
     mine: list[RunPoint] = []
     strangers: list[RunPoint] = []
     for point in points:
         if point.baseline_model != baseline_model:
             continue
-        (mine if point.candidate_model in lineage else strangers).append(point)
+        (mine if point.candidate_model in declared else strangers).append(point)
     outside_lineage = tuple(strangers)
     # Over the whole log and not over `mine`: "no run at all" is the claim, and a
     # declared id that ran only against some other baseline has run. `dict` and
     # not a `set` so the declaration's own order survives into the report.
     logged = {point.candidate_model for point in points}
-    absent_models = tuple(dict.fromkeys(id_ for id_ in candidate_models if id_ not in logged))
+    absent_models = tuple(dict.fromkeys(id_ for id_ in lineage.models if id_ not in logged))
+    # Built before either return, because both owe it. The early return below is
+    # the path a wholly undeclared log takes, which is the commonest way to reach
+    # an assumed lineage in the first place -- disclosing it only on the path that
+    # draws a line would lose it exactly where there is least else to read.
+    assumed = (
+        (Caveat(point=None, reason=_assumed_lineage(lineage.models)),)
+        if lineage.is_assumed
+        else ()
+    )
 
     anchor = _anchor(mine)
     if anchor is None:
-        return Trend((), (), (), 0, (), outside_lineage, absent_models)
+        return Trend((), (), (), 0, assumed, outside_lineage, absent_models)
 
     kept, excluded, caveats = partition_comparable(mine, against=comparability_key(anchor))
     dated = [
@@ -2813,7 +3110,7 @@ def trend(
         _successions(ordered),
         excluded,
         len(kept) - len(dated),
-        caveats,
+        assumed + caveats,
         outside_lineage,
         absent_models,
     )

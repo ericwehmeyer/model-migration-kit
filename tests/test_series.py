@@ -4990,6 +4990,24 @@ _LINEAGE_V1 = "synthetic-candidate-b-v1"
 _LINEAGE_V2 = "synthetic-candidate-b-v2"
 _LINEAGE = (_LINEAGE_V1, _LINEAGE_V2)
 
+
+def _declared(*models: str) -> series.CandidateLineage:
+    """The two ids above, declared by the operator, as R21.5's follow-up requires.
+
+    Every test in this section that was written before R21.5 was implemented passed
+    `lineage=_declared()` -- a bare sequence, which says which ids are one
+    line and cannot say whether anybody wrote them down. `trend` now takes a
+    `CandidateLineage` carrying both facts, so each of those call sites declares
+    the same ids and asserts the same behaviour: **a declared lineage raises no
+    caveat about itself**, which is what every `line.caveats == ()` below already
+    said and now also pins. The assumed half is tested in its own section.
+
+    A helper rather than a module constant so the ids stay written at the call
+    sites that vary them, and so `series.CandidateLineage` is resolved when the
+    test runs rather than at import.
+    """
+    return series.CandidateLineage.declared(models or _LINEAGE)
+
 #: The baseline every point in this section was measured from -- `_comparison`'s
 #: own, so that `_point()` needs no override to belong to the line.
 _BASELINE = "gpt-baseline-v1"
@@ -5411,7 +5429,7 @@ def test_fourteen_nights_across_two_declared_model_ids_are_one_line_with_one_vis
     of the first run under the new id, and -- fed back through the strip that needed
     no change at all -- exactly one `changed=True` row across the whole fortnight,
     which is `model_id`."""
-    line = series.trend(_fourteen_nights(), baseline_model=_BASELINE, candidate_models=_LINEAGE)
+    line = series.trend(_fourteen_nights(), baseline_model=_BASELINE, lineage=_declared())
 
     assert len(line.points) == 14
     assert [point.created for point in line.points] == list(_FOURTEEN_NIGHTS)
@@ -5455,7 +5473,7 @@ def test_a_lineage_is_never_inferred_by_stripping_a_version_suffix():
     suffix, so an implementation that normalised them would pass every other test in
     this section."""
     line = series.trend(
-        _fourteen_nights(), baseline_model=_BASELINE, candidate_models=(_LINEAGE_V1,)
+        _fourteen_nights(), baseline_model=_BASELINE, lineage=_declared(_LINEAGE_V1,)
     )
     assert len(line.points) == 13
     assert [point.candidate_model for point in line.points] == [_LINEAGE_V1] * 13
@@ -5478,7 +5496,7 @@ def test_a_single_element_lineage_reproduces_the_old_single_candidate_behaviour(
         _night(2, "gpt-candidate-v9"),
         _night(4, _LINEAGE_V1),
     ]
-    line = series.trend(nights, baseline_model=_BASELINE, candidate_models=(_LINEAGE_V1,))
+    line = series.trend(nights, baseline_model=_BASELINE, lineage=_declared(_LINEAGE_V1,))
     assert [point.created for point in line.points] == [
         "2026-08-01T22:40:58+00:00",
         "2026-08-04T22:40:58+00:00",
@@ -5504,7 +5522,7 @@ def test_a_run_of_a_candidate_outside_the_declared_lineage_is_not_on_the_line():
     line = series.trend(
         [_night(1, _LINEAGE_V1), stranger, _night(3, _LINEAGE_V2)],
         baseline_model=_BASELINE,
-        candidate_models=_LINEAGE,
+        lineage=_declared(),
     )
     assert stranger not in line.points
     assert [point.candidate_model for point in line.points] == [_LINEAGE_V1, _LINEAGE_V2]
@@ -5537,7 +5555,7 @@ def test_a_run_measured_from_a_different_baseline_is_not_on_the_line():
     line = series.trend(
         [_night(1, _LINEAGE_V1), rebased, _night(3, _LINEAGE_V2)],
         baseline_model=_BASELINE,
-        candidate_models=_LINEAGE,
+        lineage=_declared(),
     )
     assert rebased not in line.points
     assert [point.created for point in line.points] == [
@@ -5582,7 +5600,7 @@ def test_a_lineage_declared_one_character_wrong_still_reports_the_night_it_misse
     line = series.trend(
         _fourteen_nights()[:13] + [night_14],
         baseline_model=_BASELINE,
-        candidate_models=(_LINEAGE_V1, typo),
+        lineage=_declared(_LINEAGE_V1, typo),
     )
     assert len(line.points) == 13
     assert line.excluded == ()
@@ -5606,7 +5624,7 @@ def test_a_lineage_declared_entirely_wrong_is_a_page_that_says_so_and_not_an_emp
     "No runs" and "fourteen runs, none of them declared" must not look the same."""
     nights = _fourteen_nights()
     line = series.trend(
-        nights, baseline_model=_BASELINE, candidate_models=("synthetic-candidate-c-v1",)
+        nights, baseline_model=_BASELINE, lineage=_declared("synthetic-candidate-c-v1",)
     )
     assert line.points == ()
     assert line.successions == ()
@@ -5631,7 +5649,7 @@ def test_a_declared_model_that_ran_only_against_another_baseline_is_not_called_a
     line = series.trend(
         [_night(1, _LINEAGE_V1), elsewhere],
         baseline_model=_BASELINE,
-        candidate_models=_LINEAGE,
+        lineage=_declared(),
     )
     assert [point.candidate_model for point in line.points] == [_LINEAGE_V1]
     assert line.absent_models == ()
@@ -5640,12 +5658,12 @@ def test_a_declared_model_that_ran_only_against_another_baseline_is_not_called_a
 
 
 def test_the_models_that_never_ran_are_listed_in_the_order_they_were_declared_and_once_each():
-    """R15.1 says order within `candidate_models` carries no meaning, which is a
+    """R15.1 says order within the declared lineage carries no meaning, which is a
     statement about the *input* and not a licence for the output to be arbitrary.
     Two renders of one log must produce one page, so the report is the declaration's
     own order -- and an id declared twice is one absence, not two."""
     line = series.trend(
-        [], baseline_model=_BASELINE, candidate_models=(_LINEAGE_V2, _LINEAGE_V1, _LINEAGE_V2)
+        [], baseline_model=_BASELINE, lineage=_declared(_LINEAGE_V2, _LINEAGE_V1, _LINEAGE_V2)
     )
     assert line.absent_models == (_LINEAGE_V2, _LINEAGE_V1)
 
@@ -5660,7 +5678,7 @@ def test_the_undeclared_runs_come_out_in_log_order_and_are_the_points_themselves
     line = series.trend(
         [first, _night(2, _LINEAGE_V1), second],
         baseline_model=_BASELINE,
-        candidate_models=_LINEAGE,
+        lineage=_declared(),
     )
     assert line.outside_lineage == (first, second)
     assert all(isinstance(point, RunPoint) for point in line.outside_lineage)
@@ -5694,7 +5712,7 @@ def test_a_lineage_member_that_is_not_comparable_is_excluded_rather_than_drawn(c
     line = series.trend(
         [_night(1, _LINEAGE_V1), odd, _night(3, _LINEAGE_V1), _night(4, _LINEAGE_V2)],
         baseline_model=_BASELINE,
-        candidate_models=_LINEAGE,
+        lineage=_declared(),
     )
     assert odd not in line.points
     assert [point.created for point in line.points] == [
@@ -5725,7 +5743,7 @@ def test_a_night_the_partition_kept_with_a_note_is_drawn_and_carries_the_note_ou
     line = series.trend(
         [_night(1, _LINEAGE_V1), lopsided, _night(3, _LINEAGE_V2)],
         baseline_model=_BASELINE,
-        candidate_models=_LINEAGE,
+        lineage=_declared(),
     )
     assert [point.created for point in line.points] == [
         "2026-08-01T22:40:58+00:00",
@@ -5749,7 +5767,7 @@ def test_the_a_a_calibration_run_is_drawn_and_named_rather_than_drawn_silently()
     line = series.trend(
         [calibration, _night(2, _LINEAGE_V1)],
         baseline_model=_BASELINE,
-        candidate_models=(_BASELINE, _LINEAGE_V1),
+        lineage=_declared(_BASELINE, _LINEAGE_V1),
     )
     assert calibration in line.points
     assert [caveat.point.created for caveat in line.caveats] == ["2026-08-01T22:40:58+00:00"]
@@ -5772,7 +5790,7 @@ def test_points_whose_created_will_not_parse_are_counted_in_undated_and_left_off
             _night(2, _LINEAGE_V2),
         ],
         baseline_model=_BASELINE,
-        candidate_models=_LINEAGE,
+        lineage=_declared(),
     )
     assert line.undated == 2
     assert [point.created for point in line.points] == [
@@ -5798,7 +5816,7 @@ def test_one_night_lost_to_a_bad_timestamp_is_counted_once_even_beside_a_refused
     line = series.trend(
         [_night(1, _LINEAGE_V1), refused, unplaceable, _night(3, _LINEAGE_V2)],
         baseline_model=_BASELINE,
-        candidate_models=_LINEAGE,
+        lineage=_declared(),
     )
     assert [point.created for point in line.points] == [
         "2026-08-01T22:40:58+00:00",
@@ -5832,7 +5850,7 @@ def test_a_caveat_on_a_night_no_axis_could_place_is_the_only_trace_of_it_and_sur
     line = series.trend(
         [_night(1, _LINEAGE_V1), unplaceable, _night(2, _LINEAGE_V2)],
         baseline_model=_BASELINE,
-        candidate_models=_LINEAGE,
+        lineage=_declared(),
     )
     assert unplaceable not in line.points
     assert line.undated == 1
@@ -5858,7 +5876,7 @@ def test_a_succession_is_read_off_the_sorted_line_and_not_off_the_order_the_log_
     line = series.trend(
         [_night(3, _LINEAGE_V2), _night(1, _LINEAGE_V1), _night(2, _LINEAGE_V1)],
         baseline_model=_BASELINE,
-        candidate_models=_LINEAGE,
+        lineage=_declared(),
     )
     assert [point.created for point in line.points] == [
         "2026-08-01T22:40:58+00:00",
@@ -5904,7 +5922,7 @@ def test_a_newcomer_that_changed_the_golden_set_does_not_evict_the_line_it_joine
     line = series.trend(
         [_night(1, _LINEAGE_V1), _night(2, _LINEAGE_V1), _night(3, _LINEAGE_V1), newcomer],
         baseline_model=_BASELINE,
-        candidate_models=_LINEAGE,
+        lineage=_declared(),
     )
     assert [point.created for point in line.points] == [
         "2026-08-01T22:40:58+00:00",
@@ -5933,7 +5951,7 @@ def test_a_first_night_that_recorded_no_golden_set_hash_is_excluded_alone():
     line = series.trend(
         [silent, _night(2, _LINEAGE_V1), _night(3, _LINEAGE_V1), _night(4, _LINEAGE_V2)],
         baseline_model=_BASELINE,
-        candidate_models=_LINEAGE,
+        lineage=_declared(),
     )
     assert [point.created for point in line.points] == [
         "2026-08-02T22:40:58+00:00",
@@ -5964,7 +5982,7 @@ def test_a_run_with_no_timestamp_never_defines_the_axis_for_the_runs_that_have_o
     line = series.trend(
         [_night(1, _LINEAGE_V1), _night(2, _LINEAGE_V1), _night(3, _LINEAGE_V2), unplaceable],
         baseline_model=_BASELINE,
-        candidate_models=_LINEAGE,
+        lineage=_declared(),
     )
     assert [point.created for point in line.points] == [
         "2026-08-01T22:40:58+00:00",
@@ -5991,7 +6009,7 @@ def test_which_run_anchors_does_not_depend_on_the_order_read_series_returned_the
     drawn = "2026-08-01T22:40:58+00:00", "2026-08-03T22:40:58+00:00"
 
     for order in ([odd, log[0], log[2]], log, [log[2], log[0], odd]):
-        line = series.trend(order, baseline_model=_BASELINE, candidate_models=_LINEAGE)
+        line = series.trend(order, baseline_model=_BASELINE, lineage=_declared())
         assert tuple(point.created for point in line.points) == drawn, (
             f"the line was built from whichever run happened to be read first: {order}"
         )
@@ -6013,7 +6031,7 @@ def test_the_line_is_sorted_by_the_parsed_instant_and_not_by_the_recorded_string
             _point(created="2026-08-10T02:00:00+05:00", candidate_model=_LINEAGE_V1),
         ],
         baseline_model=_BASELINE,
-        candidate_models=_LINEAGE,
+        lineage=_declared(),
     )
     assert [point.created for point in line.points] == [
         "2026-08-10T02:00:00+05:00",
@@ -6034,7 +6052,7 @@ def test_two_points_recorded_at_the_identical_instant_keep_the_order_they_arrive
             _point(created=same, candidate_model=_LINEAGE_V1, reason="second"),
         ],
         baseline_model=_BASELINE,
-        candidate_models=_LINEAGE,
+        lineage=_declared(),
     )
     assert [point.reason for point in forwards.points] == ["first", "second"]
 
@@ -6044,7 +6062,7 @@ def test_two_points_recorded_at_the_identical_instant_keep_the_order_they_arrive
             _point(created=same, candidate_model=_LINEAGE_V1, reason="first"),
         ],
         baseline_model=_BASELINE,
-        candidate_models=_LINEAGE,
+        lineage=_declared(),
     )
     assert [point.reason for point in backwards.points] == ["second", "first"]
 
@@ -6060,7 +6078,7 @@ def test_an_empty_log_is_an_empty_trend_and_never_an_error():
     than assuming it. What an empty log is *not* is empty in `absent_models` --
     two ids were declared and neither has ever run, which is a fact about the
     declaration and the one the operator can act on."""
-    empty = series.trend([], baseline_model=_BASELINE, candidate_models=_LINEAGE)
+    empty = series.trend([], baseline_model=_BASELINE, lineage=_declared())
     assert isinstance(empty, tuple)
     assert len(empty) == 7
     assert empty[:5] == ((), (), (), 0, ())
@@ -6150,6 +6168,7 @@ def test_the_new_names_are_exported_so_the_rendering_chunks_can_reach_them():
     not cover them by design and this does."""
     for name in (
         "NO_PREVIOUS_RUN",
+        "CandidateLineage",
         "ParameterChange",
         "Succession",
         "Trend",
@@ -6160,6 +6179,425 @@ def test_the_new_names_are_exported_so_the_rendering_chunks_can_reach_them():
         assert name in series.__all__, f"{name} is not exported"
     assert not hasattr(series, "_NO_PREVIOUS_RUN"), "the private spelling outlived the rename"
     assert not hasattr(series, "_UNRECORDED"), "the private spelling outlived the rename"
+
+
+# ----------------------------------------------------------------------------------
+# R21.5: the lineage is declared where a config declares it, and assumed out loud
+# otherwise
+# ----------------------------------------------------------------------------------
+#
+# R15.1 made the lineage caller-declared and forbade inferring it. R21.5 closed the
+# question R15 left open -- where the caller gets one when nothing declares it --
+# and ruled: assume every distinct candidate in the log, in first-appearance order,
+# and have `Trend` say that the succession was assumed and not declared. Two things
+# were rejected explicitly and are asserted against below: defaulting to the
+# headline candidate alone, which rebuilds the defect R15 removed, and reading the
+# lineage off the shape of the ids, which R15.1 forbids outright.
+#
+# The shape is R26.4's, one chunk earlier: **the caller supplies facts and the
+# producer supplies prose.** `trend` cannot know whether its caller read the
+# lineage out of a config or built it out of the very points it is about to draw --
+# both arrive as a sequence of strings -- so the caller says which, and the words
+# are written here beside the number they qualify.
+
+
+def test_a_lineage_nobody_declared_is_assumed_from_the_log_and_the_page_says_so():
+    """**The test that carries this follow-up.** R21.5 part 2: absent a declaration
+    the lineage is every distinct candidate in first-appearance order, and `Trend`
+    carries a caveat recording that the succession was *assumed from the log and not
+    declared*.
+
+    The fourteen nights are drawn exactly as they are under a declaration -- the
+    ruling chose "render it and name the doubt" over "withhold it", as C7's own
+    first-run marker and C4's exclusions both chose before it -- so the assertion
+    that matters is the difference between the two pages, and the difference is one
+    caveat. Without it an assumed lineage and a declared one are indistinguishable,
+    and R15.1 observed that a wrongly-declared lineage is "precisely the case where
+    a reader most needs to notice"."""
+    nights = _fourteen_nights()
+    assumed = series.CandidateLineage.assumed_from(nights, baseline_model=_BASELINE)
+    assert assumed.models == _LINEAGE
+    assert assumed.source == "assumed"
+    assert assumed.is_assumed
+
+    line = series.trend(nights, baseline_model=_BASELINE, lineage=assumed)
+    assert len(line.points) == 14
+    assert len(line.successions) == 1
+    assert line.successions[0].index == 13
+    assert line.outside_lineage == ()
+    assert line.absent_models == ()
+
+    assert len(line.caveats) == 1
+    note = line.caveats[0]
+    assert note.point is None, (
+        "a claim about how the whole line was assembled is pinned to one night, "
+        "where it reads as a note about that night"
+    )
+    reason = note.reason.lower()
+    assert "assumed" in reason and "declared" in reason, (
+        "the caveat does not record that the succession was assumed and not declared"
+    )
+    assert _LINEAGE_V1 in note.reason and _LINEAGE_V2 in note.reason, (
+        "the caveat does not name the ids it joined, so a reader cannot check it"
+    )
+
+
+def test_a_declared_lineage_says_nothing_about_itself_and_that_is_the_whole_difference():
+    """R21.5 part 1: where a config declares the succession there is a review path
+    and a provenance trail, so `Trend` raises no caveat about it.
+
+    The other half of the pair above, and it has to be its own test: an
+    implementation that raises the caveat unconditionally passes every assertion in
+    this file that does not compare the two, and it turns the one signal this
+    ruling adds into decoration on every page. Fourteen identical nights, one
+    declared and one assumed, and the *only* difference is the caveat."""
+    nights = _fourteen_nights()
+    declared = series.trend(nights, baseline_model=_BASELINE, lineage=_declared())
+    assumed = series.trend(
+        nights,
+        baseline_model=_BASELINE,
+        lineage=series.CandidateLineage.assumed_from(nights, baseline_model=_BASELINE),
+    )
+    assert declared.caveats == ()
+    assert len(assumed.caveats) == 1
+    assert declared[:4] == assumed[:4]
+    assert declared.outside_lineage == assumed.outside_lineage
+    assert declared.absent_models == assumed.absent_models
+
+
+def test_a_log_with_one_candidate_is_still_an_assumption_and_still_says_so():
+    """A single-candidate log is where the caveat looks least necessary and is
+    still owed. Nothing joined, so an implementation that discloses only when it
+    joined two ids would pass every other assertion here -- and the reader would
+    lose the one thing that page cannot otherwise say: **nobody wrote down what
+    should have run.** `absent_models` is empty under an assumption by
+    construction, so a candidate that has not run yet cannot be reported missing,
+    and only this sentence tells a reader that the silence is unexamined."""
+    nights = [_night(1, _LINEAGE_V1), _night(2, _LINEAGE_V1)]
+    assumed = series.CandidateLineage.assumed_from(nights, baseline_model=_BASELINE)
+    assert assumed.models == (_LINEAGE_V1,)
+
+    line = series.trend(nights, baseline_model=_BASELINE, lineage=assumed)
+    assert len(line.points) == 2
+    assert line.successions == ()
+    assert len(line.caveats) == 1
+    assert line.caveats[0].point is None
+    assert _LINEAGE_V1 in line.caveats[0].reason
+
+
+def test_the_assumed_order_is_the_order_the_ids_first_appear_and_not_any_other_order():
+    """"In first-appearance order" is the ruling's phrase and it names the *log*'s
+    order, not the ids' and not the clock's. This fixture separates all three: read
+    order is v2 then v1, date order is v1 then v2, and sorted order is v1 then v2.
+    Only first appearance gives `(v2, v1)`.
+
+    Two renders of one log must produce one page, which is why the order is pinned
+    at all -- and the order the report shows this in is `absent_models`' and any
+    caption's, so an implementation that sorted "for tidiness" would quietly rewrite
+    the operator-facing sentence the caveat prints."""
+    log = [_night(3, _LINEAGE_V2), _night(1, _LINEAGE_V1), _night(2, _LINEAGE_V1)]
+    assumed = series.CandidateLineage.assumed_from(log, baseline_model=_BASELINE)
+    assert assumed.models == (_LINEAGE_V2, _LINEAGE_V1)
+    assert assumed.models != tuple(sorted(assumed.models)), (
+        "the fixture no longer separates first-appearance order from sorted order"
+    )
+
+    line = series.trend(log, baseline_model=_BASELINE, lineage=assumed)
+    assert [point.created for point in line.points] == [
+        "2026-08-01T22:40:58+00:00",
+        "2026-08-02T22:40:58+00:00",
+        "2026-08-03T22:40:58+00:00",
+    ], "the lineage's order leaked into the line, which is sorted by `created`"
+    assert line.caveats[0].reason.index(_LINEAGE_V2) < line.caveats[0].reason.index(
+        _LINEAGE_V1
+    ), "the sentence and the lineage disagree about which id came first"
+
+
+def test_the_assumption_joins_ids_that_look_nothing_alike_which_is_why_it_is_printed():
+    """R21.5's own defence of part 2: it "is not inference in R15's sense and the
+    distinction is the whole ruling: nothing reads the *shape* of an id."
+
+    So an assumed lineage joins `synthetic-candidate-b-v1` and
+    `some-other-vendor-v7` exactly as readily as it joins two ids differing by a
+    suffix. That is the policy -- *treat the candidates in one log as one
+    succession* -- and it "is a claim that can be wrong (two unrelated candidates
+    measured into one log)". The claim is drawn and the caveat is what makes it
+    checkable; an implementation that quietly filtered by resemblance would be the
+    suffix inference R15.1 forbids, wearing the assumption's clothes."""
+    stranger = "some-other-vendor-v7"
+    log = [_night(1, _LINEAGE_V1), _night(2, stranger)]
+    assumed = series.CandidateLineage.assumed_from(log, baseline_model=_BASELINE)
+    assert assumed.models == (_LINEAGE_V1, stranger)
+
+    line = series.trend(log, baseline_model=_BASELINE, lineage=assumed)
+    assert len(line.points) == 2
+    assert [succession.after for succession in line.successions] == [stranger]
+    assert line.outside_lineage == ()
+    assert stranger in line.caveats[0].reason
+
+
+def test_a_candidate_measured_against_another_baseline_is_never_assumed_into_this_line():
+    """**The R24.1 defect, rebuilt by the fix for a different one, and refused.**
+    "Every distinct candidate model in the series" leaves open which points count,
+    and assuming over the whole log is the reading that breaks: `trend` selects on
+    `baseline_model`, so a candidate that only ran against another baseline would
+    be declared into this lineage, not selected, and then reported in *none* of
+    `points`, `outside_lineage` or `absent_models`.
+
+    The second half of this test is that failure, shown deliberately with the
+    lineage declared the way the loose reading would assume it: the run is in the
+    log and on no part of the page. It is correct for a *declared* lineage --
+    `absent_models` is "no run in the log at all" and this model has run -- and it
+    is exactly why the assumption must not produce that declaration by itself."""
+    elsewhere = _night(2, "gpt-candidate-v9", baseline_model="gpt-baseline-v0")
+    log = [_night(1, _LINEAGE_V1), elsewhere]
+
+    assumed = series.CandidateLineage.assumed_from(log, baseline_model=_BASELINE)
+    assert assumed.models == (_LINEAGE_V1,), (
+        "a candidate from another baseline's experiment was assumed onto this line"
+    )
+    line = series.trend(log, baseline_model=_BASELINE, lineage=assumed)
+    assert [point.candidate_model for point in line.points] == [_LINEAGE_V1]
+    assert line.outside_lineage == ()
+    assert line.absent_models == ()
+
+    loose = series.trend(
+        log, baseline_model=_BASELINE, lineage=_declared(_LINEAGE_V1, "gpt-candidate-v9")
+    )
+    assert elsewhere not in loose.points
+    assert elsewhere not in loose.outside_lineage
+    assert "gpt-candidate-v9" not in loose.absent_models
+
+
+def test_a_run_whose_candidate_the_log_never_named_is_not_assumed_to_be_a_model():
+    """`""` is an absence, and two runs that recorded nothing are not thereby the
+    same model -- C4's rule that an unrecorded value never matches, not even
+    another unrecorded one, and this module's `_recorded` idiom, which strips
+    because a padded field recorded nothing either.
+
+    Admit it and the line gains a `Succession` from `""` to a real id: an assertion
+    that the model changed, made out of a field nobody wrote, and printed by the
+    one row R15.4 calls the load-bearing one. Left out, the runs come back in
+    `outside_lineage`, where the reader is told the line does not cover them --
+    which is the whole of "an absence must not render as a measurement" applied to
+    the id itself.
+
+    Both spellings, because an implementation that tested `!= ""` would keep the
+    padded one and rejoin the two absences it just separated."""
+    blank = _point(created="2026-08-02T22:40:58+00:00", candidate_model="")
+    padded = _point(created="2026-08-03T22:40:58+00:00", candidate_model="   ")
+    log = [_night(1, _LINEAGE_V1), blank, padded, _night(4, _LINEAGE_V1)]
+
+    assumed = series.CandidateLineage.assumed_from(log, baseline_model=_BASELINE)
+    assert assumed.models == (_LINEAGE_V1,)
+
+    line = series.trend(log, baseline_model=_BASELINE, lineage=assumed)
+    assert line.successions == (), (
+        "a run that recorded no candidate id was drawn as a change of model"
+    )
+    assert line.outside_lineage == (blank, padded)
+
+
+def test_an_assumed_lineage_over_a_log_with_no_runs_still_says_nobody_declared_one():
+    """The absent case, and it takes the early return -- there is no anchor, so
+    `trend` returns before it partitions anything, and a caveat built on the other
+    path would be lost exactly where the page has least else on it.
+
+    "No runs" and "no runs, and nobody said what should have run" are different
+    pages. This is the commonest way to reach an assumed lineage at all: a config
+    that declares nothing over a log that holds nothing, which is every first night
+    this tool will ever see."""
+    assumed = series.CandidateLineage.assumed_from([], baseline_model=_BASELINE)
+    assert assumed.models == ()
+    assert assumed.is_assumed
+
+    line = series.trend([], baseline_model=_BASELINE, lineage=assumed)
+    assert line.points == ()
+    assert line.successions == ()
+    assert line.excluded == ()
+    assert line.undated == 0
+    assert line.outside_lineage == ()
+    assert line.absent_models == ()
+    assert len(line.caveats) == 1, "the empty return path dropped the disclosure"
+    assert line.caveats[0].point is None
+    assert "declared" in line.caveats[0].reason.lower()
+
+
+def test_an_assumed_lineage_that_matched_nothing_is_not_silently_an_empty_page():
+    """The other early return: points in the log, none of them on this baseline.
+    The assumption then names no candidate and there is no line, and the reader is
+    owed the reason there is no line rather than an empty chart -- the same
+    distinction `absent_models` draws for a declaration typed one character
+    wrong."""
+    log = [_night(1, _LINEAGE_V1, baseline_model="gpt-baseline-v0")]
+    assumed = series.CandidateLineage.assumed_from(log, baseline_model=_BASELINE)
+    assert assumed.models == ()
+
+    line = series.trend(log, baseline_model=_BASELINE, lineage=assumed)
+    assert line.points == ()
+    assert line.outside_lineage == ()
+    assert len(line.caveats) == 1
+    assert line.caveats[0].reason.strip()
+
+
+def test_the_line_level_caveat_comes_first_and_the_point_notes_keep_their_points():
+    """**R24.7's pairwise rule, applied to the new field.** No fixture in this file
+    carried an assumed lineage *and* a point that the partition kept with a note,
+    so an implementation that replaced the caveats instead of prepending to them,
+    or that attached the line-level note to whichever point came to hand, would
+    agree with every other test here.
+
+    Both are asserted at once: the disclosure is first and carries no point, and
+    the night graded 60 against 57 still carries its own. A renderer walking these
+    into rows has to be able to tell them apart, and the only thing that tells it
+    is `point is None`."""
+    lopsided = _night(2, _LINEAGE_V1, judged_baseline=60, judged_candidate=57)
+    log = [_night(1, _LINEAGE_V1), lopsided, _night(3, _LINEAGE_V2)]
+    line = series.trend(
+        log,
+        baseline_model=_BASELINE,
+        lineage=series.CandidateLineage.assumed_from(log, baseline_model=_BASELINE),
+    )
+    assert len(line.points) == 3
+    assert [note.point for note in line.caveats] == [None, lopsided], (
+        "the line-level disclosure and the note on one night are not distinguishable"
+    )
+    assert all(isinstance(note, series.Caveat) for note in line.caveats)
+    assert line.caveats[1].reason != line.caveats[0].reason
+
+
+def test_trend_refuses_a_bare_sequence_of_ids_rather_than_assuming_which_it_is():
+    """The constraint the whole ruling rests on: **`trend` must not decide for
+    itself whether a lineage was declared.** It cannot -- a config's list and a
+    list built out of the very points it is about to draw are the same object --
+    and the two defaults it could pick are both wrong in the same direction. Default
+    to *declared* and every undeclared page claims a review path nobody walked;
+    default to *assumed* and every config that did the right thing gets a false
+    caveat.
+
+    So the old call spelling is a `TypeError` at the call site rather than a line
+    with a plausible provenance, on `spot_check`'s rule for its subject: a miswired
+    caller must fail where it is written rather than reach a reader wearing a
+    result's clothes. The error names both constructors, because a caller told only
+    that it is wrong will guess."""
+    with pytest.raises(TypeError, match="CandidateLineage"):
+        series.trend([_point()], baseline_model=_BASELINE, lineage=_LINEAGE)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="CandidateLineage"):
+        series.trend([_point()], baseline_model=_BASELINE, lineage=_LINEAGE_V1)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        series.trend([_point()], baseline_model=_BASELINE)  # type: ignore[call-arg]
+
+    message = str(
+        pytest.raises(
+            TypeError,
+            series.trend,
+            [_point()],
+            baseline_model=_BASELINE,
+            lineage=_LINEAGE,
+        ).value
+    )
+    assert "declared" in message and "assumed_from" in message
+
+
+def test_a_declared_lineage_that_declares_nothing_is_refused_at_construction():
+    """An empty *declaration* is a config that declared nothing, which is precisely
+    the case R21.5 rules is assumed and said out loud -- so it is refused here,
+    where the caller can still make the right call, rather than drawn as a
+    declaration nobody made and a page with no caveat on it.
+
+    An empty *assumption* is a different fact and is legal: a log with no runs in
+    this comparison family names no candidates, and refusing it would make an empty
+    log raise where it should render an empty chart. The asymmetry is the point --
+    one is a caller with nothing to say, the other is a log with nothing in it."""
+    with pytest.raises(ValueError, match="assumed_from"):
+        series.CandidateLineage.declared(())
+    with pytest.raises(ValueError):
+        series.CandidateLineage(models=(), source="declared")
+
+    empty = series.CandidateLineage.assumed_from([], baseline_model=_BASELINE)
+    assert empty.models == ()
+
+
+def test_a_lineage_is_a_sequence_of_ids_and_one_id_is_not_a_sequence_of_ids():
+    """`tuple("gpt-candidate-v2")` is fourteen characters, and a line built from
+    them selects nothing while looking perfectly well-formed. C7's keyword-only
+    test exists for the same reason and names the same failure; this is the door it
+    could not close, because a lineage taken by keyword can still be handed a
+    string.
+
+    A `RunPoint` in the same slot is the other slip worth naming: it is what a
+    caller assembling its own first-appearance list would pass by accident, and the
+    message points at the method that does it correctly."""
+    with pytest.raises(TypeError, match="not one id"):
+        series.CandidateLineage.declared("gpt-candidate-v2")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="assumed_from"):
+        series.CandidateLineage.declared([_point()])  # type: ignore[list-item]
+
+
+def test_a_lineage_whose_source_is_neither_of_the_two_is_refused_at_construction():
+    """`SpotCheckSubject.side`'s rule, and its reason: a validating function leaves
+    a half-legal value in a variable for anything else to read, so a
+    `CandidateLineage` that exists is one whose provenance can be printed. There is
+    no third source -- either somebody wrote the succession down or this module
+    assembled it -- and "partly declared" is not a state a page can render."""
+    for source in ("", "config", "inferred", "Declared", None):
+        with pytest.raises(ValueError, match="source must be"):
+            series.CandidateLineage(models=_LINEAGE, source=source)  # type: ignore[arg-type]
+
+    assert not series.CandidateLineage(models=_LINEAGE, source="declared").is_assumed
+    assert series.CandidateLineage(models=_LINEAGE, source="assumed").is_assumed
+
+
+def test_the_lineage_type_and_the_widened_caveat_resolve_to_the_names_they_claim():
+    """Resolved at runtime rather than read off the source, for the reason the
+    `Trend` field test gives: `from __future__ import annotations` makes a
+    misspelled type invisible until something calls `get_type_hints`, and C22 will
+    type against these.
+
+    `Caveat.point` is the widening this ruling needed and the one thing here that
+    changes a merged type: a note about the line itself has no point, and the
+    alternative was pinning a claim about the whole chart to whichever night
+    happened to anchor it."""
+    hints = typing.get_type_hints(series.trend)
+    assert hints["lineage"] is series.CandidateLineage
+
+    fields = typing.get_type_hints(series.CandidateLineage)
+    assert list(fields) == ["models", "source"]
+    assert fields["models"] == tuple[str, ...]
+    assert fields["source"] is str
+
+    caveat = typing.get_type_hints(series.Caveat)
+    assert caveat["point"] == RunPoint | None, (
+        "a caveat about the line as a whole has no point to carry"
+    )
+    assert caveat["reason"] is str
+    assert dataclasses.is_dataclass(series.CandidateLineage)
+
+
+def test_the_assumption_is_worded_by_the_producer_and_not_left_for_the_renderer():
+    """R21.5 forbids C22 inventing this caveat in the plumbing -- "plumbing that
+    quietly patches a producer's honesty is the one shape of this defect nobody
+    would find" -- and R26.4 refused the same shape a second time for
+    `spot_check`'s sentence. The consistency is the ruling: if plumbing may compose
+    a producer's prose once, the rule is gone.
+
+    So the sentence is a sentence, in `series.py`, and it is asserted to be one: a
+    caveat whose `reason` is a bare marker or an empty string would satisfy every
+    other test in this section and leave the wording to whoever renders it. Asserted
+    against the module's source too, because the reason a renderer would compose it
+    is that the producer did not."""
+    log = _fourteen_nights()
+    note = series.trend(
+        log,
+        baseline_model=_BASELINE,
+        lineage=series.CandidateLineage.assumed_from(log, baseline_model=_BASELINE),
+    ).caveats[0]
+    assert len(note.reason.split()) > 12, "a marker is not a disclosure"
+    assert note.reason.startswith("flagged: "), (
+        "the disclosure does not join the vocabulary the page already prints caveats in"
+    )
+    assert "config" in note.reason, "the caveat does not say what would replace it"
+
 
 # ==================================================================================
 # Chunk C5 -- the candidate field
