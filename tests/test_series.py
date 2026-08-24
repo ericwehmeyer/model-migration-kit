@@ -4573,3 +4573,620 @@ def test_the_partitions_annotations_resolve_to_the_named_types():
     assert fields["kept"] == tuple[RunPoint, ...]
     assert fields["excluded"] == tuple[series.Exclusion, ...]
     assert fields["caveats"] == tuple[series.Caveat, ...]
+
+
+# ==================================================================================
+# Chunk C5 -- the candidate field
+# ==================================================================================
+#
+# Written from the same plan, chunk C5 *as amended by R17.2 through R17.5*, and
+# from nothing else. `Candidate`, `CandidateField` and `candidate_field` did not
+# exist in this worktree when these were written; no expected value below was
+# obtained by running any of them.
+#
+# **Every new name is reached as `series.something`, for the reason C4's section
+# gives above and does not need repeating: a module-level import of a function
+# that has not been written yet fails at *collection* and takes the other ~197
+# tests down with it, which is a red suite that says nothing about which chunk is
+# unfinished.
+#
+# **Four amendments this section is written against, none of them optional.**
+#
+# * `RunPoint` has no baseline pass rate -- its `pass_rate` is the *candidate*
+#   side, and the only baseline-side numbers it carries are `judged_baseline` and
+#   `judge_failures_baseline`. The rate is reconstructed as
+#   `(judged_baseline - judge_failures_baseline) / judged_baseline`, `None` when
+#   the denominator is zero. So the fixture below carries **three distinguishable
+#   rates**: 0.80 on the baseline side, 0.66 if the candidate-side counts are read
+#   by mistake, and whatever `pass_rate` was set to on the row. A fixture where
+#   any two of those coincide passes for an implementation reading the wrong side.
+# * `CandidateField` carries `caveats` beside `excluded`. C4 renamed `Flag` to
+#   `Caveat`; R17.3 was written before that rename and its `flags:
+#   tuple[Flag, ...]` is stale in the name only, not in the requirement. A caveat
+#   dropped at this layer is a caveat that reaches nobody, which is the same as
+#   not having computed it.
+# * "Grouping by `comparability_key` ignoring `candidate_model`" is stale: the key
+#   never held `candidate_model`. The test that matters is the other direction --
+#   two nights with *different* candidates must share one key, because a key that
+#   did hold it makes every group a group of one and the table never renders.
+# * The tie-break is **total**: largest group, then newest point, then the key in
+#   sorted order. The third tier is tested by building one input twice in
+#   different orders and asserting the same winner, which pins determinism without
+#   pinning one implementation's arbitrary choice of winner.
+#
+# **On expected numbers being literals.** `baseline_pass_rate` is asserted against
+# `0.8` and `delta_pp` against `-15.0`, spelled out, not recomputed from the
+# fixture's counts. A test that re-derives the value with the expression it is
+# testing passes for any formula the implementation and the test agree on,
+# including a wrong one.
+#
+# **Two readings this section had to settle, recorded because a reader comparing
+# it against the plan will otherwise read them as drift.**
+#
+# * `baseline_pass_rate` is one number and every kept point carries its own
+#   baseline-side counts. Which point it comes from is not settled by the
+#   contract, so every fixture here that asserts on it gives *all* of its points
+#   the same baseline-side counts, and the assertion holds for any of the
+#   readings. The ambiguity is real and is left for the reviewer rather than
+#   decided by a test.
+# * The edge table says a candidate with no date sorts *last*, and the "must not"
+#   says order is by `candidate_model`. Both are asserted, on the reading that the
+#   dateless row is the exception and model order is the rule -- so the fixture
+#   for it gives the dateless run the alphabetically *first* model name, where the
+#   two readings disagree.
+
+#: The dates these tests are spaced along, at midnight so that a difference in
+#: days is an exact float and an assertion can be spelled `== 7.0` rather than
+#: approximated. Aug 13 to Aug 20 is exactly the default window, which is the
+#: boundary `spread_days > stale_after_days` is strict about.
+_AUG_10 = "2026-08-10T00:00:00+00:00"
+_AUG_12 = "2026-08-12T00:00:00+00:00"
+_AUG_13 = "2026-08-13T00:00:00+00:00"
+_AUG_17 = "2026-08-17T00:00:00+00:00"
+_AUG_20 = "2026-08-20T00:00:00+00:00"
+
+#: The baseline side of every point below: 50 graded, 10 failed, so the
+#: reconstructed baseline pass rate is exactly 0.80. The candidate side grades the
+#: same 50 -- equal, so no coverage caveat is raised by accident -- but fails 17 of
+#: them, so a reconstruction that reads the candidate-side counts lands on 0.66 and
+#: is visible. Neither number is any row's `pass_rate`.
+_JUDGED_BASELINE = 50
+_FAILURES_BASELINE = 10
+_JUDGED_CANDIDATE = 50
+_FAILURES_CANDIDATE = 17
+
+
+def _run(model: str, *, created: str = _AUG_20, pass_rate: float | None = 0.65, **changes):
+    """One night's comparison of `model`, on the group key every fixture here shares.
+
+    Built on C1's `_point`, so every field C5 does not name holds the value a real
+    `migkit.comparison` payload puts there.
+    """
+    return _point(
+        candidate_model=model,
+        created=created,
+        pass_rate=pass_rate,
+        judged_baseline=_JUDGED_BASELINE,
+        judge_failures_baseline=_FAILURES_BASELINE,
+        judged_candidate=_JUDGED_CANDIDATE,
+        judge_failures_candidate=_FAILURES_CANDIDATE,
+        **changes,
+    )
+
+
+def _other_group(model: str, **changes):
+    """A run against the other golden set: a second group, identifying, and never
+    comparable with the first."""
+    return _run(model, goldenset_hash=_OTHER_GOLDENSET, **changes)
+
+
+def _field_of(points, **options):
+    """The field these points make, asserted to exist, because every caller below
+    was built to produce one and a `None` here would otherwise surface as an
+    `AttributeError` on `None` three lines later."""
+    field = series.candidate_field(points, **options)
+    assert field is not None, "this fixture was built to produce a field and produced none"
+    return field
+
+
+def _models(field) -> list[str]:
+    """The candidate models of a field, in the order it put them in."""
+    return [candidate.point.candidate_model for candidate in field.candidates]
+
+
+# ----------------------------------------------------------------------------------
+# When there is no field at all
+# ----------------------------------------------------------------------------------
+
+
+def test_a_log_holding_one_comparison_yields_no_candidate_field_at_all():
+    """The contract's named first-failing test. One candidate "collapses the table
+    to a single row and it is not rendered as a table at all", and `None` is what
+    makes that structural: a one-row `CandidateField` would put the decision in a
+    template `{% if %}`, where the next chunk to render a field would get it right
+    or wrong on its own and nothing here would notice.
+
+    Spelled `is None`, not `not`: an empty-but-present field is falsey and is
+    exactly the answer this rejects."""
+    assert series.candidate_field([_run("claude-candidate-v2")]) is None
+
+
+def test_a_log_with_no_comparisons_in_it_yields_no_field_rather_than_an_empty_one():
+    """The first night of a pipeline that has not run yet. Not an error, not an
+    exception, and not an empty field whose caller then has to distinguish "nothing
+    ran" from "one thing ran"."""
+    assert series.candidate_field([]) is None
+
+
+def test_a_log_that_tried_one_candidate_on_two_nights_still_yields_no_field():
+    """Two points, one distinct candidate model. The rule is "fewer than two
+    distinct candidate models", not "fewer than two points" -- a nightly job that
+    re-ran the same pair all week is the commonest log this will ever see, and
+    rendering it as a two-row comparison table would invite a reader to compare a
+    model against itself on two different nights."""
+    points = [
+        _run("claude-candidate-v2", created=_AUG_10),
+        _run("claude-candidate-v2", created=_AUG_20),
+    ]
+    assert series.candidate_field(points) is None
+
+
+def test_a_log_whose_every_run_graded_nothing_yields_no_field_rather_than_a_column_of_deltas():
+    """A baseline that graded nothing has an *unknown* pass rate, and R17.2's whole
+    argument is that a `delta_pp` of -100.0 against it "is the same lie in the same
+    direction" as plotting 0.0 on a chart for a run that measured nothing.
+
+    The route by which this is `None` is the partition's, not a special case: a run
+    with nothing graded on a side is excluded by `_ungraded`, so a group of three
+    such runs keeps none of them and has no candidates to render."""
+    points = [
+        _run(model, judged_baseline=0, judge_failures_baseline=0)
+        for model in ("alpha-candidate", "beta-candidate", "gamma-candidate")
+    ]
+    assert series.candidate_field(points) is None
+
+
+# ----------------------------------------------------------------------------------
+# The shape of the two new types
+# ----------------------------------------------------------------------------------
+
+
+def test_the_candidate_field_carries_the_seven_fields_the_amended_contract_names():
+    """Asserted exactly -- `==`, not `<=` -- because the field that is easiest to
+    leave out is `caveats`, which R17.3 added and which nothing else in the type
+    forces anyone to populate. A `CandidateField` without it compiles, renders, and
+    silently drops every note the partition raised."""
+    field = _field_of([_run("alpha-candidate"), _run("beta-candidate")])
+    assert dataclasses.is_dataclass(field)
+    present = {member.name for member in dataclasses.fields(field)}
+    assert present == {
+        "key",
+        "candidates",
+        "excluded",
+        "caveats",
+        "spread_days",
+        "spread_flagged",
+        "baseline_pass_rate",
+    }, f"missing: {sorted({'caveats', 'baseline_pass_rate'} - present)}; extra: {sorted(present)}"
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        field.spread_flagged = True  # type: ignore[misc]
+
+
+def test_a_candidate_carries_the_point_the_delta_and_the_staleness_and_nothing_else():
+    """`delta_pp` "is subtraction of two recorded rates, not a statistic -- no
+    interval is attached to it and none may be invented". Asserted over `dir` and
+    not only over `dataclasses.fields`, because a property named `delta_interval`
+    or `delta_confidence` is not a dataclass field and would pass the narrower
+    check while being exactly the invention the contract forbids."""
+    field = _field_of([_run("alpha-candidate"), _run("beta-candidate")])
+    candidate = field.candidates[0]
+    assert dataclasses.is_dataclass(candidate)
+    assert [member.name for member in dataclasses.fields(candidate)] == [
+        "point",
+        "delta_pp",
+        "stale_days",
+    ]
+    public = {name for name in dir(candidate) if not name.startswith("_")}
+    assert public == {"point", "delta_pp", "stale_days"}
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        candidate.delta_pp = 0.0  # type: ignore[misc]
+
+
+def test_every_sequence_the_field_returns_is_a_tuple_because_the_table_has_to_be_stable():
+    """C4's reason, one chunk on: a rendered list has to be the same list between
+    two renders of one log, and set or dict-view iteration order is stable only by
+    accident of hashing."""
+    field = _field_of([_run("alpha-candidate"), _run("beta-candidate")])
+    assert isinstance(field.candidates, tuple)
+    assert isinstance(field.excluded, tuple)
+    assert isinstance(field.caveats, tuple)
+
+
+def test_the_three_new_names_are_exported_so_the_rendering_chunks_can_reach_them():
+    """C6 and C7 render this. A type that is not in `__all__` is a type a later
+    chunk re-derives from a tuple."""
+    assert {"Candidate", "CandidateField", "candidate_field"} <= set(series.__all__)
+
+
+def test_the_candidate_fields_annotations_resolve_to_the_named_types():
+    """`from __future__ import annotations` makes a misspelled type invisible until
+    something calls `get_type_hints`, and the return type is the load-bearing one:
+    `CandidateField | None` is the whole of the single-candidate rule."""
+    hints = typing.get_type_hints(series.candidate_field)
+    assert hints["return"] == series.CandidateField | None
+    members = typing.get_type_hints(series.CandidateField)
+    assert members["key"] is series.ComparabilityKey
+    assert members["candidates"] == tuple[series.Candidate, ...]
+    assert members["excluded"] == tuple[series.Exclusion, ...]
+    assert members["caveats"] == tuple[series.Caveat, ...]
+    assert typing.get_type_hints(series.Candidate)["point"] is RunPoint
+
+
+# ----------------------------------------------------------------------------------
+# The baseline pass rate, which no point carries and every delta needs
+# ----------------------------------------------------------------------------------
+
+
+def test_the_baseline_pass_rate_is_rebuilt_from_the_counts_the_baseline_side_recorded():
+    """`RunPoint.pass_rate` is documented as "Candidate side of the widest judge",
+    and there is no baseline field to read. R17.2's ruling is that the rate is
+    reconstructed from the two numbers rigor recorded it from, and that this is not
+    an approximation but the recorded rate.
+
+    50 graded and 10 failed is 0.80, spelled out here rather than recomputed. The
+    fixture's candidate side grades the same 50 and fails 17, so a reconstruction
+    that read the candidate-side counts lands on 0.66 and neither number is any
+    row's `pass_rate`."""
+    field = _field_of(
+        [_run("alpha-candidate", pass_rate=0.65), _run("beta-candidate", pass_rate=0.90)]
+    )
+    assert field.baseline_pass_rate == pytest.approx(0.8)
+    assert field.baseline_pass_rate != pytest.approx(0.66), (
+        "this is the candidate side's rate -- `judge_failures_candidate` was read"
+    )
+    assert field.baseline_pass_rate not in (0.65, 0.90), (
+        "`RunPoint.pass_rate` is the candidate side and is not a baseline rate"
+    )
+
+
+def test_a_run_that_graded_nothing_on_one_side_is_excluded_and_the_field_says_why():
+    """The partition runs inside the field, and this is what proves it: the silent
+    run is not merely absent from `candidates`, it is present in `excluded` with
+    the sentence C4 wrote for it. A point that vanishes with no sentence is the
+    table this whole pair of chunks exists to prevent.
+
+    The expected reason is taken from `partition_comparable` itself, which is
+    merged, reviewed, and not the code under test here."""
+    silent = _run("gpt-candidate-v9", judged_baseline=0, judge_failures_baseline=0)
+    field = _field_of([_run("alpha-candidate"), _run("beta-candidate"), silent])
+    expected = series.partition_comparable(
+        [silent], against=series.comparability_key(silent)
+    ).excluded[0]
+    assert _models(field) == ["alpha-candidate", "beta-candidate"]
+    assert [exclusion.point for exclusion in field.excluded] == [silent]
+    assert field.excluded[0].reason == expected.reason
+    assert field.baseline_pass_rate == pytest.approx(0.8)
+
+
+# ----------------------------------------------------------------------------------
+# The delta, which is a subtraction and not a statistic
+# ----------------------------------------------------------------------------------
+
+
+def test_the_delta_is_the_two_recorded_rates_subtracted_and_expressed_in_points():
+    """`(cand - base) * 100`. Both signs are asserted, from one fixture, because a
+    delta computed the other way round reads perfectly on a page and reverses every
+    migration decision on it. 0.65 against a baseline of 0.80 is -15.0 points and
+    0.90 against the same baseline is +10.0; an implementation that forgot the
+    hundred lands on -0.15, and one that subtracted backwards on +15.0."""
+    field = _field_of(
+        [_run("alpha-candidate", pass_rate=0.65), _run("beta-candidate", pass_rate=0.90)]
+    )
+    deltas = {candidate.point.candidate_model: candidate.delta_pp for candidate in field.candidates}
+    assert deltas["alpha-candidate"] == pytest.approx(-15.0)
+    assert deltas["beta-candidate"] == pytest.approx(10.0)
+
+
+def test_a_candidate_whose_run_recorded_no_pass_rate_has_no_delta_rather_than_a_delta_of_zero():
+    """`None` if either side is `None`. A run whose judge graded nothing has an
+    unknown rate, and a delta of 0.0 for it is a row saying the candidate matched
+    the baseline exactly -- the strongest claim on the page, drawn from no
+    measurement at all."""
+    field = _field_of(
+        [_run("alpha-candidate", pass_rate=None), _run("beta-candidate", pass_rate=0.90)]
+    )
+    assert field.candidates[0].delta_pp is None
+    assert field.candidates[1].delta_pp == pytest.approx(10.0)
+
+
+# ----------------------------------------------------------------------------------
+# Order: by model name, never by result
+# ----------------------------------------------------------------------------------
+
+
+def test_candidates_are_ordered_by_model_name_and_never_by_pass_rate():
+    """The contract's second "must not", and the fixture is built so that the three
+    plausible wrong answers are all visible: the input order is gamma, alpha, beta;
+    the pass-rate order descending is beta, gamma, alpha and ascending is alpha,
+    gamma, beta. Only the model order is alpha, beta, gamma.
+
+    The reason is in the contract and is about the reader, not about tidiness: a
+    table sorted by result invites position to be read as ranking, and the point of
+    the field is that the reader does the ranking."""
+    points = [
+        _run("gamma-candidate", pass_rate=0.50),
+        _run("alpha-candidate", pass_rate=0.10),
+        _run("beta-candidate", pass_rate=0.90),
+    ]
+    assert _models(_field_of(points)) == ["alpha-candidate", "beta-candidate", "gamma-candidate"]
+
+
+def test_the_same_candidate_compared_twice_appears_once_as_its_newer_run():
+    """The edge table's third row. The newer point is asserted by its *numbers* as
+    well as its identity: keeping the older run's row would render a stale delta
+    beside a fresh date, which is worse than either.
+
+    The newer run is passed first, so an implementation that simply keeps whichever
+    it saw last is not accidentally right."""
+    older = _run("claude-candidate-v2", created=_AUG_10, pass_rate=0.30)
+    newer = _run("claude-candidate-v2", created=_AUG_20, pass_rate=0.65)
+    other = _run("gpt-candidate-v9", created=_AUG_20, pass_rate=0.90)
+    field = _field_of([newer, older, other])
+    assert _models(field) == ["claude-candidate-v2", "gpt-candidate-v9"]
+    assert field.candidates[0].point == newer
+    assert older not in [candidate.point for candidate in field.candidates]
+    assert field.candidates[0].delta_pp == pytest.approx(-15.0), (
+        "the older run's 0.30 would have been -50.0 points"
+    )
+
+
+# ----------------------------------------------------------------------------------
+# Spread and staleness, row by row of the edge table
+# ----------------------------------------------------------------------------------
+
+
+def test_three_candidates_compared_on_one_day_have_a_spread_of_zero_days_and_are_not_flagged():
+    """The edge table's second row. `0.0` and not `None`: the runs *were* dated and
+    the spread *was* measured, and collapsing "measured, and it was nothing" into
+    "not measured" loses the only fact on the row worth having. The float check is
+    there because `False == 0.0` and `0 == 0.0` both pass a bare equality."""
+    field = _field_of([_run(model, created=_AUG_20) for model in ("alpha", "beta", "gamma")])
+    assert len(field.candidates) == 3
+    assert field.spread_days == 0.0
+    assert isinstance(field.spread_days, float)
+    assert field.spread_flagged is False
+    assert [candidate.stale_days for candidate in field.candidates] == [0.0, 0.0, 0.0]
+
+
+def test_each_candidates_staleness_is_its_age_against_the_newest_run_in_the_field():
+    """The contract's wording is "this run's age against the newest in the field",
+    so the newest run's own staleness is 0.0 and not `None`, and every age is
+    measured against the field rather than against today -- which is what makes the
+    number reproducible when the report is re-rendered a month later."""
+    field = _field_of(
+        [
+            _run("alpha-candidate", created=_AUG_10),
+            _run("beta-candidate", created=_AUG_17),
+            _run("gamma-candidate", created=_AUG_20),
+        ]
+    )
+    assert [candidate.stale_days for candidate in field.candidates] == [10.0, 3.0, 0.0]
+    assert field.spread_days == 10.0
+
+
+def test_a_candidate_whose_run_recorded_no_date_sorts_last_and_never_sets_the_spread():
+    """The edge table's fourth row, in all three of its clauses. The dateless run is
+    given the alphabetically *first* model name, which is where "sorted last" and
+    "ordered by `candidate_model`" disagree and the row is worth having.
+
+    "Never sets `spread_days`" is asserted by a literal: the two dated runs are two
+    days apart, so the spread is 2.0. A dateless run folded in as an epoch or as
+    today's date would produce a spread of thousands of days and flag a field that
+    is two days wide."""
+    field = _field_of(
+        [
+            _run("aaa-candidate", created=""),
+            _run("mmm-candidate", created=_AUG_10),
+            _run("zzz-candidate", created=_AUG_12),
+        ]
+    )
+    assert _models(field) == ["mmm-candidate", "zzz-candidate", "aaa-candidate"]
+    assert [candidate.stale_days for candidate in field.candidates] == [2.0, 0.0, None]
+    assert field.spread_days == 2.0
+    assert field.spread_flagged is False
+
+
+def test_a_field_in_which_no_run_recorded_a_date_has_no_spread_and_is_not_flagged():
+    """The edge table's fifth row. `spread_days is None` and `spread_flagged is
+    False` -- not a flag raised on an unknown spread, which would print "these runs
+    are weeks apart" about runs whose dates nobody wrote down."""
+    field = _field_of([_run("alpha-candidate", created=""), _run("beta-candidate", created="")])
+    assert field.spread_days is None
+    assert field.spread_flagged is False
+    assert [candidate.stale_days for candidate in field.candidates] == [None, None]
+
+
+def test_the_default_window_flags_a_spread_of_more_than_seven_days_and_not_of_exactly_seven():
+    """`spread_flagged` is `spread_days > stale_after_days`, strictly. Seven days
+    exactly is the boundary and is the one input that separates `>` from `>=`;
+    eight is the case the contract's failure mode describes -- "three candidates
+    measured three weeks apart render as a fair field, with the baseline having
+    drifted underneath them"."""
+    exactly = _field_of(
+        [_run("alpha-candidate", created=_AUG_13), _run("beta-candidate", created=_AUG_20)]
+    )
+    assert exactly.spread_days == 7.0
+    assert exactly.spread_flagged is False
+    wider = _field_of(
+        [_run("alpha-candidate", created=_AUG_12), _run("beta-candidate", created=_AUG_20)]
+    )
+    assert wider.spread_days == 8.0
+    assert wider.spread_flagged is True
+
+
+def test_the_staleness_window_is_a_keyword_parameter_and_not_a_literal_in_the_body():
+    """The contract's reviewer note asks for exactly this: the default is
+    defensible, but what matters is that it is a parameter. One field of fixed
+    width is flagged at one setting and not at another, which a literal `7.0` in
+    the body cannot do.
+
+    Keyword-only, per the signature's `*`. A positional second argument would let a
+    caller pass a window where a sequence was meant and get a silent answer."""
+    points = [_run("alpha-candidate", created=_AUG_10), _run("beta-candidate", created=_AUG_20)]
+    assert _field_of(points).spread_flagged is True
+    assert _field_of(points, stale_after_days=30.0).spread_flagged is False
+    assert _field_of(points, stale_after_days=3.0).spread_flagged is True
+    assert _field_of(points, stale_after_days=30.0).spread_days == 10.0, (
+        "the window decides the flag and must not change the measurement"
+    )
+    with pytest.raises(TypeError):
+        series.candidate_field(points, 30.0)  # type: ignore[misc]
+
+
+# ----------------------------------------------------------------------------------
+# The caveats, which have to survive the trip from the partition to the table
+# ----------------------------------------------------------------------------------
+
+
+def test_a_caveat_the_partition_raised_on_a_kept_run_arrives_on_the_field():
+    """R17.3's requirement, in the vocabulary C4 shipped. "Dropping the flags on
+    the floor at this layer means the caveat never reaches the table, and a caveat
+    that reaches nobody is the same as not having computed it."
+
+    The run with uneven coverage is asserted to be in *both* tuples: a caveat
+    annotates a row, it does not remove one, and an implementation that treated
+    `caveats` as a second kind of exclusion would drop the run from the table while
+    printing a note about it.
+
+    The expected sentence comes from `partition_comparable`, which is merged and is
+    not the code under test."""
+    lopsided = _run("gpt-candidate-v9", judged_candidate=44, judge_failures_candidate=11)
+    field = _field_of([_run("claude-candidate-v2"), lopsided])
+    expected = series.partition_comparable(
+        [lopsided], against=series.comparability_key(lopsided)
+    ).caveats
+    assert len(expected) == 1
+    assert [caveat.reason for caveat in field.caveats] == [expected[0].reason]
+    assert [caveat.point for caveat in field.caveats] == [lopsided]
+    assert lopsided in [candidate.point for candidate in field.candidates]
+    assert field.excluded == ()
+
+
+def test_a_run_carrying_two_caveats_arrives_with_both_of_them():
+    """One point may carry more than one, and the two are different claims: uneven
+    coverage is a doubt about the numbers on the row, and an A/A comparison is a
+    statement about what the row is for. A field that de-duplicated caveats by
+    point would print the first and lose the second."""
+    calibration = _run(
+        "gpt-baseline-v1",
+        judged_candidate=44,
+        judge_failures_candidate=11,
+    )
+    field = _field_of([_run("claude-candidate-v2"), calibration])
+    expected = series.partition_comparable(
+        [calibration], against=series.comparability_key(calibration)
+    ).caveats
+    assert len(expected) == 2
+    assert [caveat.reason for caveat in field.caveats] == [note.reason for note in expected]
+    assert calibration in [candidate.point for candidate in field.candidates]
+
+
+# ----------------------------------------------------------------------------------
+# Grouping, and the tie-break that has to be total
+# ----------------------------------------------------------------------------------
+
+
+def test_two_nights_that_tried_different_candidates_land_in_one_field():
+    """R17.4's mutant, inherited from C4's tester as that ruling asks. The key holds
+    `goldenset_hash`, `judges_hash`, `n_per_item` and `baseline_model` and has never
+    held `candidate_model` -- and a key that did hold it would make every group a
+    group of one, `candidate_field` would return `None` every time, and the table
+    would never render at all. That failure is silent: a report with no comparison
+    table looks like a report of a log with nothing to compare."""
+    monday = _run("claude-candidate-v2", created=_AUG_17, pass_rate=0.65)
+    friday = _run("gpt-candidate-v9", created=_AUG_20, pass_rate=0.90)
+    field = _field_of([monday, friday])
+    assert field.key == series.comparability_key(monday)
+    assert field.key == series.comparability_key(friday)
+    assert [candidate.point for candidate in field.candidates] == [monday, friday]
+
+
+def test_the_field_is_built_from_the_largest_group_of_comparable_runs():
+    """Largest is the first tier and beats the other two. The smaller group here
+    holds *both* of the newest runs, so an implementation that reached for the
+    newest point before counting the groups renders a two-row table while a
+    three-row one was available."""
+    big = [
+        _run(model, created=_AUG_10)
+        for model in ("alpha-candidate", "beta-candidate", "gamma-candidate")
+    ]
+    small = [_other_group(model, created=_AUG_20) for model in ("delta-cand", "epsilon-cand")]
+    field = _field_of([*small, *big])
+    assert field.key == series.comparability_key(big[0])
+    assert _models(field) == ["alpha-candidate", "beta-candidate", "gamma-candidate"]
+
+
+def test_two_equally_large_groups_break_the_tie_on_the_group_holding_the_newest_run():
+    """The edge table's last row, and the second tier. Both orderings are built,
+    because a tie-break that fell through to the order the groups were seen in
+    would be right in one of them by accident."""
+    older = [_run(model, created=_AUG_10) for model in ("alpha-candidate", "beta-candidate")]
+    newer = [_other_group(model, created=_AUG_20) for model in ("gamma-cand", "delta-cand")]
+    field = _field_of([*older, *newer])
+    assert field.key == series.comparability_key(newer[0])
+    assert field.key != series.comparability_key(older[0])
+    assert _field_of([*newer, *older]).key == field.key
+
+
+def test_two_equally_large_groups_with_no_dated_run_still_pick_one_winner_deterministically():
+    """R17.5's third tier, which exists because the first two can both run out:
+    two groups can tie on size *and* contain no dated point at all, and then "the
+    newest point" does not exist and the winner falls out of dict insertion order
+    over hashes -- stable on one machine, not guaranteed across a rebuild.
+
+    Which group wins is deliberately *not* asserted. A stable arbitrary answer is
+    what the ruling asks for, so the same input is built three ways and the three
+    answers are asserted equal; pinning one particular winner would pin whichever
+    order the first implementation happened to produce, which is the opposite of
+    the guarantee. What is asserted is that the winner is one of the two real
+    groups and that the whole field, not merely the key, is the same each time."""
+    left = [_run(model, created="") for model in ("alpha-candidate", "beta-candidate")]
+    right = [_other_group(model, created="") for model in ("gamma-cand", "delta-cand")]
+    orders = [
+        [*left, *right],
+        [*right, *left],
+        [left[0], right[0], left[1], right[1]],
+        [right[1], left[1], right[0], left[0]],
+    ]
+    fields = [_field_of(order) for order in orders]
+    assert len({field.key for field in fields}) == 1, (
+        "the winner depends on the order the groups were built in, which is a "
+        "document that differs between two renders of one log"
+    )
+    assert len({tuple(_models(field)) for field in fields}) == 1
+    assert fields[0].key in {
+        series.comparability_key(left[0]),
+        series.comparability_key(right[0]),
+    }
+
+
+def test_a_larger_group_of_runs_that_recorded_no_hashes_does_not_beat_a_smaller_group_that_did():
+    """C4's `is_identifying` exists for this caller and says so: "dataclass equality
+    alone will happily merge every run that recorded nothing into one
+    confident-looking group -- `"" == ""` and `0 == 0` both read perfectly and both
+    mean 'neither of us said'".
+
+    Three runs that recorded no golden-set hash have equal keys and are not
+    comparable with each other. If they win the group count, every one of them is
+    then excluded by the partition and the field is `None` -- so a log with two
+    perfectly comparable runs in it renders no table, and the reason is a group
+    that never existed. The silent runs are also the newest here, so they would win
+    the second tier as well."""
+    silent = [
+        _run(model, goldenset_hash="", created=_AUG_20)
+        for model in ("alpha-cand", "beta-cand", "gamma-cand")
+    ]
+    real = [_run(model, created=_AUG_10) for model in ("mmm-candidate", "zzz-candidate")]
+    field = _field_of([*silent, *real])
+    assert field.key == series.comparability_key(real[0])
+    assert _models(field) == ["mmm-candidate", "zzz-candidate"]
