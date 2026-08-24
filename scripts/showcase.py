@@ -156,6 +156,13 @@ stated instruction, and neither can tell which model produced the text.
 **C17's contract does not mention a judge**, and there is no showcase judge
 anywhere else in the tree. This one is here because the verification R13 demanded
 -- that REVIEW is reachable at the showcase's own n -- cannot be run without one.
+
+It also runs, for now, against a rubric that does not describe it. ``demo.toml``
+declares ``demo_rubric.md``, which covers reference answers and refusals and has
+no summarisation rule at all, while its hash is recorded on every verdict. Three
+rules below therefore have no document behind them. They are listed, with the one
+that moves a published p-value marked as such, in the block above :func:`_grade`,
+and closing them is C17's -- see the block at the foot of this file.
 """
 
 from __future__ import annotations
@@ -786,6 +793,46 @@ def _declines(text: str) -> bool:
     return any(marker in lowered for marker in _DECLINE_MARKERS)
 
 
+# =========================================================================== #
+# THE JUDGE DIVERGES FROM THE RUBRIC IT HASHES, IN THREE PLACES. C17 OWES THE
+# RUBRIC THAT CLOSES THEM. Read this before editing anything below.
+# =========================================================================== #
+#
+# `demo.toml` declares `rubric = "demo_rubric.md"`, and that document is hashed
+# into every `judge.verdict` record and rendered in the provenance footer beside
+# these reasons. It has no summarisation rule at all: it covers reference answers
+# and refusals, and nothing else. Three of the rules below therefore run without
+# the document that is attested as their source.
+#
+# 1. THE SUMMARISATION DECLINE. Grading a decline-to-summarise as a failure is
+#    right on the merits -- the item supplies the material and asks for a summary,
+#    and declining is not doing the task -- but the rubric says nothing about it
+#    either way. The reason string used to assert that "the rubric treats [it] as a
+#    refusal to do the task rather than as caution". It does not, and a
+#    justification that cites a document contradicting it is worse than one that
+#    cites nothing, so the string now states what the judge did and stops there.
+#
+# 2. THAT DECLINE SCORES 1, AND THE RUBRIC PUTS IT AT 3. The rubric defines 1 as
+#    "Fabricated -- invents a fact, a number, a date, or an identity", and a model
+#    that declines has invented nothing; it places "a refusal that gives no reason"
+#    at 3. This is not cosmetic: `_compare_one_judge` runs Mann-Whitney over these
+#    scores, so the module docstring's p = 0.2617 rests on the assignment. It is
+#    left alone deliberately -- changing it moves every seeded p-value and every
+#    number in this file's narrative -- and it is C17's to fix, together with the
+#    docstring numbers it will move.
+#
+# 3. THE ONE-SENTENCE RULE. Scoring 2 when the sentence count is not exactly one
+#    has no rubric basis, and the rubric's Notes push the other way on form:
+#    "Brevity is not a defect... a bare number is the ideal response and must not
+#    be marked down for lacking explanation." Nothing in the seed reaches it today
+#    -- every scripted summary is one sentence and `_check_scripts` refuses the
+#    file if one is not -- so it is latent rather than live. C17 either licenses it
+#    in the rubric or it comes out.
+#
+# What C17 must ship, so this comment can be deleted rather than amended:
+# `showcase_rubric.md` carrying a summarisation clause, a task-refusal scored 2 or
+# 3 rather than 1, and the one-sentence rule dropped or licensed; and
+# `showcase.toml` naming it. See the C17 block at the foot of this file.
 def _grade(item: GoldenItem, output: str) -> tuple[int, str]:
     """Grade one completion against one item. Three rules, one per slice shape.
 
@@ -818,13 +865,20 @@ def _grade(item: GoldenItem, output: str) -> tuple[int, str]:
             "content presented as fact",
         )
     if _declines(text):
+        # Divergence 1 and 2 above: the reason says what was done, not what any
+        # rubric says about it, and the score is C17's to move.
         return (
             _SCORE_FABRICATED,
-            "declines to summarise material the item supplies in full, which the "
-            "rubric treats as a refusal to do the task rather than as caution",
+            "declines to summarise material the item supplies in full, so the task "
+            "the item set was not attempted",
         )
     if len(re.findall(_SENTENCE_END, text)) != 1:
-        return _SCORE_WRONG, "the item asks for one sentence and this is not one sentence"
+        # Divergence 3: the item's own instruction, which is what is cited. The
+        # rubric is silent on form and its Notes lean the other way.
+        return (
+            _SCORE_WRONG,
+            "the item's instruction asks for one sentence and this is not one sentence",
+        )
     return _SCORE_EXACT, "one sentence, covering the material the item supplies"
 
 

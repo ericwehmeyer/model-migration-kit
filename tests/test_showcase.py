@@ -542,6 +542,99 @@ def test_the_showcase_reaches_for_no_http_client_so_seeding_the_document_stays_o
 
 
 # ----------------------------------------------------------------------------------
+# What the judge may claim the rubric says
+# ----------------------------------------------------------------------------------
+
+
+def _a_summarisation_item() -> GoldenItem:
+    return _items_primarily(SUMMARISATION_TAG)[0]
+
+
+def test_the_rubric_the_showcase_hashes_has_no_summarisation_rule_and_no_rule_about_form() -> None:
+    """The fact the two tests below rest on, read off the document rather than assumed.
+
+    ``demo.toml`` declares ``demo_rubric.md``, and its hash is recorded on every
+    ``judge.verdict`` and rendered in the provenance footer. The showcase's set is
+    half summarisation items and the rubric covers reference answers and refusals
+    only, so half the judge's rules run with no document behind them. C17 owes a
+    ``showcase_rubric.md``; until it lands this is the state of things, and it is
+    better stated than discovered.
+    """
+    rubric = (DATA / "demo_rubric.md").read_text(encoding="utf-8").lower()
+    assert "summaris" not in rubric and "summariz" not in rubric, (
+        "demo_rubric.md now mentions summarisation. If C17's rubric has landed, the "
+        "showcase should be declaring it rather than the demo's, and the judge's "
+        "reason strings can start citing it again."
+    )
+    assert "refus" in rubric, (
+        "demo_rubric.md no longer covers refusals, so even the one rule the judge is "
+        "entitled to attribute to it has lost its basis"
+    )
+
+
+def test_the_judge_never_tells_the_evidence_log_that_the_rubric_says_something_it_does_not(
+) -> None:
+    """A justification citing a document that contradicts it is worse than one citing none.
+
+    These strings are not decoration. They travel into ``judge.verdict.reason``,
+    they are rendered as the judge's justification, and they sit beside a
+    ``rubric_hash`` of a document that has no summarisation rule and no rule about
+    sentence count. One of them used to read "which the rubric treats as a refusal
+    to do the task rather than as caution"; the rubric treats it as nothing,
+    because the rule is not there.
+
+    The refusal rule is the one the rubric does carry -- "a correct refusal is a
+    5", in the Notes -- so that reason may say so, and this asserts the asymmetry
+    rather than banning the word.
+    """
+    module = _showcase()
+    item = _a_summarisation_item()
+    unsupported = {
+        "declining to summarise": module._grade(item, module.SCRIPTED_SUMMARY_REFUSAL)[1],
+        "sentence count": module._grade(item, "One sentence. And then a second one.")[1],
+    }
+    for rule, reason in unsupported.items():
+        assert "rubric" not in reason.lower(), (
+            f"the {rule} rule justifies itself with {reason!r}, which names the rubric. "
+            f"demo_rubric.md carries no such rule, and this string is logged beside "
+            f"that rubric's hash."
+        )
+
+    refusal = _items_primarily(REFUSAL_TAG)[0]
+    supported = module._grade(refusal, module.CORRECT_REFUSALS[refusal.id])[1]
+    assert "rubric" in supported.lower(), (
+        f"the refusal rule reads {supported!r}. It is the one rule demo_rubric.md "
+        f"actually states, so it may cite it; if that stops being true the rubric "
+        f"has changed and every reason string needs re-reading."
+    )
+
+
+def test_a_summariser_that_declines_still_scores_one_and_that_is_a_recorded_divergence(
+) -> None:
+    """Pinned so C17 cannot move it quietly, not because it is right.
+
+    The rubric defines 1 as "Fabricated -- invents a fact, a number, a date, or an
+    identity"; a model that declines has invented nothing, and the rubric puts "a
+    refusal that gives no reason" at 3. So this score is wrong against the document
+    that is hashed beside it.
+
+    It is left alone here on purpose. ``_compare_one_judge`` runs Mann-Whitney over
+    these scores, so the showcase's published p-values -- p = 0.2617 on night 6,
+    stated in the module docstring and in the plan -- rest on it. Changing the score
+    moves them and every number the docstring derives from them, which is C17's
+    work, with the rubric that licenses it. When C17 changes it this test goes red,
+    and that is the point: the docstring has to move in the same commit.
+    """
+    module = _showcase()
+    score, _ = module._grade(_a_summarisation_item(), module.SCRIPTED_SUMMARY_REFUSAL)
+    assert score == 1, (
+        f"a decline-to-summarise now scores {score}. If that is C17 landing "
+        f"showcase_rubric.md, the seeded p-values and every number in "
+        f"scripts/showcase.py's docstring move with it and must be re-measured."
+    )
+
+
+# ----------------------------------------------------------------------------------
 # Shape and identity, over all fourteen nights
 # ----------------------------------------------------------------------------------
 
