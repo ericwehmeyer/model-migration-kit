@@ -154,33 +154,46 @@ confusingly, exactly what a correct C10 render looks like. Print
 
 ## Do these next, in this order
 
-1. **Land the three in flight** -- C5's fix pass, C16's fix pass, C10's blind
-   tester.
-2. **C6** -- consumes C5's `CandidateField`, so it waits for C5's **fix pass**,
-   not merely its review: the fix changes the type C6 reads (an eighth field
-   `stale_after_days`, a new `Candidate.model` property, `spread_days` and
-   `baseline_pass_rate` gaining `None` cases, and a superseded exclusion).
-   Producer beside consumer is the one thing width cannot buy.
+**Read R21 first.** Six of C14's nine elements cannot be built as written --
+`ReportModel` does not carry C11's spot check, C4's exclusions, C5's candidates,
+C6's multiplicity or C7's parameter strip, and C14's contract gates those
+sections on function calls a template cannot make. **C22, the view model, closes
+it and must land before C14's remaining elements.** R21.5 rules the question
+underneath it (where `trend`'s lineage comes from) so C22 is not blocked on a
+decision.
 
-   **Both briefs are already written** and waiting in the scratchpad as
-   `c6_impl_brief.md` and `c6_test_brief.md`. Re-read them against C5 as merged
-   before dispatching -- they were drafted before the fix pass was scoped and
-   say `CandidateField` is "already merged and reviewed", which will be true
-   only once the fix lands.
+1. **Land the three in flight** -- C5's fix pass, C7's reviewer, C10's reviewer.
+2. **C22, the view model** -- unblocked the moment C10's and C7's reviews clear,
+   since it types their names. It is small: every producer is pure over
+   `ReportModel.series` (already `tuple[RunPoint, ...]`) or, for `spot_check`,
+   over three integers. It reads nothing, and it must not -- two merged tests
+   forbid a second pass over the log.
+3. **C14's remaining seven elements**, which then have something to render.
+   This is the step that finally moves the measured table above.
+4. **C6** -- consumes C5's `CandidateField`, so it waits for C5's **fix pass**,
+   not merely its review: the fix changes the type C6 reads (an eighth field
+   `stale_after_days`, a new `Candidate.model`, `spread_days` and
+   `baseline_pass_rate` gaining `None` cases, and a superseded exclusion).
+
+   **Both briefs are already written**, in the scratchpad as `c6_impl_brief.md`
+   and `c6_test_brief.md`. Re-read them against C5 as merged before dispatching:
+   they were drafted before the fix pass was scoped and say `CandidateField` is
+   "already merged and reviewed", true only once the fix lands.
 
    R17.1 is the thing to read first: C6's rule for which candidates lost
    significance is **not** the Holm procedure, and C6's own named first test
-   passes against the broken version. Both briefs carry the correction and the
-   second assertion that closes it.
-3. **C7's reviewer** -- merged but never mutation-tested. Its blind pair agreed
-   completely, which on this plan has never yet meant the chunk was clean.
-4. **C17** -- owes `showcase.toml` and `showcase_rubric.md`. Counted, not
-   guessed: the demo set's 4 reference-less items are all refusals, so the
-   shipped demo is fine; the showcase set's 32 split 16 refusal / 16
-   summarisation, so the demo's decline-based judge is right for half and
-   inverted for the other half. C16's judge also makes three claims
-   `demo_rubric.md` does not contain, one of which moves a published p-value.
-5. **C14's remaining seven elements**, then **C18**.
+   passes against the broken version. Both briefs carry the correction.
+5. **C17** -- owes `showcase.toml` and `showcase_rubric.md`. C16's fix pass
+   recorded the debt in a block at the foot of `scripts/showcase.py`, including
+   the five thresholds and `model = "synthetic-judge-v1"`. Counted, not guessed:
+   the demo set's 4 reference-less items are all refusals, so the shipped demo
+   is fine; the showcase set's 32 split 16 refusal / 16 summarisation, so the
+   demo's decline-based judge is right for half and inverted for the other half.
+   C16's judge makes three claims `demo_rubric.md` does not contain, one of
+   which moves a published p-value, and `JUDGE_MODEL_ID` is read by **nothing**.
+6. **C18**, and the deferred repo-wide `ruff format` drift (the tree is
+   formatted at 88, `pyproject.toml` says 100, ~26 files). Do the formatting in
+   its own chunk when the tree is quiet, never beside live work.
 
 ### Running anything at all: there is no venv in the worktrees
 
