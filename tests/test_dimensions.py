@@ -1244,6 +1244,78 @@ def test_an_unjoinable_input_is_truncated_and_quoted_in_the_reason():
 
 
 # --------------------------------------------------------------------------- #
+# The boundary the excerpt was deliberately built one character wider for
+#
+# ``_excerpt`` holds ``_INPUT_SHOWN + 1`` characters and says why: "so
+# ``_shown_excerpt`` can still tell a text that was truncated from one that
+# happened to end exactly on the limit". That extra character buys exactly one
+# distinction, at exactly one length, and nothing tested it -- ``>`` mutated to
+# ``>=`` survived, which spends the character and then lies with it, quoting an
+# input that is complete and marking it elided.
+#
+# A trailing ``...`` is the reader's only signal that what they are looking at is
+# not the whole value. Both directions are asserted, at the boundary and either
+# side of it, because a bound that is only checked from one side is half a bound.
+# --------------------------------------------------------------------------- #
+
+
+def _quoted_input(text: str) -> str:
+    """The refusal a completely unjoinable input of exactly this text produces."""
+    items = _by_id(_item("a", "alpha", ("t",)))
+    records = [_verdict(text, True), _completed(BASELINE, {JUDGE: 1})]
+    result = _counts(records, items)
+    assert result.available is False, "the input was meant to join to nothing"
+    return result.reason
+
+
+@pytest.mark.parametrize("length", [78, 79, 80])
+def test_an_input_that_fits_is_quoted_whole_and_not_marked_elided(length):
+    """At eighty characters the input ends *on* the limit and nothing was cut."""
+    text = "x" * length
+
+    reason = _quoted_input(text)
+
+    assert repr(text) in reason, "the whole input fits and must be quoted whole"
+    assert repr(text + "...") not in reason, (
+        f"an input of exactly {length} characters was quoted with a trailing "
+        f"'...', which tells the reader something was cut when nothing was. The "
+        f"excerpt is held one character past the limit for the sole purpose of "
+        f"telling these two cases apart"
+    )
+
+
+@pytest.mark.parametrize("length", [81, 82, 200])
+def test_an_input_one_character_past_the_limit_is_marked_elided(length):
+    """The other side: eighty-one characters is the first that loses something."""
+    text = "x" * length
+
+    reason = _quoted_input(text)
+
+    assert repr("x" * 80 + "...") in reason, (
+        f"an input of {length} characters was cut without saying so"
+    )
+    assert repr(text) not in reason
+
+
+def test_eighty_and_eighty_one_characters_do_not_quote_to_the_same_sentence():
+    """The distinction the extra held character exists for, stated as itself.
+
+    Both tests above could drift the same way and still agree with each other.
+    This one says the thing that must never stop being true whatever the limit
+    becomes: an input that ended on the limit and one that ran past it are not
+    shown to the reader as the same input.
+    """
+    limit = dimensions._INPUT_SHOWN
+    ends_on_the_limit = _quoted_input("y" * limit)
+    runs_past_it = _quoted_input("y" * (limit + 1))
+
+    assert ends_on_the_limit != runs_past_it, (
+        "an input that was cut and one that was not produced the same sentence, "
+        "so the '...' no longer means anything to whoever reads it"
+    )
+
+
+# --------------------------------------------------------------------------- #
 # ... and so is every *other* value a refusal names
 #
 # The test above pins the one path that was always bounded: an input that is a
@@ -2604,3 +2676,193 @@ def test_the_deferred_store_is_keyed_by_distinct_input_and_so_grows_with_items()
         f"stops growing, the store has started dropping inputs it will need at the "
         f"join, and the refusal that should name one will name nothing"
     )
+
+
+# --------------------------------------------------------------------------- #
+# The joined phase latches, and that is the half of the docstring nothing pinned
+#
+# ``DimensionTally``'s docstring draws the asymmetry between the two phases: the
+# deferred one cannot recognise an input that joins to nothing and files it like
+# any other, "and a log of inputs that join to nothing grows the store linearly
+# ... with no bound but the log", while the joined phase "recognises it
+# immediately, latches the refusal, and every later verdict for that judge returns
+# at the top of ``_verdict`` -- so the store stops growing at the first one".
+#
+# The second half had no test. Two mutations survived because of it: dropping
+# ``(self._joined and not self._knows(item_id))`` from ``_failure``, and setting
+# ``self._joined = False`` unconditionally in ``__init__``. Both send every caller
+# down the deferred path -- the one that does *not* stop growing -- and both left
+# the returned matrix identical, because the join at the end reaches the same
+# refusal by a longer road.
+# --------------------------------------------------------------------------- #
+
+
+def _held_by_a_joined_tally(records, items) -> int:
+    """``_held_by_a_tally``, but for a tally that had the golden set all along."""
+    gc.collect()
+    tracemalloc.start()
+    try:
+        base = tracemalloc.get_traced_memory()[0]
+        tally = dimensions.DimensionTally(items)
+        for record in records:
+            tally.add(record)
+        gc.collect()
+        held = tracemalloc.get_traced_memory()[0] - base
+    finally:
+        tracemalloc.stop()
+    del tally
+    return held
+
+
+def test_the_joined_phase_stops_growing_at_the_first_unjoinable_verdict():
+    """The claim in words, measured. The deferred phase's own test is above.
+
+    A tally holding the golden set knows at once that an input joins to nothing.
+    It refuses for that judge, and every later verdict under that judge returns at
+    the top of ``_verdict`` without allocating -- so ten times the unjoinable
+    records cost the same. A tally that had quietly stopped being joined would
+    file all of them at the measured 317 bytes each.
+    """
+    items = _by_id(_item("a", "alpha", ("t",)))
+
+    def stream(n_records: int):
+        return [_verdict(f"joins-to-nothing-{n}", True) for n in range(n_records)]
+
+    small = _held_by_a_joined_tally(stream(200), items)
+    large = _held_by_a_joined_tally(stream(2000), items)
+
+    assert large < small + 20_000, (
+        f"ten times the unjoinable verdicts held {small} -> {large} bytes. The "
+        f"joined phase is meant to latch on the first one and allocate nothing "
+        f"after it; this is the deferred phase's unbounded growth, reached by a "
+        f"tally that was handed the golden set and did not use it"
+    )
+
+
+def test_the_joined_phase_stops_growing_at_the_first_unknown_failed_item():
+    """The same latching, down ``_failure``'s branch rather than ``_verdict``'s.
+
+    A failed ``migkit.completion`` naming an item the set does not hold refuses
+    for *every* judge, so nothing after it may be accumulated at all.
+    """
+    items = _by_id(_item("a", "alpha", ("t",)))
+
+    def stream(n_records: int):
+        # Distinct unknown ids on purpose. One id repeated would collapse onto one
+        # entry even without the latch, and the growth this measures would vanish
+        # into the store's own keying rather than into the refusal.
+        return [
+            _completion(BASELINE, f"item-nobody-has-{n}", ok=False)
+            for n in range(n_records)
+        ]
+
+    small = _held_by_a_joined_tally(stream(200), items)
+    large = _held_by_a_joined_tally(stream(2000), items)
+
+    assert large < small + 20_000, (
+        f"ten times the failed completions naming unknown items held {small} -> "
+        f"{large} bytes. The first one refuses for every judge, `add` returns at "
+        f"the top for everything after it, and the store must not have noticed "
+        f"the difference -- this is a tally filing item ids the golden set in its "
+        f"own hand says do not exist"
+    )
+
+
+def test_an_unknown_failed_item_latches_before_a_later_refusal_can_answer_for_it():
+    """Latching is not only a memory property: it decides *which* sentence wins.
+
+    ``reason_for`` hands back the first refusal the stream produced. When the
+    unknown item id latches where it is read, that is the sentence. When it is
+    filed instead -- which is what both surviving mutants do -- the run keeps
+    accumulating, a later group-shortfall refusal lands in front of it, and the
+    reader is told judging was resumed when the real defect is a log naming an
+    item the golden set does not hold.
+    """
+    items = _by_id(_item("a", "alpha", ("t",)))
+    records = [
+        _completion(BASELINE, "item-nobody-has", ok=False),
+        _verdict("alpha", True),
+        _completed(BASELINE, {JUDGE: 99}),
+    ]
+
+    result = _counts(records, items)
+
+    assert result.available is False
+    assert "item-nobody-has" in result.reason, (
+        f"the unknown item id did not latch where it was read, so a refusal "
+        f"raised three records later answered in its place: {result.reason!r}"
+    )
+    assert "closed a group of" not in result.reason
+
+
+# --------------------------------------------------------------------------- #
+# What the sixteen bytes buy
+#
+# ``_DIGEST_BYTES = 16`` -> ``15`` and ``-> 1`` both survived every correctness
+# test; ``1`` died only on a memory test, which is the wrong reason. A narrow
+# digest does not make the store bigger, it makes the *counts wrong*: the digest
+# is the key of the tally store and of ``_Index.by_digest``, so two inputs that
+# collide are one item as far as the join is concerned, and one of them silently
+# takes the other's tags. No refusal is raised, because nothing has noticed.
+# --------------------------------------------------------------------------- #
+
+#: Two inputs whose blake2b digests are equal at one byte and differ at two. Found
+#: by search, and pinned by the first assertion of the test below so that a change
+#: of hash function fails loudly here rather than quietly weakening the
+#: demonstration into a test of nothing.
+_COLLIDES_AT_ONE_BYTE = ("question-20", "question-32")
+
+
+def test_a_digest_collision_attributes_verdicts_to_the_wrong_item(monkeypatch):
+    """The failure mode the width exists to prevent, shown by narrowing the width.
+
+    Two colliding inputs are one key. ``_index`` builds ``by_digest`` by
+    assignment, so the second item silently overwrites the first's entry rather
+    than refusing -- and every verdict for *either* input then joins to whichever
+    item was seen last. The matrix that comes back is available, complete and
+    wrong, which is the one shape this module exists not to produce.
+    """
+    first, second = _COLLIDES_AT_ONE_BYTE
+    items = _by_id(_item("a", first, ("alpha-tag",)), _item("b", second, ("bravo-tag",)))
+    records = [
+        _verdict(first, True),
+        _verdict(first, True),
+        _completed(BASELINE, {JUDGE: 2}),
+    ]
+
+    sound = _tallied(records, items)
+
+    assert sound.available is True, sound.reason
+    assert _cell(sound, BASELINE, "alpha-tag") == (2, 2, 1), "two draws of item 'a'"
+    assert _cell(sound, BASELINE, "bravo-tag") == (0, 0, 0), "and none of item 'b'"
+
+    monkeypatch.setattr(dimensions, "_DIGEST_BYTES", 1)
+    assert dimensions._digest(first) == dimensions._digest(second), (
+        f"{_COLLIDES_AT_ONE_BYTE} no longer collide at one byte, so this test is "
+        f"demonstrating nothing. Find a new pair rather than deleting the test"
+    )
+
+    collided = _tallied(records, items)
+
+    assert collided.available is True, (
+        "a collision is not detected and cannot be: this is the point"
+    )
+    assert _cell(collided, BASELINE, "alpha-tag") == (0, 0, 0)
+    assert _cell(collided, BASELINE, "bravo-tag") == (2, 2, 1), (
+        "both draws of item 'a' were counted against item 'b', under a tag item "
+        "'a' does not carry, and the matrix says nothing about it"
+    )
+
+
+def test_the_digest_is_sixteen_bytes_wide():
+    """Not a restatement of the constant: the width is the only guard there is.
+
+    A collision produces the wrong counts silently -- the test above is what that
+    looks like -- so there is no runtime check to fall back on and no test at any
+    realistic scale can tell fifteen bytes from sixteen. The width *is* the
+    control, so it is asserted directly. See the constant's own comment for what
+    the two populations are and why the margin holds by roughly thirty orders of
+    magnitude at both of them.
+    """
+    assert dimensions._DIGEST_BYTES == 16
+    assert len(dimensions._digest("alpha")) == 16
