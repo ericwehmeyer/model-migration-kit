@@ -4662,16 +4662,17 @@ def _run(model: str, *, created: str = _AUG_20, pass_rate: float | None = 0.65, 
     Built on C1's `_point`, so every field C5 does not name holds the value a real
     `migkit.comparison` payload puts there.
     """
-    return _point(
-        candidate_model=model,
-        created=created,
-        pass_rate=pass_rate,
-        judged_baseline=_JUDGED_BASELINE,
-        judge_failures_baseline=_FAILURES_BASELINE,
-        judged_candidate=_JUDGED_CANDIDATE,
-        judge_failures_candidate=_FAILURES_CANDIDATE,
-        **changes,
-    )
+    fields: dict[str, typing.Any] = {
+        "candidate_model": model,
+        "created": created,
+        "pass_rate": pass_rate,
+        "judged_baseline": _JUDGED_BASELINE,
+        "judge_failures_baseline": _FAILURES_BASELINE,
+        "judged_candidate": _JUDGED_CANDIDATE,
+        "judge_failures_candidate": _FAILURES_CANDIDATE,
+    }
+    fields.update(changes)
+    return _point(**fields)
 
 
 def _other_group(model: str, **changes):
@@ -4805,7 +4806,9 @@ def test_every_sequence_the_field_returns_is_a_tuple_because_the_table_has_to_be
 def test_the_three_new_names_are_exported_so_the_rendering_chunks_can_reach_them():
     """C6 and C7 render this. A type that is not in `__all__` is a type a later
     chunk re-derives from a tuple."""
-    assert {"Candidate", "CandidateField", "candidate_field"} <= set(series.__all__)
+    wanted = {"Candidate", "CandidateField", "candidate_field"}
+    exported = set(series.__all__)
+    assert wanted <= exported, f"missing from `__all__`: {sorted(wanted - exported)}"
 
 
 def test_the_candidate_fields_annotations_resolve_to_the_named_types():
