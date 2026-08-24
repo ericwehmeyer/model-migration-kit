@@ -2859,11 +2859,17 @@ FAKE MODELS {{ dash }} these numbers describe scripted responses, not a real pro
   banner above reports the most recent of these runs.
 {% if timeline.runs_without_rate or timeline.runs_without_floor %}
   <br>Not everything could be drawn, and the gaps are counted rather than hidden:
-  {% if timeline.runs_without_rate %}{{ timeline.runs_without_rate }} run(s) recorded no
-  pass rate, so they carry no marker{% endif %}{% if timeline.runs_without_rate and timeline.runs_without_floor %};
-  {% endif %}{% if timeline.runs_without_floor %}{{ timeline.runs_without_floor }} run(s)
-  recorded no floor, so the rule is broken where they sit {{ dash }} which is a gap
-  in the record, not a floor of zero{% endif %}.
+  <ul>
+  {% if timeline.runs_without_rate %}
+    <li>{{ timeline.runs_without_rate }} run(s) recorded no pass rate, so they
+        carry no marker</li>
+  {% endif %}
+  {% if timeline.runs_without_floor %}
+    <li>{{ timeline.runs_without_floor }} run(s) recorded no floor, so the rule is
+        broken where they sit {{ dash }} which is a gap in the record, not a floor
+        of zero</li>
+  {% endif %}
+  </ul>
 {% endif %}
 </p>
 {% endif %}
@@ -3164,7 +3170,7 @@ _CHANGES_MACRO = """
 """
 
 
-class Draws(NamedTuple):
+class _Draws(NamedTuple):
     """One side's draws, grouped for printing rather than for counting.
 
     Presentation only. Nothing here reaches a statistic: the rate, the interval
@@ -3209,7 +3215,7 @@ class Draws(NamedTuple):
         return f"{self.total} draws, {self.distinct} distinct"
 
 
-def _draws(outputs: Sequence[str]) -> Draws:
+def _draws(outputs: Sequence[str]) -> _Draws:
     """Group one side's outputs, collapsing only total agreement.
 
     Only the all-identical case collapses. Partial grouping -- three of one text
@@ -3225,8 +3231,8 @@ def _draws(outputs: Sequence[str]) -> Draws:
         if text not in seen:
             seen.append(text)
     if len(seen) == 1 and len(outputs) > 1:
-        return Draws((seen[0],), len(outputs), 1)
-    return Draws(tuple(outputs), len(outputs), len(seen))
+        return _Draws((seen[0],), len(outputs), 1)
+    return _Draws(tuple(outputs), len(outputs), len(seen))
 
 
 def _banner_bar(model: ReportModel) -> str:
