@@ -667,6 +667,14 @@ both failed to record a golden-set hash have equal keys and are not comparable.
 
 #### C5 — the candidate field
 
+> **AMENDED — read R20 before this section.** `CandidateField` gains an eighth
+> field, `stale_after_days: float`, recording the window the field was built
+> with. Without it a renderer prints "measured more than 7 days apart" beside a
+> field built with `stale_after_days=30.0`, which is a lie assembled from two
+> true halves. The test asserting the field set is exactly seven names changes
+> with it. R20 also carries nine defects the review found and how each was
+> ruled.
+
 > **AMENDED — read R17.2 through R17.5 before this section.** Four corrections.
 > (1) `Candidate.delta_pp` and `CandidateField.baseline_pass_rate` need a
 > baseline pass rate, and **`RunPoint` has no such field** — its `pass_rate` is
@@ -3998,3 +4006,156 @@ through `spot_check` let the always-round-up mutant live.
 | C11 | 120 tests | **150** | 12 introduced, 12 dead |
 
 Both green on all seven merge checks. Full suite at C4's branch: 1692 passed.
+
+### R20 — what C5's review found, and the one finding that changes the contract
+
+C5's reviewer ran 39 mutants and 15 survived. The chunk's *code* came out mostly
+right — all four of the implementer's blind decisions were endorsed on the
+reasoning, not merely on the outcome — but the suite underneath it was holding
+much less than its 269 passing tests suggested.
+
+#### R20.1 — the fixture monoculture, which is now a named failure mode
+
+**`delta_pp` computed against the field's summary `baseline_pass_rate` survives
+a fully green suite.** The implementation correctly uses each point's own
+baseline; nothing pins it.
+
+Every C5 fixture hard-codes `judged_baseline=50, judge_failures_baseline=10` on
+*every* point, so all rows share one baseline and per-point versus summary are
+numerically identical. The mutant cannot be seen, because no fixture can tell
+the two apart.
+
+Probed against real drift:
+
+```
+alpha (Aug 10, own baseline 0.80, pass_rate 0.65) -> delta_pp = -15.0  (correct)
+gamma (Aug 20, own baseline 0.60, pass_rate 0.65) -> delta_pp =  +5.0  (correct)
+under the mutant, BOTH rows print +5.0
+```
+
+A candidate that lost fifteen points is published as having gained five, because
+the baseline drifted underneath it. That is C5's own named failure mode, and 269
+tests stayed green.
+
+**This is the third appearance of one shape.** On C4, a hash-prefix mutant
+survived the whole suite because every fixture hash differed at character 0. On
+C7, the tester killed it in advance by choosing two hashes that share sixteen
+characters and differ at the seventeenth, and ids differing *only* in a version
+suffix. The rule those three cases teach:
+
+> **A fixture where the broken and the correct implementation agree is a fixture
+> that tests nothing.** Vary the field the code is supposed to be reading. If
+> every fixture carries the same value for it, the suite cannot see it at all.
+
+The tester was not careless here — it flagged the ambiguity in a section header
+and left it "for the reviewer rather than decided by a test". But that admission
+was about `baseline_pass_rate`'s provenance, and it silently took `delta_pp`'s
+per-point baseline down with it. **An acknowledged ambiguity in one field is not
+an acknowledged ambiguity in its neighbour.**
+
+#### R20.2 — a ruling shipped with its substance unpinned
+
+The sorting ruling (dateless rows sort *oldest*, not last) was upheld on review,
+and I would rule it the same way again. But the `_UNDATED = datetime.max`
+mutant — which inverts the ruling in **all three** places the ruling itself says
+it has work to do — survives 269 green tests. Only one of the three, the spread,
+was asserted.
+
+Two jobs had no test at all: a model with one undated and one dated run (the
+dated run should win the row), and two equally large groups where one holds an
+undated run (the dated group should win the tie-break).
+
+**Ruling a disagreement is not the same as pinning the ruling.** When a blind
+pair disagrees and the orchestrator rules, the ruling needs a test the same day,
+or the next reader finds a contract sentence with nothing enforcing it.
+
+One correction to my own ruling, from the same review: I wrote that the date
+reading was "the only total reading". That is false — "dateless rows last,
+`candidate_model` within each block" is also total. The contract simply does not
+supply that second sentence, so the layout reading is untotal **as written**,
+which is enough under R17.5. The overstatement is worth removing precisely
+because a reader who catches it discounts the two grounds that do carry the
+ruling.
+
+#### R20.3 — CandidateField gains the window it was built with
+
+`stale_after_days` is a parameter of `candidate_field` (correctly — R14 made it
+one rather than a literal). `_STALE_AFTER_DAYS` is private. **`CandidateField`
+carries neither.**
+
+So a renderer holding only the field can say "measured more than 7 days apart"
+about a field built with `stale_after_days=30.0`. Both halves are true and the
+sentence is a lie. This is the hazard C6's `note` discipline exists to prevent —
+the sentence must be written where the number is computed, not in the template,
+so the terminal render and the HTML cannot drift apart.
+
+**Ruling: add `stale_after_days: float` as an eighth field.** The number and the
+window it was measured against travel together, or they eventually disagree. The
+alternative — passing the window to the renderer alongside the field — creates
+exactly the two sources that can contradict each other.
+
+I deferred this at first, on the grounds that it changes a field count a test
+asserts and that C6 was about to be dispatched against the seven-field shape.
+That reasoning does not survive contact: **C6's dispatch is mine to schedule**,
+its brief was still a draft, and it is blocked on C5 in any case. A contract
+defect is cheapest to fix while the file is already open, and the deferral was
+buying nothing.
+
+`CandidateField` is a frozen dataclass rather than a NamedTuple, so field order
+is repr-only and `dataclasses.replace` in C6 is unaffected. The eighth field
+goes last.
+
+#### R20.4 — eight more defects, and how each was ruled
+
+Acted on in the fix pass:
+
+| | Defect | Ruling |
+|---|---|---|
+| D1 | The header baseline is the *newest* row's; each `delta_pp` is against its *own*. When the baseline drifts they are silently inconsistent, and `spread_flagged` — a **time** proxy — is `False` on a one-day drift. | Raise a caveat when the rendered rows' reconstructed baselines are not all equal, and say on the **public** attribute that the header must not be added to the deltas. Do not blank the header. |
+| D2 | A run superseded by a newer run of the same model appears in `candidates`, `excluded` **and** `caveats`: nowhere. It vanishes with no sentence. | Mint a superseded exclusion on the `_unnamed_candidate` precedent. This is the quietly-shrunk table C4 exists to prevent, and it contradicts the implementer's own decision-2 rationale. |
+| D3 | `spread_days == 0.0` from a **single** dated row — the exact "measured in a single sitting" claim its docstring says `None` exists to refuse. | `None` unless at least two rendered rows carry a date. Compatible with all three contract edges. |
+| D4 | `judge_failures_baseline > judged_baseline` yields a negative rate and a `delta_pp` of +85.0, uncaveated. The only rate C5 computes rather than reads, and the only one with no sanity bound. | `None`. C4 minted four exclusions for exactly this "a payload is JSON, not a type" class. |
+| D5 | The deliberate unroundedness is stated only in *private* docstrings, and a round-to-1dp mutant survives because `pytest.approx` swallows it. | Move the sentence to the public attributes; assert one exact float. |
+| D8 | The `dir()` guard on `Candidate` forbids *any* public addition, not just a statistic. | Narrow it to interval/CI/confidence/p-value-shaped names, so `Candidate.model` can be added for C6. |
+
+Documentation-only, and both are cases of a docstring teaching something false:
+
+- **D6 — `is_identifying` is dead at its only call site.** `candidate_field` and
+  `_widest_field` both justify the guard with a scenario that cannot occur:
+  partitioning against a non-identifying key keeps *zero* points, so its rank is
+  `(0, 0, _UNDATED)` and it can never win. Keep the guard, correct the
+  sentences. Cross-chunk consequence: C4 introduced `is_identifying` on the
+  claim that "anything that groups on `ComparabilityKey` needs this", and the
+  only consumer that ever grouped on it does not.
+- **D7 — `CandidateField.baseline_pass_rate` can never be `None`** from
+  `candidate_field`, since every rendered point passed `_ungraded`, which
+  requires `judged_baseline > 0`. Say so, or C6 writes a dead branch.
+  (`Candidate.delta_pp is None` *is* reachable, and that promise stands.)
+
+#### R20.5 — what the review endorsed
+
+Worth recording, because four blind decisions surviving a hostile review is the
+first time that has happened on this plan:
+
+1. **"Largest group" ranks by distinct models, not run count.** Thirteen nightly
+   runs of a single candidate beside a two-model group: the implementation
+   renders the two-model field, run-count-first returns `None`. The docstring's
+   claim — *if any eligible group can render a table, the chosen one does* — is
+   exact, because the rank's first term is literally `len(rendered)`.
+2. **Partition the whole log, not just the group.** Endorsed with a proof rather
+   than an observation: `_incomparable(key(p), K) is None` iff `key(p) == K`
+   **and** `K.is_identifying`, and eligibility guarantees the second — so `kept`
+   is bit-identical either way and only `excluded` differs. Without it,
+   `excluded` names only ungraded runs and C4's exclusion machinery is dead at
+   its only call site.
+3. **A new exclusion for `candidate_model == ""`.** C4 genuinely has no
+   jurisdiction — `candidate_model` is not in the key — and C5 is the only
+   consumer.
+4. **`caveats` filtered to the rendered rows.** Correct in isolation; correct
+   *and complete* once D2 mints the superseded exclusion.
+
+One consequence flagged for the plan rather than for C5: a log of two anonymous
+runs plus one named candidate returns `None`, and every exclusion sentence
+computed along the way dies with it. The report can never say *why* there is no
+table. That is inherent to the contract's `None` return, and it is worth
+revisiting when C14's remaining elements decide what an empty section renders as.
