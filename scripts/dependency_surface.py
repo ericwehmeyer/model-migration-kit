@@ -61,9 +61,21 @@ def rigor_imports(path: Path) -> tuple[list[str], bool]:
     return sorted(names), imports_module
 
 
+#: Every directory in the tree that may import rigor. `scripts/` is here because
+#: it was not, and the omission had already cost a row: `scripts/showcase.py` does
+#: `from opik_rigor import FakeAdapter` and was invisible to this gate, so
+#: COMPATIBILITY.md was incomplete by exactly one module while `--check` passed.
+#: The claim that table is made under -- "so the completeness claim is checkable
+#: rather than asserted" -- is not survivable with a glob that only looks where the
+#: last violation happened to be. A fourth directory added later must be added
+#: here; there is no way to make that automatic without walking the repo root and
+#: sweeping up the venv, the build tree and every worktree checkout beside it.
+SEARCHED = ("src", "tests", "scripts")
+
+
 def table_rows() -> list[str]:
     sources = sorted(
-        [*(REPO / "src").rglob("*.py"), *(REPO / "tests").rglob("*.py")],
+        [path for name in SEARCHED for path in (REPO / name).rglob("*.py")],
         key=lambda p: p.relative_to(REPO).as_posix(),
     )
     rows = []

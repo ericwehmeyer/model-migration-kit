@@ -163,13 +163,14 @@ claimed in the window where the tree said one thing and the index another.
 
 ## 1. The API model-migration-kit actually calls
 
-Name by name. Every `.py` file in this repository that names `opik_rigor` is on
-this list; anything not on it is not relied on and a rigor release may move it
-freely. The enumeration is mechanical and re-runnable — see the command below the
+Name by name. Every `.py` file under `src/`, `tests/` and `scripts/` that names
+`opik_rigor` is on this list; anything not on it is not relied on and a rigor
+release may move it freely. The enumeration is mechanical and re-runnable — see the command below the
 table — so the completeness claim is checkable rather than asserted.
 
 | Module | Imported from `opik_rigor` |
 |---|---|
+| `scripts/showcase.py` | `FakeAdapter` |
 | `src/model_migration_kit/cli.py` | `Adapter`, `AdapterError`, `AnthropicAdapter`, `EvidenceLog`, `FakeAdapter`, `OpenAICompatAdapter`, `RigorError`, `SampleTimeout`, `__version__` |
 | `src/model_migration_kit/comparison.py` | `EvidenceLog`, `PassRateError`, `RegressionError`, `SCORE_MAX`, `SCORE_MIN`, `assert_no_regression`, `assert_pass_rate`, `wilson_interval` |
 | `src/model_migration_kit/demo.py` | `AdapterError`, `EvidenceLog`, `FakeAdapter` |
@@ -191,6 +192,7 @@ table — so the completeness claim is checkable rather than asserted.
 | `tests/test_report_scale.py` | `EvidenceLog`, `FakeAdapter` |
 | `tests/test_runner.py` | `EvidenceLog`, `FakeAdapter`, `PassRateError`, `assert_pass_rate`, `sample_of` |
 | `tests/test_series.py` | `EvidenceError`, `EvidenceLog`, `EvidenceRecord` |
+| `tests/test_showcase.py` | `EvidenceLog`, `FakeAdapter`, `PassRateError`, `assert_pass_rate` |
 | `tests/test_stranger_path.py` | `EvidenceLog`, `anthropic`, `openai_compat` |
 | `tests/test_thresholds_confidence_contract.py` | `assert_pass_rate`, `wilson_lower_bound` |
 
@@ -236,9 +238,15 @@ tests/test_thresholds_confidence_contract.py:56 from opik_rigor import assert_pa
 The `.claude` exclusion is new and was earned: agent worktrees under
 `.claude/worktrees/` are checkouts of this same repository, so without it the
 command prints four stale copies of every row above and the output stops being an
-inventory of what ships. `scripts/dependency_surface.py` never had the problem —
-it walks `src/` and `tests/` by name — which is the argument for the script being
-the check and this command being the illustration.
+inventory of what ships. `scripts/dependency_surface.py` never had *that* problem
+— it walks named directories rather than the repo root — but it had the mirror of
+it, and the mirror is the more dangerous one. It walked `src/` and `tests/` only,
+so `scripts/showcase.py`'s `from opik_rigor import FakeAdapter` was invisible to
+the check while `--check` reported agreement: the table was incomplete by exactly
+one row and the gate said it was not. `scripts/` is now in the list. Naming the
+directories is still right — sweeping the root drags in the venv, the build tree
+and every worktree — but the list is a thing a new directory has to be added to,
+and this is the record of the one time it was not.
 
 `__version__` is load-bearing rather than decorative: `migkit --version` prints
 it, so removing it from the package root would break the CLI's most trivial
