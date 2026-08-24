@@ -2866,12 +2866,37 @@ def test_the_judge_table_the_flips_and_the_provenance_come_from_the_last_run(
     )
 
 
-def test_a_series_of_runs_renders_exactly_what_one_run_rendered(tmp_path: Path) -> None:
-    """C3's title is "hang the series off ``ReportModel``, render nothing".
+def _without_timeline(html: str) -> str:
+    """The document with its run-history section and nav entry cut out.
 
-    Byte-for-byte, modulo the log's own path and digest. A chunk that quietly
-    added a row, a column or a sentence would ship a document nobody reviewed,
-    and C6 is where the timeline is supposed to arrive.
+    Everything C14a added lives between ``<h2 id="timeline">`` and the next
+    heading, plus one ``<li>`` in the nav. Cutting exactly that leaves the rest of
+    the document to be compared byte for byte.
+    """
+    start = html.find('<h2 id="timeline">')
+    if start != -1:
+        end = html.find('<h2 id="judges">', start)
+        assert end != -1, "the timeline section is not followed by the judges heading"
+        html = html[:start] + html[end:]
+    kept = [line for line in html.splitlines() if 'href="#timeline"' not in line]
+    return chr(10).join(kept)
+
+
+def test_a_series_of_runs_changes_the_run_history_and_nothing_else(tmp_path: Path) -> None:
+    """C3 said "render nothing"; C14a is the chunk where the timeline arrives.
+
+    So the original byte-for-byte assertion is kept and *narrowed* rather than
+    deleted: outside the run-history section the two documents must still be
+    identical, modulo the log's own path and digest. What C3's test was really
+    protecting is the promise in ``ReportModel.series``' own docstring -- that the
+    timeline can gain, lose or re-derive a field "without the banner, the judge
+    table, the flips or the provenance block moving with it" -- and that promise
+    is not weakened by rendering the series. It is only now testable.
+
+    The second assertion is what stops this from becoming a test that passes by
+    cutting out everything that differs: the section that *was* excised must
+    genuinely differ between the two documents. Without it, a bug that rendered
+    the timeline identically for one run and two would sail through.
     """
     scenario = _scenario(tmp_path / "renders")
     alone = _model_from(scenario.evidence)
@@ -2880,8 +2905,17 @@ def test_a_series_of_runs_renders_exactly_what_one_run_rendered(tmp_path: Path) 
     )
     with_history = _model_from(log)
 
-    assert _headline_scrubbed(_html(with_history), log) == _headline_scrubbed(
-        _html(alone), scenario.evidence
+    two_runs = _headline_scrubbed(_html(with_history), log)
+    one_run = _headline_scrubbed(_html(alone), scenario.evidence)
+
+    assert _without_timeline(two_runs) == _without_timeline(one_run), (
+        "a second comparison in the log changed something outside the run-history "
+        "section; the banner, the judge table, the flips and the provenance block "
+        "are read from the records and must not move with the series"
+    )
+    assert two_runs != one_run, (
+        "the two documents are identical, so the run history is not being rendered "
+        "at all and the comparison above is vacuous"
     )
     assert len(_series(with_history)) == 2, (
         "the documents match because neither model has a series"
@@ -6864,3 +6898,923 @@ def test_a_model_built_by_any_other_route_says_no_counts_were_taken(tmp_path: Pa
     counts = _get(bare, "dimension_counts")
     assert counts.available is False
     assert counts.reason, "the default has to say something, and it says nothing"
+
+
+# --------------------------------------------------------------------------- #
+# C14a -- the two charts that exist, and the evidence made legible.
+#
+# The two SVG helpers return trusted markup and must be injected unescaped;
+# everything derived from model output must stay escaped. The set of ``| safe``
+# filters in the template is therefore a fixed, enumerable list, and this section
+# opens by pinning it. A ``| safe`` that appears anywhere else is the failure the
+# contract names as the one that ships: a path that can carry model output turns
+# an escaped ``<img src="https://tracker/x.png">`` in a completion into a real
+# fetch.
+# --------------------------------------------------------------------------- #
+
+#: The only expressions the document is allowed to mark safe, by name. Each is a
+#: hand-rolled SVG helper's injection point -- ``interval_bar_svg`` reached
+#: through the ``interval_bar`` filter, and ``timeline_svg``'s ``.svg`` member
+#: reached through the ``timeline`` filter. Written as a set of *descriptors*
+#: rather than a count, because "two safes" is satisfied by two safes in the
+#: wrong places.
+SAFE_INJECTION_POINTS = frozenset({"interval_bar", "timeline.svg"})
+
+
+def _safe_descriptor(node: Any) -> str:
+    """Name the expression a ``| safe`` was applied to.
+
+    A filter chain (``model | interval_bar | safe``) is named by the filter
+    underneath the ``safe``; an attribute access (``tl.svg | safe``) by its
+    dotted path. Anything else returns its node type, which is what makes an
+    unexpected ``safe`` fail with a legible name rather than a bare count.
+    """
+    from jinja2 import nodes
+
+    if isinstance(node, nodes.Filter):
+        return str(node.name)
+    if isinstance(node, nodes.Getattr):
+        inner = node.node
+        stem = inner.name if isinstance(inner, nodes.Name) else type(inner).__name__
+        return f"{stem}.{node.attr}"
+    if isinstance(node, nodes.Name):
+        return str(node.name)
+    return type(node).__name__
+
+
+def _safes_in_template() -> list[str]:
+    """Every ``| safe`` in the document's own source, by the expression it marks."""
+    from jinja2 import Environment, nodes
+
+    source = _report._CHANGES_MACRO + _report._TEMPLATE
+    tree = Environment().parse(source)
+    return [
+        _safe_descriptor(node.node)
+        for node in tree.find_all(nodes.Filter)
+        if node.name == "safe"
+    ]
+
+
+def test_the_document_marks_exactly_one_expression_safe_per_hand_rolled_svg_and_no_others() -> (
+    None
+):
+    """C14a's test that fails first: the ``| safe`` set, by name, not by count.
+
+    Parsed with jinja2's own parser rather than grepped, for the same reason the
+    self-containment detector is an HTML parser rather than a regex: ``| safe``
+    inside a quoted string, or inside a comment, is not a filter, and a grep
+    cannot tell the difference. The assertion is on the *set* so that a ``safe``
+    moved from the timeline onto a row's model text fails here even though the
+    count is unchanged -- which is exactly the mutation that would ship the
+    fetching hole.
+    """
+    found = _safes_in_template()
+    assert len(found) == len(set(found)), f"a safe is applied twice to one expression: {found}"
+    assert set(found) == SAFE_INJECTION_POINTS, (
+        f"the document marks {sorted(set(found))} safe; the only expressions that "
+        f"may be marked safe are {sorted(SAFE_INJECTION_POINTS)}. A safe on anything "
+        f"derived from model output turns an escaped tag in a completion into a fetch."
+    )
+
+
+def _render_context(model: Any) -> dict[str, Any]:
+    """The keyword arguments ``render_html_string`` passes to the template."""
+    return {
+        "model": model,
+        "title": _report._default_title(model),
+        "generated": NOW_A,
+        "verdict_class": _report._VERDICT_CLASS.get(model.verdict_word, "none"),
+        "sections": _report.methodology_sections(model),
+        "dash": _report.EM_DASH,
+        "ellipsis": "…",
+        "unrecorded": _report.THRESHOLD_SOURCE_UNRECORDED,
+        "config_path": model.config_path,
+        "baseline_parts": _report._parts_phrase(model.baseline, "baseline"),
+        "candidate_parts": _report._parts_phrase(model.candidate, "candidate"),
+        "max_output_chars": model.max_output_chars,
+        "max_report_chars": model.max_report_chars,
+    }
+
+
+def test_stripping_a_safe_escapes_the_chart_instead_of_drawing_it(tmp_path: Path) -> None:
+    """The reviewer's third question, as a test: mutate each ``| safe`` off.
+
+    Both helpers return trusted markup and are the only expressions allowed
+    through unescaped. If a ``| safe`` were removed the document would not fail --
+    it would render the SVG source as visible text, which is a broken page rather
+    than a raised exception, and a broken page is the kind of thing a green suite
+    ships. So each one is removed here and the escaping is asserted, which proves
+    the filter is load-bearing rather than decorative.
+    """
+    from jinja2 import DictLoader, Environment, StrictUndefined, select_autoescape
+
+    model, _ = _rendered(tmp_path / "safe")
+    source = _report._CHANGES_MACRO + _report._TEMPLATE
+
+    for injection in sorted(SAFE_INJECTION_POINTS):
+        stem = injection.split(".")[0]
+        mutated = source.replace(injection + " | safe", injection).replace(
+            stem + " | safe", stem
+        )
+        assert mutated != source, "no " + injection + " | safe was found to remove"
+        env = Environment(
+            loader=DictLoader({_report._TEMPLATE_NAME: mutated}),
+            autoescape=select_autoescape(default_for_string=True, default=True),
+            undefined=StrictUndefined,
+            trim_blocks=True,
+            lstrip_blocks=True,
+        )
+        for name, one in _report._environment().filters.items():
+            env.filters[name] = one
+        html = env.get_template(_report._TEMPLATE_NAME).render(**_render_context(model))
+        assert "&lt;svg" in html, (
+            f"removing the {injection} | safe did not escape anything, so that "
+            f"filter is not what puts the chart in the document and the safe-set "
+            f"test above is pinning the wrong thing"
+        )
+
+
+# -- defect 1: repetition presented as evidence ------------------------------ #
+
+
+def test_identical_draws_are_printed_once_and_the_count_is_stated(tmp_path: Path) -> None:
+    """Five byte-identical draws are one block plus a sentence, not five blocks.
+
+    The sentence is not decoration. Collapsing without it would remove the count
+    from the page entirely, and "how many draws agreed" is what says how much
+    weight one draw carries.
+    """
+    repeated = "the candidate said exactly this, five times over"
+    model, html = _rendered(tmp_path / "identical", candidate_output=repeated)
+
+    # One block per row that embedded it, not one per document: every changed row
+    # quotes its own draws, and collapsing across rows would merge two different
+    # items' evidence into one claim.
+    rows = [
+        row
+        for row in (*model.flips, *model.gains, *model.unstable)
+        if row.detail_embedded and set(row.candidate_outputs) == {repeated}
+    ]
+    assert rows, "this fixture is supposed to give some row five identical draws"
+
+    printed = [text for text in _pre_texts(html) if text.strip() == repeated]
+    assert len(printed) == len(rows), (
+        f"the identical candidate draws were printed {len(printed)} times across "
+        f"{len(rows)} row(s); repetition is not evidence and each row should show "
+        f"the text once"
+    )
+    assert len(printed) < len(rows) * N_PER_ITEM, (
+        "nothing was collapsed, so this test would pass against the old template"
+    )
+    assert f"all {N_PER_ITEM} draws identical" in _visible(html), (
+        "the draws were collapsed without saying how many there were, which "
+        "removes the count from the document rather than de-duplicating it"
+    )
+
+
+def test_differing_draws_are_every_one_printed_and_the_distinct_count_is_stated(
+    tmp_path: Path,
+) -> None:
+    """The other half, and the half a collapse could silently break.
+
+    The default scenario gives every draw a distinct suffix. All of them must
+    still be printed -- dropping a draw to shorten the page would remove evidence
+    -- and the document must say how many were distinct, because that is the fact
+    the reader cannot otherwise see.
+    """
+    _, html = _rendered(tmp_path / "differing")
+    blocks = _pre_texts(html)
+
+    for index in range(N_PER_ITEM):
+        marker = "#" + str(index)
+        assert any(marker in text for text in blocks), (
+            f"draw {marker} is not in the document; collapsing must not drop a draw"
+        )
+    assert f"{N_PER_ITEM} draws, {N_PER_ITEM} distinct" in _visible(html), (
+        "draws that all differ must say so; uniformity and variation rendering "
+        "identically is the defect this chunk exists to fix"
+    )
+
+
+class _PreBlocks(HTMLParser):
+    """The text of every ``<pre>``, block by block.
+
+    ``_Document`` flattens the page into one string, which cannot answer "how
+    many separate blocks hold this text" -- and that count is exactly what the
+    draws collapse changes. Read independently, on the stdlib parser, for the
+    same reason ``_Document`` is: an escaped ``<pre>`` inside a model completion
+    is text, not a block, and only a parser can tell those apart.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.blocks: list[str] = []
+        self._depth = 0
+        self._buffer: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "pre":
+            self._depth += 1
+            self._buffer = []
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "pre" and self._depth:
+            self._depth -= 1
+            self.blocks.append("".join(self._buffer))
+            self._buffer = []
+
+    def handle_data(self, data: str) -> None:
+        if self._depth:
+            self._buffer.append(data)
+
+
+def _pre_texts(html: str) -> list[str]:
+    """The text of every ``<pre>`` block, read with the stdlib parser."""
+    parser = _PreBlocks()
+    parser.feed(html)
+    parser.close()
+    return parser.blocks
+
+
+def test_only_total_agreement_collapses() -> None:
+    """A pure-function check on the rule, including the case that must not collapse.
+
+    Partial grouping was rejected deliberately: it reorders the draws, and the
+    order they were recorded in is the only evidence a reader has about when a
+    model changed its answer within a run.
+    """
+    draws = _report._draws
+
+    assert draws(("a", "a", "a")).texts == ("a",)
+    assert draws(("a", "a", "a")).total == 3
+    assert draws(("a", "a", "a")).sentence == "all 3 draws identical"
+
+    mixed = draws(("a", "b", "a"))
+    assert mixed.texts == ("a", "b", "a"), (
+        "a partially repeating side must print every draw in the recorded order"
+    )
+    assert mixed.distinct == 2
+    assert mixed.sentence == "3 draws, 2 distinct"
+
+    lone = draws(("a",))
+    assert lone.texts == ("a",)
+    assert lone.sentence == "", "one draw needs no sentence; there is nothing to compare"
+    assert draws(()).texts == ()
+    assert draws(()).sentence == ""
+
+
+def test_the_completeness_claim_still_counts_what_the_models_produced(
+    tmp_path: Path,
+) -> None:
+    """R5's failure in a new coat, and the one thing the collapse could break.
+
+    The budget sentence certifies completeness. If collapsing identical draws made
+    it count what was *printed*, it would certify a smaller thing in exactly the
+    same words. So the produced figure must survive unchanged, and where the
+    printed total differs the document must give both numbers rather than swapping
+    one for the other.
+    """
+    repeated = "identical draw text"
+    model, html = _rendered(tmp_path / "budget", candidate_output=repeated)
+    visible = _squeeze(_visible(html))
+
+    produced = model.detail.embedded
+    printed = _report._printed_chars(model)
+    assert printed < produced, (
+        "this fixture is supposed to collapse something; if nothing collapsed the "
+        "assertions below are vacuous"
+    )
+    assert f"{produced:,}" in visible, (
+        f"the budget sentence no longer states the {produced:,} characters the "
+        f"models produced, so it is certifying what survived the presentation layer"
+    )
+    assert f"{printed:,}" in visible, (
+        f"the document collapses draws but never states the {printed:,} characters "
+        f"it actually prints, so the two numbers cannot be reconciled by a reader"
+    )
+
+
+# -- defect 2: the finding behind a closed triangle --------------------------- #
+
+
+def _section_details(html: str, section_id: str) -> list[bool]:
+    """Whether each ``<details>`` under one ``<h2 id=...>`` carries ``open``."""
+    states: list[bool] = []
+    inside = False
+    for tag, attrs in _parse(html).tags:
+        if tag == "h2":
+            inside = attrs.get("id") == section_id
+        elif tag == "details" and inside:
+            states.append("open" in attrs)
+    return states
+
+
+def test_flips_are_open_by_default_and_gains_are_not(tmp_path: Path) -> None:
+    """Flips are the point of the document; gains are context.
+
+    Opening gains too would give a reader's eye the same weight for both, and this
+    document's own argument is that netting the two lists is how a bad migration
+    ships.
+    """
+    model, html = _rendered(tmp_path / "open")
+    assert model.flips, "this fixture needs a flip"
+    assert model.gains, "this fixture needs a gain"
+
+    flips = _section_details(html, "flips")
+    gains = _section_details(html, "gains")
+
+    assert flips
+    assert all(flips), (
+        f"a flip renders closed: {flips}. The run's most important result sits "
+        f"inside one of these, and a reader who does not click sees only a verdict"
+    )
+    assert gains
+    assert not any(gains), (
+        f"a gain renders open: {gains}. Gains are context, not the finding"
+    )
+
+
+# -- defect 3: a path printed eight times ------------------------------------- #
+
+
+def test_the_thresholds_table_names_its_source_by_filename(tmp_path: Path) -> None:
+    """One absolute path, repeated once per threshold row, in a 60rem document."""
+    model, html = _rendered(tmp_path / "paths")
+    config = model.config_path
+    assert config, "this fixture needs a recorded config path"
+    visible = _visible(html)
+    seen = visible.count(config)
+
+    assert seen <= 2, (
+        f"the full config path appears {seen} times in the visible text; it belongs "
+        f"at full length in 'What was compared' and the provenance block, and "
+        f"nowhere else. Before this chunk it appeared once per threshold row"
+    )
+    assert _report._basename(config) in visible, (
+        "the source column must still name the file it came from"
+    )
+    assert model.thresholds, (
+        "no thresholds are recorded, so the repetition this test measures cannot "
+        "occur and the count above is vacuous"
+    )
+
+
+def test_the_full_path_is_still_shown_where_it_can_be_checked(tmp_path: Path) -> None:
+    """Shortening must not become hiding.
+
+    A reviewer signing a migration decision has to be able to check which file the
+    thresholds came from, so the whole path stays in the document -- once, where a
+    path belongs.
+    """
+    model, html = _rendered(tmp_path / "shown")
+    config = model.config_path
+    assert config, "this fixture needs a recorded config path"
+    assert config in _visible(html), (
+        "the full config path is nowhere in the document; the basename in the "
+        "thresholds table is a shortening, not a substitute"
+    )
+
+
+def test_a_windows_path_in_a_title_attribute_would_fail_the_self_containment_gate() -> None:
+    """Why C14a's contract clause about ``title=`` was rejected rather than built.
+
+    The contract says to keep the full path in a ``title=``, on the grounds that
+    ``title`` is not in ``FETCHING_ATTRS`` and is not dereferenced. Both halves are
+    true and the conclusion does not follow: ``title`` is also not exempt under
+    ``_NEVER_DEREFERENCED_RE``, so it is still judged by *shape* -- and a Windows
+    drive letter is a URL scheme by ``_SCHEME_RE``'s reading, because ``C:``
+    matches ``[a-zA-Z][a-zA-Z0-9+.-]*:``.
+
+    So the tooltip would make ``assert_self_contained`` refuse the entire document,
+    which runs inside ``render_html`` before the file is written -- and it would do
+    so on Windows only, passing everywhere it was written. That is the platform
+    trap this project has already been bitten by twice, in opposite directions,
+    once in each repository.
+
+    Pinned as a test rather than left as a paragraph so that a future editor who
+    reaches for ``title=`` on a path finds out here instead of from a user.
+    """
+    backslash = chr(92)
+    windows = "C:" + backslash + "work" + backslash + "run-config.toml"
+
+    tooltipped = _report.external_urls('<td title="' + windows + '">run-config.toml</td>')
+    assert len(tooltipped) == 1, (
+        "a Windows path in a title= is no longer flagged; if the scanner was "
+        "deliberately widened, this test and _source_label's docstring are the two "
+        "places that argue from the old behaviour"
+    )
+    assert tooltipped[0].attribute == "title"
+
+    assert _report.external_urls("<td>" + windows + "</td>") == (), (
+        "the same path as element text must stay clean -- that is why the "
+        "thresholds table prints a basename rather than a tooltip"
+    )
+    assert _report.external_urls('<td title="/work/run-config.toml">x</td>') == (), (
+        "the POSIX form passes, which is exactly why this defect would have "
+        "shipped: it is invisible on the platform most contributors test on"
+    )
+
+
+# -- defect 4: a row that can never say anything ------------------------------ #
+
+
+def _visible_between(html: str, start_id: str, end_id: str) -> str:
+    """Visible text between two ``<h2 id=...>`` headings."""
+    start = html.find('<h2 id="' + start_id + '"')
+    end = html.find('<h2 id="' + end_id + '"', start + 1)
+    assert start != -1
+    assert end > start, f"no {start_id}..{end_id} span in the document"
+    return _visible(html[start:end])
+
+
+def test_a_wholly_scripted_run_omits_the_latency_table_and_says_why(
+    tmp_path: Path,
+) -> None:
+    """``0.000 / 0.000`` is not a fast model; it is the absence of a measurement."""
+    model, html = _rendered(
+        tmp_path / "fake",
+        baseline_adapter="FakeAdapter",
+        candidate_adapter="FakeAdapter",
+    )
+    assert model.baseline.is_fake
+    assert model.candidate.is_fake
+
+    start = html.find('<h2 id="latency"')
+    end = html.find('<h2 id="flips"', start + 1)
+    tags = [tag for tag, _ in _parse(html[start:end]).tags]
+    assert "table" not in tags, (
+        "the latency table is still rendered for a wholly scripted run; every cell "
+        "in it is a few microseconds of local dictionary lookup"
+    )
+
+    latency = _visible_between(html, "latency", "flips")
+    assert "not measured" in latency.lower(), (
+        "the table was removed without saying why, which is an absence a reader "
+        "cannot distinguish from a rendering bug"
+    )
+
+
+def test_a_real_run_still_gets_its_latency_table(tmp_path: Path) -> None:
+    """The suppression must key off ``is_fake`` and not off the numbers.
+
+    A real provider that genuinely answered in under a millisecond would round to
+    ``0.000`` too, and suppressing *that* would hide a measurement rather than an
+    absence.
+    """
+    model, html = _rendered(tmp_path / "real")
+    assert not model.baseline.is_fake
+    assert not model.candidate.is_fake
+
+    latency = _visible_between(html, "latency", "flips")
+    assert "median" in latency.lower(), (
+        "a real run lost its latency table; the suppression is meant to fire on "
+        "scripted adapters only"
+    )
+
+
+# -- the charts themselves ---------------------------------------------------- #
+
+
+def test_the_banner_bar_draws_the_numbers_the_judge_table_prints(tmp_path: Path) -> None:
+    """The bar and the table must not be able to disagree.
+
+    Two pictures of one number is two chances to be wrong. The bar is drawn from
+    ``series[-1]`` and the table from the judge records, so this is a real
+    cross-check between two paths through the evidence rather than a tautology.
+    """
+    model, html = _rendered(tmp_path / "agree")
+    row = _judge_row(model)
+    point = model.series[-1]
+
+    assert point.pass_rate == pytest.approx(_rate_stat(row, "candidate").rate), (
+        "the banner's bar and the judge table are reading different pass rates"
+    )
+
+    opened = html.find('<div class="bar">')
+    bar = html[opened : html.find("</div>", opened)]
+    assert f'data-value="{point.pass_rate:.6f}"' in bar, (
+        f"the bar's drawn value is not the headline run's pass rate {point.pass_rate}"
+    )
+
+
+def test_neither_chart_emits_a_css_url_in_a_presentation_attribute() -> None:
+    """The reviewer's second question, pinned.
+
+    C20 narrowed the self-containment scanner and its reviewer found that SVG
+    presentation attributes taking a CSS ``<url>`` -- ``fill``, ``filter``,
+    ``mask``, ``clip-path``, ``marker-end``, ``cursor`` -- are invisible to it.
+    This chunk injects inline SVG into the document for the first time, so
+    ``fill="url(...)"`` became reachable in a way it was not before.
+
+    Both helpers emit only literal colours today, which is what makes the gap
+    unreachable rather than merely unexercised. That is a property of the current
+    implementation and nothing enforces it, so it is enforced here: the day someone
+    reaches for a gradient, this fails and the scanner gap has to be closed first.
+    """
+    bar = _report.interval_bar_svg(rate=0.72, interval=(0.61, 0.81), floor=0.8, label="x")
+    chart = _report.timeline_svg(())
+
+    for name, svg in (("interval_bar_svg", bar), ("timeline_svg", chart.svg)):
+        assert "url(" not in svg.lower(), (
+            f"{name} emits a CSS url(), which the self-containment scanner does not "
+            f"see in a presentation attribute -- close that gap before shipping this"
+        )
+        assert 'style="' not in svg, (
+            f"{name} emits a style attribute; presentation must stay in inline "
+            f"attributes and the chart's own <style> block, both of which the "
+            f"scanner does read"
+        )
+
+
+def test_the_self_containment_fixtures_exercise_both_new_sections(
+    tmp_path: Path,
+) -> None:
+    """C14a's "then" clause: the two must-pass tests must not be vacuous.
+
+    ``test_the_rendered_report_has_no_external_url`` and its neighbour are required
+    to pass unchanged against a fixture that exercises both new sections. They
+    render the standard scenario, so this asserts that the standard scenario
+    actually contains both -- otherwise the two tests would keep passing while
+    covering none of this chunk.
+    """
+    model, html = _rendered(tmp_path / "fixture")
+    assert model.series, "the standard fixture has no series, so no timeline renders"
+    assert '<h2 id="timeline">' in html, "the fixture does not exercise the timeline"
+    assert '<div class="bar">' in html, "the fixture does not exercise the banner bar"
+    assert "migkit-timeline" in html, "timeline_svg does not reach the document"
+    assert "interval-bar" in html, "interval_bar_svg does not reach the document"
+    assert _urls(html) == (), "the fixture that exercises both sections is not clean"
+
+
+# --------------------------------------------------------------------------- #
+# C14a review -- the survivors of a 27-mutant run, and two false sentences.
+#
+# Every test below was written against a mutant that the suite as merged left
+# alive. The first two are not coverage: they are documents that said something
+# untrue about themselves, which in a compliance artifact is the defect and not
+# the omission.
+# --------------------------------------------------------------------------- #
+
+
+def _timeline_markers(html: str) -> list[dict[str, str]]:
+    """Every run marker in the run-history chart, in the order the markup lists."""
+    start = html.find('<h2 id="timeline">')
+    assert start != -1, "no run-history section in this document"
+    end = html.find("</svg>", start)
+    return [
+        dict(re.findall(r'([a-z-]+)="([^"]*)"', one))
+        for one in re.findall(r"<rect [^>]*/>", html[start:end])
+    ]
+
+
+def _pct_in(markup: str, value: float) -> bool:
+    return f"{value * 100:.1f}%" in markup
+
+
+def test_the_run_history_prose_does_not_claim_the_banner_is_the_newest_marker(
+    tmp_path: Path,
+) -> None:
+    """The chart is sorted by clock; the banner is read in write order.
+
+    ``series.read_series`` sorts nothing on purpose -- "a sorted series would
+    silently reorder a log whose clock stepped backwards over a daylight-saving
+    boundary" -- while ``timeline_svg`` sorts by parsed ``created``, also on
+    purpose, because its axis is time. Both are right. What follows is that the
+    banner describes ``series[-1]``, the last comparison *written*, while the
+    rightmost marker is the last comparison *dated*, and on any log where those
+    disagree a sentence promising they are the same run is false.
+
+    Proved rather than argued: this log's first-written comparison carries a 2027
+    date and a GO, and its last-written one carries the scenario's 2026 date and a
+    NO-GO. The banner reads NO-GO; the rightmost marker is the GO. A reader told
+    the banner reports "the most recent of these runs" reads the chart backwards.
+    """
+    scenario = _scenario(tmp_path / "clock", verdict=Verdict.NO_GO)
+    log = _log_with_history(
+        scenario,
+        "out-of-order.jsonl",
+        _earlier_run(
+            scenario,
+            tag="future",
+            verdict=Verdict.GO,
+            created="2027-01-01T00:00:00.000000+00:00",
+        ),
+    )
+    model = _model_from(log)
+    html = _html(model)
+
+    assert model.verdict_word == Verdict.NO_GO
+    assert _series(model)[-1].verdict == Verdict.NO_GO, (
+        "series[-1] must stay the run the banner reports; it is read in log order"
+    )
+
+    markers = _timeline_markers(html)
+    assert len(markers) == 2, markers
+    by_x = sorted(markers, key=lambda one: float(one["x"]))
+    assert by_x[-1]["data-created"].startswith("2027"), (
+        f"the chart is not sorted by time, so this fixture no longer separates "
+        f"write order from clock order: {[one['data-created'] for one in markers]}"
+    )
+    assert by_x[-1]["class"] != by_x[0]["class"], "the two runs must be visibly different"
+
+    visible = _squeeze(_visible(html))
+    assert "reports the most recent of these runs" not in visible, (
+        "the document claims the banner reports the newest run on the chart. On "
+        "this log it reports the oldest one, and the newest marker carries the "
+        "opposite verdict. Say 'the last comparison this log records' -- which is "
+        "true of every log -- or say nothing"
+    )
+    assert "last comparison this log records" in visible, (
+        "the run-history prose must still say which of the markers the banner "
+        "above it describes; dropping the sentence trades a false claim for none"
+    )
+
+
+def test_the_thresholds_prose_names_a_section_the_full_path_is_actually_in(
+    tmp_path: Path,
+) -> None:
+    """Shortening to a basename is only honest if the pointer is right.
+
+    The merged text sent the reader to "the provenance block" for the full path.
+    The provenance block carries the evidence log's path and the config *hash*;
+    it has never carried ``config_path``. So the one sentence justifying the
+    shortening pointed at the one place the path is not.
+    """
+    model, html = _rendered(tmp_path / "pointer")
+    config = model.config_path
+    assert config, "this fixture needs a recorded config path"
+
+    footer = html[html.find('<footer id="provenance">') :]
+    assert config not in footer, (
+        "the provenance block now carries the config path; if that was added "
+        "deliberately this test and the prose beneath the thresholds table are "
+        "the two places that argue from its absence"
+    )
+    compared = html[html.find('<h2 id="compared">') : html.find('<h2 id="thresholds"')]
+    assert config in compared, "the full path must stay in 'What was compared'"
+
+    visible = _squeeze(_visible(html))
+    assert "again in the provenance block" not in visible, (
+        "the thresholds prose still sends a reviewer to the provenance block for "
+        "a path that is not there"
+    )
+    assert "What was compared" in visible
+
+
+def test_the_banner_bar_draws_the_floor_and_the_interval_and_not_only_the_rate(
+    tmp_path: Path,
+) -> None:
+    """Three numbers reach ``interval_bar_svg``; the merged suite pinned one.
+
+    Dropping ``floor=point.floor`` or ``interval=point.interval`` from
+    ``_banner_bar`` left all 347 tests green. The floor is the only thing in the
+    picture that makes the rate mean anything -- the bar exists to show whether
+    the candidate cleared the gate -- and ``interval_bar_svg`` renders a missing
+    floor as *no line at all*, so the loss is a silently emptier picture rather
+    than a visibly wrong one.
+    """
+    model, html = _rendered(tmp_path / "bar-values")
+    point = model.series[-1]
+    assert point.floor is not None, "this fixture needs a recorded floor"
+    assert point.interval is not None, "this fixture needs a recorded interval"
+
+    opened = html.find('<div class="bar">')
+    bar = html[opened : html.find("</div>", opened)]
+
+    assert '<line class="floor"' in bar, (
+        f"the banner bar does not draw the floor {point.floor} the run was held "
+        f"to; a rate with no gate beside it is a number, not a verdict"
+    )
+    assert f'data-value="{point.floor:.6f}"' in bar, (
+        f"the banner bar draws a floor line at some other value than {point.floor}"
+    )
+    assert f'data-value="{point.interval[0]:.6f}"' in bar, (
+        "the banner bar does not draw the interval's lower end"
+    )
+    assert f'data-value-upper="{point.interval[1]:.6f}"' in bar, (
+        "the banner bar does not draw the interval's upper end"
+    )
+    assert _pct_in(bar, point.floor), (
+        "the bar's accessible title must speak the floor too, or a screen-reader "
+        "user is told the rate and not the rule"
+    )
+    assert "candidate" in bar and point.judge_name in bar, (
+        "the bar's accessible name must say which side and which judge it draws"
+    )
+
+
+def test_the_run_history_chart_draws_a_marker_for_every_run_it_counts(
+    tmp_path: Path,
+) -> None:
+    """The chunk's headline feature, which the merged suite did not pin at all.
+
+    Replacing ``timeline_svg(tuple(points))`` with ``timeline_svg(())`` in the
+    filter left 347 tests green: the document rendered a heading reading
+    "Run history -- 2 comparison(s) in this log" above a chart reading "No dated
+    runs to plot", and nothing anywhere noticed. A heading that counts runs over a
+    picture that draws none is worse than no picture.
+    """
+    scenario = _scenario(tmp_path / "drawn")
+    log = _log_with_history(scenario, "two.jsonl", _earlier_run(scenario, tag="one"))
+    model = _model_from(log)
+    html = _html(model)
+
+    assert len(_series(model)) == 2
+    markers = _timeline_markers(html)
+    assert len(markers) == 2, (
+        f"the chart draws {len(markers)} marker(s) for the {len(_series(model))} "
+        f"run(s) its own heading counts"
+    )
+    assert "No dated runs to plot" not in html
+    drawn = {one["data-created"] for one in markers}
+    assert drawn == {point.created for point in _series(model)}, (
+        f"the markers are not this log's runs: drew {sorted(drawn)}"
+    )
+
+
+def test_a_model_with_no_series_renders_no_run_history_section_at_all(
+    tmp_path: Path,
+) -> None:
+    """The contract's presence rule, which nothing tested.
+
+    "timeline -- present when ``len(model.series) >= 1``". Removing the guard left
+    the suite green and put an empty chart, a nav entry and a heading reading
+    "0 comparison(s) in this log" into every document built by some route other
+    than ``from_evidence`` -- which is a placeholder, and this document's own
+    argument is that a placeholder is worse than an absence.
+    """
+    model, _ = _rendered(tmp_path / "guard")
+    empty = dataclasses.replace(model, series=())
+    html = _html(empty)
+
+    assert '<h2 id="timeline">' not in html, "an empty series still renders a chart"
+    assert 'href="#timeline"' not in html, "an empty series still gets a nav entry"
+    assert "migkit-timeline" not in html
+    assert '<div class="bar">' in html, (
+        "the banner's bar must still render for a model with no series; "
+        "interval_bar_svg draws each absent value as its own named picture"
+    )
+    assert _urls(html) == ()
+
+
+def test_the_nav_offers_the_run_history_exactly_when_there_is_one(
+    tmp_path: Path,
+) -> None:
+    """A section with no way to reach it is a section half the readers never see."""
+    model, html = _rendered(tmp_path / "nav")
+    assert model.series
+    nav = html[html.find("<nav>") : html.find("</nav>")]
+    assert nav.count('href="#timeline"') == 1, (
+        "the run-history section is rendered but the contents list does not offer it"
+    )
+
+
+def test_a_half_scripted_run_keeps_the_table_and_names_the_side_it_could_not_measure(
+    tmp_path: Path,
+) -> None:
+    """The suppression is ``and``, and the per-side cells exist for this run.
+
+    Turning it into ``or`` left the suite green, because nothing rendered a run
+    with one scripted side and one real one -- so the two per-side branches inside
+    the table were unreachable from any test. Under ``or`` a real, measured
+    candidate loses its latency numbers because the *baseline* was scripted, which
+    hides a measurement rather than an absence.
+    """
+    model, html = _rendered(
+        tmp_path / "half",
+        baseline_adapter="FakeAdapter",
+        candidate_adapter="OpenAICompatAdapter",
+    )
+    assert model.baseline.is_fake
+    assert not model.candidate.is_fake
+
+    start = html.find('<h2 id="latency"')
+    end = html.find('<h2 id="flips"', start + 1)
+    section = html[start:end]
+    assert "<table" in section, (
+        "a run with one measured side lost its latency table; the suppression is "
+        "for a run where neither side was measured"
+    )
+    assert "scripted adapter" in section, (
+        "the scripted side is printed as a number rather than named as unmeasured"
+    )
+    assert f"{model.candidate.latency_median:.3f}" in section, (
+        "the measured side's median is missing from the table"
+    )
+    assert f"{model.baseline.latency_median:.3f}" not in section, (
+        "the scripted side's timing is printed anyway, which is the 0.000 this "
+        "chunk exists to stop printing"
+    )
+
+
+def test_a_threshold_source_that_is_not_a_path_is_printed_whole() -> None:
+    """``_source_label`` shortens paths only, and that guard was untested.
+
+    Making it shorten unconditionally left the suite green, because the only
+    non-path value the fixtures produce is ``THRESHOLD_SOURCE_UNRECORDED``, which
+    has no separator in it to be cut at. A source recorded as prose -- and the
+    docstring argues from exactly this -- would be truncated at its last slash and
+    read as a filename.
+    """
+    label = _report._source_label
+    prose = "CLI flag --pass-rate-floor, overriding config/migkit.toml"
+    assert label(prose) == prose, (
+        "a sentence containing a slash is not a path and must not be cut at one"
+    )
+    assert label(_report.THRESHOLD_SOURCE_UNRECORDED) == _report.THRESHOLD_SOURCE_UNRECORDED
+    assert label("migkit.toml") == "migkit.toml"
+    assert label("") == ""
+    assert label(None) == ""
+
+    backslash = chr(92)
+    assert label("C:" + backslash + "work" + backslash + "migkit.toml") == "migkit.toml"
+    assert label("/etc/migkit/migkit.toml") == "migkit.toml"
+
+
+def test_the_run_history_gaps_are_a_list_beside_the_paragraph_not_inside_it(
+    tmp_path: Path,
+) -> None:
+    """``<ul>`` inside ``<p>`` is not nesting a parser will honour.
+
+    An HTML parser closes the open ``<p>`` when it meets ``<ul>`` and drops the
+    ``</p>`` that follows as a stray end tag, so the list loses the ``.secondary``
+    styling the paragraph was carrying, and the document is invalid where it says
+    it is auditable.
+    """
+    scenario = _scenario(tmp_path / "gaps")
+    log = _log_with_history(
+        scenario,
+        "gappy.jsonl",
+        _earlier_run(scenario, tag="norate", pass_rate=None),
+    )
+    html = _html(_model_from(log))
+    start = html.find('<h2 id="timeline">')
+    end = html.find('<h2 id="judges">', start)
+    section = html[start:end]
+    assert "<ul" in section, "this fixture is supposed to produce a counted gap"
+
+    # Raw markup, not the parsed tree: the parser is the thing that *repairs*
+    # this, so asking it what it saw would report the repaired document rather
+    # than the one written to disk.
+    depth = 0
+    for token in re.findall(r"</?(?:p|ul)", section):
+        if token == "<p":
+            depth += 1
+        elif token == "</p":
+            depth -= 1
+        elif token == "<ul":
+            assert depth == 0, (
+                "the gap list opens inside an unclosed <p>; a parser closes the "
+                "paragraph there and drops the </p> that follows"
+            )
+    assert depth == 0, "the run-history section leaves a <p> unclosed"
+
+    opened = section[section.find("<ul") :]
+    assert opened.split(">")[0].endswith('class="secondary"'), (
+        "the gap list must keep the secondary styling the paragraph gave it"
+    )
+
+
+def test_the_printed_figure_is_read_back_off_the_page_it_describes(
+    tmp_path: Path,
+) -> None:
+    """The second number is a measurement, and the suite never measured it.
+
+    ``_printed_chars`` was pinned only by ``printed < produced``. Under that
+    assertion one side of the sum can stop collapsing -- the mutation is a single
+    identifier -- and the document goes on printing a "characters printed below"
+    figure that is larger than the text below it, with 359 tests green. A number
+    a reader uses to reconcile two claims is worth exactly as much as the check
+    that it matches the page.
+
+    So the draws-and-input half is re-derived from the rendered ``<pre>`` blocks,
+    which is the document itself and not another reading of the model.
+    """
+    repeated = "the candidate said exactly this, five times over"
+    model, html = _rendered(tmp_path / "measured", candidate_output=repeated)
+
+    rows = [
+        row
+        for row in (*model.flips, *model.gains, *model.unstable)
+        if row.detail_embedded
+    ]
+    assert rows, "this fixture needs embedded rows"
+    assert any(len(set(row.candidate_outputs)) == 1 for row in rows), (
+        "nothing collapsed, so an uncollapsed sum would agree and this is vacuous"
+    )
+
+    reasons = sum(len(text) for row in rows for text in row.reasons.values())
+    on_the_page = sum(len(text) for text in _pre_texts(html))
+
+    # This fixture collapses the candidate only -- ``_scenario`` gives the
+    # baseline a distinct suffix per draw. The baseline half of the same sum is
+    # pinned in ``tests/test_report_scale.py``, on the fixture where both sides
+    # are byte-identical; neither fixture alone reaches both terms.
+
+    assert _report._printed_chars(model) - reasons == on_the_page, (
+        f"the document says it prints "
+        f"{_report._printed_chars(model) - reasons:,} characters of inputs and "
+        f"draws; its <pre> blocks hold {on_the_page:,}. One of the two sides "
+        f"stopped collapsing, and the figure beside the budget is now wrong in "
+        f"the direction that overstates what a reader can see"
+    )

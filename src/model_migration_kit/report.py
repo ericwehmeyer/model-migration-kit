@@ -2687,6 +2687,23 @@ h2 {
   font-size: 0.9rem;
   color: #3d434a;
 }
+.banner .bar {
+  margin: 0.75rem 0 0 0;
+}
+.chart {
+  margin: 0.75rem 0 0.25rem 0;
+}
+/* Both charts are drawn to a fixed viewBox and scaled down by the viewport, so
+   a narrow window shrinks them rather than scrolling the page sideways. */
+.banner .bar svg, .chart svg {
+  max-width: 100%;
+  height: auto;
+}
+.draws {
+  color: #4a5058;
+  font-size: 0.88rem;
+  margin: 0.15rem 0 0.6rem 0;
+}
 .banner.go {
   border-color: #1d6b32;
   background: #e9f6ec;
@@ -2812,6 +2829,7 @@ FAKE MODELS {{ dash }} these numbers describe scripted responses, not a real pro
 <section class="banner {{ verdict_class }}" id="verdict">
   <p class="word">{{ model.verdict_word }}</p>
   <p class="reason">{{ model.verdict_reason }}</p>
+  <div class="bar">{{ model | interval_bar | safe }}</div>
   <p class="meta">
     Exit code a CI system would have received: <strong>{{ model.exit_code }}</strong>
     {{ dash }} decided by {{ model.decided_by or 'no recorded rule' }}
@@ -2822,6 +2840,9 @@ FAKE MODELS {{ dash }} these numbers describe scripted responses, not a real pro
 <nav>
   <ol>
     <li><a href="#compared">What was compared</a></li>
+{% if model.series %}
+    <li><a href="#timeline">Run history</a></li>
+{% endif %}
     <li><a href="#judges">Per-judge results</a></li>
     <li><a href="#latency">Latency (descriptive only)</a></li>
     <li><a href="#flips">Flips</a></li>
@@ -2886,7 +2907,7 @@ FAKE MODELS {{ dash }} these numbers describe scripted responses, not a real pro
   <tbody>
   {% for name, value in model.thresholds.items() %}
     <tr><td>{{ name }}</td><td class="num">{{ value }}</td>
-        <td>{{ model.threshold_sources.get(name, unrecorded) }}</td></tr>
+        <td>{{ model.threshold_sources.get(name, unrecorded) | source_label }}</td></tr>
   {% endfor %}
   {% if not model.thresholds %}
     <tr><td colspan="3">no thresholds recorded in the evidence</td></tr>
@@ -2898,8 +2919,44 @@ FAKE MODELS {{ dash }} these numbers describe scripted responses, not a real pro
   verdict, so a loosened gate cannot be hidden. Which of CLI flag, config file or
   built-in default set any individual number is not carried in the evidence
   payload; where it says {{ unrecorded }}, that is a gap in the record and not a
-  claim about the default.
+  claim about the default. A source that is a file is named by its filename here;
+  its full path is shown once, whole, and where it can be checked {{ dash }} under
+  <em>config</em> in "What was compared", above.
 </p>
+
+{% if model.series %}
+{% set timeline = model.series | timeline %}
+<h2 id="timeline">Run history {{ dash }} {{ model.series | length }} comparison(s) in this log</h2>
+<div class="chart">{{ timeline.svg | safe }}</div>
+<p class="secondary">
+  Every comparison this evidence log holds, oldest first, with the candidate's
+  pass rate against the floor each run was actually held to. <strong>The axis is
+  time, not run number</strong>, so a three-week gap between the run that was
+  green and the run that was not is drawn as three weeks. Nothing is
+  interpolated: no line joins the markers, because a line between two runs would
+  assert a pass rate on the dates in between, and on those dates nothing ran. The
+  banner above, and the bar inside it, report the <strong>last comparison this log
+  records</strong> {{ dash }} which is the newest marker on this chart whenever the
+  clock agrees with the file, and is not when it does not: the series is drawn in
+  time order and the log is read in write order, and a run appended with an older
+  timestamp sits to the left of the run the banner describes.
+</p>
+{% if timeline.runs_without_rate or timeline.runs_without_floor %}
+<p class="secondary">Not everything could be drawn, and the gaps are counted
+rather than hidden:</p>
+<ul class="secondary">
+  {% if timeline.runs_without_rate %}
+  <li>{{ timeline.runs_without_rate }} run(s) recorded no pass rate, so they
+      carry no marker</li>
+  {% endif %}
+  {% if timeline.runs_without_floor %}
+  <li>{{ timeline.runs_without_floor }} run(s) recorded no floor, so the rule is
+      broken where they sit {{ dash }} which is a gap in the record, not a floor
+      of zero</li>
+  {% endif %}
+</ul>
+{% endif %}
+{% endif %}
 
 <h2 id="judges">Per-judge results</h2>
 <p class="secondary">
@@ -2968,15 +3025,38 @@ measures quality.</p>
 <p class="secondary"><strong>Descriptive only. Latency is never a gate</strong>
 {{ dash }} a migration that is slower per call is a product decision, not a
 quality regression.</p>
+{% if model.baseline.is_fake and model.candidate.is_fake %}
+<p class="secondary">
+  <strong>Not measured.</strong> Both sides of this comparison ran on scripted
+  adapters, which return their answers without calling a provider, so every
+  timing here would be a few microseconds of local dictionary lookup. The table
+  is omitted rather than printed as zeros: a row that reads
+  <code>0.000 / 0.000</code> is not a fast model, it is the absence of a
+  measurement, and a reader should not have to work that out.
+</p>
+{% else %}
 <table>
   <thead><tr><th></th><th>median (s)</th><th>p90 (s)</th></tr></thead>
   <tbody>
-    <tr><td>baseline</td><td class="num">{{ model.baseline.latency_median | num3 }}</td>
-        <td class="num">{{ model.baseline.latency_p90 | num3 }}</td></tr>
-    <tr><td>candidate</td><td class="num">{{ model.candidate.latency_median | num3 }}</td>
-        <td class="num">{{ model.candidate.latency_p90 | num3 }}</td></tr>
+    <tr><td>baseline</td>
+    {% if model.baseline.is_fake %}
+        <td colspan="2">not measured {{ dash }} scripted adapter</td>
+    {% else %}
+        <td class="num">{{ model.baseline.latency_median | num3 }}</td>
+        <td class="num">{{ model.baseline.latency_p90 | num3 }}</td>
+    {% endif %}
+        </tr>
+    <tr><td>candidate</td>
+    {% if model.candidate.is_fake %}
+        <td colspan="2">not measured {{ dash }} scripted adapter</td>
+    {% else %}
+        <td class="num">{{ model.candidate.latency_median | num3 }}</td>
+        <td class="num">{{ model.candidate.latency_p90 | num3 }}</td>
+    {% endif %}
+        </tr>
   </tbody>
 </table>
+{% endif %}
 
 {% if not model.goldenset.available %}
 <div class="band mismatch" id="goldenset-mismatch">
@@ -2984,10 +3064,26 @@ quality regression.</p>
 </div>
 {% endif %}
 
+{% set printed = model | printed_chars %}
+{#
+  The budget sentence counts what the run *produced*. Identical draws are printed
+  once below, so what is on the page is smaller, and both numbers are given
+  rather than letting one quietly replace the other: the sentence is a
+  completeness claim, and a completeness claim that starts counting what survived
+  the presentation layer certifies a smaller thing in the same words.
+#}
 {% if model.detail.capped %}
 <div class="note" id="detail-budget">
   <strong>The quoted model text in this report is bounded.</strong>
   {{ model.detail.sentence }}
+  {% if printed != model.detail.embedded %}
+  The rows that do carry their outputs embedded
+  {{ '{:,}'.format(model.detail.embedded) }} characters of model text, of which
+  {{ '{:,}'.format(printed) }} are printed below: where every draw of a side came
+  back byte-identical it is shown once and counted, rather than repeated. The
+  first figure counts what the models produced, which is what completeness is
+  about; the second counts what this page spends on it.
+  {% endif %}
   <ul>
     <li>rows are visited round-robin across flips, gains and unstable, in
         golden-set order within each, so no section crowds out another</li>
@@ -2998,11 +3094,22 @@ quality regression.</p>
   </ul>
 </div>
 {% else %}
-<p class="secondary" id="detail-budget">{{ model.detail.sentence }}</p>
+<p class="secondary" id="detail-budget">{{ model.detail.sentence }}
+{% if printed != model.detail.embedded %}
+  Of those, {{ '{:,}'.format(printed) }} characters are printed below: where every
+  draw of a side came back byte-identical it is shown once and counted, rather
+  than repeated. The figure above counts what the models produced, which is what
+  completeness is about.
+{% endif %}
+</p>
 {% endif %}
 
 <h2 id="flips">Flips {{ dash }} items that stopped working ({{ model.flips | length }})</h2>
-{{ changes(model.flips) }}
+<p class="secondary">
+  <strong>Open by default</strong>, because these are the finding. Everything
+  else in this document is context for them.
+</p>
+{{ changes(model.flips, True) }}
 
 <h2 id="gains">Gains {{ dash }} items that started working ({{ model.gains | length }})</h2>
 <p class="secondary">
@@ -3071,12 +3178,18 @@ quality regression.</p>
 """
 
 _CHANGES_MACRO = """
-{% macro changes(rows) %}
+{#
+  ``opened`` is passed true only for flips. Gains stay closed on purpose: they
+  are context, not the finding, and this document already argues that netting the
+  two lists is how a bad migration ships. Opening them by default would give a
+  reader's eye the same weight for both.
+#}
+{% macro changes(rows, opened=False) %}
 {% if not rows %}
 <p class="secondary">None.</p>
 {% else %}
 {% for row in rows %}
-<details>
+<details{% if opened %} open{% endif %}>
   <summary>{{ row.summary }}</summary>
   <div>
     {% if not row.detail_embedded %}
@@ -3101,17 +3214,25 @@ _CHANGES_MACRO = """
     {% else %}
     <p class="secondary">Input not shown: the golden set is unavailable or has changed.</p>
     {% endif %}
-    <h4>Baseline outputs ({{ row.baseline_outputs | length }})</h4>
-    {% for text in row.baseline_outputs %}
+    {% set baseline_draws = row.baseline_outputs | draws %}
+    <h4>Baseline outputs ({{ baseline_draws.total }})</h4>
+    {% for text in baseline_draws.texts %}
     <pre class="output">{{ text }}</pre>
     {% endfor %}
+    {% if baseline_draws.sentence %}
+    <p class="draws">{{ baseline_draws.sentence }}</p>
+    {% endif %}
     {% if not row.baseline_outputs %}
     <p class="secondary">No baseline outputs available.</p>
     {% endif %}
-    <h4>Candidate outputs ({{ row.candidate_outputs | length }})</h4>
-    {% for text in row.candidate_outputs %}
+    {% set candidate_draws = row.candidate_outputs | draws %}
+    <h4>Candidate outputs ({{ candidate_draws.total }})</h4>
+    {% for text in candidate_draws.texts %}
     <pre class="output">{{ text }}</pre>
     {% endfor %}
+    {% if candidate_draws.sentence %}
+    <p class="draws">{{ candidate_draws.sentence }}</p>
+    {% endif %}
     {% if not row.candidate_outputs %}
     <p class="secondary">No candidate outputs available.</p>
     {% endif %}
@@ -3132,6 +3253,164 @@ _CHANGES_MACRO = """
 {% endif %}
 {% endmacro %}
 """
+
+
+class _Draws(NamedTuple):
+    """One side's draws, grouped for printing rather than for counting.
+
+    Presentation only. Nothing here reaches a statistic: the rate, the interval
+    and every count in the document are read from the evidence payload, and this
+    decides how many ``<pre>`` blocks a row spends on text the models produced.
+
+    The distinction the type exists to make is *uniformity*. Five byte-identical
+    draws and five different ones are the same five blocks today, so a reader
+    cannot see whether the draws agreed -- and whether they agreed is the fact
+    that says how much weight one draw carries. Repetition is not evidence.
+    """
+
+    #: What to print. One entry when every draw was byte-identical; otherwise
+    #: every draw, in the order they were recorded.
+    texts: tuple[str, ...]
+    #: Draws the run produced. Never derived from ``texts``, which is the whole
+    #: point: after a collapse the two differ, and the sentence below needs both.
+    total: int
+    #: Distinct texts among them.
+    distinct: int
+
+    @property
+    def collapsed(self) -> bool:
+        """True when this is printing fewer blocks than the run produced draws."""
+        return len(self.texts) < self.total
+
+    @property
+    def sentence(self) -> str:
+        """What the reader is owed about the draws, or ``""`` when nothing is.
+
+        Three cases and three different facts. Every draw agreeing is stated
+        *because* only one block is shown -- the count would otherwise be missing
+        from the page entirely. Draws differing is stated because the number that
+        differed is the finding, and today it is invisible: uniformity and
+        variation render identically. A single draw gets no sentence, because
+        "1 draw, 1 distinct" tells a reader nothing they cannot see.
+        """
+        if self.total < 2:
+            return ""
+        if self.distinct == 1:
+            return f"all {self.total} draws identical"
+        return f"{self.total} draws, {self.distinct} distinct"
+
+
+def _draws(outputs: Sequence[str]) -> _Draws:
+    """Group one side's outputs, collapsing only total agreement.
+
+    Only the all-identical case collapses. Partial grouping -- three of one text
+    and two of another shown as two blocks with counts -- was considered and
+    rejected: it silently reorders the draws, and the order draws were recorded
+    in is the only evidence a reader has about *when* a model changed its answer
+    within a run. Total agreement has no order to lose.
+
+    First-appearance order, not sorted, for the same reason.
+    """
+    seen: list[str] = []
+    for text in outputs:
+        if text not in seen:
+            seen.append(text)
+    if len(seen) == 1 and len(outputs) > 1:
+        return _Draws((seen[0],), len(outputs), 1)
+    return _Draws(tuple(outputs), len(outputs), len(seen))
+
+
+def _banner_bar(model: ReportModel) -> str:
+    """The headline run's pass rate, interval and floor, as one inline SVG.
+
+    Read from ``series[-1]`` rather than from a judge row, and that is the point
+    of the field rather than a shortcut. :class:`~model_migration_kit.series.RunPoint`
+    carries ``floor`` together with ``floor_source``, so the bar draws *the number
+    the run was held to* and can tell that apart from the number that was merely
+    configured. A judge row carries neither, and a bar drawn from
+    ``model.thresholds`` would show a rule the gate may not have applied.
+
+    ``[-1]`` and not "the newest by clock", which is the same run on every log
+    this pipeline writes and not on every log that exists.
+    :func:`~model_migration_kit.series.read_series` sorts nothing -- file order is
+    the series order, so that a log whose clock stepped back over a daylight-saving
+    boundary is not silently reordered -- while :func:`timeline_svg` sorts by
+    parsed ``created``, because its axis is time. So ``series[-1]`` is exactly the
+    comparison ``from_evidence``'s own last-wins reduction kept for the banner,
+    which is what makes the bar and the banner one reading; it is *not* guaranteed
+    to be the rightmost marker on the chart. The prose beneath the chart says
+    which of the two it is, because a document that lets a reader assume they are
+    the same is a document that can show a GO beside a chart ending in red.
+
+    An empty series is not an error and not a zero. Every model built by some
+    route other than :meth:`ReportModel.from_evidence` has one, and
+    :func:`interval_bar_svg` already draws each missing value as its own named
+    picture -- a floor of ``None`` draws no line at all rather than a line at 0.0,
+    because a rule that was never set, rendered as a floor of zero, makes the
+    document claim a bar cleared a bar that does not exist.
+    """
+    point = model.series[-1] if model.series else None
+    if point is None:
+        return interval_bar_svg(rate=None, interval=None, floor=None, label="candidate")
+    label = f"candidate {point.judge_name}".strip()
+    return interval_bar_svg(
+        rate=point.pass_rate,
+        interval=point.interval,
+        floor=point.floor,
+        label=label,
+    )
+
+
+def _printed_chars(model: ReportModel) -> int:
+    """Characters of quoted model text the document actually prints.
+
+    Not what it embedded -- :attr:`DetailBudget.embedded` counts that, and the two
+    differ by exactly the draws this document collapsed. Both numbers are printed,
+    beside each other, because the budget sentence is a *completeness* claim and
+    completeness is about what the run produced. Letting that sentence quietly
+    start counting what was printed would shrink the thing it certifies while
+    leaving the wording intact, which is the same failure as stating missing data
+    as zero, in a new coat.
+    """
+    total = 0
+    for section in (model.flips, model.gains, model.unstable):
+        for row in section:
+            if not row.detail_embedded:
+                continue
+            total += len(row.input or "")
+            total += sum(len(text) for text in _draws(row.baseline_outputs).texts)
+            total += sum(len(text) for text in _draws(row.candidate_outputs).texts)
+            total += sum(len(reason) for reason in row.reasons.values())
+    return total
+
+
+def _source_label(value: object) -> str:
+    """A threshold's source, shortened to a basename only when it is a full path.
+
+    The thresholds table prints its source once per row, and on the demo run that
+    is the same absolute path six times, each about 130 characters, in a document
+    whose readable width is 60rem. The full path is already shown once, whole, and
+    where it can be checked, under ``config`` in "What was compared" -- and there
+    only. The provenance block carries the *evidence log's* path and the config
+    *hash*, not the config path, so the prose beneath the table names the one
+    place the whole path is: a shortening that sends a reviewer to a section the
+    path is not in is a hiding.
+
+    Shortened only when :func:`_is_absolute` says so, so that
+    ``THRESHOLD_SOURCE_UNRECORDED`` and any other prose passes through untouched:
+    a sentence containing a slash is not a path, and :func:`_basename` would cut
+    it at the slash.
+
+    **Not put in a ``title=``**, which is what C14a's contract asked for. A
+    Windows path is a scheme by ``_SCHEME_RE``'s reading -- ``C:`` matches
+    ``[a-zA-Z][a-zA-Z0-9+.-]*:`` -- and ``title`` is not exempt under
+    ``_NEVER_DEREFERENCED_RE``, so the tooltip would make
+    :func:`assert_self_contained` refuse the whole document, on Windows only.
+    Measured, not reasoned: see
+    ``test_a_windows_path_in_a_title_attribute_would_fail_the_self_containment_gate``.
+    """
+    text = "" if value is None else str(value)
+    return _basename(text) if _is_absolute(text) else text
 
 
 def _environment() -> Environment:
@@ -3161,6 +3440,17 @@ def _environment() -> Environment:
     env.filters["interval"] = _interval
     env.filters["flag"] = _flag
     env.filters["counts"] = _item_counts
+    # The two hand-rolled SVGs, reached as filters so that each one's markup
+    # enters the document at exactly one point that the template marks ``| safe``.
+    # A helper called anywhere else, or a ``| safe`` on anything else, is caught by
+    # test_the_document_marks_exactly_one_expression_safe_per_hand_rolled_svg_and_no_others,
+    # which asserts the *set* of safe expressions by name: two safes in the wrong
+    # places is the mutation a count would pass.
+    env.filters["interval_bar"] = _banner_bar
+    env.filters["timeline"] = lambda points: timeline_svg(tuple(points))
+    env.filters["draws"] = _draws
+    env.filters["printed_chars"] = _printed_chars
+    env.filters["source_label"] = _source_label
     return env
 
 

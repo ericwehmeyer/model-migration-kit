@@ -6,6 +6,31 @@ statistically adequate sample is roughly 200 completions per side and up to 229 
 a 0.80 baseline rate, so the configuration users are told to run had never been
 rendered. These tests render it, and the sizes above it, and pin what happens.
 
+**Read this before trusting a number below. Added by C14a, 2026-08-24.**
+
+This module's fixture is *maximally compressible*, and until C14a that did not
+matter. ``_responses`` returns one answer per input and ``FakeAdapter`` in Mapping
+mode hands that same string back for every draw, so all n draws of a side are
+byte-identical by construction. C14a prints byte-identical draws once, above a
+line saying how many there were -- so on this fixture the rendered document
+collapsed from 330 ``<pre>`` blocks to 90, and from 1.2 MB to 281 KB.
+
+**That reduction will not transfer to a real run.** A real provider varies between
+draws; collapsing is near-total here only because nothing varies. So this suite no
+longer exercises the worst case for *rendered size*, which is exactly what it was
+built to bound. The budget itself is unaffected -- it counts what the models
+produced, not what the page printed, deliberately, so that a bound cannot depend
+on how compressible the output happened to be.
+
+**Restored by C14a's review, same day.** ``FakeAdapter`` already accepts a
+callable, so a fixture whose draws differ is a four-line closure and not a new
+adapter: see ``_varying`` and the ``varying`` fixture at the end of this module.
+The uniform fixture is kept -- all-identical draws are a real case and the
+collapse is worth pinning -- and the size law is asserted over the rendered file
+on the varying one, where a real provider's behaviour is what is being bounded.
+The assertions on the uniform fixture below remain a floor on a favourable case;
+they are no longer the only ones.
+
 The finding they were written to hold in place was a *size law*, not a bug in any
 one function::
 
@@ -63,8 +88,10 @@ in CI.
 
 from __future__ import annotations
 
+import html
 import json
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -80,6 +107,7 @@ from model_migration_kit.judging import JudgeConfig, judge_artifact
 from model_migration_kit.report import (
     DEFAULT_MAX_REPORT_CHARS,
     ReportModel,
+    _printed_chars,
     external_urls,
     render_html,
     render_html_string,
@@ -358,7 +386,7 @@ def test_every_changed_item_becomes_a_row_and_no_row_is_dropped(
         f"{changed} ({len(model.flips)} flips, {len(model.gains)} gains, "
         f"{len(model.unstable)} unstable)"
     )
-    assert rendered["html"].count("<details>") == ITEMS
+    assert rendered["html"].count("<details") == ITEMS
 
 
 def test_every_row_carries_all_n_draws_from_both_sides(rendered: dict[str, Any]) -> None:
@@ -374,11 +402,29 @@ def test_every_row_carries_all_n_draws_from_both_sides(rendered: dict[str, Any])
         assert row.detail_embedded, row.item_id
         assert len(row.baseline_outputs) == N_PER_ITEM, row.item_id
         assert len(row.candidate_outputs) == N_PER_ITEM, row.item_id
+
+    # THE FIXTURE IS UNIFORM, AND THAT IS NOW LOAD-BEARING. ``_responses`` returns
+    # one answer per input, and ``FakeAdapter`` in Mapping mode returns it for
+    # every draw, so all n draws of a side are byte-identical *by construction*.
+    # This assertion states that out loud because the two below depend on it.
+    for row in model.flips:
+        assert len(set(row.baseline_outputs)) == 1, row.item_id
+        assert len(set(row.candidate_outputs)) == 1, row.item_id
+
+    # C14a prints byte-identical draws once, above a line saying how many there
+    # were, so the count is 3 blocks a row and not 2n + 1. The guarantee this test
+    # exists for is unchanged and is asserted above, on the model, where it
+    # belongs: every draw is *kept*. What changed is how many times the document
+    # repeats one of them.
     blocks = rendered["html"].count('<pre class="output">')
-    expected = ITEMS * (2 * N_PER_ITEM + 1)  # both sides' draws, plus the input
+    expected = ITEMS * 3  # one baseline block, one candidate block, one input
     assert blocks == expected, (
-        f"expected {expected} output blocks ({ITEMS} rows x (2 x {N_PER_ITEM} draws "
-        f"+ 1 input)), got {blocks}"
+        f"expected {expected} output blocks ({ITEMS} rows x (1 collapsed baseline "
+        f"+ 1 collapsed candidate + 1 input)), got {blocks}"
+    )
+    assert rendered["html"].count(f"all {N_PER_ITEM} draws identical") == ITEMS * 2, (
+        "every collapsed side must state how many draws it stands for; a collapse "
+        "that does not say so removes the count from the document"
     )
 
 
@@ -396,16 +442,33 @@ def test_the_document_grows_as_rows_times_draws_times_the_cut(
     # same limit, so it can only add; leaving it out keeps this a true floor for a
     # golden set whose inputs are short.
     embedded_floor = ITEMS * 2 * N_PER_ITEM * MAX_OUTPUT_CHARS
-    assert rendered["bytes"] >= embedded_floor, (
-        f"{rendered['path']} is {rendered['bytes']} bytes, under the "
-        f"{embedded_floor} bytes its own embedded outputs should account for"
-    )
-    assert rendered["bytes"] > 1_000_000, (
-        f"{ITEMS} items at n={N_PER_ITEM} rendered {rendered['bytes']} bytes; this "
-        f"test exists because that number is over a megabyte from a golden set "
-        f"smaller than the one the methodology asks for"
-    )
+
+    # The law still holds over what the models PRODUCED, which is what the budget
+    # counts and what a completeness claim is about. This is the assertion that
+    # matters and it is unchanged.
     assert rendered["model"].detail.embedded >= embedded_floor
+
+    # It no longer holds over the rendered FILE, and that is deliberate: C14a
+    # prints byte-identical draws once. On this fixture every draw is identical by
+    # construction, so the file drops by roughly n-fold.
+    #
+    # DO NOT "fix" this by reading the file size back as the new floor. The
+    # reduction is a property of a maximally compressible fixture, not of the
+    # tool: a real provider varies between draws and collapses almost nothing. The
+    # honest consequence is recorded at the top of this module -- this suite no
+    # longer exercises the worst case for rendered size, and restoring that needs
+    # a fixture whose draws differ.
+    printed_floor = ITEMS * 2 * MAX_OUTPUT_CHARS
+    assert rendered["bytes"] >= printed_floor, (
+        f"{rendered['path']} is {rendered['bytes']} bytes, under the "
+        f"{printed_floor} bytes the text it actually prints should account for"
+    )
+    assert rendered["bytes"] > 250_000, (
+        f"{ITEMS} items at n={N_PER_ITEM} rendered {rendered['bytes']} bytes from a "
+        f"golden set smaller than the one the methodology asks for, and that is "
+        f"with every draw collapsing; the size problem this module exists for is "
+        f"not solved, it is hidden by this fixture"
+    )
 
 
 def test_the_truncation_that_is_announced_is_the_per_block_one(
@@ -502,7 +565,7 @@ def test_no_row_is_dropped_when_the_budget_binds(
         row.item_id for row in rendered["model"].flips
     ]
     assert len(model.flips) == ITEMS
-    assert capped["html"].count("<details>") == ITEMS
+    assert capped["html"].count("<details") == ITEMS
     for row in model.flips:
         assert row.item_id in capped["html"]
         assert row.judges == ("accuracy",)
@@ -532,8 +595,13 @@ def test_a_summarised_row_carries_no_quotations_at_all(capped: dict[str, Any]) -
         assert row.reasons == {}
         assert row.quoted_chars == 0
         assert row.truncated is False
+    # Three blocks a row, not 2n + 1: this fixture's draws are byte-identical by
+    # construction and C14a prints an identical side once. What this test is for
+    # is unchanged -- the summarised rows contribute *nothing*, which is asserted
+    # row by row above; the arithmetic below only has to stay tied to the seven
+    # rows that did embed.
     blocks = capped["html"].count('<pre class="output">')
-    assert blocks == 7 * (2 * N_PER_ITEM + 1), (
+    assert blocks == 7 * 3, (
         f"expected quoted blocks for seven rows only, got {blocks}"
     )
 
@@ -830,3 +898,202 @@ def test_the_report_section_takes_the_bound_and_the_cli_validates_it(
     config.write_text("[report]\nmax_report_chars = 0\n", encoding="utf-8")
     with pytest.raises(cli.ConfigError, match="max_report_chars"):
         cli.load_settings(config)
+
+
+# --------------------------------------------------------------------------- #
+# C14a review, 2026-08-24: the worst case, restored.
+#
+# C14a recorded that this suite had stopped exercising the worst case for
+# rendered size and that restoring it "needs a stateful adapter, which is a
+# change to this module rather than to the one C14a was allowed to touch". Both
+# halves are wrong. ``FakeAdapter`` already takes a callable -- opik_rigor's own
+# docstring: "a callable taking the prompt and returning the response, for
+# responses that have to be computed" -- so no adapter is needed, only a closure
+# holding a counter. And this module was already changed by C14a, so scope was
+# never what stood in the way.
+#
+# So the bound is back. The fixture above stays exactly as it was, because the
+# all-identical case is a real case and its collapse is worth pinning; this one
+# is added beside it.
+# --------------------------------------------------------------------------- #
+
+
+def _varying(goldenset: GoldenSet) -> Callable[[str], str]:
+    """A candidate whose every draw of one item differs from the last.
+
+    Four lines, and it is the difference between a suite that bounds the report a
+    real provider produces and one that bounds a report nothing produces. A
+    provider does not repeat itself: the collapse C14a added is near-total on the
+    mapping fixture *because nothing varies there*, and a size law measured under
+    that condition is a floor on the favourable case.
+
+    Each answer stays the same length as the reference, so the per-block
+    truncation and the size arithmetic are unchanged from the mapping fixture --
+    the only variable this changes is whether the draws are byte-identical.
+    """
+    counts: dict[str, int] = {}
+    by_input = {item.input: item for item in goldenset}
+
+    def respond(prompt: str) -> str:
+        counts[prompt] = counts.get(prompt, 0) + 1
+        reference = by_input[prompt].reference
+        assert reference is not None
+        return f"draw-{counts[prompt]:07d} " + "w" * (len(reference) - 20)
+
+    return respond
+
+
+@pytest.fixture(scope="module")
+def varying(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
+    """The same 30 items at n=5, with a candidate that answers differently each draw."""
+    root = tmp_path_factory.mktemp("report-scale-varying")
+    goldenset_path = root / "goldenset.jsonl"
+    _write_goldenset(goldenset_path, ITEMS, answer_chars=MAX_OUTPUT_CHARS)
+    goldenset = GoldenSet.load(goldenset_path)
+    evidence = _run_pipeline(
+        root,
+        goldenset_path,
+        _responses(goldenset, wrong=False),
+        _varying(goldenset),
+        n=N_PER_ITEM,
+    )
+    model = _model(evidence, goldenset_path)
+    path = render_html(model, root / "report.html", now="2026-01-01T00:00:00Z")
+    return {
+        "model": model,
+        "path": path,
+        "html": path.read_text(encoding="utf-8"),
+        "bytes": path.stat().st_size,
+    }
+
+
+def test_a_candidate_that_does_not_repeat_itself_has_nothing_to_collapse(
+    varying: dict[str, Any]
+) -> None:
+    """The fixture's own premise, asserted before anything is measured on it."""
+    model = varying["model"]
+    assert model.flips, "every item was supposed to change state"
+    for row in model.flips:
+        assert len(row.candidate_outputs) == N_PER_ITEM, row.item_id
+        assert len(set(row.candidate_outputs)) == N_PER_ITEM, (
+            f"{row.item_id}: the candidate repeated itself, so this fixture is "
+            f"back to being the compressible one and the bound below is vacuous"
+        )
+    assert varying["html"].count(f"{N_PER_ITEM} draws, {N_PER_ITEM} distinct") == len(
+        model.flips
+    ), "a side whose draws all differ must say how many were distinct"
+
+
+def test_the_size_law_still_holds_over_the_rendered_file_when_draws_differ(
+    varying: dict[str, Any]
+) -> None:
+    """The bound this module exists for, over the file rather than the model.
+
+    ``html_bytes >= changed_items x n x max_output_chars`` for the side that
+    varies -- the candidate. The baseline still collapses to one block a row,
+    which is why the factor here is n once and not 2n; a fixture varying both
+    sides would restore the full 2n, at twice the runtime for no extra law.
+
+    This is the assertion C14a removed and replaced with ``bytes > 250_000``, a
+    number the collapsed fixture clears by 12%. Measured on this fixture the file
+    is roughly 765 KB against a 600 KB floor.
+    """
+    floor = ITEMS * N_PER_ITEM * MAX_OUTPUT_CHARS
+    assert varying["bytes"] >= floor, (
+        f"{varying['path']} is {varying['bytes']} bytes, under the {floor} bytes "
+        f"its own candidate draws should account for. The size law is linear in "
+        f"the number of *distinct* draws, and a real provider's draws are all "
+        f"distinct"
+    )
+    blocks = varying["html"].count('<pre class="output">')
+    expected = ITEMS * (N_PER_ITEM + 2)  # n candidate draws, 1 baseline, 1 input
+    assert blocks == expected, (
+        f"expected {expected} output blocks ({ITEMS} rows x ({N_PER_ITEM} distinct "
+        f"candidate draws + 1 collapsed baseline + 1 input)), got {blocks}"
+    )
+
+
+def test_the_collapse_never_shrinks_what_the_budget_counts(
+    rendered: dict[str, Any], varying: dict[str, Any]
+) -> None:
+    """The two fixtures differ in what is printed and not in what is certified.
+
+    Same items, same n, same per-block cut: one candidate repeats itself and one
+    does not. The rendered files differ by roughly a factor of three. The budget
+    figure -- the completeness claim -- must not move with them, because it counts
+    what the models produced and completeness is about what the run produced.
+    """
+    uniform = rendered["model"].detail.embedded
+    differing = varying["model"].detail.embedded
+    assert uniform == differing, (
+        f"the budget counted {uniform:,} characters on the uniform fixture and "
+        f"{differing:,} on the varying one; it is measuring the presentation "
+        f"layer, which is the R5 failure -- missing data stated as zero -- in a "
+        f"new coat"
+    )
+    assert varying["bytes"] > rendered["bytes"] * 2, (
+        f"the two fixtures rendered {varying['bytes']} and {rendered['bytes']} "
+        f"bytes; if they no longer differ, the collapse is not happening and the "
+        f"uniform fixture's assertions are the ones to look at"
+    )
+
+
+def test_a_capped_document_also_states_both_character_counts(
+    capped: dict[str, Any]
+) -> None:
+    """The capped branch of the printed-characters clause, which nothing rendered.
+
+    C14a wrote the clause twice -- once under the ``capped`` band and once in the
+    uncapped paragraph -- and only the uncapped one was ever rendered by a test.
+    Deleting the capped one left the whole suite green, and the capped document is
+    the one where the completeness claim is doing the most work: it is already
+    saying that 23 rows carry no quotations, so a reader reconciling "what was
+    produced" against "what is on the page" has two subtractions to make and needs
+    both numbers to make either.
+    """
+    model = capped["model"]
+    assert model.detail.capped, "this fixture is supposed to bind the budget"
+
+    produced = model.detail.embedded
+    printed = _printed_chars(model)
+    assert printed < produced, (
+        "nothing collapsed in the capped render, so this assertion is vacuous"
+    )
+
+    visible = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", capped["html"]))
+    assert f"{produced:,}" in visible, (
+        f"the capped document never states the {produced:,} characters the models "
+        f"produced, so its completeness claim is about what survived rendering"
+    )
+    assert f"{printed:,}" in visible, (
+        f"the capped document collapses draws but never states the {printed:,} "
+        f"characters it prints, so the two cannot be reconciled by a reader"
+    )
+
+
+def test_the_printed_figure_matches_the_blocks_on_a_page_that_collapses_both_sides(
+    rendered: dict[str, Any]
+) -> None:
+    """The other half of the printed-characters oracle, on the uniform fixture.
+
+    ``tests/test_report.py`` measures the same sum on a scenario whose baseline
+    draws all differ, so only the candidate term of ``_printed_chars`` is
+    exercised there. Here both sides are byte-identical by construction, so a
+    term that stopped collapsing -- either one -- shows up as a document claiming
+    to print more characters than its blocks hold.
+    """
+    model = rendered["model"]
+    rows = [row for row in model.flips if row.detail_embedded]
+    assert rows
+    for row in rows:
+        assert len(set(row.baseline_outputs)) == 1, row.item_id
+        assert len(set(row.candidate_outputs)) == 1, row.item_id
+
+    reasons = sum(len(text) for row in rows for text in row.reasons.values())
+    blocks = re.findall(r'<pre class="output">(.*?)</pre>', rendered["html"], re.S)
+    on_the_page = sum(len(html.unescape(one)) for one in blocks)
+
+    assert _printed_chars(model) - reasons == on_the_page, (
+        f"the document says it prints {_printed_chars(model) - reasons:,} "
+        f"characters of inputs and draws; its <pre> blocks hold {on_the_page:,}"
+    )
