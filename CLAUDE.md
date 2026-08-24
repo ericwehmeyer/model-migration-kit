@@ -57,6 +57,34 @@ Detached, so several can sit at one commit without fighting over a branch.
 Never touch `C:\Users\ewehm\repos\migration-kit` (the main checkout) — it is
 usually on some agent's branch. `mk-main` is the worktree for `main`.
 
+## Your scratchpad is shared. Namespace it.
+
+Worktrees isolate the repo. They do **not** isolate the session scratchpad —
+every agent of a pair defaults to the same directory, and a common filename
+(`probe.py`, `check.py`, `fixture.py`) will collide.
+
+**Put your files in a subdirectory named for your role and chunk**, e.g.
+`scratchpad/c14b-impl/`. Never write a bare filename into the scratchpad root.
+
+This has now cost twice. On C4 a tester wrote its test file over the
+implementer's staging file and the harness put ~140 lines of the tester's work
+into the implementer's context unrequested. On C14b the same thing happened
+again, in the other direction.
+
+**And the rule that matters more than the isolation:** if you find yourself
+looking at something you were not supposed to see — your blind partner's
+fixtures, its assertions, its reading of the contract — **stop and report it in
+your final message.** Do not quietly route around it.
+
+The reason is not tidiness. A blind pair's entire product is two independent
+readings of an ambiguous contract, surfaced as a conflict for the orchestrator
+to rule on. On C4 the leak did not merely contaminate the implementer: it
+*destroyed the signal*, by letting a real contract disagreement resolve itself
+silently inside one agent instead of reaching anyone who could rule on it. An
+agent that hides a leak costs a contract defect. An agent that reports one hands
+it over for free — which is exactly what C14b's implementer did, and it was
+right to.
+
 ## Mutating code you are reviewing
 
 Restore from a **byte-verified backup** (copy the file, compare hashes),
