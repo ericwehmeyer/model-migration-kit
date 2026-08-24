@@ -48,6 +48,7 @@ import importlib
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tracemalloc
@@ -58,7 +59,9 @@ import pytest
 from opik_rigor import EvidenceError, EvidenceLog, EvidenceRecord
 
 from model_migration_kit import series
+from model_migration_kit.comparison import _require_comparable
 from model_migration_kit.errors import ArtifactError
+from model_migration_kit.judging import JudgedArtifact, JudgeRecord
 from model_migration_kit.series import RunPoint, read_series, run_point
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -2446,3 +2449,728 @@ def test_a_number_the_reader_cannot_use_is_not_a_malformed_line(tmp_path: Path):
     points = read_series(log)
     assert [point.candidate_model for point in points] == ["before", "odd"]
     assert points[1].n_per_item == 0
+
+
+# ==================================================================================
+# Chunk C4 -- the comparability key and the partition
+# ==================================================================================
+#
+# Written from the same plan, chunk C4, and from the section it cites (§4.4), and
+# from nothing else. `comparability_key`, `ComparabilityKey`, `Exclusion`, `Flag`
+# and `partition_comparable` did not exist in this worktree when these were
+# written; no expected value below was obtained by running any of them.
+#
+# **Why every name below is reached as `series.something` rather than imported at
+# the top of the file.** A module-level `from model_migration_kit.series import
+# partition_comparable` fails at *collection* while the function is missing, and
+# takes C1's and C2's 106 passing tests down with it -- a red suite that says
+# nothing about which chunk is unfinished. An attribute lookup fails one test at a
+# time, with `AttributeError: module 'model_migration_kit.series' has no attribute
+# 'partition_comparable'`, which is what a test waiting on an unwritten function is
+# supposed to look like. It is not a style preference and it is not indirection to
+# be tidied away later.
+#
+# **Three departures from the contract as written, agreed in review before this
+# file was started.** They are recorded here because a reader comparing this
+# section against the plan will otherwise read them as drift:
+#
+# * `partition_comparable` returns a **three**-tuple, `(kept, excluded, flagged)`.
+#   The edge table's last row requires "a flag on the kept point" and the
+#   two-tuple signature has nowhere to put one. A flagged point is *also* in
+#   `kept` -- a flag annotates a row, it does not remove it -- and empty input is
+#   `((), (), ())`.
+# * The flag is read off `judged_baseline`/`judged_candidate`. §4.4 names
+#   `records`, which is a real key of the *payload* and not a field of `RunPoint`;
+#   the field that carries the same reading is `judged_*`. Its docstring in
+#   `series.py` is emphatic that it counts completions the judge **graded** rather
+#   than completions the run produced, and the two are different numbers on any
+#   run with a parse failure, so the sentence has to say which one it means.
+# * Hashes are shown truncated to 16 characters, which is `_require_comparable`'s
+#   own convention (`comparison.py:934`) and not a number invented here.
+#
+# **What "per-side coverage" means in the flag row, since it is the one thing in
+# C4 the contract states twice in two different vocabularies.** §4.4: "`records`
+# is recorded per side and is the available proxy; unequal `records` flags rather
+# than excludes". Per *side* -- the baseline side and the candidate side of one
+# run -- not per run within a group. That is the truncation `_require_comparable`
+# catches key by key and the key cannot see at all: a run whose baseline was
+# graded 60 times and whose candidate was graded 57 is a run where three
+# completions went missing from one side, and the shortfall flatters whichever
+# side finished. The group key is unchanged by it, so the row stays; the reader is
+# told.
+
+#: The two golden sets and the two judge panels these tests separate. They differ
+#: from their first character, deliberately: a fixture whose two hashes share a
+#: 16-character prefix would print two identical truncations and the exclusion
+#: sentence would name one value twice while looking correct.
+_GROUP_GOLDENSET = "5fef50364057cad869f16698df32d927b650778c34382f6f68d9fd53ba4e9a04"
+_OTHER_GOLDENSET = "a1b2c3d4e5f60718293a4b5c6d7e8f901a2b3c4d5e6f708192a3b4c5d6e7f809"
+_GROUP_JUDGES = "bb624f0ed1781d852cd961a9f4a338a3644ffddf262f4435c0d0f8628b7dcbc2"
+_OTHER_JUDGES = "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0"
+
+#: The four fields the contract's `ComparabilityKey` is made of.
+_KEY_FIELDS = ("goldenset_hash", "judges_hash", "n_per_item", "baseline_model")
+
+
+def _point(**changes: typing.Any) -> RunPoint:
+    """One point in a series: C1's own payload fixtures, with `changes` applied.
+
+    Built through `run_point` rather than by spelling out thirty-three constructor
+    arguments, so every field C4 keys on holds the value a real `migkit.comparison`
+    payload puts there rather than one typed in beside the assertion.
+    """
+    return dataclasses.replace(run_point(_comparison(), _verdict()), **changes)
+
+
+def _group_key() -> typing.Any:
+    """The key of the unmodified fixture point, which is every group's key here."""
+    return series.comparability_key(_point())
+
+
+# ----------------------------------------------------------------------------------
+# The key: what it is made of, and what it deliberately ignores
+# ----------------------------------------------------------------------------------
+
+
+def test_the_comparability_key_is_made_of_the_four_fields_the_contract_names():
+    """A fifth field would split groups that belong together and the field would
+    render as a table of one row; a missing fourth is the failure mode the contract
+    names outright -- "a table that quietly compares a 60-item run against a 40-item
+    run is worse than no table"."""
+    key = series.comparability_key(_point())
+    assert dataclasses.is_dataclass(key)
+    present = {field.name for field in dataclasses.fields(key)}
+    assert present == set(_KEY_FIELDS), (
+        f"missing from ComparabilityKey: {sorted(set(_KEY_FIELDS) - present)}; "
+        f"not in the contract: {sorted(present - set(_KEY_FIELDS))}"
+    )
+    assert key.goldenset_hash == _GROUP_GOLDENSET
+    assert key.judges_hash == _GROUP_JUDGES
+    assert key.n_per_item == 5
+    assert key.baseline_model == "gpt-baseline-v1"
+
+
+def test_two_nights_that_tried_different_candidates_still_share_one_key():
+    """The key answers one question -- may these two rows sit in the same table --
+    and the whole purpose of that table is that the candidates differ. A key that
+    included `candidate_model` would put every run in a group of one, and C5's field
+    would then never have two candidates to render."""
+    monday = _point(candidate_model="claude-candidate-v2", pass_rate=0.75)
+    friday = _point(candidate_model="gpt-candidate-v9", pass_rate=0.81, created="")
+    assert series.comparability_key(monday) == series.comparability_key(friday)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"goldenset_hash": _OTHER_GOLDENSET},
+        {"judges_hash": _OTHER_JUDGES},
+        {"n_per_item": 3},
+        {"baseline_model": "gpt-baseline-v0"},
+    ],
+    ids=_KEY_FIELDS,
+)
+def test_a_run_that_differs_in_any_one_of_the_four_fields_does_not_share_the_key(change):
+    """Each field asserted on its own, because a key built from three of the four
+    passes every test that varies the fourth alongside another."""
+    assert series.comparability_key(_point()) != series.comparability_key(_point(**change))
+
+
+def test_a_comparability_key_can_be_a_dictionary_key_because_grouping_needs_one():
+    """C5 groups points by this object. A key that is unhashable cannot be grouped
+    at all, and one that is editable can be changed after the grouping that used
+    it, which is a table whose rows no longer agree with the heading above them."""
+    key = series.comparability_key(_point())
+    same = series.comparability_key(_point(candidate_model="another"))
+    assert {key: "group"}[same] == "group"
+    assert len({key, same}) == 1
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        key.n_per_item = 3  # type: ignore[misc]
+
+
+# ----------------------------------------------------------------------------------
+# The partition, row by row of the contract's edge table
+# ----------------------------------------------------------------------------------
+
+
+def test_points_that_all_share_the_group_key_are_all_kept_and_none_excluded():
+    """Row one. The ordinary case is worth pinning because it is the one a reader
+    never checks: a partition that excluded a matching point would show a nightly
+    job silently losing runs, with a reason nobody reads because the table looks
+    plausible without them."""
+    points = [_point(candidate_model=name) for name in ("first", "second", "third")]
+    kept, excluded, flagged = series.partition_comparable(points, against=_group_key())
+    assert [point.candidate_model for point in kept] == ["first", "second", "third"]
+    assert excluded == ()
+    assert flagged == ()
+
+
+def test_an_empty_series_partitions_into_three_empty_tuples():
+    """Row six. An empty log is the commonest input this code will ever see -- a
+    pipeline whose first night has not run yet -- and it is not an error, an
+    exception, or a `None` that the caller has to test for before unpacking."""
+    assert series.partition_comparable([], against=_group_key()) == ((), (), ())
+
+
+def test_a_run_with_a_different_n_per_item_is_excluded_and_the_reason_names_both_values():
+    """The contract's named first-failing test, and the failure it exists to stop:
+    "a table that quietly compares a 60-item run against a 40-item run is worse than
+    no table". Three draws per item against five is that table -- the same golden
+    set, the same judges, the same baseline, and 40% less evidence behind every
+    number on the row.
+
+    Both values are asserted, not merely that a reason exists. "excluded: n_per_item
+    differs" is a sentence that passes a non-empty check and tells the reader
+    nothing they can act on; the point of the sentence is that someone reading the
+    exclusion list can see *which* run was the odd one and by how much."""
+    odd = _point(candidate_model="three-draws", n_per_item=3)
+    kept, excluded, _flagged = series.partition_comparable(
+        [_point(candidate_model="five-draws"), odd], against=_group_key()
+    )
+    assert [point.candidate_model for point in kept] == ["five-draws"]
+    assert len(excluded) == 1, f"expected exactly one exclusion, got {excluded}"
+    assert excluded[0].point == odd
+    reason = excluded[0].reason
+    assert re.search(r"\b3\b", reason), f"the excluded run's 3 draws are not named: {reason!r}"
+    assert re.search(r"\b5\b", reason), f"the group's 5 draws are not named: {reason!r}"
+    assert "n_per_item" in reason or "per item" in reason.lower(), (
+        f"the sentence has to name the field that differed as well as the two "
+        f"values, or a reader cannot tell what the numbers are: {reason!r}"
+    )
+
+
+def test_a_run_judged_against_a_different_golden_set_is_excluded_showing_both_hashes():
+    """Row three. Two models scored on two different golden sets are, in
+    `_require_comparable`'s words, "two unrelated numbers side by side".
+
+    The hashes are asserted truncated to exactly sixteen characters -- present at
+    16, absent at 17 -- because that is `comparison._require_comparable`'s own
+    convention and this is the second place in the tree that prints a pair of
+    them. Two truncation lengths for the same pair of hashes is how a reader ends
+    up unable to match an exclusion here against a refusal there."""
+    odd = _point(candidate_model="other-set", goldenset_hash=_OTHER_GOLDENSET)
+    kept, excluded, _flagged = series.partition_comparable(
+        [_point(candidate_model="right-set"), odd], against=_group_key()
+    )
+    assert [point.candidate_model for point in kept] == ["right-set"]
+    assert len(excluded) == 1, f"expected exactly one exclusion, got {excluded}"
+    assert excluded[0].point == odd
+    reason = excluded[0].reason
+    assert _GROUP_GOLDENSET[:16] in reason, f"the group's golden set is not named: {reason!r}"
+    assert _OTHER_GOLDENSET[:16] in reason, f"the odd run's golden set is not named: {reason!r}"
+    assert _GROUP_GOLDENSET[:17] not in reason, f"truncated at more than 16: {reason!r}"
+    assert _OTHER_GOLDENSET[:17] not in reason, f"truncated at more than 16: {reason!r}"
+    assert "golden" in reason.lower(), (
+        f"two bare hashes name neither the field nor what a reader should do about "
+        f"it: {reason!r}"
+    )
+
+
+def test_a_run_graded_by_a_different_judge_panel_is_excluded_showing_both_panels():
+    """Row four, and `_require_comparable`'s reasoning for it: "scores from two
+    panels are readings from two instruments; the difference between them would
+    measure the judges, not the models"."""
+    odd = _point(candidate_model="other-panel", judges_hash=_OTHER_JUDGES)
+    kept, excluded, _flagged = series.partition_comparable(
+        [_point(candidate_model="right-panel"), odd], against=_group_key()
+    )
+    assert [point.candidate_model for point in kept] == ["right-panel"]
+    assert len(excluded) == 1, f"expected exactly one exclusion, got {excluded}"
+    assert excluded[0].point == odd
+    reason = excluded[0].reason
+    assert _GROUP_JUDGES[:16] in reason, f"the group's judge panel is not named: {reason!r}"
+    assert _OTHER_JUDGES[:16] in reason, f"the odd run's judge panel is not named: {reason!r}"
+    assert _OTHER_JUDGES[:17] not in reason, f"truncated at more than 16: {reason!r}"
+
+
+def test_a_run_that_differs_in_more_than_one_field_is_excluded_once_and_not_twice():
+    """Not a row of the table, but the shape of every real disagreement: a run
+    against a different golden set was usually graded by a different panel too. One
+    point must produce one exclusion, or the rendered list repeats the same run
+    under two headings and the count beneath the table is wrong."""
+    odd = _point(
+        candidate_model="different-everything",
+        goldenset_hash=_OTHER_GOLDENSET,
+        judges_hash=_OTHER_JUDGES,
+        n_per_item=3,
+    )
+    kept, excluded, _flagged = series.partition_comparable(
+        [_point(candidate_model="ordinary"), odd], against=_group_key()
+    )
+    assert [point.candidate_model for point in kept] == ["ordinary"]
+    assert [exclusion.point.candidate_model for exclusion in excluded] == [
+        "different-everything"
+    ]
+
+
+# ----------------------------------------------------------------------------------
+# The hole: an unrecorded hash is not a hash two runs share
+# ----------------------------------------------------------------------------------
+
+
+def test_a_run_that_recorded_no_golden_set_hash_is_excluded_and_the_reason_says_so():
+    """Row five. An empty hash is not a value that happens to differ, so the
+    sentence cannot be the one row three prints: `" vs 5fef50364057cad8"` names one
+    golden set and an empty pair of quotes, and reads as a rendering bug rather
+    than as the thing it is, which is a log that did not record what it was
+    measured against."""
+    odd = _point(candidate_model="no-hash", goldenset_hash="")
+    kept, excluded, _flagged = series.partition_comparable(
+        [_point(candidate_model="hashed"), odd], against=_group_key()
+    )
+    assert [point.candidate_model for point in kept] == ["hashed"]
+    assert len(excluded) == 1, f"expected exactly one exclusion, got {excluded}"
+    assert excluded[0].point == odd
+    reason = excluded[0].reason
+    assert "record" in reason.lower(), (
+        f"the sentence has to say the hash was not recorded rather than print it "
+        f"as an empty value that differed: {reason!r}"
+    )
+    assert "golden" in reason.lower(), f"the sentence does not name the field: {reason!r}"
+
+
+def test_two_runs_that_both_recorded_no_golden_set_hash_are_still_not_comparable():
+    """The reviewer's note, and the single likeliest defect in this chunk. Two logs
+    that both failed to record a golden-set hash have `==`-equal keys, and equal
+    keys are exactly what a naive partition treats as a match. They are not
+    comparable: an empty hash is not a golden set the two runs share, it is the
+    absence of any evidence that they share one, and the table that results
+    compares a model measured on last month's set against one measured on this
+    month's and reports the difference as a regression.
+
+    The fixture is checked first, because this test is worthless unless the two
+    keys really are equal -- that equality is the whole thing the partition has to
+    refuse to act on. Both points go, including the one the group key was taken
+    from: a point whose golden set is unrecorded is not comparable to anything,
+    itself included."""
+    anchor = _point(candidate_model="anchor", goldenset_hash="")
+    other = _point(candidate_model="also-blank", goldenset_hash="")
+    key = series.comparability_key(anchor)
+    assert key == series.comparability_key(other), (
+        "the fixture is useless unless the two keys are genuinely equal; that "
+        "equality is what the partition is required to refuse to act on"
+    )
+    kept, excluded, _flagged = series.partition_comparable([anchor, other], against=key)
+    assert kept == (), f"an unrecorded golden set was matched against another: {kept}"
+    assert [exclusion.point.candidate_model for exclusion in excluded] == [
+        "anchor",
+        "also-blank",
+    ]
+
+
+def test_two_runs_that_both_recorded_no_judges_hash_are_not_comparable_either():
+    """The same hole in the field beside it. The contract's table names only the
+    golden-set hash, and the reasoning it gives is the *absence*'s and not that
+    particular field's: two runs that did not record which judge panel graded them
+    have not been shown to share one, and a difference between two panels measures
+    the judges rather than the models.
+
+    Recorded here rather than assumed: this row is an extension of the contract's
+    fifth row, agreed in review, and not a transcription of it."""
+    anchor = _point(candidate_model="anchor", judges_hash="")
+    other = _point(candidate_model="also-blank", judges_hash="")
+    key = series.comparability_key(anchor)
+    assert key == series.comparability_key(other), "the fixture's two keys must be equal"
+    kept, excluded, _flagged = series.partition_comparable([anchor, other], against=key)
+    assert kept == (), f"an unrecorded judge panel was matched against another: {kept}"
+    assert [exclusion.point.candidate_model for exclusion in excluded] == [
+        "anchor",
+        "also-blank",
+    ]
+
+
+# ----------------------------------------------------------------------------------
+# Stable order, and what a set or a dict would do to it
+# ----------------------------------------------------------------------------------
+
+
+def test_the_kept_points_come_back_in_the_order_they_were_given():
+    """"Ordering must be stable so the rendered list is stable." The dates below are
+    out of order, and out of order in a way no sort would leave alone, so a
+    partition that grouped through anything that reorders is visible here rather
+    than in a table that changes row order between two runs over one unchanged
+    log."""
+    created = [
+        "2026-08-21T23:00:00.000000+00:00",
+        "2026-08-19T09:00:00.000000+00:00",
+        "2026-08-20T12:00:00.000000+00:00",
+    ]
+    points = [
+        _point(candidate_model=name, created=when)
+        for name, when in zip(("first", "second", "third"), created, strict=True)
+    ]
+    assert created != sorted(created), "the fixture is useless if its dates are already ordered"
+    kept, _excluded, _flagged = series.partition_comparable(points, against=_group_key())
+    assert [point.candidate_model for point in kept] == ["first", "second", "third"]
+    assert [point.created for point in kept] == created
+
+
+def test_three_identical_points_are_all_three_kept_rather_than_folded_into_one():
+    """The other half of "not a set". A nightly job re-run against an unchanged
+    golden set writes a byte-identical comparison, and those repeats are the
+    evidence that a result is stable rather than noise. A partition that passed its
+    points through a `set` to deduplicate them returns one row and reports three
+    nights of agreement as one night."""
+    points = [_point(), _point(), _point()]
+    assert points[0] == points[1] == points[2], "the fixture must really be identical"
+    kept, _excluded, _flagged = series.partition_comparable(points, against=_group_key())
+    assert len(kept) == 3, f"identical points were folded together: {len(kept)} kept"
+
+
+def test_the_excluded_points_come_back_in_the_order_they_were_given_too():
+    """The exclusion list is rendered beneath the table, and a reader matches it
+    against the log by eye. An order that comes out of a set is an order that
+    changes between two runs over the same file, and there is nothing on the page
+    that says the list is unordered."""
+    points = [
+        _point(candidate_model="excluded-first", n_per_item=3),
+        _point(candidate_model="kept"),
+        _point(candidate_model="excluded-second", goldenset_hash=_OTHER_GOLDENSET),
+        _point(candidate_model="excluded-third", judges_hash=_OTHER_JUDGES),
+    ]
+    kept, excluded, _flagged = series.partition_comparable(points, against=_group_key())
+    assert [point.candidate_model for point in kept] == ["kept"]
+    assert [exclusion.point.candidate_model for exclusion in excluded] == [
+        "excluded-first",
+        "excluded-second",
+        "excluded-third",
+    ]
+
+
+def test_the_partition_hands_back_tuples_holding_the_very_points_it_was_given():
+    """Tuples for the reason `RunPoint` is frozen: a caller that can append to the
+    kept list can add a row the partition refused. And the points themselves, not
+    copies -- a later chunk matches a flagged or excluded point against the series
+    it came from, and a rebuilt point of equal value is not the same row."""
+    points = [_point(candidate_model="first"), _point(candidate_model="second")]
+    result = series.partition_comparable(points, against=_group_key())
+    assert isinstance(result, tuple)
+    assert len(result) == 3, f"the partition returns (kept, excluded, flagged), got {result}"
+    kept, excluded, flagged = result
+    assert isinstance(kept, tuple)
+    assert isinstance(excluded, tuple)
+    assert isinstance(flagged, tuple)
+    for one, original in zip(kept, points, strict=True):
+        assert one is original
+
+
+def test_an_excluded_point_is_never_also_one_of_the_kept_points():
+    """What "excluded" has to mean, asserted rather than assumed. A point that
+    appears in both lists is a run that is named as unusable underneath a table it
+    is also a row of."""
+    points = [_point(candidate_model="kept"), _point(candidate_model="odd", n_per_item=3)]
+    kept, excluded, _flagged = series.partition_comparable(points, against=_group_key())
+    excluded_models = {exclusion.point.candidate_model for exclusion in excluded}
+    assert excluded_models == {"odd"}
+    assert {point.candidate_model for point in kept}.isdisjoint(excluded_models)
+
+
+def test_the_group_key_can_only_be_passed_by_keyword():
+    """The contract puts a bare `*` before it. Positionally, a caller could pass the
+    key where the points belong -- or, worse, a second sequence of points -- and get
+    back a partition of something they did not mean."""
+    with pytest.raises(TypeError):
+        series.partition_comparable([_point()], _group_key())  # type: ignore[misc]
+
+
+# ----------------------------------------------------------------------------------
+# The flag: a run whose two sides were not judged alike
+# ----------------------------------------------------------------------------------
+
+
+def test_a_run_whose_two_sides_were_judged_unequally_is_kept_and_flagged():
+    """The table's last row. Coverage is the field the key cannot see, and §4.4
+    refuses to paper over the gap: a run whose baseline was graded 60 times and
+    whose candidate was graded 57 has the same hashes, the same `n_per_item` and the
+    same baseline as every other row, so nothing about the key can exclude it -- and
+    it should not be excluded, because the shortfall is already surfaced by
+    `Completeness` and dropping the row would lose a night of history over three
+    completions. It is kept, and it is annotated."""
+    lopsided = _point(candidate_model="truncated", judged_candidate=57)
+    assert lopsided.judged_baseline == 60, "the fixture must really be uneven"
+    kept, excluded, flagged = series.partition_comparable(
+        [_point(candidate_model="even"), lopsided], against=_group_key()
+    )
+    assert [point.candidate_model for point in kept] == ["even", "truncated"]
+    assert excluded == (), f"a coverage shortfall must flag rather than exclude: {excluded}"
+    assert len(flagged) == 1, f"expected exactly one flag, got {flagged}"
+    assert flagged[0].point == lopsided
+
+
+def test_a_flagged_point_is_also_one_of_the_kept_points():
+    """Stated separately because it is the whole difference between a flag and an
+    exclusion, and a partition that returned the flagged point *instead* of keeping
+    it would pass every assertion about the flag itself while dropping the row."""
+    lopsided = _point(candidate_model="truncated", judged_candidate=57)
+    kept, _excluded, flagged = series.partition_comparable([lopsided], against=_group_key())
+    assert len(flagged) == 1
+    assert flagged[0].point in kept
+
+
+def test_the_flag_names_both_of_the_two_counts_that_disagreed():
+    """The same requirement the exclusion sentence carries, for the same reason: a
+    flag reading "the two sides were judged unequally" is a warning a reader cannot
+    size. Three completions short of sixty is a footnote; forty-three is the run
+    being unusable, and only the numbers say which one this is."""
+    lopsided = _point(judged_baseline=60, judged_candidate=57)
+    _kept, _excluded, flagged = series.partition_comparable([lopsided], against=_group_key())
+    assert len(flagged) == 1, f"expected exactly one flag, got {flagged}"
+    reason = flagged[0].reason
+    assert re.search(r"\b60\b", reason), f"the baseline's 60 is not named: {reason!r}"
+    assert re.search(r"\b57\b", reason), f"the candidate's 57 is not named: {reason!r}"
+
+
+def test_the_flag_says_the_judge_graded_those_completions_and_does_not_call_them_records():
+    """§4.4 names `records` as the available proxy, and `records` is a key of the
+    payload rather than a field of `RunPoint`. The field that carries this reading
+    is `judged_*`, whose docstring exists to stop exactly this sentence being
+    written loosely: it counts completions the judge **graded**, which excludes the
+    ones whose judge reply would not parse, and it is not the run's completion
+    count that the report's "completions" row already shows. A flag that says "60
+    records against 57" contradicts a row on the same page that says both sides
+    produced 60, and the reader has no way to tell which number is wrong.
+
+    "Completions" is not banned -- "graded 57 of 60 completions" is the correct
+    sentence and says both things. What is banned is the word the payload uses for
+    a different count."""
+    lopsided = _point(judged_baseline=60, judged_candidate=57)
+    _kept, _excluded, flagged = series.partition_comparable([lopsided], against=_group_key())
+    assert len(flagged) == 1, f"expected exactly one flag, got {flagged}"
+    reason = flagged[0].reason
+    assert "graded" in reason.lower(), (
+        f"the sentence has to say the judge *graded* these, which is what the "
+        f"number counts: {reason!r}"
+    )
+    assert "records" not in reason.lower(), (
+        f"'records' is the payload's word for a different count -- two judges "
+        f"grading 60 completions are 120 records -- and using it here re-commits "
+        f"the conflation `judged_*` was renamed to prevent: {reason!r}"
+    )
+
+
+def test_a_run_whose_two_sides_were_judged_alike_is_not_flagged():
+    """The other side of it. A flag on every row is a flag on none of them, and the
+    fixture's own sides are equal, so a partition that flagged unconditionally
+    would pass every test above."""
+    even = _point()
+    assert even.judged_baseline == even.judged_candidate == 60
+    kept, excluded, flagged = series.partition_comparable([even], against=_group_key())
+    assert len(kept) == 1
+    assert excluded == ()
+    assert flagged == (), f"an evenly judged run was flagged: {flagged}"
+
+
+def test_an_excluded_run_whose_sides_also_disagree_is_excluded_and_not_kept():
+    """The two annotations meeting on one point. A truncated run against a different
+    golden set is still not comparable, and a flag must not rescue it into the
+    table: the flag annotates rows that are staying, and this one is not."""
+    both = _point(
+        candidate_model="truncated-and-odd",
+        goldenset_hash=_OTHER_GOLDENSET,
+        judged_candidate=57,
+    )
+    kept, excluded, flagged = series.partition_comparable(
+        [_point(candidate_model="ordinary"), both], against=_group_key()
+    )
+    assert [point.candidate_model for point in kept] == ["ordinary"]
+    assert [exclusion.point.candidate_model for exclusion in excluded] == ["truncated-and-odd"]
+    assert [flag.point.candidate_model for flag in flagged] == [], (
+        f"an excluded point was also flagged, so it is named twice beneath a table "
+        f"it is not a row of: {flagged}"
+    )
+
+
+# ----------------------------------------------------------------------------------
+# The shapes of the two annotations
+# ----------------------------------------------------------------------------------
+
+
+def test_an_exclusion_carries_the_point_it_removed_and_a_sentence_about_it():
+    """Both halves are needed by the layer that renders the list beneath the table:
+    the sentence to print, and the point to date it and name its candidate. A
+    sentence on its own is a line of prose with no run attached to it."""
+    odd = _point(candidate_model="odd", n_per_item=3)
+    _kept, excluded, _flagged = series.partition_comparable([odd], against=_group_key())
+    exclusion = excluded[0]
+    assert dataclasses.is_dataclass(exclusion)
+    assert {field.name for field in dataclasses.fields(exclusion)} == {"point", "reason"}
+    assert exclusion.point is odd
+    assert isinstance(exclusion.reason, str)
+    assert exclusion.reason.strip(), "an exclusion with an empty reason explains nothing"
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        exclusion.reason = "something else"  # type: ignore[misc]
+
+
+def test_a_flag_carries_the_point_it_annotates_and_a_sentence_about_it():
+    """The same shape as `Exclusion`, deliberately: the layer that renders them
+    renders both, and two annotations with two different field names would be two
+    templates for one list."""
+    lopsided = _point(judged_candidate=57)
+    _kept, _excluded, flagged = series.partition_comparable([lopsided], against=_group_key())
+    flag = flagged[0]
+    assert dataclasses.is_dataclass(flag)
+    assert {field.name for field in dataclasses.fields(flag)} == {"point", "reason"}
+    assert flag.point is lopsided
+    assert isinstance(flag.reason, str)
+    assert flag.reason.strip(), "a flag with an empty reason explains nothing"
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        flag.reason = "something else"  # type: ignore[misc]
+
+
+# ----------------------------------------------------------------------------------
+# The bridge to `_require_comparable`, which §4.4 says must exist as code
+# ----------------------------------------------------------------------------------
+
+
+def _judged(
+    model_id: str,
+    *,
+    goldenset_hash: str,
+    judges_hash: str = _GROUP_JUDGES,
+    n_per_item: int = 5,
+    items: int = 12,
+) -> JudgedArtifact:
+    """A judged artifact: `items` items, every one graded `n_per_item` times.
+
+    Shaped so that two of these differ in exactly the field the test varies.
+    `coverage()` is (judge, item) -> how many samples were graded, so two artifacts
+    built with the same `items` and `n_per_item` cover each other exactly and
+    `_require_comparable` has nothing to object to but the hashes.
+    """
+    records = tuple(
+        JudgeRecord(
+            judge="accuracy",
+            item_id=f"q{index:03d}",
+            sample_index=sample,
+            passed=sample < 4,
+            score=5.0 if sample < 4 else 1.0,
+        )
+        for index in range(items)
+        for sample in range(n_per_item)
+    )
+    return JudgedArtifact(
+        model_id=model_id,
+        goldenset_hash=goldenset_hash,
+        judges_hash=judges_hash,
+        n_per_item=n_per_item,
+        records=records,
+        judges=(
+            {
+                "name": "accuracy",
+                "model": "fake-judge-v1",
+                "adapter_class": "FakeAdapter",
+                "rubric_hash": "cc39e4aad0ef5db821fb627bb1217bab78095543642634bc2d30581f642c6268",
+            },
+        ),
+    )
+
+
+def _point_of(baseline: JudgedArtifact, candidate: JudgedArtifact) -> RunPoint:
+    """The `RunPoint` a comparison of these two artifacts would have written.
+
+    Every field the comparability key is made of is read *off the artifacts* rather
+    than typed in again beside them. A bridge whose two ends are two independent
+    literals is not a bridge: it would go on passing after someone changed what
+    `_require_comparable` compares, which is the one thing it exists to notice.
+    """
+    payload = _comparison(
+        goldenset_hash=baseline.goldenset_hash,
+        judges_hash=baseline.judges_hash,
+        n_per_item=baseline.n_per_item,
+    )
+    payload["baseline"]["model_id"] = baseline.model_id
+    payload["baseline"]["n_per_item"] = baseline.n_per_item
+    payload["candidate"]["model_id"] = candidate.model_id
+    payload["candidate"]["n_per_item"] = candidate.n_per_item
+    return run_point(
+        payload,
+        _verdict(baseline_model=baseline.model_id, candidate_model=candidate.model_id),
+    )
+
+
+def test_grouping_never_admits_a_pair_that_require_comparable_would_have_refused():
+    """§4.4's bridge, as code rather than as a paragraph.
+
+    `_require_comparable` takes two live `JudgedArtifact`s and the report has
+    payloads, so it cannot be called at this layer -- that is the whole reason
+    `series` writes a second, narrower predicate. The claim being made is therefore
+    not "grouping respects `_require_comparable`", which is not available, but
+    "grouping never admits a pair `_require_comparable` would have refused on a
+    field grouping can see". This is that claim, exercised on one pair.
+
+    The scenario is the one a real log produces. Monday's run compared the baseline
+    against `claude-candidate-v2` on one golden set; Friday's compared it against
+    `claude-candidate-v3` after the golden set was edited. Each night is internally
+    comparable and each wrote a perfectly good comparison payload -- both are
+    asserted to pass `_require_comparable` below, so the refusal that follows cannot
+    be an artifact of a broken fixture. What is not comparable is Monday's candidate
+    against Friday's, and putting both rows in one table is exactly that comparison,
+    made implicitly and with nothing on the page to disclose it.
+
+    The refusal is *called*, not assumed, and the message is checked to be the
+    golden-set one: `_require_comparable` has four ways to refuse, and a fixture
+    that tripped the coverage check or the self-comparison check would prove
+    something this test does not claim."""
+    monday_baseline = _judged("gpt-baseline-v1", goldenset_hash=_GROUP_GOLDENSET)
+    monday_candidate = _judged("claude-candidate-v2", goldenset_hash=_GROUP_GOLDENSET)
+    friday_baseline = _judged("gpt-baseline-v1", goldenset_hash=_OTHER_GOLDENSET)
+    friday_candidate = _judged("claude-candidate-v3", goldenset_hash=_OTHER_GOLDENSET)
+
+    # Each night on its own is a comparison the pipeline would have run. If either
+    # of these raised, the refusal below would prove nothing about the golden set.
+    _require_comparable(monday_baseline, monday_candidate, allow_same_model=False)
+    _require_comparable(friday_baseline, friday_candidate, allow_same_model=False)
+
+    with pytest.raises(ArtifactError) as refused:
+        _require_comparable(monday_candidate, friday_candidate, allow_same_model=False)
+    assert "golden set" in str(refused.value).lower(), (
+        f"the premise has to be the golden-set refusal specifically, or this test "
+        f"is asserting about some other disagreement: {refused.value}"
+    )
+
+    monday = _point_of(monday_baseline, monday_candidate)
+    friday = _point_of(friday_baseline, friday_candidate)
+    kept, excluded, _flagged = series.partition_comparable(
+        [monday, friday], against=series.comparability_key(monday)
+    )
+    assert [point.candidate_model for point in kept] == ["claude-candidate-v2"]
+    assert [exclusion.point.candidate_model for exclusion in excluded] == [
+        "claude-candidate-v3"
+    ]
+
+
+def test_grouping_also_refuses_the_pair_require_comparable_refuses_for_uneven_coverage():
+    """The same bridge over the other field the two predicates share, where they
+    reach the same answer by different routes. `_require_comparable` has no
+    `n_per_item` check at all: it compares coverage key by key, and a run drawn
+    three times per item covers every item three times against the other's five.
+    Grouping cannot see coverage, and sees `n_per_item` instead.
+
+    The two routes agreeing here is what makes the narrower predicate usable. If
+    they disagreed, the report's table would admit a pair the pipeline itself
+    refuses to compare, which is the failure §4.4 exists to rule out."""
+    monday_baseline = _judged("gpt-baseline-v1", goldenset_hash=_GROUP_GOLDENSET)
+    monday_candidate = _judged("claude-candidate-v2", goldenset_hash=_GROUP_GOLDENSET)
+    thrifty_baseline = _judged("gpt-baseline-v1", goldenset_hash=_GROUP_GOLDENSET, n_per_item=3)
+    thrifty_candidate = _judged(
+        "claude-candidate-v3", goldenset_hash=_GROUP_GOLDENSET, n_per_item=3
+    )
+
+    _require_comparable(monday_baseline, monday_candidate, allow_same_model=False)
+    _require_comparable(thrifty_baseline, thrifty_candidate, allow_same_model=False)
+
+    with pytest.raises(ArtifactError) as refused:
+        _require_comparable(monday_candidate, thrifty_candidate, allow_same_model=False)
+    assert "cover" in str(refused.value).lower(), (
+        f"the premise has to be the coverage refusal specifically: {refused.value}"
+    )
+
+    monday = _point_of(monday_baseline, monday_candidate)
+    thrifty = _point_of(thrifty_baseline, thrifty_candidate)
+    kept, excluded, _flagged = series.partition_comparable(
+        [monday, thrifty], against=series.comparability_key(monday)
+    )
+    assert [point.candidate_model for point in kept] == ["claude-candidate-v2"]
+    assert [exclusion.point.candidate_model for exclusion in excluded] == [
+        "claude-candidate-v3"
+    ]
