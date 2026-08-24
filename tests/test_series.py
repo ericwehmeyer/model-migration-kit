@@ -2832,9 +2832,73 @@ def test_a_spot_check_of_no_prompts_is_a_caller_error_and_not_a_certainty():
     """k == 0. `comb(N, 0) / comb(N, 0)` is 1.0, so the quiet answer is "a
     zero-prompt spot check finds nothing 100% of the time" -- true, useless, and
     indistinguishable in the rendered document from a real result. The contract
-    makes it an error so it cannot reach a reader."""
-    with pytest.raises(ValueError):
+    makes it an error so it cannot reach a reader.
+
+    Negative k is the same bug wearing a different sign, and it is worse: `comb`
+    rejects it and the caller gets a ValueError from inside the arithmetic
+    naming `comb`, not a message naming `k`. The guard is `k <= 0` and both
+    sides of it are pinned here."""
+    with pytest.raises(ValueError, match="positive number of prompts"):
         series.spot_check(88, 8, 0, k=0)
+    with pytest.raises(ValueError, match="positive number of prompts"):
+        series.spot_check(88, 8, 0, k=-1)
+    with pytest.raises(ValueError, match="positive number of prompts"):
+        series.spot_check(88, 8, 0, k=-12)
+    # k == 1 is the smallest legitimate check and must not be caught by it.
+    single = series.spot_check(88, 8, 0, k=1)
+    assert single is not None
+    assert single.k == 1
+    assert single.probability == pytest.approx(88 / 96, rel=1e-12)
+
+
+@pytest.mark.parametrize(
+    ("passing", "failing", "unstable"),
+    [(-1, 8, 0), (88, -8, 0), (88, 8, -1), (-1, -1, -1), (88, 8, -100)],
+)
+def test_negative_item_counts_are_a_caller_error_and_never_a_probability(
+    passing, failing, unstable
+):
+    """The guard nothing tested, and it is load-bearing rather than defensive.
+
+    Unguarded, `spot_check(88, -8, 0)` is not an exception and not a wrong
+    number in the fourth decimal place. N becomes 80, `comb(80 - -8, 12)` is
+    `comb(88, 12)`, and the quotient is **3.4088** -- a probability above 3 --
+    which the renderer then formats without complaint as "... would have shown
+    no failures at all in 341% of such checks." A negative count is a miswired
+    caller, and a miswired caller must not be able to put an impossible
+    percentage into the most-quoted line in the document.
+
+    Checked before N is summed, because summing is what destroys the evidence:
+    once the three counts are added, -8 failing and 96 passing is
+    indistinguishable from 88 passing."""
+    with pytest.raises(ValueError, match="cannot be negative"):
+        series.spot_check(passing, failing, unstable, k=12)
+
+
+def test_the_default_check_is_twelve_prompts_and_the_default_is_what_gets_used():
+    """`k: int = 12` was never exercised for a non-None result -- every call that
+    returned a `SpotCheck` passed `k=12` explicitly, and every call that omitted
+    it returned `None` for some other reason. So the default could be changed to
+    11 or 13 and the suite stayed green (M23, M24).
+
+    Twelve is not arbitrary and it is not a tuning knob: it is the size the
+    report's sentence is written around, and a default that silently disagreed
+    with the prose would produce a document whose sentence and whose arithmetic
+    describe different checks."""
+    default = series.spot_check(88, 8, 0)
+    explicit = series.spot_check(88, 8, 0, k=12)
+    assert default is not None
+    assert explicit is not None
+    assert default.k == 12
+    assert default == explicit
+    assert default.probability == pytest.approx(0.3287693171387045, rel=1e-12)
+    assert "12-prompt" in default.sentence
+    # And it is genuinely the default rather than a coincidence of this set:
+    # neighbouring k give different answers, so 11 or 13 would have shown.
+    for neighbour in (11, 13):
+        other = series.spot_check(88, 8, 0, k=neighbour)
+        assert other is not None
+        assert other.probability != default.probability
 
 
 def test_the_spot_check_carries_the_six_fields_the_contract_names_and_is_frozen():
