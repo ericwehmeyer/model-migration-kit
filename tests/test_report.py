@@ -10529,7 +10529,14 @@ def test_both_new_fields_are_populated_while_the_log_is_still_read_once(
 #: The third candidate of the multiplicity fixture. Sorts after ``SIBLING_MODEL``
 #: so the rendered row order -- by candidate model, never by result -- is a known
 #: answer and ``Multiplicity.changed``'s order can be asserted rather than sorted.
-THIRD_MODEL = "model-d-20260101"
+#:
+#: Prefixed ``FAMILY_`` because C10's dimension-matrix fixtures already define a
+#: module-level ``THIRD_MODEL`` at 8215, and the later assignment wins for every
+#: reference in the module. Merged blind, the two collided and C10's
+#: ``FOURTH_MODEL < THIRD_MODEL < CANDIDATE_MODEL`` guard went red -- which is
+#: exactly what that guard exists to do, and is the second name collision this
+#: file has produced at a merge. See R32.
+FAMILY_THIRD_MODEL = "model-d-20260101"
 
 #: The level every member of the family is tested at. Not ``THRESHOLDS``' own
 #: ``0.03``: the three p-values below have to sit *under* alpha and still not be
@@ -10544,7 +10551,7 @@ FAMILY_ALPHA = 0.05
 FAMILY_P_VALUES = {
     CANDIDATE_MODEL: 0.03,
     SIBLING_MODEL: 0.04,
-    THIRD_MODEL: 0.045,
+    FAMILY_THIRD_MODEL: 0.045,
 }
 
 #: A day after ``SIBLING_CREATED_NARROW`` and a day before the headline, so the
@@ -10703,9 +10710,9 @@ def _family_log(scenario: Scenario, name: str = "evidence-family.jsonl") -> Path
             EVENT_COMPARISON,
             _priced_sibling(
                 scenario,
-                candidate_model=THIRD_MODEL,
+                candidate_model=FAMILY_THIRD_MODEL,
                 created=THIRD_CREATED,
-                p_value=FAMILY_P_VALUES[THIRD_MODEL],
+                p_value=FAMILY_P_VALUES[FAMILY_THIRD_MODEL],
             ),
             EARLIER_TS_COMPARISON,
         ),
@@ -11210,12 +11217,12 @@ def test_the_correction_caveats_name_the_rows_they_are_about(tmp_path: Path) -> 
     field = _model_field(model)
     rows = {row.model: row for row in field.candidates}
 
-    assert list(rows) == [CANDIDATE_MODEL, SIBLING_MODEL, THIRD_MODEL], (
+    assert list(rows) == [CANDIDATE_MODEL, SIBLING_MODEL, FAMILY_THIRD_MODEL], (
         f"the rendered rows are {list(rows)}; the field holds this log's three "
         f"candidates under one key, ordered by candidate model"
     )
     about = {id(note.point): note for note in field.caveats}
-    for model_id in (CANDIDATE_MODEL, SIBLING_MODEL, THIRD_MODEL):
+    for model_id in (CANDIDATE_MODEL, SIBLING_MODEL, FAMILY_THIRD_MODEL):
         point = rows[model_id].point
         assert id(point) in about, (
             f"no caveat on the field is about {model_id}, whose significance the "
@@ -11258,14 +11265,14 @@ def test_the_multiplicity_records_what_the_correction_actually_did(
         f"the family holds {record.family_size} candidate(s); all three rows of this "
         f"field carry a p-value"
     )
-    assert record.changed == (CANDIDATE_MODEL, SIBLING_MODEL, THIRD_MODEL), (
+    assert record.changed == (CANDIDATE_MODEL, SIBLING_MODEL, FAMILY_THIRD_MODEL), (
         f"the correction reports changing {record.changed}; at {FAMILY_ALPHA!r} over "
         f"{sorted(FAMILY_P_VALUES.values())} Holm rejects none of the three, and a "
         f"`changed` of two has dropped the largest sub-alpha p-value -- the one a "
         f"`p >= threshold` rule always misses"
     )
     assert sorted(record.thresholds) == sorted(
-        (CANDIDATE_MODEL, SIBLING_MODEL, THIRD_MODEL)
+        (CANDIDATE_MODEL, SIBLING_MODEL, FAMILY_THIRD_MODEL)
     ), (
         f"the thresholds are keyed {sorted(record.thresholds)}; applied=True over an "
         f"incomplete mapping is the overclaim this record exists to prevent"
