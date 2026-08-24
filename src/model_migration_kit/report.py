@@ -123,6 +123,17 @@ report from scripted models by avoiding ``migkit demo``. A flag-driven banner is
 exactly the banner that goes missing from the screenshot someone pastes into a
 deck.
 
+**And there is a third state, because "was this scripted" has three answers.**
+An adapter name that was never recorded makes the question unanswerable, and a
+two-state design answers it *real* on the strength of nothing: blank both sides'
+adapters in the payload, delete the run artifacts, and a fully scripted demo
+renders clean, with a verdict and pass rates and no band. The log that does that
+is byte-identical to a real run whose adapter was never written down, so no
+reader can separate them -- which makes "the document does not know" the only
+honest answer and :class:`Provenance` the place it is said. The scripted claim
+still outranks the gap, and the ``<title>`` still carries only the scripted one:
+a prefix on every legacy log teaches readers to skip the prefix.
+
 **The document is bounded, and says by how much.** The report used to grow as
 ``changed_items x 2n x max_output_chars`` with nothing looking at the total: 200
 items at n=20 rendered 32.4 MB, 1000 items at n=20 rendered 161.8 MB holding
@@ -159,7 +170,7 @@ import os
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -206,6 +217,10 @@ __all__ = [
     "FlipRow",
     "JudgeRow",
     "MethodologySection",
+    "PROVENANCE_RECORDED",
+    "PROVENANCE_SCRIPTED",
+    "PROVENANCE_UNRECORDED",
+    "Provenance",
     "RateStat",
     "ReportModel",
     "RunSummary",
@@ -837,6 +852,183 @@ class DetailBudget:
         }
 
 
+#: :attr:`Provenance.state` when a ``Fake*`` adapter produced any run the document
+#: shows. The positive claim, and the only one the ``<title>`` carries.
+PROVENANCE_SCRIPTED = "scripted"
+
+#: :attr:`Provenance.state` when the evidence does not name the adapter that
+#: produced a headline run, so the document can say neither "scripted" nor "real".
+PROVENANCE_UNRECORDED = "unrecorded"
+
+#: :attr:`Provenance.state` when every headline run names an adapter and none of
+#: them is scripted. The only state that bands nothing.
+PROVENANCE_RECORDED = "recorded"
+
+#: The three states' band labels, ids and colours, keyed by state. A mapping
+#: rather than three ``if`` chains in three renderers: the terminal, the HTML band
+#: and any later surface read the same row, so a fourth state cannot be added to
+#: one of them and forgotten in the others.
+_PROVENANCE_BANDS: Mapping[str, tuple[str, str, str, str]] = {
+    PROVENANCE_SCRIPTED: ("FAKE MODELS", "fake-models", "fake", "red"),
+    PROVENANCE_UNRECORDED: (
+        "PROVENANCE NOT RECORDED",
+        "provenance-unrecorded",
+        "unrecorded",
+        "yellow",
+    ),
+}
+
+
+@dataclass(frozen=True)
+class Provenance:
+    """Where this document's numbers came from, in the three states that exist.
+
+    **Three states and not two, which is R29.2's ruling and the reason this class
+    exists.** ``is_demo`` answers "was any run scripted" and answers it from
+    adapter names; a log that records no adapter at all makes that question
+    unanswerable, and a two-state design resolves the unanswerable case to
+    *real* -- silently, on the strength of nothing. Blanking both sides' adapters
+    in the payload and deleting the run artifacts turned a fully scripted demo
+    into a clean report carrying a verdict and pass rates, which is exactly the
+    document §5.3 says cannot be obtained. The two logs are byte-identical, so no
+    amount of reading can tell them apart: the honest reading is that the
+    document does not know, and the honest rendering says so.
+
+    That is this package's own rule -- an absence must not render as a
+    measurement -- applied to its most important disclosure.
+
+    **The scripted state outranks the unrecorded one.** A ``Fake*`` adapter on
+    either side is a positive finding and a missing adapter on the other is a
+    gap; a document that has both has something definite to say and says it. The
+    consequence is that :attr:`unrecorded` can be non-empty while
+    :attr:`state` is :data:`PROVENANCE_SCRIPTED`, which is why the sentences
+    below never describe an unnamed side as real.
+
+    **The counts are in comparisons, and say so.** R29.4: a :class:`RunPoint`
+    carries no run id and no artifact path, so two comparisons naming the same
+    baseline run cannot be told from two comparisons naming two -- in the
+    showcase shape a night is four runs and six adapter mentions. A run count
+    off ``migkit.run_started`` would be exact where those records exist and
+    absent on precisely the hand-assembled logs this disclosure protects. A
+    coarser number that is right beats a precise one that is wrong.
+    """
+
+    #: One of the three ``PROVENANCE_*`` constants.
+    state: str
+    #: Whether the *headline* comparison's own sides name a ``Fake*`` adapter, as
+    #: distinct from the document containing scripted runs anywhere. R29.1 turns
+    #: on this: the two cases get different sentences, not one sentence with a
+    #: variable in it.
+    headline_scripted: bool
+    #: Comparisons the document draws -- one per ``migkit.comparison`` record.
+    comparisons: int
+    #: Of those, how many name a ``Fake*`` adapter on at least one side.
+    scripted_comparisons: int
+    #: Headline sides whose adapter the evidence never recorded, ``"baseline"``
+    #: before ``"candidate"``. Empty on every log this tool writes.
+    unrecorded: tuple[str, ...]
+    #: Comparisons whose payload ``created`` names a different UTC calendar day
+    #: from the evidence record carrying it. R29.3: detected, never assumed --
+    #: unconditional prose would be false on ``migkit demo``, where the two are
+    #: the same instant, and an asymmetry asserted where none was measured is
+    #: this package's rule inverted inside the chunk about unsuppressible
+    #: honesty.
+    dated_apart: int
+
+    @property
+    def banded(self) -> bool:
+        """Whether this document carries a band above its verdict banner."""
+        return self.state in _PROVENANCE_BANDS
+
+    @property
+    def label(self) -> str:
+        """The band's shouted half, or ``""`` when there is no band."""
+        return _PROVENANCE_BANDS.get(self.state, ("", "", "", ""))[0]
+
+    @property
+    def anchor(self) -> str:
+        """The band's ``id``, so a reviewer can link straight at it."""
+        return _PROVENANCE_BANDS.get(self.state, ("", "", "", ""))[1]
+
+    @property
+    def css(self) -> str:
+        """The band's modifier class."""
+        return _PROVENANCE_BANDS.get(self.state, ("", "", "", ""))[2]
+
+    @property
+    def border(self) -> str:
+        """The terminal panel's border colour. Never the only carrier of a fact."""
+        return _PROVENANCE_BANDS.get(self.state, ("", "", "", ""))[3]
+
+    @property
+    def sentence(self) -> str:
+        """The band's words, written once for the terminal and the HTML both.
+
+        The same discipline as :attr:`DetailBudget.sentence`: two copies of a
+        disclosure are two chances for one of them to go stale, and this one is
+        the disclosure the whole module is built around.
+        """
+        if self.state == PROVENANCE_SCRIPTED:
+            head = "these numbers describe scripted responses, not a real provider"
+            counted = self._counted
+            return f"{head}; {counted}" if counted else head
+        if self.state == PROVENANCE_UNRECORDED:
+            return (
+                f"the evidence does not name the adapter that produced "
+                f"{self._sides}, so this report cannot say whether these numbers "
+                f"came from a real provider or from a script"
+            )
+        return ""
+
+    @property
+    def _counted(self) -> str:
+        """The band's series-aware clause, or ``""`` when there is no series.
+
+        ``0`` comparisons is a model built by hand rather than a document with no
+        scripted runs in it, so it counts nothing rather than publishing a
+        ``0 of 0`` that reads like a measurement.
+
+        The one-comparison spellings are written out rather than reached with a
+        pluralising helper, because English will not let the number and the verb
+        be chosen independently: "all 1 comparison name a Fake adapter" is what a
+        helper produces, and a document whose loudest sentence is ungrammatical
+        is a document a reader trusts less than one that says nothing.
+        """
+        if not self.comparisons:
+            return ""
+        if self.scripted_comparisons == self.comparisons:
+            if self.comparisons == 1:
+                return "the one comparison in this document names a Fake adapter"
+            return (
+                f"all {self.comparisons} comparisons in this document name a Fake "
+                f"adapter"
+            )
+        if self.scripted_comparisons:
+            verb = "names" if self.scripted_comparisons == 1 else "name"
+            return (
+                f"{self.scripted_comparisons} of the {self.comparisons} comparisons "
+                f"in this document {verb} a Fake adapter"
+            )
+        if self.comparisons == 1:
+            return (
+                "the one comparison in this document names no Fake adapter in its "
+                "own payload, and this band comes from the run artifacts the "
+                "headline read"
+            )
+        return (
+            f"none of the {self.comparisons} comparisons in this document name a "
+            f"Fake adapter in their own payloads, and this band comes from the run "
+            f"artifacts the headline read"
+        )
+
+    @property
+    def _sides(self) -> str:
+        """Which headline run has no adapter recorded, named rather than counted."""
+        if len(self.unrecorded) == 1:
+            return f"the {self.unrecorded[0]} run"
+        return "either run"
+
+
 @dataclass(frozen=True)
 class MethodologySection:
     heading: str
@@ -1017,6 +1209,21 @@ class ReportModel:
     #: Printed in the provenance block, because a report that quietly read
     #: different files than the ones recorded is worse than one that failed.
     artifact_dir: str = ""
+    #: Comparison records whose payload ``created`` names a different UTC calendar
+    #: day from the ``ts`` of the evidence record carrying it. Counted in
+    #: :meth:`from_evidence` and nowhere else, because it is the one fact on this
+    #: model that the series cannot supply: ``series._created`` returns the
+    #: payload's ``created`` when it parses and **discards** the envelope ``ts``,
+    #: keeping only a ``created_source`` label, so by the time a
+    #: :class:`~model_migration_kit.series.RunPoint` exists the second clock is
+    #: gone. R29.3 ruled the counting happen here rather than widening
+    #: ``RunPoint``, which is outside C18's files.
+    #:
+    #: Zero on a model built by any other route, which is the same claim as "no
+    #: comparison disagreed with its own record": both mean the document says
+    #: nothing about dates, and the disclosure is written to appear only when the
+    #: count is positive.
+    dated_apart: int = 0
     #: One point per ``migkit.comparison`` record in the log, oldest first --
     #: every run the log holds, not only the one this report is about. A log of
     #: fourteen nightly runs used to render as one verdict with thirteen nights
@@ -1231,6 +1438,7 @@ class ReportModel:
         comparison = None
         verdict_record = None
         last = None
+        dated_apart = 0
         builder = SeriesBuilder()
         tally = DimensionTally()
         for record in _stream_records(path):
@@ -1249,6 +1457,11 @@ class ReportModel:
             if record.event_type == EVENT_COMPARISON:
                 comparison = record
                 verdict_record = None
+                # Counted here and not from the series: see
+                # :attr:`ReportModel.dated_apart`. This is the loop's only
+                # remaining reader of an envelope ``ts``, and it has to be, because
+                # a ``RunPoint`` no longer carries one.
+                dated_apart += _dated_apart(record.payload, str(record.ts or ""))
             elif record.event_type == EVENT_VERDICT:
                 verdict_record = record
         series = builder.points()
@@ -1429,6 +1642,7 @@ class ReportModel:
             config_path=config_path,
             command=str(payload.get("command", "") or ""),
             artifact_dir="" if artifact_dir is None else str(artifact_dir),
+            dated_apart=dated_apart,
             series=series,
             dimensions=dimensions,
             candidates=candidates,
@@ -1464,6 +1678,51 @@ class ReportModel:
         )
 
     @property
+    def provenance(self) -> Provenance:
+        """What this document can say about where its numbers came from.
+
+        :attr:`is_demo` is untouched and still means exactly what it meant: it is
+        the *positive* claim, and everything keyed off it -- the ``<title>``
+        prefix, the latency omission, the appendix -- keeps keying off it. This
+        adds the state it cannot express, which is "the evidence does not say".
+
+        The precedence is R29.2's: scripted outranks unrecorded, because a
+        ``Fake*`` adapter is a finding and a missing adapter is a gap.
+
+        **The unrecorded state is read off the headline sides only.** The series
+        is deliberately not consulted for it. ``test_a_series_of_real_runs_does_
+        not_band_the_report`` was written by C3's reviewer around exactly the
+        input "an earlier run whose adapter strings are empty, under a real
+        headline", and whether that shape should now disclose a gap is a question
+        R29.2 did not reach -- it decided the *sides*, in the vocabulary of the
+        headline. It is reported open rather than answered here.
+        """
+        unrecorded = tuple(
+            name
+            for name, side in (("baseline", self.baseline), ("candidate", self.candidate))
+            if not side.adapter.strip()
+        )
+        if self.is_demo:
+            state = PROVENANCE_SCRIPTED
+        elif unrecorded:
+            state = PROVENANCE_UNRECORDED
+        else:
+            state = PROVENANCE_RECORDED
+        return Provenance(
+            state=state,
+            headline_scripted=self.baseline.is_fake or self.candidate.is_fake,
+            comparisons=len(self.series),
+            scripted_comparisons=sum(
+                1
+                for point in self.series
+                if point.adapter_baseline.startswith(_FAKE_PREFIX)
+                or point.adapter_candidate.startswith(_FAKE_PREFIX)
+            ),
+            unrecorded=unrecorded,
+            dated_apart=self.dated_apart,
+        )
+
+    @property
     def exit_code(self) -> int:
         return Verdict.exit_code(self.verdict or Verdict.ERROR)
 
@@ -1488,6 +1747,41 @@ class ReportModel:
 #: through it, and renaming the thing a guard points at is how a guard quietly
 #: stops guarding.
 _stream_records = stream_records
+
+
+def _dated_apart(payload: Any, ts: str) -> int:
+    """``1`` when this comparison's two clocks name different UTC days, else ``0``.
+
+    Two clocks, two claims. ``payload["created"]`` is written by the comparison
+    and is the date the timeline plots; ``record.ts`` is written when the line was
+    appended to the log. A seed generator that dates fourteen nights into one
+    sitting patches the first and cannot patch the second, so the gap is the
+    signature of a document whose history was manufactured -- and C17's contract
+    requires that asymmetry disclosed rather than left for a careful reader to
+    notice and distrust.
+
+    **A whole UTC day apart, and not a millisecond**, which is R29.3's threshold
+    and is what makes this a detector rather than a coin flip. A real ``compare``
+    writes ``created`` and appends the record microseconds later; the two strings
+    routinely differ and occasionally straddle a second, so any tighter rule
+    would fire on ``migkit demo`` and turn the disclosure into noise. Normalising
+    to UTC before taking the date is the other half: ``2026-08-24T23:30-05:00``
+    and ``2026-08-25T04:30Z`` are the same instant written by two machines, and a
+    detector that read the calendar day off the string would call them a gap.
+
+    Unparseable or absent on either side counts as no gap. That is deliberately
+    *not* the same as "the dates agree" -- it is "this record cannot be asked" --
+    and the distinction survives because the disclosure this feeds appears only
+    on a positive count and says nothing otherwise.
+    """
+    mapping = payload if isinstance(payload, Mapping) else {}
+    created = parse_created(str(mapping.get("created") or ""))
+    written = parse_created(str(ts or ""))
+    if created is None or written is None:
+        return 0
+    left = created.astimezone(timezone.utc).date()
+    right = written.astimezone(timezone.utc).date()
+    return 1 if left != right else 0
 
 
 def _tool_version() -> str:
@@ -2306,6 +2600,150 @@ def _bool_or_none(value: Any) -> bool | None:
 # --------------------------------------------------------------------------- #
 
 
+#: The scripted paragraph's closing, which is true in both of R29.1's cases and
+#: is the sentence the whole disclosure exists to deliver.
+_MACHINERY_IS_REAL = (
+    "The only real thing in this document is the machinery: the sampling, the "
+    "judging, the statistics and the decision rules are the production paths, "
+    "exercised end to end. The quality difference they measure was written into "
+    "the script."
+)
+
+
+def _scripted_paragraph(model: ReportModel, provenance: Provenance) -> str:
+    """The appendix's opening paragraph, for a document with scripted runs in it.
+
+    **Two openings, not one opening with a variable in it** -- R29.1, and the
+    defect it rules on was live in the rendered document. The old paragraph was
+    headline-scoped while ``is_demo`` is series-scoped, so a real headline over a
+    scripted history printed, verbatim:
+
+        At least one side of this comparison was produced by a Fake adapter
+        (AnthropicAdapter for the baseline, OpenAICompatAdapter for the
+        candidate).
+
+    Both named adapters are real. That is worse than an absence rendering as a
+    measurement: it is a disclosure disclosing the wrong thing, in the paragraph
+    a sceptical reader opens first, and it named two real adapters *as the
+    evidence for its own claim*. The second opening therefore names no adapter at
+    all -- the evidence is in comparisons the sentence is not about, and there is
+    nothing on this side of the document to point at.
+
+    Neither opening describes an unnamed side as real. The scripted state
+    outranks the unrecorded one, so a headline side whose adapter was never
+    recorded can reach here, and "both sides are real" would be a claim the
+    evidence does not support.
+    """
+    if provenance.headline_scripted:
+        opening = (
+            "These numbers describe scripted responses, not a real provider. At "
+            f"least one side of this comparison was produced by a Fake adapter "
+            f"({model.baseline.adapter or 'unknown'} for the baseline, "
+            f"{model.candidate.adapter or 'unknown'} for the candidate)."
+        )
+    else:
+        opening = (
+            "This document draws scripted runs, and the comparison in front of "
+            "you is not one of them: neither of its sides names a Fake adapter. "
+            "No adapter is named here as the evidence, because the scripted runs "
+            "are other comparisons on the timeline and naming this one's sides "
+            "would name the wrong runs."
+        )
+    return " ".join(
+        one
+        for one in (
+            opening,
+            _counted_paragraph(provenance),
+            _MACHINERY_IS_REAL,
+            _dated_sentence(provenance),
+        )
+        if one
+    )
+
+
+def _counted_paragraph(provenance: Provenance) -> str:
+    """How much of the document is scripted, counted in comparisons. R29.4.
+
+    Comparisons and never runs: a :class:`~model_migration_kit.series.RunPoint`
+    carries no run id, so two comparisons against one baseline run cannot be told
+    from two comparisons against two, and a run count would render 84 for a
+    document holding 56 runs. The reasoning is on :class:`Provenance`.
+
+    Silent when the document draws no timeline at all, because ``0 of 0`` is a
+    model built by hand rather than a measured absence of scripted runs.
+    """
+    if not provenance.comparisons:
+        return ""
+    total = provenance.comparisons
+    scripted = provenance.scripted_comparisons
+    if scripted == total:
+        if total == 1:
+            return (
+                "The one comparison drawn in this document names a Fake adapter on "
+                "at least one side."
+            )
+        return (
+            f"All {total} comparisons drawn in this document name a Fake adapter on "
+            f"at least one side."
+        )
+    if scripted:
+        rest = total - scripted
+        return (
+            f"{scripted} of the {total} comparisons drawn in this document "
+            f"{'names' if scripted == 1 else 'name'} a Fake adapter on at least one "
+            f"side; {'the other one does not' if rest == 1 else f'the other {rest} do not'}."
+        )
+    if total == 1:
+        return (
+            "The one comparison drawn in this document names no Fake adapter in its "
+            "own payload: this paragraph is here because the run artifacts the "
+            "headline read do, which is a disagreement between the log and the "
+            "files it points at."
+        )
+    return (
+        f"None of the {total} comparisons drawn in this document name a Fake "
+        f"adapter in their own payloads: this paragraph is here because the run "
+        f"artifacts the headline read do, which is a disagreement between the log "
+        f"and the files it points at."
+    )
+
+
+def _dated_sentence(provenance: Provenance) -> str:
+    """C17's timestamp asymmetry, disclosed when it is there and not when it is not.
+
+    R29.3. Unconditional prose was refused because it is false on ``migkit demo``,
+    whose comparison ``created`` and whose record ``ts`` are the same instant -- an
+    asymmetry asserted where none was measured, inside the chunk whose subject is
+    unsuppressible honesty.
+    """
+    if not provenance.dated_apart:
+        return ""
+    if provenance.dated_apart == provenance.comparisons == 1:
+        opening = (
+            "The one comparison here records a created date on a different UTC day "
+            "from the evidence record carrying it."
+        )
+    elif provenance.dated_apart == provenance.comparisons:
+        opening = (
+            f"All {provenance.comparisons} comparisons record a created date on a "
+            f"different UTC day from the evidence record carrying each."
+        )
+    else:
+        opening = (
+            f"{provenance.dated_apart} of the {provenance.comparisons} comparisons "
+            f"{'records' if provenance.dated_apart == 1 else 'record'} a created "
+            f"date on a different UTC day from the evidence record carrying each."
+        )
+    return (
+        f"{opening} Those are two clocks making two claims: created is written by "
+        f"the comparison, and the record's own timestamp is written when the line "
+        f"was appended to the log. A document seeded one night at a time has that "
+        f"gap by construction -- the comparison dates are the seed's and the run "
+        f"and judging records keep the real clock -- and it is disclosed here "
+        f"rather than left for a reader to find and distrust."
+    )
+
+
 def methodology_sections(model: ReportModel) -> tuple[MethodologySection, ...]:
     """The SR 11-7 artifact, substituted with this run's actual numbers.
 
@@ -2323,17 +2761,14 @@ def methodology_sections(model: ReportModel) -> tuple[MethodologySection, ...]:
     fired = model.decided_by or ""
 
     tested: list[str] = []
-    if model.is_demo:
-        tested.append(
-            "These numbers describe scripted responses, not a real provider. At "
-            f"least one side of this comparison was produced by a Fake adapter "
-            f"({model.baseline.adapter or 'unknown'} for the baseline, "
-            f"{model.candidate.adapter or 'unknown'} for the candidate). The only "
-            "real thing in this document is the machinery: the sampling, the "
-            "judging, the statistics and the decision rules are the production "
-            "paths, exercised end to end. The quality difference they measure was "
-            "written into the script."
-        )
+    # R29.2 decided two surfaces for the unrecorded state -- the band and the
+    # terminal -- and this appendix is neither. The scripted paragraph stays
+    # because §5.3 named it as one of the five places that say the models are
+    # scripted; a third wording of the unrecorded gap would be a third thing to
+    # keep in step for no ruling that asked for it.
+    provenance = model.provenance
+    if provenance.state == PROVENANCE_SCRIPTED:
+        tested.append(_scripted_paragraph(model, provenance))
     tested.append(
         f"{model.n_per_item or model.baseline.n_per_item} draws per item over "
         f"{model.goldenset.get('size') or model.baseline.items} items, giving "
@@ -2595,15 +3030,18 @@ def render_terminal(model: ReportModel, *, console: Console | None = None) -> No
     tests around this function are watching for.
     """
     out = console or Console()
-    if model.is_demo:
+    # Both provenance bands, from the one place their words are written. R29.2
+    # item 3: the terminal and the HTML must say the same words, which they did
+    # not while each renderer held its own copy of the scripted sentence. The
+    # separator is an ASCII hyphen and not the HTML's em dash on purpose -- rich
+    # substitutes box characters on a legacy Windows console and not arbitrary
+    # text, and this line prints before anything else has had a chance to fail.
+    provenance = model.provenance
+    if provenance.banded:
         out.print(
             Panel(
-                Text(
-                    "FAKE MODELS - these numbers describe scripted responses, "
-                    "not a real provider",
-                    style="bold",
-                ),
-                border_style="red",
+                Text(f"{provenance.label} - {provenance.sentence}", style="bold"),
+                border_style=provenance.border,
             )
         )
     verdict = model.verdict_word
@@ -3110,6 +3548,11 @@ h2 {
   background: #a1141a;
   color: #ffffff;
 }
+.band.unrecorded {
+  background: #fbe9c8;
+  color: #4a3400;
+  border: 2px solid #a8760a;
+}
 .band.mismatch {
   background: #fbe9c8;
   color: #4a3400;
@@ -3269,9 +3712,9 @@ footer {
 </style>
 </head>
 <body>
-{% if model.is_demo %}
-<div class="band fake" id="fake-models" role="alert">
-FAKE MODELS {{ dash }} these numbers describe scripted responses, not a real provider
+{% if model.provenance.banded %}
+<div class="band {{ model.provenance.css }}" id="{{ model.provenance.anchor }}" role="alert">
+{{ model.provenance.label }} {{ dash }} {{ model.provenance.sentence }}
 </div>
 {% endif %}
 <main>
