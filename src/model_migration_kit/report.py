@@ -1069,7 +1069,7 @@ class ReportModel:
                 )
 
         judges = tuple(_judge_row(one) for one in payload.get("judges", ()))
-        counts = _dimension_counts(tally, gs_view, judges[0].name if judges else "")
+        counts = _close_the_tally(tally, gs_view, judges[0].name if judges else "")
         rows = _ChangeContext(
             goldenset=gs_view,
             base_run=base_run,
@@ -1440,10 +1440,20 @@ def _load_goldenset(
     return view
 
 
-def _dimension_counts(
+def _close_the_tally(
     tally: DimensionTally, gs_view: Mapping[str, Any], judge: str
 ) -> DimensionCounts:
     """Close the tally against the golden set, or hand back the golden set's own words.
+
+    **Named for what it does rather than for what it looked like.** This was
+    ``_dimension_counts``, which reads as a wrapper around
+    :func:`~model_migration_kit.dimensions.dimension_counts` and is not one: that
+    function takes a stream and a golden set and runs both phases back to back,
+    while this one takes a :class:`~model_migration_kit.dimensions.DimensionTally`
+    whose first phase already ran on ``from_evidence``'s single pass and calls
+    :meth:`~model_migration_kit.dimensions.DimensionTally.counts` on it. The two
+    are not interchangeable and the old name said they were. ``_close_the_tally``
+    is the second phase, which is the thing C10 will reach for by name.
 
     Nothing here opens a file and nothing here reads the log a second time: the
     tally already holds everything the log had to say, in a form keyed by distinct

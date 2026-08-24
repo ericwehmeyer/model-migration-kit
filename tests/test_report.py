@@ -6614,7 +6614,7 @@ def test_the_label_opens_the_accessible_name_rather_than_trailing_it() -> None:
 # `dimensions.py` is tested exhaustively in `tests/test_dimensions.py`, against
 # hand-built record streams. Nothing there touches `report.py`, and until this
 # section existed nothing anywhere did: the field, the `tally.add(record)` in
-# `from_evidence`'s loop, and `_dimension_counts`'s two branches were carried
+# `from_evidence`'s loop, and `_close_the_tally`'s two branches were carried
 # entirely by tests that never imported `report`. These are the tests for the
 # wiring, and only for the wiring -- the arithmetic is not re-litigated here.
 #
