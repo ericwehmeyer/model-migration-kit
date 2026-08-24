@@ -2446,3 +2446,239 @@ def test_a_number_the_reader_cannot_use_is_not_a_malformed_line(tmp_path: Path):
     points = read_series(log)
     assert [point.candidate_model for point in points] == ["before", "odd"]
     assert points[1].n_per_item == 0
+
+
+# ----------------------------------------------------------------------------------
+# `spot_check`, per chunk C11 and section 7.4
+# ----------------------------------------------------------------------------------
+#
+# Written from the plan's `#### C11 -- the spot-check line` and `### 7.4`, and from
+# nothing else: `series.spot_check` did not exist in this worktree when these were
+# written, and no expected value below was obtained by running it. Every number is a
+# `math.comb` quotient computed by hand and pasted here as a literal, deliberately --
+# a test that recomputes `comb(N - F, k) / comb(N, k)` passes for any implementation
+# that is consistently wrong in the same way, which is the failure mode this chunk is
+# most exposed to.
+#
+# **The contract's own arithmetic is wrong and these tests do not follow it.** The
+# edge table says `passing=88, failing=8, k=12` gives "approximately 0.351" and both
+# the worked sentence and section 7.4 say "34%". The hypergeometric the same contract
+# specifies gives
+#
+#     comb(88, 12) / comb(96, 12) == 0.3287693171387045
+#
+# and 0.351 is not a rounding of it -- it is `(88 / 96) ** 12 == 0.3519956...`, the
+# *with-replacement* answer, i.e. the very same "independent draws" error the "must
+# not" a dozen lines further down forbids. 34% is that wrong number rounded. So the
+# contract's prose and the contract's formula disagree, the formula is the one that
+# is right, and these tests assert 0.32877 -- 33% -- throughout. This was ruled on
+# before dispatch and the same ruling was given to the author of `series.py`.
+#
+# **Why `series.spot_check` and not a direct import.** Naming these in this module's
+# `from model_migration_kit.series import ...` line would fail the whole module at
+# collection while C11 is unwritten, taking every pre-existing test in this file with
+# it. Attribute access fails in the test that uses it and nowhere else, which is the
+# same guarantee scoped to the tests that make the claim.
+
+
+def test_no_spot_check_sentence_is_offered_when_nothing_was_failing():
+    """The vacuous case. Nothing failed, so there is nothing a spot check could
+    have missed, and "a spot check would have found nothing" is then not a
+    concession -- it is a tautology dressed as one, and the most quotable line in
+    the document would be quotable in exactly the case where it says nothing.
+
+    This is the row an implementation optimising for "always show the persuasive
+    line" gets wrong, which is why it is first."""
+    assert series.spot_check(96, 0, 0) is None
+    # Unstable items are counted as passing, so they do not rescue the sentence
+    # either: a set with instability but no outright failure is still F == 0.
+    assert series.spot_check(90, 0, 6) is None
+    # And at a k the set is large enough for, so `None` here is the F == 0 rule
+    # and not the N < k rule standing in for it.
+    assert series.spot_check(96, 1, 0, k=12) is not None
+
+
+def test_the_spot_check_counts_unstable_items_as_passing_so_the_number_never_flatters_the_tool():
+    """Three unstable items moved out of `passing` and into `unstable` must change
+    nothing at all: same N, same F, same probability, same sentence. Counting them
+    as failures instead would raise F to 11 and drop the probability, which reads
+    as a *better* argument for the tool -- a bigger blind spot for the naive
+    method it is arguing against. The thumb has to be on the other side of the
+    scale, and that is the whole reason this sentence survives a reader who is
+    looking for the catch."""
+    without = series.spot_check(88, 8, 0, k=12)
+    with_unstable = series.spot_check(85, 8, 3, k=12)
+
+    assert without is not None
+    assert with_unstable is not None
+    assert with_unstable.probability == without.probability
+    assert with_unstable.sentence == without.sentence
+    assert with_unstable.items == without.items == 96
+    assert with_unstable.failing == without.failing == 8
+    # Both are N = 96, F = 8; `unstable` is reported as it was passed, because the
+    # count is still a fact about the set even though it does not enter the sum.
+    assert without.unstable == 0
+    assert with_unstable.unstable == 3
+    assert with_unstable.probability == pytest.approx(0.32877, abs=5e-6)
+
+
+def test_the_probability_is_the_hypergeometric_one_and_not_the_with_replacement_one():
+    """`comb(88, 12) / comb(96, 12)`, to the digit. The near miss is the danger:
+    drawing the same twelve items *with* replacement gives 0.35200, which rounds
+    to the 34% the contract's prose quotes, and both numbers look equally
+    plausible printed in a sentence. Only one of them is the probability that a
+    twelve-item sample drawn from ninety-six contains none of the eight bad
+    ones -- you cannot inspect the same prompt twice and call it two prompts."""
+    check = series.spot_check(88, 8, 0, k=12)
+    assert check is not None
+    assert check.probability == pytest.approx(0.3287693171387045, rel=1e-12)
+    assert check.probability == pytest.approx(0.32877, abs=5e-6)
+    assert check.probability != pytest.approx(0.3519956280141369, rel=1e-6)
+    assert check.k == 12
+    assert check.items == 96
+    assert check.failing == 8
+
+
+@pytest.mark.parametrize(
+    ("passing", "failing", "expected", "with_replacement"),
+    [
+        (12, 4, 0.0005494505494505495, 0.03167635202407837),
+        (18, 6, 0.006864988558352402, 0.03167635202407837),
+    ],
+    ids=["N=16", "N=24"],
+)
+def test_the_draw_is_of_items_without_replacement_and_not_a_completion_rate_raised_to_k(
+    passing, failing, expected, with_replacement
+):
+    """Section 7.4's objection 2, made into a case where the two readings cannot
+    be confused for each other. Both rows are a three-in-four pass rate, so the
+    completion-level reading is `0.75 ** 12 == 0.0317` for each of them, while the
+    item-level answer moves from 0.69% to 0.055% as the pool shrinks -- a factor
+    of 58 at N = 16. On the contract's own N = 96 fixture the two readings are
+    0.329 and 0.352 and a wrong implementation is nearly invisible; here it is off
+    by more than an order of magnitude, which is the whole reason these rows exist
+    rather than another variation on ninety-six items.
+
+    At N = 16 the arithmetic also degenerates usefully: only twelve items pass, so
+    there is exactly one clean twelve-item sample out of `comb(16, 12)` -- 1/1820.
+    Any implementation treating the twelve draws as independent cannot produce
+    that number by accident."""
+    check = series.spot_check(passing, failing, 0, k=12)
+    assert check is not None
+    assert check.probability == pytest.approx(expected, rel=1e-12)
+    assert check.probability != pytest.approx(with_replacement, rel=1e-3)
+
+
+def test_the_sentence_names_the_assumption_it_made_rather_than_leaving_it_implied():
+    """Objection 3. Nobody picks twelve prompts at random -- an engineer picks
+    twelve they believe are representative, and no arithmetic here models that. So
+    the sentence has to say "drawn at random" out loud and let the reader discount
+    it. A sentence that omits the phrase is claiming something about real spot
+    checks that this function did not compute."""
+    check = series.spot_check(88, 8, 0, k=12)
+    assert check is not None
+    assert "drawn at random" in check.sentence
+
+
+def test_the_sentence_is_about_spot_checks_and_never_about_runs():
+    """Section 7.4's objection 1, and the one a director finds. Nothing in this
+    calculation is distributed over runs; the population is items and the thing
+    being counted is samples of them. "in 34% of runs" invites the question "what
+    is a run", and the honest answer -- that a run is not the unit here at all --
+    is a hole in the most-quoted sentence in the document."""
+    check = series.spot_check(88, 8, 0, k=12)
+    assert check is not None
+    lowered = check.sentence.lower()
+    assert "spot check" in lowered
+    assert "runs" not in lowered
+
+
+def test_the_percentage_in_the_sentence_is_the_probability_that_was_computed():
+    """A sentence carrying a different number from the field beside it is the
+    exact shape of this chunk's failure mode: the arithmetic is corrected and the
+    prose keeps the old constant, or the prose is written from the contract's
+    "34%" and the arithmetic is right. 0.32877 is 33%, and 34% or 35% appearing
+    anywhere in the sentence means one of those two happened.
+
+    The rest pins the sentence to *this* set rather than a fixed string: twelve
+    prompts out of ninety-six items."""
+    check = series.spot_check(88, 8, 0, k=12)
+    assert check is not None
+    assert "33%" in check.sentence
+    assert "34" not in check.sentence
+    assert "35" not in check.sentence
+    assert "12" in check.sentence
+    assert "96" in check.sentence
+
+
+def test_a_set_smaller_than_the_check_offers_no_sentence_because_the_check_reads_everything():
+    """N < k. Twelve prompts against nine items is not a sample, it is the whole
+    set read twice over, and the probability of missing a failure in it is zero by
+    construction rather than by evidence. Printing a sentence here would be
+    printing an argument that the set is too small to make."""
+    assert series.spot_check(8, 1, 0, k=12) is None
+    # N == k is a sample -- of everything, once -- and is not excluded by this rule.
+    assert series.spot_check(11, 1, 0, k=12) is not None
+
+
+def test_an_empty_set_offers_no_sentence():
+    """N == 0. There is nothing to draw from, and `comb(0, 12)` over `comb(0, 12)`
+    is a zero-over-zero the caller should never be shown the result of."""
+    assert series.spot_check(0, 0, 0) is None
+    assert series.spot_check(0, 0, 0, k=1) is None
+
+
+def test_a_set_that_fails_everywhere_still_gets_its_sentence_and_the_probability_is_zero():
+    """The mirror of the vacuous case, and it is not vacuous. Every item fails, so
+    no spot check of any size can come back clean, and 0.0 is the strongest
+    version of the argument this line exists to make. Returning `None` here would
+    suppress the sentence precisely where it is most earned."""
+    check = series.spot_check(0, 96, 0, k=12)
+    assert check is not None
+    assert check.probability == 0.0
+    assert check.items == 96
+    assert check.failing == 96
+    assert check.sentence
+    assert "drawn at random" in check.sentence
+    assert "runs" not in check.sentence.lower()
+
+
+def test_a_spot_check_of_no_prompts_is_a_caller_error_and_not_a_certainty():
+    """k == 0. `comb(N, 0) / comb(N, 0)` is 1.0, so the quiet answer is "a
+    zero-prompt spot check finds nothing 100% of the time" -- true, useless, and
+    indistinguishable in the rendered document from a real result. The contract
+    makes it an error so it cannot reach a reader."""
+    with pytest.raises(ValueError):
+        series.spot_check(88, 8, 0, k=0)
+
+
+def test_the_spot_check_carries_the_six_fields_the_contract_names_and_is_frozen():
+    """Transcribed from the contract's dataclass, asserted with `==` rather than
+    a subset check so any addition or rename has to be made here on purpose.
+    Frozen because a `SpotCheck` is a record of a computation that already
+    happened; a `probability` that can be reassigned after the sentence naming it
+    has been built is two numbers that can disagree."""
+    assert [field.name for field in dataclasses.fields(series.SpotCheck)] == [
+        "k",
+        "items",
+        "failing",
+        "unstable",
+        "probability",
+        "sentence",
+    ]
+    check = series.spot_check(88, 8, 0, k=12)
+    assert check is not None
+    assert isinstance(check, series.SpotCheck)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        check.probability = 0.34
+
+
+def test_the_function_documents_that_unstable_items_are_counted_as_passing():
+    """The contract requires this in the docstring, and the requirement is not
+    housekeeping: the number is deliberately generous to the naive method, and a
+    generous number whose direction is undocumented is just a number somebody will
+    later "correct" in the flattering direction. Saying which way the thumb is on
+    the scale is what makes the line defensible."""
+    doc = (series.spot_check.__doc__ or "").lower()
+    assert "unstable" in doc
+    assert "passing" in doc
