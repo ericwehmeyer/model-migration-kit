@@ -8947,6 +8947,10 @@ def test_building_the_matrix_does_not_read_the_evidence_log_a_second_time(
 # against 70% -- and the field fixture carries three exclusions produced by three
 # different rules, because a fixture with no exclusions cannot see
 # `candidates.excluded` being dropped.
+#
+# NOTE, and it is the finding this section reports rather than a test:
+# `test_the_spot_checks_sentence_names_the_side_it_counted` cannot pass from
+# inside C22a's files. See its docstring.
 # --------------------------------------------------------------------------- #
 
 
@@ -9352,6 +9356,46 @@ def test_a_set_no_larger_than_the_draw_carries_no_spot_check_either(
         f"twelve items against a twelve-prompt draw is a census on either side, and "
         f"the model carries {_spot_check(model)!r}. `spot_check` returns `None` "
         f"here and the view model may not fill it in"
+    )
+
+
+
+def test_the_spot_checks_sentence_names_the_side_it_counted(tmp_path: Path) -> None:
+    """R23.1: which side this number speaks about must be *in the sentence*.
+
+    "The whole point of this number is that a sceptical reader checks it first",
+    and an unqualified sentence is a defect even when the arithmetic is right:
+    96 items with 8 failing is the candidate side of this run and 75 with 2 is
+    the baseline side, and a line that prints one of them without saying which is
+    a line that cannot be checked where it is read.
+
+    **This test cannot pass from inside C22a's files, and that is the finding it
+    reports.** `SpotCheck.sentence` is built inside `series.spot_check`, which
+    takes three bare integers, knows nothing of sides, and is C11's -- merged,
+    frozen, and not in C22a's **Files**. The three ways to satisfy this from
+    `report.py` are all refused by rulings already in the plan: rebuilding the
+    sentence in the wiring is R21.5's "plumbing that quietly patches a producer's
+    honesty ... the one shape of this defect nobody would find";
+    `dataclasses.replace`-ing it is the same edit spelled shorter; and leaving it
+    to C14's template is C22a shipping the sentence R23.1 says must not ship.
+
+    So this belongs to a C11 follow-up, exactly as R21.5's assumed-lineage caveat
+    belongs to C7's -- and C22a is blocked on it in the same way R23.3 records
+    C22b as blocked, which R23.3 did not notice when it called this half
+    "dispatchable now, both producers through all four roles with no open
+    rulings".
+    """
+    scenario = _counted_scenario(tmp_path / "namesside")
+    model = _model_from(_field_log(scenario))
+    check = _spot_check(model)
+    assert check is not None, "no spot check, so there is no sentence to read"
+
+    sentence = check.sentence.lower()
+    assert "candidate" in sentence or "baseline" in sentence, (
+        f"the printed sentence names no side: {check.sentence!r}. It counts "
+        f"{check.items} items with {check.failing} failing, which is one side of "
+        f"this run and not the other, and a reader cannot tell which. R23.1 "
+        f"requires the side to be stated in the sentence it prints"
     )
 
 
