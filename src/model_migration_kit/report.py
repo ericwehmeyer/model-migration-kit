@@ -2841,8 +2841,8 @@ FAKE MODELS {{ dash }} these numbers describe scripted responses, not a real pro
   built-in default set any individual number is not carried in the evidence
   payload; where it says {{ unrecorded }}, that is a gap in the record and not a
   claim about the default. A source that is a file is named by its filename here;
-  its full path is above under <em>config</em> and again in the provenance block,
-  which is where a path is shown once, whole, and where it can be checked.
+  its full path is shown once, whole, and where it can be checked {{ dash }} under
+  <em>config</em> in "What was compared", above.
 </p>
 
 {% if model.series %}
@@ -2856,22 +2856,27 @@ FAKE MODELS {{ dash }} these numbers describe scripted responses, not a real pro
   green and the run that was not is drawn as three weeks. Nothing is
   interpolated: no line joins the markers, because a line between two runs would
   assert a pass rate on the dates in between, and on those dates nothing ran. The
-  banner above reports the most recent of these runs.
+  banner above, and the bar inside it, report the <strong>last comparison this log
+  records</strong> {{ dash }} which is the newest marker on this chart whenever the
+  clock agrees with the file, and is not when it does not: the series is drawn in
+  time order and the log is read in write order, and a run appended with an older
+  timestamp sits to the left of the run the banner describes.
+</p>
 {% if timeline.runs_without_rate or timeline.runs_without_floor %}
-  <br>Not everything could be drawn, and the gaps are counted rather than hidden:
-  <ul>
+<p class="secondary">Not everything could be drawn, and the gaps are counted
+rather than hidden:</p>
+<ul class="secondary">
   {% if timeline.runs_without_rate %}
-    <li>{{ timeline.runs_without_rate }} run(s) recorded no pass rate, so they
-        carry no marker</li>
+  <li>{{ timeline.runs_without_rate }} run(s) recorded no pass rate, so they
+      carry no marker</li>
   {% endif %}
   {% if timeline.runs_without_floor %}
-    <li>{{ timeline.runs_without_floor }} run(s) recorded no floor, so the rule is
-        broken where they sit {{ dash }} which is a gap in the record, not a floor
-        of zero</li>
+  <li>{{ timeline.runs_without_floor }} run(s) recorded no floor, so the rule is
+      broken where they sit {{ dash }} which is a gap in the record, not a floor
+      of zero</li>
   {% endif %}
-  </ul>
+</ul>
 {% endif %}
-</p>
 {% endif %}
 
 <h2 id="judges">Per-judge results</h2>
@@ -2993,11 +2998,12 @@ quality regression.</p>
   <strong>The quoted model text in this report is bounded.</strong>
   {{ model.detail.sentence }}
   {% if printed != model.detail.embedded %}
-  Of those {{ '{:,}'.format(model.detail.embedded) }} characters,
+  The rows that do carry their outputs embedded
+  {{ '{:,}'.format(model.detail.embedded) }} characters of model text, of which
   {{ '{:,}'.format(printed) }} are printed below: where every draw of a side came
   back byte-identical it is shown once and counted, rather than repeated. The
-  budget figure counts what the models produced, which is what completeness is
-  about.
+  first figure counts what the models produced, which is what completeness is
+  about; the second counts what this page spends on it.
   {% endif %}
   <ul>
     <li>rows are visited round-robin across flips, gains and unstable, in
@@ -3245,6 +3251,18 @@ def _banner_bar(model: ReportModel) -> str:
     configured. A judge row carries neither, and a bar drawn from
     ``model.thresholds`` would show a rule the gate may not have applied.
 
+    ``[-1]`` and not "the newest by clock", which is the same run on every log
+    this pipeline writes and not on every log that exists.
+    :func:`~model_migration_kit.series.read_series` sorts nothing -- file order is
+    the series order, so that a log whose clock stepped back over a daylight-saving
+    boundary is not silently reordered -- while :func:`timeline_svg` sorts by
+    parsed ``created``, because its axis is time. So ``series[-1]`` is exactly the
+    comparison ``from_evidence``'s own last-wins reduction kept for the banner,
+    which is what makes the bar and the banner one reading; it is *not* guaranteed
+    to be the rightmost marker on the chart. The prose beneath the chart says
+    which of the two it is, because a document that lets a reader assume they are
+    the same is a document that can show a GO beside a chart ending in red.
+
     An empty series is not an error and not a zero. Every model built by some
     route other than :meth:`ReportModel.from_evidence` has one, and
     :func:`interval_bar_svg` already draws each missing value as its own named
@@ -3292,9 +3310,12 @@ def _source_label(value: object) -> str:
 
     The thresholds table prints its source once per row, and on the demo run that
     is the same absolute path six times, each about 130 characters, in a document
-    whose readable width is 60rem. The full path is already shown -- once, whole,
-    and where it can be checked -- in "What was compared" and again in the
-    provenance block, which is where a path belongs.
+    whose readable width is 60rem. The full path is already shown once, whole, and
+    where it can be checked, under ``config`` in "What was compared" -- and there
+    only. The provenance block carries the *evidence log's* path and the config
+    *hash*, not the config path, so the prose beneath the table names the one
+    place the whole path is: a shortening that sends a reviewer to a section the
+    path is not in is a hiding.
 
     Shortened only when :func:`_is_absolute` says so, so that
     ``THRESHOLD_SOURCE_UNRECORDED`` and any other prose passes through untouched:

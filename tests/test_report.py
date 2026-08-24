@@ -7152,3 +7152,377 @@ def test_the_self_containment_fixtures_exercise_both_new_sections(
     assert "migkit-timeline" in html, "timeline_svg does not reach the document"
     assert "interval-bar" in html, "interval_bar_svg does not reach the document"
     assert _urls(html) == (), "the fixture that exercises both sections is not clean"
+
+
+# --------------------------------------------------------------------------- #
+# C14a review -- the survivors of a 27-mutant run, and two false sentences.
+#
+# Every test below was written against a mutant that the suite as merged left
+# alive. The first two are not coverage: they are documents that said something
+# untrue about themselves, which in a compliance artifact is the defect and not
+# the omission.
+# --------------------------------------------------------------------------- #
+
+
+def _timeline_markers(html: str) -> list[dict[str, str]]:
+    """Every run marker in the run-history chart, in the order the markup lists."""
+    start = html.find('<h2 id="timeline">')
+    assert start != -1, "no run-history section in this document"
+    end = html.find("</svg>", start)
+    return [
+        dict(re.findall(r'([a-z-]+)="([^"]*)"', one))
+        for one in re.findall(r"<rect [^>]*/>", html[start:end])
+    ]
+
+
+def _pct_in(markup: str, value: float) -> bool:
+    return f"{value * 100:.1f}%" in markup
+
+
+def test_the_run_history_prose_does_not_claim_the_banner_is_the_newest_marker(
+    tmp_path: Path,
+) -> None:
+    """The chart is sorted by clock; the banner is read in write order.
+
+    ``series.read_series`` sorts nothing on purpose -- "a sorted series would
+    silently reorder a log whose clock stepped backwards over a daylight-saving
+    boundary" -- while ``timeline_svg`` sorts by parsed ``created``, also on
+    purpose, because its axis is time. Both are right. What follows is that the
+    banner describes ``series[-1]``, the last comparison *written*, while the
+    rightmost marker is the last comparison *dated*, and on any log where those
+    disagree a sentence promising they are the same run is false.
+
+    Proved rather than argued: this log's first-written comparison carries a 2027
+    date and a GO, and its last-written one carries the scenario's 2026 date and a
+    NO-GO. The banner reads NO-GO; the rightmost marker is the GO. A reader told
+    the banner reports "the most recent of these runs" reads the chart backwards.
+    """
+    scenario = _scenario(tmp_path / "clock", verdict=Verdict.NO_GO)
+    log = _log_with_history(
+        scenario,
+        "out-of-order.jsonl",
+        _earlier_run(
+            scenario,
+            tag="future",
+            verdict=Verdict.GO,
+            created="2027-01-01T00:00:00.000000+00:00",
+        ),
+    )
+    model = _model_from(log)
+    html = _html(model)
+
+    assert model.verdict_word == Verdict.NO_GO
+    assert _series(model)[-1].verdict == Verdict.NO_GO, (
+        "series[-1] must stay the run the banner reports; it is read in log order"
+    )
+
+    markers = _timeline_markers(html)
+    assert len(markers) == 2, markers
+    by_x = sorted(markers, key=lambda one: float(one["x"]))
+    assert by_x[-1]["data-created"].startswith("2027"), (
+        f"the chart is not sorted by time, so this fixture no longer separates "
+        f"write order from clock order: {[one['data-created'] for one in markers]}"
+    )
+    assert by_x[-1]["class"] != by_x[0]["class"], "the two runs must be visibly different"
+
+    visible = _squeeze(_visible(html))
+    assert "reports the most recent of these runs" not in visible, (
+        "the document claims the banner reports the newest run on the chart. On "
+        "this log it reports the oldest one, and the newest marker carries the "
+        "opposite verdict. Say 'the last comparison this log records' -- which is "
+        "true of every log -- or say nothing"
+    )
+    assert "last comparison this log records" in visible, (
+        "the run-history prose must still say which of the markers the banner "
+        "above it describes; dropping the sentence trades a false claim for none"
+    )
+
+
+def test_the_thresholds_prose_names_a_section_the_full_path_is_actually_in(
+    tmp_path: Path,
+) -> None:
+    """Shortening to a basename is only honest if the pointer is right.
+
+    The merged text sent the reader to "the provenance block" for the full path.
+    The provenance block carries the evidence log's path and the config *hash*;
+    it has never carried ``config_path``. So the one sentence justifying the
+    shortening pointed at the one place the path is not.
+    """
+    model, html = _rendered(tmp_path / "pointer")
+    config = model.config_path
+    assert config, "this fixture needs a recorded config path"
+
+    footer = html[html.find('<footer id="provenance">') :]
+    assert config not in footer, (
+        "the provenance block now carries the config path; if that was added "
+        "deliberately this test and the prose beneath the thresholds table are "
+        "the two places that argue from its absence"
+    )
+    compared = html[html.find('<h2 id="compared">') : html.find('<h2 id="thresholds"')]
+    assert config in compared, "the full path must stay in 'What was compared'"
+
+    visible = _squeeze(_visible(html))
+    assert "again in the provenance block" not in visible, (
+        "the thresholds prose still sends a reviewer to the provenance block for "
+        "a path that is not there"
+    )
+    assert "What was compared" in visible
+
+
+def test_the_banner_bar_draws_the_floor_and_the_interval_and_not_only_the_rate(
+    tmp_path: Path,
+) -> None:
+    """Three numbers reach ``interval_bar_svg``; the merged suite pinned one.
+
+    Dropping ``floor=point.floor`` or ``interval=point.interval`` from
+    ``_banner_bar`` left all 347 tests green. The floor is the only thing in the
+    picture that makes the rate mean anything -- the bar exists to show whether
+    the candidate cleared the gate -- and ``interval_bar_svg`` renders a missing
+    floor as *no line at all*, so the loss is a silently emptier picture rather
+    than a visibly wrong one.
+    """
+    model, html = _rendered(tmp_path / "bar-values")
+    point = model.series[-1]
+    assert point.floor is not None, "this fixture needs a recorded floor"
+    assert point.interval is not None, "this fixture needs a recorded interval"
+
+    opened = html.find('<div class="bar">')
+    bar = html[opened : html.find("</div>", opened)]
+
+    assert '<line class="floor"' in bar, (
+        f"the banner bar does not draw the floor {point.floor} the run was held "
+        f"to; a rate with no gate beside it is a number, not a verdict"
+    )
+    assert f'data-value="{point.floor:.6f}"' in bar, (
+        f"the banner bar draws a floor line at some other value than {point.floor}"
+    )
+    assert f'data-value="{point.interval[0]:.6f}"' in bar, (
+        "the banner bar does not draw the interval's lower end"
+    )
+    assert f'data-value-upper="{point.interval[1]:.6f}"' in bar, (
+        "the banner bar does not draw the interval's upper end"
+    )
+    assert _pct_in(bar, point.floor), (
+        "the bar's accessible title must speak the floor too, or a screen-reader "
+        "user is told the rate and not the rule"
+    )
+    assert "candidate" in bar and point.judge_name in bar, (
+        "the bar's accessible name must say which side and which judge it draws"
+    )
+
+
+def test_the_run_history_chart_draws_a_marker_for_every_run_it_counts(
+    tmp_path: Path,
+) -> None:
+    """The chunk's headline feature, which the merged suite did not pin at all.
+
+    Replacing ``timeline_svg(tuple(points))`` with ``timeline_svg(())`` in the
+    filter left 347 tests green: the document rendered a heading reading
+    "Run history -- 2 comparison(s) in this log" above a chart reading "No dated
+    runs to plot", and nothing anywhere noticed. A heading that counts runs over a
+    picture that draws none is worse than no picture.
+    """
+    scenario = _scenario(tmp_path / "drawn")
+    log = _log_with_history(scenario, "two.jsonl", _earlier_run(scenario, tag="one"))
+    model = _model_from(log)
+    html = _html(model)
+
+    assert len(_series(model)) == 2
+    markers = _timeline_markers(html)
+    assert len(markers) == 2, (
+        f"the chart draws {len(markers)} marker(s) for the {len(_series(model))} "
+        f"run(s) its own heading counts"
+    )
+    assert "No dated runs to plot" not in html
+    drawn = {one["data-created"] for one in markers}
+    assert drawn == {point.created for point in _series(model)}, (
+        f"the markers are not this log's runs: drew {sorted(drawn)}"
+    )
+
+
+def test_a_model_with_no_series_renders_no_run_history_section_at_all(
+    tmp_path: Path,
+) -> None:
+    """The contract's presence rule, which nothing tested.
+
+    "timeline -- present when ``len(model.series) >= 1``". Removing the guard left
+    the suite green and put an empty chart, a nav entry and a heading reading
+    "0 comparison(s) in this log" into every document built by some route other
+    than ``from_evidence`` -- which is a placeholder, and this document's own
+    argument is that a placeholder is worse than an absence.
+    """
+    model, _ = _rendered(tmp_path / "guard")
+    empty = dataclasses.replace(model, series=())
+    html = _html(empty)
+
+    assert '<h2 id="timeline">' not in html, "an empty series still renders a chart"
+    assert 'href="#timeline"' not in html, "an empty series still gets a nav entry"
+    assert "migkit-timeline" not in html
+    assert '<div class="bar">' in html, (
+        "the banner's bar must still render for a model with no series; "
+        "interval_bar_svg draws each absent value as its own named picture"
+    )
+    assert _urls(html) == ()
+
+
+def test_the_nav_offers_the_run_history_exactly_when_there_is_one(
+    tmp_path: Path,
+) -> None:
+    """A section with no way to reach it is a section half the readers never see."""
+    model, html = _rendered(tmp_path / "nav")
+    assert model.series
+    nav = html[html.find("<nav>") : html.find("</nav>")]
+    assert nav.count('href="#timeline"') == 1, (
+        "the run-history section is rendered but the contents list does not offer it"
+    )
+
+
+def test_a_half_scripted_run_keeps_the_table_and_names_the_side_it_could_not_measure(
+    tmp_path: Path,
+) -> None:
+    """The suppression is ``and``, and the per-side cells exist for this run.
+
+    Turning it into ``or`` left the suite green, because nothing rendered a run
+    with one scripted side and one real one -- so the two per-side branches inside
+    the table were unreachable from any test. Under ``or`` a real, measured
+    candidate loses its latency numbers because the *baseline* was scripted, which
+    hides a measurement rather than an absence.
+    """
+    model, html = _rendered(
+        tmp_path / "half",
+        baseline_adapter="FakeAdapter",
+        candidate_adapter="OpenAICompatAdapter",
+    )
+    assert model.baseline.is_fake
+    assert not model.candidate.is_fake
+
+    start = html.find('<h2 id="latency"')
+    end = html.find('<h2 id="flips"', start + 1)
+    section = html[start:end]
+    assert "<table" in section, (
+        "a run with one measured side lost its latency table; the suppression is "
+        "for a run where neither side was measured"
+    )
+    assert "scripted adapter" in section, (
+        "the scripted side is printed as a number rather than named as unmeasured"
+    )
+    assert f"{model.candidate.latency_median:.3f}" in section, (
+        "the measured side's median is missing from the table"
+    )
+    assert f"{model.baseline.latency_median:.3f}" not in section, (
+        "the scripted side's timing is printed anyway, which is the 0.000 this "
+        "chunk exists to stop printing"
+    )
+
+
+def test_a_threshold_source_that_is_not_a_path_is_printed_whole() -> None:
+    """``_source_label`` shortens paths only, and that guard was untested.
+
+    Making it shorten unconditionally left the suite green, because the only
+    non-path value the fixtures produce is ``THRESHOLD_SOURCE_UNRECORDED``, which
+    has no separator in it to be cut at. A source recorded as prose -- and the
+    docstring argues from exactly this -- would be truncated at its last slash and
+    read as a filename.
+    """
+    label = _report._source_label
+    prose = "CLI flag --pass-rate-floor, overriding config/migkit.toml"
+    assert label(prose) == prose, (
+        "a sentence containing a slash is not a path and must not be cut at one"
+    )
+    assert label(_report.THRESHOLD_SOURCE_UNRECORDED) == _report.THRESHOLD_SOURCE_UNRECORDED
+    assert label("migkit.toml") == "migkit.toml"
+    assert label("") == ""
+    assert label(None) == ""
+
+    backslash = chr(92)
+    assert label("C:" + backslash + "work" + backslash + "migkit.toml") == "migkit.toml"
+    assert label("/etc/migkit/migkit.toml") == "migkit.toml"
+
+
+def test_the_run_history_gaps_are_a_list_beside_the_paragraph_not_inside_it(
+    tmp_path: Path,
+) -> None:
+    """``<ul>`` inside ``<p>`` is not nesting a parser will honour.
+
+    An HTML parser closes the open ``<p>`` when it meets ``<ul>`` and drops the
+    ``</p>`` that follows as a stray end tag, so the list loses the ``.secondary``
+    styling the paragraph was carrying, and the document is invalid where it says
+    it is auditable.
+    """
+    scenario = _scenario(tmp_path / "gaps")
+    log = _log_with_history(
+        scenario,
+        "gappy.jsonl",
+        _earlier_run(scenario, tag="norate", pass_rate=None),
+    )
+    html = _html(_model_from(log))
+    start = html.find('<h2 id="timeline">')
+    end = html.find('<h2 id="judges">', start)
+    section = html[start:end]
+    assert "<ul" in section, "this fixture is supposed to produce a counted gap"
+
+    # Raw markup, not the parsed tree: the parser is the thing that *repairs*
+    # this, so asking it what it saw would report the repaired document rather
+    # than the one written to disk.
+    depth = 0
+    for token in re.findall(r"</?(?:p|ul)", section):
+        if token == "<p":
+            depth += 1
+        elif token == "</p":
+            depth -= 1
+        elif token == "<ul":
+            assert depth == 0, (
+                "the gap list opens inside an unclosed <p>; a parser closes the "
+                "paragraph there and drops the </p> that follows"
+            )
+    assert depth == 0, "the run-history section leaves a <p> unclosed"
+
+    opened = section[section.find("<ul") :]
+    assert opened.split(">")[0].endswith('class="secondary"'), (
+        "the gap list must keep the secondary styling the paragraph gave it"
+    )
+
+
+def test_the_printed_figure_is_read_back_off_the_page_it_describes(
+    tmp_path: Path,
+) -> None:
+    """The second number is a measurement, and the suite never measured it.
+
+    ``_printed_chars`` was pinned only by ``printed < produced``. Under that
+    assertion one side of the sum can stop collapsing -- the mutation is a single
+    identifier -- and the document goes on printing a "characters printed below"
+    figure that is larger than the text below it, with 359 tests green. A number
+    a reader uses to reconcile two claims is worth exactly as much as the check
+    that it matches the page.
+
+    So the draws-and-input half is re-derived from the rendered ``<pre>`` blocks,
+    which is the document itself and not another reading of the model.
+    """
+    repeated = "the candidate said exactly this, five times over"
+    model, html = _rendered(tmp_path / "measured", candidate_output=repeated)
+
+    rows = [
+        row
+        for row in (*model.flips, *model.gains, *model.unstable)
+        if row.detail_embedded
+    ]
+    assert rows, "this fixture needs embedded rows"
+    assert any(len(set(row.candidate_outputs)) == 1 for row in rows), (
+        "nothing collapsed, so an uncollapsed sum would agree and this is vacuous"
+    )
+
+    reasons = sum(len(text) for row in rows for text in row.reasons.values())
+    on_the_page = sum(len(text) for text in _pre_texts(html))
+
+    # This fixture collapses the candidate only -- ``_scenario`` gives the
+    # baseline a distinct suffix per draw. The baseline half of the same sum is
+    # pinned in ``tests/test_report_scale.py``, on the fixture where both sides
+    # are byte-identical; neither fixture alone reaches both terms.
+
+    assert _report._printed_chars(model) - reasons == on_the_page, (
+        f"the document says it prints "
+        f"{_report._printed_chars(model) - reasons:,} characters of inputs and "
+        f"draws; its <pre> blocks hold {on_the_page:,}. One of the two sides "
+        f"stopped collapsing, and the figure beside the budget is now wrong in "
+        f"the direction that overstates what a reader can see"
+    )
