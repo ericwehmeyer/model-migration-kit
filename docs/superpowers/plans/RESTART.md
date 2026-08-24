@@ -59,47 +59,40 @@ forty lines below it.
 
 | Branch | Contains | State |
 |---|---|---|
-| `main` | C1-C5, C7-C16, C19-C21, R1-R23 | all seven gates green, **2052 passed** |
-| `chunk/c6-impl` / `c6-test` | multiplicity, corrected and said out loud | **blind pair in flight** |
-| `mk-c7-review` / `mk-c10-review` | detached review worktrees at `60a3fed` | **two reviewers in flight** |
+| `main` | C1-C16, C19-C21, R1-R26 | all seven gates green, **2083 passed** |
+| `chunk/c22a-impl` | `ReportModel.candidates` -- the **first production caller of C5** | green; `spot_check` half deliberately not built (R26) |
+| `chunk/c7-fix` | R24's eleven survivors | in flight |
+| `chunk/c17-impl` | `showcase.toml`, `showcase_rubric.md` | in flight |
+| `chunk/c11-subject` | `spot_check` gains a caller-supplied subject (R26.4) | in flight |
+| `mk-c10-review` | detached at `60a3fed` | reviewer in flight |
 
-Updated 2026-08-24, main at `027bb93`. `chunk/c10-impl` and `chunk/c10-test`
-(without the `2`) are **dead** -- written against a contract prescribing an
-impossible call. Ignore them.
+Updated 2026-08-24, main at `cbea6bc`. `chunk/c10-impl` and `chunk/c10-test`
+(no `2`) are **dead**; ignore them.
 
-**C5 is merged and through all four roles.** Its fix pass produced an unfix
-table in which every revert goes red, and then did something nobody asked for:
-it re-anchored all fourteen named survivors against the fixed tree and confirmed
-each one now dies. M01, the fixture monoculture that survived 269 green tests,
-dies on three; R14, the `_UNDATED` mutant that inverted the sorting ruling in all
-three places it had work to do, dies on three more.
+**Three consecutive blind pairs produced zero disagreement** -- C7 (33 tests),
+C10 (22), C6 (31). That is a good sign about the contracts and **not** a reason
+to skip review: C5's pair agreed too, and its 269-test green suite was hiding
+the chunk's own named failure mode.
 
-**Two consecutive blind pairs produced zero disagreement** (C7, C10). Good sign
-about the contracts, not a reason to skip review -- C5's pair agreed too, and its
-269-test green suite was hiding the chunk's own named failure mode.
+### The watchdog raises false alarms -- verify before acting
 
-### One agent, one worktree -- reviewers included
+The stall monitor has now fired **four** alerts naming agents that had already
+**completed and been merged** (`C5 fix pass` twice, `C7 reviewer`, `C6
+implementer`). One escalated to *"Stop it and salvage its commits"* for work
+that had been on `main` for ninety minutes.
 
-Two reviewers were once dispatched into `mk-main` together. That is wrong: they
-overwrite each other's mutations and each other's restores, and the orchestrator
-commits documentation to that same tree, so a live mutant can be captured by a
-`git add -A` that has nothing to do with it.
+It tracks agents by name and does not observe completion. **Before acting on any
+stall alert**, check `ListAgents` for a live agent and `git log`/`git branch
+--contains` for the work. Salvaging a merged branch is wasted effort; stopping a
+live agent on a false alarm costs its context.
 
-```
-git worktree add --detach /c/Users/ewehm/repos/mk-<chunk>-review <main-sha>
-```
-
-Detached, so several can sit at one commit without fighting over the branch. It
-also retires "run `check_merge.py` alone" for reviewers -- that rule was about
-contention, and a private worktree has none.
-
-**Agents die in clusters.** Three died in one window (two 600s stalls, one API
-error) and all three were recovered by **resuming** them with `SendMessage`
-rather than re-dispatching, which preserved their partial findings. Before
-resuming, check every worktree: the reviewers had restored cleanly, but a fix
-pass had 950 lines of green work uncommitted, one accident from gone. Commit
-that work yourself, and say in the message that its unfix harness has not run so
-nobody merges on a green suite alone.
+Genuine stalls do happen -- three agents died in one window (two 600s stalls,
+one API error). The user later found these correlated with **machine power and
+sleep settings**, and changing them appears to have stopped the clustering. When
+a real stall happens, **resume with `SendMessage` rather than re-dispatching**:
+it preserves partial findings, and one reviewer came back with four surviving
+mutants intact. Check every worktree first -- reviewers had restored cleanly,
+but one fix pass had 950 lines of green work uncommitted.
 
 **Merged and reviewed** means the blind pair ran, a reviewer mutation-tested it,
 and a fix pass acted on the review. Every chunk on `main` above has been through
@@ -158,43 +151,43 @@ confusingly, exactly what a correct C10 render looks like. Print
 
 ## Do these next, in this order
 
-**Read R21, R21.6 and R23 first.** `report.py` imports exactly three names from
-`series.py` and all three are C3's; four merged chunks produce values no
-production path reads. That is why the render is byte-identical across three
-merges while every gate stays green. **C22 closes it.**
-
-1. **Land the three in flight** -- C6's blind pair, C7's reviewer, C10's
-   reviewer.
-2. **C22a -- the view model, part one. Dispatch this the moment a slot opens;
-   it is the artifact-moving work.** `ReportModel` gains exactly two fields,
-   `spot_check` and `candidates`, both pure over what the model already holds.
-   It renders **three** of C14's nine elements and is what finally moves *"spot
-   check"* off zero.
-
-   **Both briefs are written**, in the scratchpad as `c22a_impl_brief.md` and
-   `c22a_test_brief.md`. Its producers (C11, C5) are through all four roles with
-   no open rulings, so nothing blocks it but the orchestrator's own capacity.
-3. **C14's remaining elements for those three sections**, which then have
-   something to render. Note R23.2's consequence: a report with no candidate
-   table cannot say *why*, so the empty state must say runs may have been
-   excluded without naming them -- never an empty list, which reads as "nothing
-   was excluded".
-4. **C7's fix pass**, once its review lands. It owes R21.5's lineage caveat:
-   `Trend` must say so when the succession was assumed from the log rather than
-   declared in config. **C22b is blocked on this**, and R21.5 forbids inventing
-   the caveat in the plumbing instead.
-5. **C22b** -- `trend`, `parameter_strip` (after 4) and `multiplicity` (after
-   C6).
-6. **C17** -- owes `showcase.toml` and `showcase_rubric.md`. C16's fix pass
-   recorded the debt at the foot of `scripts/showcase.py` with the five
-   thresholds and `model = "synthetic-judge-v1"`. Counted, not guessed: the demo
-   set's 4 reference-less items are all refusals so the shipped demo is fine;
-   the showcase set's 32 split 16 refusal / 16 summarisation, so the demo's
-   decline-based judge is right for half and inverted for the other half. Three
-   of C16's judge's claims are absent from `demo_rubric.md`, one moves a
-   published p-value, and `JUDGE_MODEL_ID` is read by **nothing**.
-7. **C18**, and the deferred repo-wide `ruff format` drift (tree at 88,
+1. **Land the five in flight** -- C22a's tester, C7's fix, C17, C11's subject
+   follow-up, C10's reviewer.
+2. **Merge `chunk/c22a-impl`'s `candidates` half.** It is complete and green on
+   its own. Its `spot_check` half is blocked on `chunk/c11-subject` (R26.4).
+3. **C22a part two** -- `spot_check` on the model, once C11's subject lands.
+   Rulings are made: `judges[0]` and refuse rather than aggregate (R26.3), the
+   **candidate** side, and the subject named in the producer's own sentence.
+4. **C14's remaining elements** for whatever is then on the model.
+   **Two things to know before scheduling the spot-check element:** its section
+   will be **empty on the bundled demo** whatever we do -- 12 items and `k=12`
+   means `spot_check` correctly returns `None` -- and per R23.2 a report with no
+   candidate table cannot say *why*, so the excluded list's empty state must say
+   runs may have been excluded without naming them.
+5. **C22b** -- `trend` and `parameter_strip` (after C7's fix lands R21.5's
+   lineage caveat) and `multiplicity` (C6 is merged; R25.4 lists four contract
+   points still unruled, cheap now and expensive once rendered).
+6. **C18**, and the deferred repo-wide `ruff format` drift (tree at 88,
    `pyproject.toml` says 100, ~26 files). Its own chunk, when the tree is quiet.
+
+### Two errors of mine, both caught by agents, both the same shape
+
+Recorded because the pattern is the useful part, not the individual mistakes.
+
+**R17.1** explained a real worked table with a mechanism I had inferred from
+reading code rather than running it. **R23.1** claimed `ReportModel.item_counts`
+carried three keys it does not carry, in a section whose own words were "checked
+rather than assumed" -- I had grepped, found a *function* reading those key
+names, and concluded the *field* had them. One hour apart, the second
+immediately after writing down the lesson from the first.
+
+> **When a revision claims something was checked, it must carry the output that
+> checked it.** A sentence saying "verified" is not evidence; a pasted
+> `KeyError` or printed dict is.
+
+Both were caught by agents, both because the agent **needed the actual value to
+do its job** and so could not take the sentence on trust. That is an argument
+for briefs that make an agent derive a number rather than accept one.
 
 ### Running anything at all: there is no venv in the worktrees
 
