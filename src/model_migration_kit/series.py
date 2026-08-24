@@ -62,7 +62,15 @@ from opik_rigor import EvidenceRecord
 from .contracts import EVENT_COMPARISON, EVENT_VERDICT
 from .evidence import resolve_evidence, stream_records
 
-__all__ = ["RunPoint", "SeriesBuilder", "parse_created", "read_series", "run_point"]
+__all__ = [
+    "RunPoint",
+    "SeriesBuilder",
+    "SpotCheck",
+    "parse_created",
+    "read_series",
+    "run_point",
+    "spot_check",
+]
 
 #: ``floor_source``'s three values. The word "unrecorded" is
 #: ``report.THRESHOLD_SOURCE_UNRECORDED``'s, deliberately: the report already has
@@ -713,3 +721,146 @@ def _count_or_none(value: Any) -> int | None:
     """
     number = _numeric(value)
     return None if number is None else int(number)
+
+
+# --------------------------------------------------------------------------- #
+# C11: the counterfactual spot check
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class SpotCheck:
+    """What an engineer sampling ``k`` prompts by hand would probably have seen.
+
+    The report's other numbers say what this run measured. This one says what a
+    cheaper method would have *missed*, which is the argument for having run the
+    harness at all -- and it is therefore the number a sceptical reader will
+    check first, so every choice behind it is written down rather than inferred.
+
+    Frozen, and carrying its own inputs beside its answer, for the reason
+    :class:`RunPoint` is: the sentence and the counts it was computed from must
+    travel together. A reader who wants to redo the arithmetic can, from this
+    object alone, without trusting the prose.
+    """
+
+    #: How many prompts the hypothetical spot check tries.
+    k: int
+    #: ``N`` -- every item in the set, failing and unstable ones included.
+    items: int
+    #: ``F`` -- items failing under the candidate. Only these can be "found".
+    failing: int
+    #: Items that were neither reliably passing nor reliably failing. Counted
+    #: into ``items`` and *not* into ``failing``; see :func:`spot_check`.
+    unstable: int
+    #: ``P(a k-item draw contains none of the F failing items)``.
+    probability: float
+    #: The same fact in one sentence, with its assumption named in it.
+    sentence: str
+
+
+def spot_check(
+    items_passing: int, items_failing: int, items_unstable: int, *, k: int = 12
+) -> SpotCheck | None:
+    """The chance a ``k``-prompt hand check of this set would have seen nothing.
+
+    ``comb(N - F, k) / comb(N, k)``: the probability that ``k`` items drawn
+    without replacement miss every failing one. Hypergeometric, and no more than
+    that -- it is not a power calculation, needs no effect size and no target
+    power, and the ``n_required`` the record already carries does not appear in
+    it and cannot be made to.
+
+    **The unit is items, never completions.** ``k`` prompts is ``k`` *decisions*,
+    not ``k`` samples from a completion-level pass rate. At temperature 0 -- and
+    under the fake adapter, where a mapped prompt returns one fixed string -- all
+    ``n`` draws of an item are identical, so 60 completions are 12 decisions.
+    Writing this as ``rate ** k`` over completions is the obvious implementation
+    and it is wrong by roughly an order of magnitude in the flattering direction:
+    on the demo's numbers it says 3% where the item-level answer is 33%. A tool
+    whose whole argument is that naive methods are blind must not compute its own
+    headline number by a naive method.
+
+    **Unstable items count as passing, and that is the thumb on the scale.** An
+    item that fails on some draws and not others is *not* treated as a guaranteed
+    failure here, which shrinks ``F`` and so raises this probability -- it makes
+    the spot check look worse at finding things, which is to say it makes this
+    tool's case look *better*. That is deliberate and it is the direction the
+    error must run: every place this number could have been rounded in the tool's
+    favour, it was, and it still lands where it lands. Counting unstable items as
+    failures would produce a larger, more quotable number that a reviewer could
+    knock down by pointing out that an unstable item is one a spot check might
+    well pass. This one they cannot.
+
+    **The sentence names the assumption it made.** A real spot check is not a
+    random draw: an engineer picks twelve prompts they believe are
+    representative, and nobody can model that. So the sentence says "drawn at
+    random" out loud and lets the reader discount it, rather than quietly
+    claiming to have modelled a human's judgement. It also says *spot checks*
+    and not *runs*: nothing here is distributed over runs, and a director who
+    reads "in X% of runs" and asks what a run is has found a hole.
+
+    Returns ``None`` -- no sentence at all -- rather than a weaker one, when:
+
+    * ``F == 0``. There was nothing to miss, so "a spot check would have found
+      nothing" is true and vacuous. The temptation is to print the line anyway
+      because it is the most quoted line in the document; a line that is
+      unfalsifiable on this run is worth less than the silence it replaces.
+    * ``N < k``. The check would try every item and the counterfactual collapses.
+    * ``N == 0``. There is no set to sample.
+
+    ``k == 0`` is a caller's bug, not a run without failures, so it raises rather
+    than joining the ``None`` cases: a zero-prompt spot check trivially sees
+    nothing, and silently returning ``None`` would hide a miswired caller behind
+    a result the report already knows how to render as an absence.
+    """
+    if k <= 0:
+        raise ValueError(f"k must be a positive number of prompts, got {k!r}")
+    if items_passing < 0 or items_failing < 0 or items_unstable < 0:
+        raise ValueError(
+            "item counts cannot be negative, got "
+            f"passing={items_passing!r}, failing={items_failing!r}, "
+            f"unstable={items_unstable!r}"
+        )
+
+    items = items_passing + items_failing + items_unstable
+    if items == 0 or items < k or items_failing == 0:
+        return None
+
+    # math.comb, not a float product: the exact integer arithmetic costs nothing
+    # here and cannot drift, and a reviewer checking this line should find the
+    # textbook expression rather than something they have to re-derive.
+    probability = math.comb(items - items_failing, k) / math.comb(items, k)
+    sentence = (
+        f"A {k}-prompt spot check drawn at random from these {items} items "
+        f"would have shown no failures at all in {_percent(probability)} "
+        "of spot checks."
+    )
+    return SpotCheck(
+        k=k,
+        items=items,
+        failing=items_failing,
+        unstable=items_unstable,
+        probability=probability,
+        sentence=sentence,
+    )
+
+
+def _percent(probability: float) -> str:
+    """A probability as a whole-percent phrase, with both ends kept honest.
+
+    Whole percent because the sentence is read aloud in a review, and 32.9% is
+    a precision this estimate does not have: it assumes a random draw that no
+    engineer actually performs.
+
+    The two guards exist because rounding here is not symmetric in its
+    consequences. Both ends of this scale flatter the argument the sentence is
+    making -- rounding a genuinely non-zero probability down to "0%" claims a
+    spot check would *always* have caught it, and rounding up to "100%" claims it
+    could never have. Neither is a claim the arithmetic made, so a value strictly
+    between the bound and the rounding threshold says so in words instead.
+    """
+    percent = round(probability * 100)
+    if percent == 0 and probability > 0:
+        return "fewer than 1%"
+    if percent == 100 and probability < 1:
+        return "more than 99%"
+    return f"{percent}%"
