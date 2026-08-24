@@ -189,13 +189,20 @@ from .judging import JudgedArtifact
 from .runner import RunArtifact
 from .series import (
     CandidateField,
+    CandidateLineage,
+    Multiplicity,
+    ParameterChange,
     RunPoint,
     SeriesBuilder,
     SpotCheck,
     SpotCheckSubject,
+    Trend,
     candidate_field,
+    correct_field,
+    parameter_strip,
     parse_created,
     spot_check,
+    trend,
 )
 
 __all__ = [
@@ -855,6 +862,30 @@ _NO_DIMENSION_COUNTS = (
     "the only thing that takes them."
 )
 
+#: What :attr:`ReportModel.trend` carries when nobody drew a line -- seven empty
+#: fields, and **no caveat** (R30.4). :func:`~model_migration_kit.series.trend`
+#: raises R21.5's assumed-lineage note whenever it is handed a lineage nobody
+#: declared, so every line this module draws carries it; a ``ReportModel`` that
+#: was never handed a series has assumed nothing, and putting the note here would
+#: make a default say something was measured and doubted when nothing was
+#: measured at all. That is this project's recurring defect (an absence rendering
+#: as a measurement) reached from the one direction nobody checks, because the
+#: sentence would be *true of every real report* and so would look right.
+#:
+#: A shared instance rather than a ``default_factory``: a :class:`Trend` is a
+#: ``NamedTuple`` of tuples, so there is no per-instance state to protect and
+#: nothing a caller could mutate through it. ``dimensions`` and ``detail`` need
+#: the factory because they are dataclasses; this does not.
+_NO_TREND = Trend(
+    points=(),
+    successions=(),
+    excluded=(),
+    undated=0,
+    caveats=(),
+    outside_lineage=(),
+    absent_models=(),
+)
+
 
 @dataclass(frozen=True)
 class TagColumn:
@@ -1065,6 +1096,22 @@ class ReportModel:
     #: :func:`~model_migration_kit.series.candidate_field`, which is called on
     #: :attr:`series` and reads nothing else.
     #:
+    #: **It is the field :func:`~model_migration_kit.series.correct_field`
+    #: returned, not the one :func:`~model_migration_kit.series.candidate_field`
+    #: did** (R30.2), and :attr:`multiplicity` is the second half of that one
+    #: call. The correction appends one
+    #: :class:`~model_migration_kit.series.Caveat` per candidate whose
+    #: significance did not survive it, so keeping the uncorrected field here
+    #: would compute those caveats and drop them -- R21's finding, reproduced
+    #: inside the chunk written to fix R21. There is no second place that fact is
+    #: recorded: :attr:`~model_migration_kit.series.Multiplicity.changed` is a
+    #: tuple of model ids and not prose, and the sentence saying what the
+    #: correction did to a *particular* candidate exists only on that candidate's
+    #: caveat. Nothing else about the field moves -- a correction that changed
+    #: nothing, and a correction that was refused, both return the field
+    #: unchanged, and the rows, the exclusions and the key are the same objects
+    #: either way.
+    #:
     #: **``None`` is carried through, and is not an empty field.** The producer
     #: returns ``None`` when no comparability key holds two distinct candidate
     #: models, which is a different claim from "a field of no candidates": the
@@ -1146,6 +1193,98 @@ class ReportModel:
     #:
     #: Defaulted for :attr:`candidates`' reason.
     spot_check: SpotCheck | None = None
+    #: This log's one candidate line, and everything it left out -- see
+    #: :func:`~model_migration_kit.series.trend`, called on :attr:`series` and
+    #: reading nothing else.
+    #:
+    #: **Never ``None``.** ``trend`` has no ``None`` return: a log it can draw no
+    #: line from comes back as a :class:`~model_migration_kit.series.Trend` whose
+    #: :attr:`~model_migration_kit.series.Trend.points` are empty and whose other
+    #: six fields say why -- which runs were excluded, how many could not be
+    #: dated, which ran on this baseline outside the succession, which declared
+    #: ids never ran at all. So the absence has a shape here rather than needing
+    #: an ``is None`` gate, and a renderer that has no line to draw still has
+    #: something to print. That is the opposite of :attr:`candidates`, and the two
+    #: differ because the producers do; neither shape is chosen here.
+    #:
+    #: **The lineage is always
+    #: :meth:`~model_migration_kit.series.CandidateLineage.assumed_from`** (R30.1).
+    #: Nothing outside ``series.py`` mentions a lineage: no config schema carries
+    #: one, ``from_evidence`` reads no config, and R21.3 forbids it starting. So
+    #: every report rendered today carries R21.5's caveat saying the succession
+    #: was assumed from the log rather than declared. **That is correct and is not
+    #: to be tuned down.** It is the true sentence about every log this project
+    #: can currently read, and a caveat on every report becomes noise only once a
+    #: declaration path exists and reports using it still carry it. Suppressing it
+    #: here -- a flag, a default declaration, a filter on the way out -- would
+    #: restore the silent default R21.5 rejected, and would do it in the wiring,
+    #: which R21.5 names as the one shape of this defect nobody would find.
+    #:
+    #: **``baseline_model`` is :attr:`baseline`'s** ``model_id`` and not
+    #: ``series[-1].baseline_model`` (R30.4). They are one fact and R23.2 allows
+    #: it one source; the tie goes to the one that is always there, since
+    #: :attr:`baseline` is read from the records while :attr:`series` can be
+    #: empty, and choosing the other would need an empty-series special case
+    #: purely to answer a question :attr:`baseline` already answers.
+    trend: Trend = _NO_TREND
+    #: Every tracked parameter as it stood across the line's last two runs -- see
+    #: :func:`~model_migration_kit.series.parameter_strip`. Empty exactly when
+    #: :attr:`trend` has no points.
+    #:
+    #: **Both points come from** :attr:`~model_migration_kit.series.Trend.points`
+    #: **and never from** :attr:`series` (R30.3). ``trend``'s own docstring
+    #: settles it: filtering the line by the field that moves "is what hid the
+    #: change", and the strip "was always able to show the change and was
+    #: prevented by its own caller". :attr:`series` is the whole log in the log's
+    #: order, so feeding the strip from it would compare two runs that may be
+    #: neither consecutive nor on the same line.
+    #:
+    #: Two consequences, both accepted rather than worked around:
+    #:
+    #: * ``points[-1]`` is the *line's* newest run, which is not always the
+    #:   headline run. If the headline was excluded from the line the strip is
+    #:   not about the banner -- and that is right: the strip belongs beside the
+    #:   timeline, where :attr:`~model_migration_kit.series.Trend.excluded`,
+    #:   :attr:`~model_migration_kit.series.Trend.outside_lineage` and
+    #:   :attr:`~model_migration_kit.series.Trend.undated` already say who is
+    #:   missing and why. A strip silently retargeted at the headline would
+    #:   compare two runs the chart above it does not draw as consecutive.
+    #: * **The strip is gated on the trend, not on itself.** An empty tuple here
+    #:   means an empty line, and the reason is in :attr:`trend`. A renderer that
+    #:   gates on this being non-empty publishes "no parameters tracked" over a
+    #:   log that simply has no line yet. When there *is* a line the tuple is
+    #:   never empty -- ``parameter_strip`` emits one row per tracked parameter
+    #:   including the ones that held -- so empty here is unambiguous.
+    #:
+    #: A one-point line passes ``previous=None``, which the producer renders as
+    #: :data:`~model_migration_kit.series.NO_PREVIOUS_RUN` in every ``before``
+    #: cell: a word, not a blank, so a genuine first run cannot be read as a run
+    #: that changed nothing.
+    parameter_strip: tuple[ParameterChange, ...] = ()
+    #: What correcting :attr:`candidates`' p-values across its candidates did, or
+    #: why it was declined -- the second half of the one
+    #: :func:`~model_migration_kit.series.correct_field` call that also produced
+    #: :attr:`candidates`.
+    #:
+    #: **``None`` exactly when :attr:`candidates` is ``None``, and never
+    #: otherwise** (R30.4). The two are one fact -- the multiplicity is *of* the
+    #: field -- and ``correct_field`` takes a
+    #: :class:`~model_migration_kit.series.CandidateField`, not an optional one.
+    #: A refusal :class:`~model_migration_kit.series.Multiplicity` invented for
+    #: the no-field case would be this module composing a producer's prose, which
+    #: R26.4 refused for the spot check's sentence and R21.5 refused for the
+    #: lineage caveat. The renderer already owes a sentence for
+    #: ``candidates is None``; a second one saying "and so nothing was corrected"
+    #: can only agree with it or contradict it, and the second is the outcome
+    #: that ships.
+    #:
+    #: When it is present it is never a silence: ``correct_field`` records a
+    #: refusal as a :class:`~model_migration_kit.series.Multiplicity` with
+    #: ``applied=False`` and its own note, so "fewer than two testable
+    #: candidates", "the members were tested at different levels" and "the
+    #: correction ran and changed nothing" are three readable outcomes rather
+    #: than one absent object.
+    multiplicity: Multiplicity | None = None
 
     # -- construction ------------------------------------------------------- #
 
@@ -1368,6 +1507,57 @@ class ReportModel:
         # and there must never be one, because the absence is the finding and a
         # default would publish it as a measurement.
         candidates = candidate_field(series)
+        # R30.2: the corrected field replaces the uncorrected one rather than
+        # sitting beside it. `correct_field` appends one caveat per candidate
+        # whose significance did not survive the correction, and those caveats
+        # live nowhere else -- keeping the field `candidate_field` returned would
+        # compute them and throw them away, which is R21's finding rebuilt inside
+        # the chunk written to fix R21. Rebinding rather than a second name for
+        # the same reason C22a gives for one partition: two fields differing only
+        # in their caveats is a disagreement nothing on the model can adjudicate.
+        #
+        # R30.4: `multiplicity` is `None` exactly here, where there is no field to
+        # correct, and never anywhere else. No refusal `Multiplicity` is invented
+        # for this case -- `correct_field` mints refusals for the families it can
+        # see, and one minted here would be this module writing a producer's
+        # prose. A correction of nothing is not a refused correction.
+        multiplicity: Multiplicity | None = None
+        if candidates is not None:
+            candidates, multiplicity = correct_field(candidates)
+        # R30.1: the lineage is assumed, on every report, because nothing in this
+        # package reads a declared one and R21.3 forbids this method starting.
+        # `trend` then raises R21.5's caveat on every line drawn from today, which
+        # is the true sentence about every log this tool can read -- it is not a
+        # placeholder and it is not to be suppressed here. R21.5 rules that the
+        # words are the producer's; all this passes is the fact of how the
+        # succession was come by, which only the caller knows.
+        #
+        # `baseline.model_id` and not `series[-1].baseline_model` (R30.4): one
+        # fact, one source, and this is the source that survives an empty series.
+        # Assembly is `CandidateLineage.assumed_from`'s and deliberately not
+        # rebuilt here -- it restricts the assumption to `trend`'s own selection,
+        # and a copy of the loop here could not see that rule.
+        line = trend(
+            series,
+            baseline_model=baseline.model_id,
+            lineage=CandidateLineage.assumed_from(
+                series, baseline_model=baseline.model_id
+            ),
+        )
+        # R30.3: the strip's two points are the line's, never the log's. `series`
+        # is every experiment in the file in the file's order, so `series[-2:]`
+        # can be two runs that are neither consecutive nor on one line; the strip
+        # exists to license an attribution, and two runs the chart does not draw
+        # as consecutive license the wrong one. An empty line yields an empty
+        # tuple rather than a strip of NO_PREVIOUS_RUN rows against a run that
+        # was never selected.
+        strip = (
+            ()
+            if not line.points
+            else parameter_strip(
+                line.points[-2] if len(line.points) > 1 else None, line.points[-1]
+            )
+        )
         # The counting judge's candidate-side items, R26.3, computed from the
         # rows already parsed above -- see :attr:`spot_check`. ``counting`` and
         # ``counting_judge`` are the same selection :attr:`dimensions` was built
@@ -1433,6 +1623,9 @@ class ReportModel:
             dimensions=dimensions,
             candidates=candidates,
             spot_check=spot,
+            trend=line,
+            parameter_strip=strip,
+            multiplicity=multiplicity,
         )
 
     # -- derived ------------------------------------------------------------ #
