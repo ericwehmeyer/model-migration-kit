@@ -3055,3 +3055,124 @@ presentation attributes taking a CSS `<url>` (`fill`, `filter`, `mask`,
 inline SVG into the document for the first time, so `fill="url(...)"` is now
 reachable in a way it was not before. Check what the two helpers actually emit.
 **Three:** mutate each `| safe` off and confirm something goes red.
+
+---
+
+### R14 — six contract defects found before dispatch, and the rulings that settled them
+
+Five of these were found by reading contracts against the code they name, in the
+pre-dispatch pass §"When it is safe to go wide" asks for. One came back from
+C16's implementer. All six would have split an implementer/tester pair, which is
+the specific failure R6 and R7 exist to prevent: two agents each pick a different
+reading of the same sentence and neither is wrong.
+
+#### R14.1 — C11's probability is stated twice and both statements are wrong
+
+C11's edge table says `passing=88, failing=8, unstable=0, k=12` gives
+"probability ≈ 0.351". The worked example sentence, and §7.4's version of it,
+both say "34%". These are the same scenario — 96 items, 8 failing, k=12 — so the
+plan gives two different answers to one question, and neither is right:
+
+```
+comb(96 - 8, 12) / comb(96, 12) = 0.3287693171387045
+```
+
+**Ruling: 0.32877, which is 33%.** Both printed numbers are struck. An
+implementer would have coded the formula and got 0.32877; a tester reading the
+edge table would have asserted 0.351 and filed a bug against correct code. The
+formula was always right; only the arithmetic done on it was wrong.
+
+#### R14.2 — C4's flag has nowhere to go
+
+C4's edge table requires that a point whose key matches but whose per-side
+coverage differs is **kept**, "and the sentence is a flag on the kept point, not
+an exclusion". But `partition_comparable` returns `(kept, excluded)` and
+`RunPoint` is frozen with no flag field. There is no third place.
+
+**Ruling: `partition_comparable` returns a three-tuple**, and a `Flag`
+dataclass parallel to `Exclusion`:
+
+```python
+@dataclass(frozen=True)
+class Flag:
+    point: RunPoint
+    reason: str
+
+def partition_comparable(
+    points: Sequence[RunPoint], *, against: ComparabilityKey
+) -> tuple[tuple[RunPoint, ...], tuple[Exclusion, ...], tuple[Flag, ...]]: ...
+```
+
+A flagged point is **also** in `kept` — a flag annotates, it does not remove. The
+empty case is `((), (), ())`. C5's `CandidateField` will need a `flags` field to
+match; it is not yet dispatched, so this is still cheap.
+
+#### R14.3 — C4 flags on a field that does not exist
+
+§4.4 says "`records` is recorded per side and is the available proxy". That is
+true of the payload. It is **not** true of `RunPoint`, which has no `records`
+field — enumerated on main, not read off this plan. Adding one means editing the
+producer (C1/C2) while its consumers are in flight, which §"When it is safe to go
+wide" rule 2 forbids.
+
+**Ruling: the flag reads `judged_baseline` / `judged_candidate`.** These are not
+interchangeable with `records` and the difference must survive into the wording:
+they count completions the judge **graded**, not completions produced. A
+completion produced but whose judge reply would not parse is counted by neither.
+So the flag sentence says *graded*. Saying "completions" here re-commits the
+exact conflation `RunPoint.judged_baseline`'s docstring exists to prevent.
+
+#### R14.4 — "byte-identical artifacts" is unachievable for any adapter
+
+C16's contract asks for byte-identical artifacts across runs. `RunHeader.created`
+is `utc_now()` and `Completion.duration` is a wall-clock measurement inside
+rigor's `sample`. No adapter can satisfy this; the demo has the same property. A
+tester taking it literally writes a red test against correct code.
+
+**Ruling: the testable form is two-part** — the projection
+`(item_id, sample_index, output, error)` over all completions is identical
+between runs, **and** `created` and `duration` are the only keys that differ
+anywhere in the artifact. The second half is the stronger claim and the one worth
+writing: a projection-only test would not notice a third source of
+nondeterminism appearing later.
+
+#### R14.5 — §7.3's blind-testable property is the wrong noun
+
+"night 14's `#refusal` completions for candidate B are strictly fewer than night
+13's". The completions are 85 on both nights — everything gets graded. What
+drops is **passing** completions, 85 to 5.
+
+**Ruling: assert passing completions.** Related: the collapse takes the 16 items
+whose *primary* tag is `refusal`, not all 17 tagged ones — `synthetic-summarise-09`
+borrows the tag and keeps passing — so the floor is 5/85, not 0/85. A test
+asserting the dimension goes to zero is wrong, and the reason it is 5 is worth
+pinning: it puts the golden set's two-tag arithmetic on display.
+
+#### R14.6 — C7's `trend` and C16's night-14 story cannot both be satisfied
+
+C16 requires night 14 to produce exactly one `changed=True` parameter row, and
+with n, items, judges, golden set and config all held, the only tracked
+parameter that *can* change is `model_id`. But `trend(points, *, baseline_model,
+candidate_model)` filters the series **by** `candidate_model`, so nights 1–13
+(`-b-v1`) and night 14 (`-b-v2`) can never appear in one series. The strip can
+never see the change it exists to show, and candidate B's timeline splits 13+1.
+
+**Not yet ruled.** C7 is unimplemented, so it is still the cheap side to move,
+and C16's reading (the id changes) is implemented. Settle before C7 is
+dispatched. This is the second time an identity field has forced a choice
+between "the series is one line" and "the change is visible"; R8 is the first,
+and it is still open.
+
+#### And one that is not a wording defect
+
+C10's contract tells the implementer to consume
+`dimension_counts(records, items, *, judge)`. That call cannot be made inside
+`from_evidence`'s single pass: it needs the records and the golden set at the
+same moment, and the golden set is named on a record that arrives last. **That
+is the C10 blocker**, and the contract still prescribes the impossible call.
+C10 must be amended to: feed `DimensionTally` in the loop, call `.counts()`
+after the comparison record. C10 also states the public surface is "exactly" an
+`__all__` that omits `DimensionTally`, which C21 added and C10 must use; and it
+expects `ReportModel.dimensions: DimensionMatrix` where C21 delivers
+`dimension_counts: DimensionCounts`, raw counts only. **C21 did not deliver
+C10** — building the matrix from those counts is still C10's work.
