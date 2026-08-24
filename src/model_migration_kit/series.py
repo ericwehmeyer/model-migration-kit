@@ -484,12 +484,22 @@ class ComparabilityKey:
 
     @property
     def hashes_recorded(self) -> bool:
-        """Whether this key can establish comparability at all.
+        """Whether this key's two *hashes* were recorded. Not the whole question.
 
         A key missing either hash identifies nothing: it says only that two logs
         were equally silent. Anything that groups on :class:`ComparabilityKey`
         needs this, because dataclass equality alone will happily merge every
         run that failed to record a hash into one confident-looking group.
+
+        **It is a necessary condition and not a sufficient one, and the name is
+        the honest half.** ``n_per_item == 0`` and ``baseline_model == ""`` are
+        the same absence in the two fields this property does not look at, and
+        :func:`partition_comparable` excludes on both. So a caller that groups on
+        this and then partitions can still be told that every member of a group
+        it vouched for was excluded. Widening this to all four fields is a change
+        to a contract two unwritten chunks are about to type against; the reason
+        it has not been made in passing is recorded here rather than discovered
+        by whoever writes them.
 
         A hash of nothing but whitespace counts as unrecorded, the same judgement
         :func:`partition_comparable` makes: the two have to agree, or a caller

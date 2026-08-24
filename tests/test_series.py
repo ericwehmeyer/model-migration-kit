@@ -3695,7 +3695,14 @@ def test_a_key_knows_whether_it_can_establish_comparability_at_all(changes, reco
 def test_the_key_and_the_partition_agree_about_what_counts_as_recorded():
     """The property and the rule have to give one answer, or a caller does the
     honest thing -- group on `hashes_recorded`, then partition -- and is told that
-    every member of a group the property vouched for was excluded."""
+    every member of a group the property vouched for was excluded.
+
+    Scoped to the hashes on purpose, which is a gap and is named as one. The
+    property looks at two of the key's four fields, and the partition now excludes
+    on all four, so a key with both hashes and `n_per_item == 0` answers `True`
+    here and is excluded there. Widening the property is a contract change that C5
+    and C7 are about to type against; this test asserts the agreement that exists
+    rather than pretending to the one that does not."""
     for changes in ({}, {"goldenset_hash": ""}, {"judges_hash": "  "}, {"goldenset_hash": " "}):
         point = _point(**changes)
         key = series.comparability_key(point)
