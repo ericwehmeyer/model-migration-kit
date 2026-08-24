@@ -39,6 +39,19 @@ argument. So:
   parameter strip exists to make -- one row moved, so the drop is *attributable*
   rather than merely observed.
 
+**The baseline and candidates A and C are numerically identical on nights 13 and
+14, by construction: they are the control, and the only thing that moves on night
+14 is candidate B.** Diffing the whole ``ComparisonReport`` for those sides across
+the two nights, 9 of 99 leaf fields differ and every one of them is a path, a
+``created`` timestamp or a latency; every statistic is bit-identical. Since C14a
+suppresses latency on fake adapters and shortens paths, the *rendered* rows for
+two of the three candidates will be identical except for the date. That is the
+correct result and it is the point of the design -- see :func:`_rotation_night`
+for why the rotation stops on night 14 -- but a reader diffing two comparison
+records that agree to sixteen significant figures has found something that looks
+exactly like a duplicated record. It is not one. Anything rendering this log
+should say so where the two rows appear.
+
 **Every adapter here is a plain ``Mapping`` from prompt to response.** Not a
 callable, no per-draw counter, no state of any kind. The original contract asked
 for the callable form on the grounds that a REVIEW verdict needs per-draw
@@ -1037,3 +1050,42 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
+
+
+# =========================================================================== #
+# WHAT C17 OWES THIS FILE. Recorded here, not built here.
+# =========================================================================== #
+#
+# C16 stops at the adapters and the judge. Three things this file currently runs
+# against are the driver chunk's to ship, and each of them is a place where the
+# showcase presently attests to something that is not quite what it did.
+#
+# 1. `showcase.toml`, replacing the stand-in use of `demo.toml`. It must carry
+#    exactly the thresholds every band in the docstring above is computed at:
+#
+#        pass_rate_floor = 0.90
+#        confidence = 0.95
+#        alpha = 0.05
+#        min_detectable_effect = 0.10
+#        power_target = 0.80
+#
+#    These are demo.toml's numbers, which is why standing in works today. Writing
+#    them down in the showcase's own config is what stops a later edit to the
+#    demo's gate from silently re-banding the showcase's REVIEW.
+#
+# 2. `showcase_rubric.md`, and the judge's three divergences closed with it. The
+#    detail is in the block above `_grade`; the summary is a summarisation clause,
+#    a task-refusal scored 2 or 3 rather than 1, and the one-sentence rule either
+#    dropped or licensed. **Changing the refusal score moves the seeded p-values**
+#    -- `_compare_one_judge` runs Mann-Whitney over these scores -- so night 6's
+#    p = 0.2617, night 14's p = 3.8e-12 and every number in this file's docstring
+#    that derives from them have to be re-measured in the same commit.
+#    `tests/test_showcase.py` pins the current score for exactly that reason: it
+#    goes red when C17 moves it, so the docstring cannot be left behind.
+#
+# 3. `model = "synthetic-judge-v1"` in that config. `judge_adapter_for` takes the
+#    id from `spec.model`, deliberately, so that the judge rigor pins is the judge
+#    the config declares. Under `demo.toml` that means the showcase judge currently
+#    runs as **`fake-judge-v1`**, which contradicts `JUDGE_MODEL_ID`'s own
+#    docstring three hundred lines above and puts a name in the provenance footer
+#    that says "demo" on a document about the showcase.

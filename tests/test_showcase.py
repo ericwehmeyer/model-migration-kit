@@ -899,6 +899,33 @@ def test_the_baseline_schedule_has_one_entry_per_green_night_and_the_program_agr
     )
 
 
+def test_the_control_is_disclosed_where_a_reader_of_the_module_will_see_it() -> None:
+    """The freeze is a control, and a control nobody is told about is a glitch.
+
+    Night 14's baseline, candidate A and candidate C are numerically identical to
+    night 13 -- every statistic bit-identical, only paths, ``created`` and latency
+    differing -- and with latency suppressed on fake adapters and paths shortened,
+    two of the three rendered candidate rows differ only in the date. That is the
+    correct result and the point of the design. It was disclosed in exactly one
+    place: the docstring of a private helper. C17 and C18 write the synthetic band
+    without ever opening that function, and a sceptical reader diffing two
+    comparison records that agree to sixteen significant figures has found what
+    looks exactly like a duplicated record.
+
+    So the module docstring has to carry it. This checks the disclosure is in the
+    narrative a reader meets first, not that it is phrased any particular way.
+    """
+    doc = (_showcase().__doc__ or "").lower()
+    for word in ("control", "identical"):
+        assert word in doc, (
+            f"scripts/showcase.py's module docstring does not use the word {word!r}. "
+            f"The narrative section must say that the baseline and candidates A and "
+            f"C are identical on nights 13 and 14 by construction, that they are the "
+            f"control, and that only candidate B moves -- otherwise the one place "
+            f"that says so is a private helper nobody downstream reads."
+        )
+
+
 def test_night_fourteen_freezes_the_other_three_sides_at_night_thirteen_exactly() -> None:
     """The control, asserted rather than left in a private docstring.
 
