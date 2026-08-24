@@ -268,8 +268,18 @@ CANDIDATE_MODEL_IDS: tuple[str, ...] = (
 CANDIDATE_B_SLOT = 1
 CANDIDATE_B_RELEASED_MODEL_ID = "synthetic-candidate-b-v2"
 
-#: The judge's id. Pinned (``opik_rigor.pinning.is_pinned``), so the panel builds
-#: a real ``PinnedJudge`` over it, and synthetic in the same word as the models.
+#: The judge's id, as the showcase's config *will* declare it: pinned
+#: (``opik_rigor.pinning.is_pinned``), so the panel builds a real ``PinnedJudge``
+#: over it, and synthetic in the same word as the models.
+#:
+#: **Nothing reads this today.** :func:`judge_adapter_for` takes the id from
+#: ``spec.model`` -- deliberately, so the judge rigor pins is the judge the config
+#: declares and the report echoes -- and the only config that exists is
+#: ``demo.toml``, which says ``fake-judge-v1``. So the showcase judge currently
+#: runs under the demo's name while this constant states another, and the constant
+#: is the aspiration rather than the fact until C17 ships ``showcase.toml`` naming
+#: it. Recorded here rather than quietly corrected: the fix is a config file, and a
+#: constant nobody reads cannot make one appear.
 JUDGE_MODEL_ID = "synthetic-judge-v1"
 
 # --------------------------------------------------------------------------- #
