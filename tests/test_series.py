@@ -2498,14 +2498,22 @@ def test_no_spot_check_sentence_is_offered_when_nothing_was_failing():
     assert series.spot_check(96, 1, 0, k=12) is not None
 
 
-def test_the_spot_check_counts_unstable_items_as_passing_so_the_number_never_flatters_the_tool():
+def test_the_spot_check_counts_unstable_items_as_passing_so_f_is_only_established_regressions():
     """Three unstable items moved out of `passing` and into `unstable` must change
-    nothing at all: same N, same F, same probability, same sentence. Counting them
-    as failures instead would raise F to 11 and drop the probability, which reads
-    as a *better* argument for the tool -- a bigger blind spot for the naive
-    method it is arguing against. The thumb has to be on the other side of the
-    scale, and that is the whole reason this sentence survives a reader who is
-    looking for the catch."""
+    nothing at all: same N, same F, same probability, same sentence. Only `F`
+    decides the number, and only items this run *established* as failing enter
+    `F`.
+
+    This test was named `..._so_the_number_never_flatters_the_tool` and its
+    reasoning ran that the alternative -- counting them as failures -- would
+    "raise F to 11 and drop the probability, which reads as a *better* argument
+    for the tool". That is backwards, and it is the same inversion the docstring
+    shipped with. A dropped probability is a spot check that catches things more
+    often, which is a *worse* argument for having run this harness. The rule
+    keeps the bigger number, so it flatters the tool rather than restraining it;
+    what defends it is that `F` names only established regressions.
+    `test_excluding_unstable_items_from_f_raises_the_probability_and_the_docstring_says_that`
+    holds the direction against the arithmetic."""
     without = series.spot_check(88, 8, 0, k=12)
     with_unstable = series.spot_check(85, 8, 3, k=12)
 
@@ -2673,12 +2681,59 @@ def test_the_spot_check_carries_the_six_fields_the_contract_names_and_is_frozen(
         check.probability = 0.34
 
 
-def test_the_function_documents_that_unstable_items_are_counted_as_passing():
-    """The contract requires this in the docstring, and the requirement is not
-    housekeeping: the number is deliberately generous to the naive method, and a
-    generous number whose direction is undocumented is just a number somebody will
-    later "correct" in the flattering direction. Saying which way the thumb is on
-    the scale is what makes the line defensible."""
-    doc = (series.spot_check.__doc__ or "").lower()
-    assert "unstable" in doc
-    assert "passing" in doc
+def test_excluding_unstable_items_from_f_raises_the_probability_and_the_docstring_says_that():
+    """The direction of the thumb, pinned against the arithmetic rather than
+    against a word list.
+
+    This test replaces a word-presence check that asserted only `"unstable"` and
+    `"passing"` appear in the docstring. That check passes for a docstring
+    stating the rule's rationale *and* for one stating its exact negation, which
+    is not a hypothetical: the shipped docstring claimed that counting unstable
+    items as failures "would produce a larger, more quotable number", and it is
+    measurably smaller. Both halves below have to agree or this goes red.
+
+    The measurement, first, because it is what settles it. Excluding unstable
+    items shrinks `F` from 11 to 8, and a smaller `F` means a *larger*
+    probability -- a blinder spot check, which is a *stronger* argument for
+    having run the harness. The rule therefore raises the quoted number and
+    flatters the tool. It is defensible on the honesty of `F` -- the tool does
+    not claim regressions it has not established -- and on nothing else, and a
+    docstring that sells it as restraint is selling the opposite of what it is.
+    """
+    by_the_rule = series.spot_check(85, 8, 3, k=12)
+    as_failures = series.spot_check(85, 11, 0, k=12)
+    assert by_the_rule is not None
+    assert as_failures is not None
+    # Same set of 96 items either way; only F moves.
+    assert by_the_rule.items == as_failures.items == 96
+    assert by_the_rule.failing == 8
+    assert as_failures.failing == 11
+    assert by_the_rule.probability == pytest.approx(0.3287693171387045, rel=1e-12)
+    assert as_failures.probability == pytest.approx(0.21061896729287496, rel=1e-12)
+    # The whole ruling in one line: the rule's number is the bigger one.
+    assert by_the_rule.probability > as_failures.probability
+
+    # Whitespace-normalised: these are wrapped docstring lines, so a phrase can
+    # straddle a newline and an unnormalised `in` check would miss it for a
+    # reason that has nothing to do with what the docstring says.
+    doc = " ".join((series.spot_check.__doc__ or "").split())
+    lowered = doc.lower()
+    assert "unstable" in lowered
+    # The docstring must name the direction, and name it the way the two numbers
+    # above just came out. Interpolated, not literal, so a docstring edited to
+    # quote the swap the other way round cannot pass.
+    high = f"{round(by_the_rule.probability * 100)}%"
+    low = f"{round(as_failures.probability * 100)}%"
+    assert f"from {high} to {low}" in doc, (
+        "the docstring must quote the drop that counting unstable items as "
+        "failures would cause, in the order the arithmetic produces it"
+    )
+    assert f"from {low} to {high}" not in doc
+    assert "raises the quoted number" in lowered
+    assert "strengthens the tool's own case" in lowered
+    # The specific false claim that shipped, verbatim and in its near variants:
+    # "counting unstable items as failures would produce a larger, more quotable
+    # number". It would produce a smaller one.
+    assert "larger, more quotable" not in lowered
+    assert "would produce a larger" not in lowered
+    assert "it is not a restraint on the number" in lowered

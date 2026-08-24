@@ -779,16 +779,22 @@ def spot_check(
     whose whole argument is that naive methods are blind must not compute its own
     headline number by a naive method.
 
-    **Unstable items count as passing, and that is the thumb on the scale.** An
-    item that fails on some draws and not others is *not* treated as a guaranteed
-    failure here, which shrinks ``F`` and so raises this probability -- it makes
-    the spot check look worse at finding things, which is to say it makes this
-    tool's case look *better*. That is deliberate and it is the direction the
-    error must run: every place this number could have been rounded in the tool's
-    favour, it was, and it still lands where it lands. Counting unstable items as
-    failures would produce a larger, more quotable number that a reviewer could
-    knock down by pointing out that an unstable item is one a spot check might
-    well pass. This one they cannot.
+    **Unstable items are excluded from ``F``, and that raises this number.** An
+    item that fails on some draws and not others has not been *established* as a
+    regression, and ``F`` is the count of regressions this run established. The
+    tool does not claim regressions it has not established, so an unstable item
+    does not enter ``F``. That is an honesty claim about ``F``, and it is the
+    only ground this rule stands on.
+
+    Say plainly which way it runs, because it does not run the way a reader
+    expects. A smaller ``F`` means a *larger* probability: the spot check looks
+    blinder, and a blinder spot check is a stronger argument for having run this
+    harness. So the rule raises the quoted number and strengthens the tool's own
+    case. It is not a restraint on the number and must not be described as one.
+    Counting unstable items as failures would take ``F`` from 8 to 11 on the
+    demo's set and the probability from 33% to 21% -- a *weaker* claim, not a
+    more quotable one. The reason it is not done is that it would assert eight
+    plus three regressions on evidence for eight.
 
     **The sentence names the assumption it made.** A real spot check is not a
     random draw: an engineer picks twelve prompts they believe are
