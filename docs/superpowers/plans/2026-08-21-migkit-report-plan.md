@@ -5491,3 +5491,129 @@ goes to whichever chunk next opens `candidate_field` — and until then, the rul
 that matters downstream is the one `Trend.caveats` already documents: **a
 renderer walking caveats into rows must ask before it indexes.** C14b's brief
 carries it.
+
+### R31 — three rulings landed, and the third mechanism I prescribed without running
+
+C10's fix pass and C18's round two are merged; `main` is at **2174 passing**,
+seven gates green, 20 of 22 chunks. Seventeen of R27's eighteen survivors now
+die and the eighteenth is reported rather than papered over. Four findings came
+back that the rulings did not anticipate, and one of them is about me.
+
+#### R31.1 — R27.3 prescribed a mechanism the code cannot support. That is three.
+
+R27.3 ruled that a `zeta`/`alpha` fixture closes M24 — the mutant that drops
+`report.py`'s own ordering of the matrix tags. C10's fix agent built the fixture
+and **measured that the mutant still survived all 2142 tests.** `dimensions.py`
+keys every column through `sorted(index.tags)` (`dimensions.py:902`), so on
+every input `from_evidence` can build, the counter's key order *is* alphabetical
+order, and no log whatever can distinguish them. R27.3's own preceding paragraph
+is what makes R27.3 unimplementable.
+
+The agent closed the intent another way — replace `_close_the_tally` with one
+returning unsorted keys, the only input no log can produce — kept the fixture
+because it pins the published contract, and reported the discrepancy instead of
+quietly substituting. Correct on every count.
+
+**This is the third ruling of mine whose mechanism was wrong**, and the three
+have one shape:
+
+| | I claimed | Measured |
+|---|---|---|
+| R17.1 | `holm_bonferroni` returns uncorrected `alpha` after a step-down stop | every position is `alpha/(k-rank)` |
+| R23.1 | `ReportModel.item_counts` holds `passing`/`failing`/`unstable` | `{"unit", "per_judge": {judge: {"baseline", "candidate"}}}` |
+| R27.3 | a `zeta`/`alpha` fixture kills M24 | it survives; the sort makes the orders identical |
+
+Each time I reasoned about what the code must do from its name, its docstring or
+a neighbouring function, and each time the reasoning was good and the code was
+different. Each time an agent caught it by running something.
+
+**The rule this yields, and it is narrower than "check everything":** a ruling
+that prescribes an **outcome** — *the note must not claim a measured zero*, *the
+sentence must say what `is_demo` measured* — needs an argument and nothing more,
+because the implementer will discover any obstacle while satisfying it. A ruling
+that prescribes a **mechanism** — *this fixture kills that mutant*, *this field
+holds those keys* — is a claim about code I have not run, and **it must carry
+the output of running it.** That is R26.1 (*a claim that something was checked
+must carry the output that checked it*) applied to the one place I keep
+forgetting it: rulings that helpfully tell the implementer how.
+
+Three of these have now cost roughly an agent-hour each, all recovered by the
+same habit on the agent's side. Prescribe outcomes; prove mechanisms.
+
+#### R31.2 — two more tests that a docstring would satisfy
+
+R27.2's lesson generalises and C10's fix agent went looking rather than waiting
+to be asked. Two more of the same shape, both currently satisfied by executable
+code and both one docstring away from not being:
+
+- `tests/test_report.py::test_render_html_is_the_one_that_validates` — regex-slices
+  `render_html`'s body out of the module source and asserts
+  `"assert_self_contained" in` it. A docstring mentioning the call satisfies it.
+- `tests/test_stranger_path.py:214` — `assert name in source` over
+  `scripts/verify_release.py` for three bundled data filenames. A comment naming
+  a file the wheel no longer ships keeps it green.
+
+Both take R27.2's fix: parse the module and find the `Call`.
+
+**And the asymmetry worth keeping**, which the agent identified and which is
+why `tests/test_cli.py:919` was correctly left alone: `assert name in source` is
+a **positive** claim that prose can satisfy falsely. `assert "API_KEY" not in
+source` is a **negative** claim that prose can only false-alarm. Source-text
+assertions are unsafe in one direction only, and this project writes long
+docstrings, so the unsafe direction is unsafe here in proportion to how well the
+code is documented.
+
+#### R31.3 — a defect that existed in neither branch, only in their sum
+
+Merging C10's fix produced `[FAIL] no shadowed top-level names`:
+
+```
+tests\test_report.py: '_candidates' defined at 8286, 9909 -- the later one wins
+```
+
+C10's fix added `_candidates(matrix)`, returning the matrix's candidate columns
+and carrying R27.4's assertion that they are a `tuple` and never a `Mapping`.
+C22a's tests, merged earlier, define `_candidates(model)` returning
+`model.candidates`. Python resolves module-level names at call time, so the
+later definition won for all four earlier call sites — and **the merge of a fix
+pass silently deleted the assertion that same fix pass had just added.**
+
+The suite stayed green throughout, because the surviving helper returns the
+right object for both callers; only the `isinstance` check was lost. Renamed to
+`_candidate_columns`, with the reason in its docstring.
+
+Worth naming as a class, because the pipeline's whole shape invites it:
+**neither branch was wrong, and no role could have caught it.** The implementer
+and the blind tester share a contract and not a namespace; the reviewer mutates
+one branch; the fix pass works on one branch. A collision between two branches
+is visible only at the merge, which is the orchestrator's stage — and the reason
+it was caught is that `check_merge.py` runs a check whose entire purpose is to
+find name collisions the interpreter accepts. **Run the gate on every merge,
+including the ones where the suite is already green.** The suite was green.
+
+#### R31.4 — C18's open point: the unrecorded state stops at the headline
+
+R29.2 decided the *sides*, in the headline's vocabulary, and said nothing about
+the series. C18's implementer implemented exactly that and reported the gap
+rather than widening the ruling on its own authority: **blanking only the
+history's adapters removes the "the history was scripted" disclosure and puts
+nothing in its place** — R29.2's own defect, one level down.
+
+Not ruled here, because it wants the same care R29.2 got and C18 has already
+shipped its clauses. Recorded as open, with the note that `is_demo` is
+series-scoped and `provenance` is headline-scoped, so the two disclosures now
+have different reach and a reader cannot tell which one is speaking. That
+asymmetry is the thing to rule on, not the missing sentence.
+
+#### R31.5 — C22b measured the render, and it correctly did not move
+
+24,564 bytes before and after, `<svg>` 2, `"dimension"` 0, `"spot check"` 0 — a
+32-line diff of which every line is per-run nondeterminism (the generated
+timestamp, the temp directory, the evidence hash). That is the expected and
+correct result for a view-model chunk, and measuring it is how we know the chunk
+did what it claimed and nothing else.
+
+The consequence to carry forward: **R21.5's assumed-lineage caveat now exists on
+every model and reaches no reader.** It is on `ReportModel.trend.caveats[0]`,
+with `point=None`, and no template renders it. That is C14c's to fix, and it is
+the first item in C14c's brief.
