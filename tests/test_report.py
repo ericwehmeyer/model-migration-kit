@@ -9594,10 +9594,26 @@ def _declines(tmp_path: Path) -> list[tuple[str, Any, str]]:
     return cases
 
 
+def _diagnosis(reason: str) -> str:
+    """One decline's template: the sentence with every interpolated value removed.
+
+    R27.6. The distinctness assertion below used to compare the six *strings*, and
+    six strings are trivially distinct: every one of these refusals interpolates a
+    judge name, a model id, an item id or a count, so collapsing ``_unknown_item``
+    onto ``_unjoinable``'s sentence leaves two unequal strings carrying one
+    diagnosis. A reader shown either would learn the same thing and be sent to the
+    same fix, which is what the claim "six distinguishable ways" is actually about.
+
+    Every value ``dimensions`` names in a refusal goes through ``repr``, so the
+    interpolations are the quoted runs; counts are the digit runs.
+    """
+    return re.sub(r"\d+", "N", re.sub(r"'[^']*'", "'...'", reason))
+
+
 def test_the_matrix_declines_in_six_distinguishable_ways_and_re_words_none_of_them(
     tmp_path: Path,
 ) -> None:
-    """Six causes, six sentences, each quoted from the place that produced it.
+    """Six causes, six diagnoses, each quoted from the place that produced it.
 
     The contract's list, asserted as a list rather than as six independent tests,
     because the claim that makes it worth writing down is that the six are
@@ -9605,9 +9621,14 @@ def test_the_matrix_declines_in_six_distinguishable_ways_and_re_words_none_of_th
     pass six separate tests for containing a keyword and would still have told the
     reader nothing about which fix to apply.
 
-    Byte-identical, not "mentions the judge" and not "is non-empty". A re-worded
-    refusal is a third copy of a disclosure that already has two, and the copy
-    that goes stale is never the one anybody is looking at.
+    Byte-identical against the source, not "mentions the judge" and not "is
+    non-empty": a re-worded refusal is a third copy of a disclosure that already
+    has two, and the copy that goes stale is never the one anybody is looking at.
+    That pins ``report.py``, which is the part C10 owns. It cannot pin
+    ``dimensions.py``, because the expected sentence is produced by the same
+    function -- so the *wording* of a decline is pinned in ``test_dimensions.py``,
+    where the wording lives, and what is asserted here is that no two of them
+    share a template.
     """
     seen: dict[str, str] = {}
     for label, model, expected in _declines(tmp_path):
@@ -9622,9 +9643,12 @@ def test_the_matrix_declines_in_six_distinguishable_ways_and_re_words_none_of_th
         assert _candidate_ids(matrix) == [], f"{label}: a refusal carried candidate columns"
         seen[label] = _get(matrix, "reason")
 
-    assert len(set(seen.values())) == len(seen) == 6, (
-        f"the six causes did not produce six distinguishable sentences: "
-        f"{sorted(seen)} gave {len(set(seen.values()))} distinct reasons"
+    assert len(seen) == 6
+    diagnoses = {label: _diagnosis(reason) for label, reason in seen.items()}
+    assert len(set(diagnoses.values())) == 6, (
+        f"the six causes did not produce six distinguishable *diagnoses*: "
+        f"{sorted(seen)} gave {len(set(diagnoses.values()))} distinct templates.\n"
+        + "\n".join(f"  {label}: {one!r}" for label, one in sorted(diagnoses.items()))
     )
 
 

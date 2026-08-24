@@ -846,6 +846,85 @@ def test_an_empty_stream_is_a_refusal_and_not_an_empty_matrix():
     assert result.reason != ""
 
 
+#: The two refusals that name a golden-set miss, written out. R27.6: the report
+#: side asserts that no two declines share a *template*, and pins the wording of
+#: what ``report.py`` does with a reason -- but it cannot pin the wording of the
+#: reason itself without deriving the expected sentence from the production code
+#: that produces it, which moves both sides of the assertion together. So the
+#: wording is pinned here, where the wording lives. A re-wording of either
+#: function used to survive all 1998 tests: both were carried by a substring
+#: check for an interpolated id, and an interpolated id is the one part of the
+#: sentence a re-wording keeps.
+UNJOINABLE_REASON = (
+    "a judge.verdict for judge 'accuracy' carries an input that is in no "
+    "golden-set item: 'orphan input'. The golden set's hash was already checked "
+    "against the one the run used, so an unjoinable input means the log and the "
+    "set disagree in a way that hash did not catch."
+)
+UNKNOWN_ITEM_REASON = (
+    "a failed migkit.completion for 'anthropic/claude-3-5-haiku' names item "
+    "'ghost-99', which is in no golden-set item. Guessing which item failed "
+    "would move a failure to the wrong tag."
+)
+
+
+def test_the_unjoinable_input_refusal_says_what_it_is_written_to_say():
+    """Byte-for-byte, because "names the input" is satisfied by any wrapper at all.
+
+    The sentence has three jobs and the id does one of them: it names the input,
+    it says the hash check already passed so this is not the mismatch the reader
+    would first suspect, and it says which two things disagree. A re-wording that
+    kept the quoted input would keep the substring assertion above green and drop
+    the other two.
+    """
+    items = _by_id(_item("a", "alpha", ("t",)))
+    records = [
+        _verdict("alpha", True),
+        _verdict("orphan input", False),
+        _completed(BASELINE, {JUDGE: 2}),
+    ]
+
+    result = _counts(records, items)
+
+    assert result.available is False
+    assert result.reason == UNJOINABLE_REASON
+
+
+def test_the_unknown_item_refusal_says_what_it_is_written_to_say():
+    """The other half, and the reason both are here rather than one.
+
+    These two are the pair R27.6 names as collapsible: they are the only refusals
+    that both end in "is in no golden-set item", and each interpolates ids the
+    other does not, so collapsing one onto the other leaves two *unequal* strings
+    carrying one diagnosis. Only the wording tells them apart, and only here.
+    """
+    items = _by_id(_item("a", "alpha", ("t",)))
+    records = [
+        _verdict("alpha", True),
+        _completed(BASELINE, {JUDGE: 1}),
+        _completion(CANDIDATE, "ghost-99", ok=False),
+        _completed(CANDIDATE, {JUDGE: 1}, imputed={JUDGE: 1}),
+    ]
+
+    result = _counts(records, items)
+
+    assert result.available is False
+    assert result.reason == UNKNOWN_ITEM_REASON
+
+
+def test_the_two_golden_set_miss_refusals_are_two_diagnoses_and_not_one():
+    """Distinct after the interpolated values are removed, not merely distinct.
+
+    Two sentences that differ only in the ids they quote are one diagnosis wearing
+    two coats: a reader shown either one learns the same thing, and the fix the
+    document sends them to is the same fix. The comparison is therefore made on
+    the templates.
+    """
+    assert re.sub(r"'[^']*'", "'...'", UNJOINABLE_REASON) != re.sub(
+        r"'[^']*'", "'...'", UNKNOWN_ITEM_REASON
+    )
+
+
 def test_a_refusal_reason_is_a_sentence_and_not_a_code():
     """ "A sentence a reader can act on" -- not a two-word error code."""
     items = _by_id(
