@@ -3433,9 +3433,20 @@ class Trend(NamedTuple):
 > them, so they were computed and discarded — **which is precisely the defect
 > class the next three paragraphs name, committed in the type written to fix
 > it.** It went last so that tuple-prefix unpacking and any assertion about the
-> first four positions survive. Every point in `Trend.points` is drawn, so every
-> caveat on a kept point has a row to print against and none are filtered — this
-> is not C5, where a caveat on a superseded run has no row and is dropped.
+> first four positions survive. None are filtered — this is not C5, where a
+> caveat on a superseded run has no row and is correctly dropped.
+>
+> The reason first given for carrying them all was "every point in
+> `Trend.points` is drawn, so every caveat has a row." **That is false**, and
+> C7's implementer said so while implementing the ruling. A point the partition
+> *keeps* and datedness then *drops* has no row at all — and that is exactly the
+> case where filtering would be worst, because `undated` is a bare count that
+> names no point, so the caveat is the only surviving trace of that run. A
+> `Caveat` carries its own point, so a renderer with no row for one can say so
+> rather than invent one. Dropping it would have been this defect class a fifth
+> time, inside the amendment fixing its fourth. The ruling stands; the reason for
+> it is the implementer's, and it is in the code's docstrings so nobody tidies it
+> back.
 >
 > The implementer declined to add the field unilaterally, correctly: the contract
 > fixed four fields, and a blind tester asserting `len(t) == 4` would have gone
