@@ -66,16 +66,21 @@ __all__ = [
     "Caveat",
     "ComparabilityKey",
     "Exclusion",
+    "ParameterChange",
     "Partition",
     "RunPoint",
     "SeriesBuilder",
     "SpotCheck",
+    "Succession",
+    "Trend",
     "comparability_key",
+    "parameter_strip",
     "parse_created",
     "partition_comparable",
     "read_series",
     "run_point",
     "spot_check",
+    "trend",
 ]
 
 #: ``floor_source``'s three values. The word "unrecorded" is
@@ -1396,3 +1401,399 @@ def _percent(probability: float) -> str:
     if percent == 100:
         return "more than 99%"
     return f"{percent}%"
+
+
+# --------------------------------------------------------------------------- #
+# C7: the trend and the parameter strip
+# --------------------------------------------------------------------------- #
+
+
+class Succession(NamedTuple):
+    """One model id giving way to the next, *inside* a single line.
+
+    A line drawn across a succession is still one line -- the operator declared
+    these ids one lineage, and joining them is the whole point of R15 -- but a
+    reader who is not told will read an unbroken line as one unbroken model.
+    That is the reading this report exists to prevent, so the join leaves
+    :func:`trend` as data rather than being left for whoever draws the chart to
+    re-derive. R15.4 wants the same change said in three places (the strip, a
+    rule on the timeline, a caption in words) precisely because each is silent in
+    a different failure; three renderings deriving the succession three ways is
+    three chances to name three different instants.
+    """
+
+    #: Into :attr:`Trend.points`, of the **first** run under :attr:`after` -- not
+    #: the last run under :attr:`before`. The succession is a property of the new
+    #: run, and an index pointing at the old one would draw the mark a night early.
+    index: int
+    before: str
+    after: str
+    #: The new run's ``created``, verbatim, so a caption can date the change
+    #: without indexing back into ``points`` and re-deciding what "at" means.
+    created: str
+
+
+class Trend(NamedTuple):
+    """One candidate lineage as one line, plus everything that did not make it.
+
+    Five fields rather than the bare ``tuple[RunPoint, ...]`` C7 first specified,
+    because a bare tuple has room only for presences. C7's contract said the
+    caller "learns of [undated points] separately" and then returned a type
+    through which nothing whatever could be learned; R15.3 names that as the
+    third instance of one defect class in this plan (C4's flag with no field,
+    C13's counts, this). A contract that promises to report an absence needs
+    somewhere to report it.
+
+    :attr:`caveats` is the fourth instance, caught in the type R15.3 wrote to
+    close the class: :func:`partition_comparable` returns three tuples and the
+    first draft of this one had room for two, so the A/A-calibration and
+    uneven-coverage notes were computed and dropped on the floor. It is appended
+    **last**, deliberately -- prefix unpacking and every four-element comparison
+    written against the earlier shape still hold, which is the same
+    backward-compatible discipline R15.5 applies to ``timeline_svg``.
+    """
+
+    #: Ascending by parsed ``created``; points sharing an instant keep input order.
+    points: tuple[RunPoint, ...]
+    successions: tuple[Succession, ...]
+    #: Points that may not share a line with the rest, each with the sentence
+    #: that says why -- C4's type, because joining two ids onto one axis is a
+    #: comparability claim and C4 is what adjudicates those (R15.2).
+    excluded: tuple[Exclusion, ...]
+    #: How many otherwise-comparable points were dropped for a ``created`` no
+    #: axis can place them on. A count, because a count is what the caller was
+    #: promised and what C10/C14 render.
+    undated: int
+    #: Notes on points that were **kept**, not reasons for removing any -- C4's
+    #: type again, and one point may carry more than one. Unfiltered: see
+    #: :func:`trend`.
+    caveats: tuple[Caveat, ...]
+
+
+def trend(
+    points: Sequence[RunPoint],
+    *,
+    baseline_model: str,
+    candidate_models: Sequence[str],
+) -> Trend:
+    """The one line for a declared candidate lineage, and what it left out.
+
+    Args:
+        points: Every point in the log, in the order it was read.
+        baseline_model: The other side of the comparison. A point measured
+            against a different baseline is not a run of this line at all, so it
+            is simply not selected -- it is not "excluded", and putting it in
+            :attr:`Trend.excluded` would bury the exclusions that matter under
+            every other experiment in the log.
+        candidate_models: **Declared by the caller, never inferred.** Every id
+            the operator asserts is the same candidate over time. Order here
+            carries no meaning; time comes from ``created``.
+
+    **The lineage is a fact about the world, and no log records it.** Stripping a
+    trailing ``-v2`` to decide it succeeds ``-v1`` is the obvious implementation
+    and it is forbidden (R15.1): a wrong guess draws two unrelated models as one
+    line, which is the "two unrelated numbers side by side" failure
+    ``_require_comparable`` exists to prevent, reached from a new direction. The
+    operator knows the lineage; the operator says so. Nothing here parses a model
+    id.
+
+    **This used to filter by the field that moves, and that is what hid the
+    change.** With ``candidate_model`` in the filter, night 14 under ``-b-v2``
+    landed in a different series from night 13 under ``-b-v1``, so
+    :func:`parameter_strip` saw ``previous=None`` and reported the ``model_id``
+    row as ``changed=False`` against an empty ``before`` -- the first run of a
+    series changed nothing, because there was nothing to change from. The strip
+    was always able to show the change and was prevented by its own caller. A
+    single-element ``candidate_models`` is therefore the old behaviour, not a new
+    one: this is a generalisation.
+
+    **Joining ids onto one line asserts they are comparable, so it is checked.**
+    The selected points are partitioned through :func:`partition_comparable`
+    against the line's anchor key (see :func:`_anchor`), and the refusals travel
+    out in :attr:`Trend.excluded`. A lineage whose members disagree on golden
+    set, judges, ``n_per_item`` or baseline is not one line and must not be drawn
+    as one -- and that is as true of one id measured across an edited golden set
+    as it is of two ids, which is why the partition is not conditional on there
+    being two.
+
+    **Comparability is decided before datedness, and a point can only be lost
+    once.** A run that is both incomparable and undated leaves through
+    :attr:`Trend.excluded`, carrying the sentence that names the field and both
+    values; :attr:`Trend.undated` therefore counts exactly the points that would
+    otherwise have been drawn and could not be placed. Counting such a run in
+    both would report one lost night as two, and counting it only as undated
+    would trade a reason for a tally.
+
+    **The caveats come out whole, and are not filtered to the drawn rows.** Every
+    point in :attr:`Trend.points` has a row for its note to print against, so
+    there is nothing to filter on that count; and a point kept by the partition
+    but dropped as undated has no row at all, which makes its caveat the *only*
+    surviving trace of it -- :attr:`Trend.undated` is a bare count and names no
+    point. Dropping it to tidy the tuple would be this plan's own defect class a
+    fifth time. A :class:`Caveat` carries its own point, so a renderer that has
+    no row for one can say so; it cannot invent one it was never handed.
+
+    Nothing is de-duplicated, here or anywhere else in this module: two identical
+    runs are two runs.
+    """
+    lineage = frozenset(candidate_models)
+    mine = [
+        point
+        for point in points
+        if point.baseline_model == baseline_model and point.candidate_model in lineage
+    ]
+    anchor = _anchor(mine)
+    if anchor is None:
+        return Trend((), (), (), 0, ())
+
+    kept, excluded, caveats = partition_comparable(mine, against=comparability_key(anchor))
+    dated = [
+        (moment, point) for point in kept if (moment := parse_created(point.created)) is not None
+    ]
+    # Sorted on the parsed instant alone, never on the pair: RunPoint has no
+    # ordering, so a tie would fall through to comparing two of them and raise.
+    # `sorted` is stable, which is the whole of how "input order preserved" for
+    # points sharing an instant is kept.
+    ordered = tuple(point for _, point in sorted(dated, key=lambda pair: pair[0]))
+    return Trend(ordered, _successions(ordered), excluded, len(kept) - len(dated), caveats)
+
+
+def _anchor(points: Sequence[RunPoint]) -> RunPoint | None:
+    """The point whose comparability key defines the line, or ``None`` for no line.
+
+    **The earliest run anchors, because a line is defined by its history.** If
+    the newest run anchored instead, a night that changed the golden set would
+    not join the series -- it would evict the thirteen nights that came before
+    it, and the report would show one point and twelve refusals. The established
+    series keeps the axis; the divergent newcomer is the one excluded.
+
+    **The earliest run that identifies a group anchors, not merely the earliest.**
+    :attr:`ComparabilityKey.is_identifying` exists for exactly this caller: a key
+    with an unrecorded field identifies nothing, and under C4's rule an
+    unrecorded value never matches -- not even another unrecorded one. Anchoring
+    on such a point excludes every point in the log including itself, so a line
+    whose oldest night predates the field being logged at all would render empty
+    rather than render the nights that do agree. Skipping to the first key that
+    can define a group excludes the silent run alone, which is the run the reader
+    needs told about.
+
+    Falling back to the earliest point when none identifies is deliberate and not
+    a rescue: the partition then excludes everything, and an empty line with a
+    reason per point beats an empty line with no reasons.
+
+    Undated points rank after every dated one and cannot displace one, since a
+    point with no instant has no claim to being first.
+    """
+    if not points:
+        return None
+    moments = [parse_created(point.created) for point in points]
+    dated = sorted((moment, index) for index, moment in enumerate(moments) if moment is not None)
+    ranked = [points[index] for _, index in dated]
+    ranked += [points[index] for index, moment in enumerate(moments) if moment is None]
+    for point in ranked:
+        if comparability_key(point).is_identifying:
+            return point
+    return ranked[0]
+
+
+def _successions(points: tuple[RunPoint, ...]) -> tuple[Succession, ...]:
+    """Every place the candidate id changes between adjacent points on the line.
+
+    Adjacency in the *sorted* series, so a succession is a fact about the order a
+    reader sees. Read off the finished tuple rather than computed alongside it so
+    that :attr:`Succession.index` cannot index anything but
+    :attr:`Trend.points` -- an index into a pre-sort list is an index into a
+    sequence nobody is holding.
+    """
+    return tuple(
+        Succession(
+            index=index,
+            before=points[index - 1].candidate_model,
+            after=points[index].candidate_model,
+            created=points[index].created,
+        )
+        for index in range(1, len(points))
+        if points[index].candidate_model != points[index - 1].candidate_model
+    )
+
+
+@dataclass(frozen=True)
+class ParameterChange:
+    """One tracked parameter, as it stood before and after, and whether it moved.
+
+    Frozen for :class:`RunPoint`'s reason: this row is the evidence licensing an
+    attribution, and a row that can be edited after it is built is a row the
+    chart beneath it can be made to disagree with.
+    """
+
+    name: str
+    #: Rendered for a reader, never compared: hashes are truncated here, and both
+    #: of the ways a value can be missing are spelled out in words rather than
+    #: left blank. Never ``""``.
+    before: str
+    after: str
+    changed: bool
+
+
+#: The tracked parameters, in the order they render. A tuple and not a set: the
+#: strip's argument is that the *whole* list appears every time, and a list whose
+#: order shifts between renders of one log is a list a reader cannot diff by eye.
+_TRACKED_PARAMETERS = (
+    "model_id",
+    "n_per_item",
+    "items",
+    "judges",
+    "golden set",
+    "config",
+)
+
+
+class _Cell(NamedTuple):
+    """One side of one row, kept as two values because they answer two questions.
+
+    ``value`` is what decides :attr:`ParameterChange.changed`: the **full**
+    hash, never the display prefix. Two runs whose ``judges_hash`` agrees for 16
+    characters and differs at the 17th changed panel, and a strip that compared
+    what it printed would say they held. ``shown`` is what a reader sees, and it
+    is where the truncation and the word for "unrecorded" live.
+
+    ``value`` is ``""`` exactly when the run recorded nothing, whatever the
+    field's own type, so one emptiness test decides for hashes, ids and counts
+    alike.
+    """
+
+    value: str
+    shown: str
+
+
+#: What a ``before`` cell reads when there was no previous run at all. Display
+#: text in a value position, on :data:`_UNRECORDED`'s precedent and for its
+#: reason: an absence a reader has to act on is spelled out in words, because a
+#: blank cell in a table of values reads as "same as the row above" and this one
+#: is not.
+#:
+#: **A distinct word, because these are two different absences.** "There was no
+#: previous run" and "the value was not recorded" must not print the same word:
+#: the first says the comparison could not be made, the second says one side of
+#: it was never written down, and a reader who conflates them draws a conclusion
+#: about the run from a fact about the log.
+#:
+#: The contract said ``""`` here, twice, and it was wrong -- ruled after the
+#: blind suite pinned it. The defence was that on a genuine first run the blank
+#: is *true*, and it is; what it is not is legible. Six blank cells are also
+#: exactly what a wrongly-split series renders, since a split makes ``previous``
+#: ``None`` too, so the top of a real series and the middle of a broken one are
+#: the same six blanks and the same six ``changed=False``. That
+#: indistinguishability is the whole of what R15 exists to kill. R15 made the
+#: split need a wrong declaration from the operator rather than a version
+#: suffix, which makes it rare -- and rare is exactly when a reader needs the
+#: cell to say something rather than nothing.
+_NO_PREVIOUS_RUN = "no previous run"
+
+#: The whole ``before`` side of a first run. ``value`` stays ``""`` so that
+#: :func:`_parameter_change` reads it as nothing to compare: the marker is a
+#: rendering and must never become a value two runs could be found equal on.
+_BEFORE_FIRST_RUN = _Cell("", _NO_PREVIOUS_RUN)
+
+
+def parameter_strip(previous: RunPoint | None, current: RunPoint) -> tuple[ParameterChange, ...]:
+    """Every tracked parameter of ``current``, against ``previous``.
+
+    **One row per tracked parameter, always, including the ones that did not
+    move.** That is the whole of the argument this function exists to make: when
+    one row moved and everything else held, the drop beneath it is
+    *attributable* rather than merely observed. A strip listing only what changed
+    cannot make that claim, because the absence of a row is indistinguishable
+    from the absence of a record -- and the reader supplies the more flattering
+    of the two readings.
+
+    **An unrecorded value must not render as unchanged.** A blank cell reads as
+    "held", and a strip whose job is to license an attribution licenses a false
+    one the moment it says "judges: held" about a run that never wrote a panel
+    hash. So an absence is spelled out in the word this module already uses for
+    it, and a row with an absence on either side is never ``changed=True``: what
+    a run did not record is not evidence that it changed, and not evidence that
+    it did not.
+
+    ``previous is None`` yields every row with ``changed=False`` -- the first run
+    of a line changed nothing because there was nothing to change from -- and a
+    ``before`` of :data:`_NO_PREVIOUS_RUN`, which is a *word* and not a blank.
+    See that constant: a blank there is true and illegible, and it renders a
+    first run identically to a wrongly-split one. After R15 that case is rare and
+    means what it says; before R15 it fired on every model succession, which is
+    exactly how the succession stayed invisible.
+
+    Comparison is on full values and display is truncated to
+    :data:`_HASH_WIDTH`, in that order and never the reverse.
+    """
+    before = (
+        _cells(previous)
+        if previous is not None
+        else (_BEFORE_FIRST_RUN,) * len(_TRACKED_PARAMETERS)
+    )
+    return tuple(
+        _parameter_change(name, was, now)
+        for name, was, now in zip(_TRACKED_PARAMETERS, before, _cells(current), strict=True)
+    )
+
+
+def _cells(point: RunPoint) -> tuple[_Cell, ...]:
+    """One point's tracked parameters, in :data:`_TRACKED_PARAMETERS`' order.
+
+    The order is positional and shared with that tuple rather than being carried
+    in a mapping, because the two must not be able to drift into naming one row
+    and printing another's value; ``strict=True`` at the one call site turns a
+    length mismatch into an error instead of a silently shorter strip.
+    """
+    return (
+        _text_cell(point.candidate_model),
+        _count_cell(point.n_per_item),
+        _count_cell(point.items),
+        _hash_cell(point.judges_hash),
+        _hash_cell(point.goldenset_hash),
+        _hash_cell(point.config_hash),
+    )
+
+
+def _parameter_change(name: str, before: _Cell, after: _Cell) -> ParameterChange:
+    """One row, with ``changed`` answered only where both sides actually spoke.
+
+    Three states are collapsed into one boolean here, so which two share a
+    ``False`` matters: "the same" and "one side is silent" both give
+    ``changed=False``, and only the rendered values tell them apart. That is why
+    the absence has a word -- the boolean cannot carry the distinction and must
+    not be asked to.
+    """
+    return ParameterChange(
+        name=name,
+        before=before.shown,
+        after=after.shown,
+        changed=_recorded(before.value) and _recorded(after.value) and before.value != after.value,
+    )
+
+
+def _text_cell(value: str) -> _Cell:
+    """A recorded string, or the word for having none."""
+    return _Cell(value, value if _recorded(value) else _UNRECORDED)
+
+
+def _count_cell(value: int) -> _Cell:
+    """A count, with ``0`` read as the absence :class:`RunPoint` documents it to be.
+
+    Both of the counted fields record ``0`` for "the payload did not say", so a
+    zero printed as ``0`` would be a measurement this run never made -- and, sat
+    beside a previous run's ``0``, would read as a parameter that held.
+    """
+    return _Cell(str(value), str(value)) if value > 0 else _Cell("", _UNRECORDED)
+
+
+def _hash_cell(value: str) -> _Cell:
+    """A hash: compared whole, printed at :data:`_HASH_WIDTH`.
+
+    The truncation lives here, at the display end, and nowhere near the
+    comparison in :func:`_parameter_change`. A strip that compared 16-character
+    prefixes would pass every test written against 16-character fixtures and be
+    wrong only on real hashes, which is a mutant that has already survived a
+    whole suite once on this module.
+    """
+    return _Cell(value, _hash(value))

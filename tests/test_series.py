@@ -4573,3 +4573,751 @@ def test_the_partitions_annotations_resolve_to_the_named_types():
     assert fields["kept"] == tuple[RunPoint, ...]
     assert fields["excluded"] == tuple[series.Exclusion, ...]
     assert fields["caveats"] == tuple[series.Caveat, ...]
+
+
+# ==================================================================================
+# Chunk C7 -- the trend and the parameter strip
+# ==================================================================================
+#
+# Written from the plan's chunk C7 **as amended by R15**, and from nothing else.
+# `trend`, `Trend`, `Succession`, `parameter_strip` and `ParameterChange` did not
+# exist in this worktree when these were written -- the implementation was being
+# typed in another worktree at the time and was never read. No expected value below
+# was obtained by running any of them.
+#
+# **Every new name is reached as `series.something`.** The reason is the one C4's
+# banner gives 700 lines above and it has not changed: a module-level `from
+# model_migration_kit.series import trend` fails at *collection* while the function
+# is missing and takes the ~197 tests above it down with it, which is a red suite
+# that says nothing about which chunk is unfinished. An attribute lookup fails one
+# test at a time, with `AttributeError: module 'model_migration_kit.series' has no
+# attribute 'trend'`.
+#
+# **What R15 changed, and why every test here turns on it.** The old signature was
+# `trend(points, *, baseline_model, candidate_model)` -- it filtered the series by
+# *the very field that moves*. Night 14 under `-b-v2` therefore landed in a
+# different series from night 13 under `-b-v1`, so `parameter_strip` saw
+# `previous is None`, so the `model_id` row reported `changed=False` against an
+# empty `before`: the first run changed nothing because there was nothing to change
+# from. The strip was always able to show the change and was prevented by its own
+# caller. R15 replaces the filter with a **caller-declared lineage** and the bare
+# tuple with a `Trend`, and the test that carries this chunk --
+# `test_fourteen_nights_...` below -- is that whole argument made executable.
+#
+# **Three rulings taken here that the contract does not spell out.** Recorded so a
+# reader comparing this section against the plan reads them as rulings and not as
+# drift:
+#
+# * A point whose `candidate_model` is outside the declared lineage is asserted
+#   only to be **absent from `points`**, never to be present in `excluded`.
+#   `Exclusion` is C4's type and carries a comparability verdict; a run that simply
+#   is not part of this line was never adjudicated and has no such verdict. Which
+#   of the two the implementation does is not pinned, because the contract does not
+#   say and the tests do not need it to.
+# * The same for a run measured from a different `baseline_model`: absent from
+#   `points`, and nothing asserted about where it went.
+# * `n_per_item` and `items` are held to the same unrecorded-is-not-unchanged rule
+#   as the four string fields, on `0`. The contract's edge row spells the
+#   unrecorded value `""`, which is the string fields only -- but `RunPoint.items`
+#   documents `0` as "unrecorded" in as many words, `_depth` in `series.py` already
+#   prints `0` as the word "unrecorded", and a depth nobody wrote down rendered as
+#   "5 -> 5" licenses exactly the false attribution the reviewer note is about.
+#   **This is the one place a reasonable implementer might disagree**, and it is
+#   two assertions in one test rather than scattered through the section so that
+#   overturning it is a small edit.
+#
+# **On the word this section checks for.** The contract says to use "the existing
+# `THRESHOLD_SOURCE_UNRECORDED` idiom" for a value nobody recorded, and the idiom is
+# meant rather than the constant: `series.py` must not import `report`, and it
+# already carries its own `_UNRECORDED = "unrecorded"` with a comment saying it
+# adopts `report`'s vocabulary deliberately, so that two parts of one page do not
+# describe the same absence in different words. The assertions below therefore
+# require the substring `"recorded"` -- which `"unrecorded"` satisfies, as does
+# `report`'s longer sentence, and which no rendered hash, model id or integer
+# does. What they refuse is a blank, and a blank is the failure mode. Asserting
+# either constant's exact text would pin the wording rather than the guarantee.
+#
+# **`Trend` has five fields and `caveats` is the fifth.** R15.3 names a defect
+# class -- "a contract states the caller is told about an absence and gives a
+# return type with room only for presences" -- and the four-field `Trend`
+# committed it: `partition_comparable` computes caveats and `Trend` had nowhere to
+# put them, so an A/A calibration run and an unevenly-graded night were drawn as
+# ordinary rows. Corrected in the contract, appended last so that prefix unpacking
+# of the first four still reads.
+#
+# **Partitioning is unconditional, including for a one-element lineage.** The
+# contract's "a single-element sequence reproduces today's behaviour exactly" and
+# its rule that `trend` partitions through `partition_comparable` contradict each
+# other on a log holding an incomparable run, because the old `trend` partitioned
+# nothing. Ruled: the single-element case reproduces the old *selection*, not the
+# old permissiveness -- a line joining one model's runs across an edited golden set
+# is the same false line, and the number of declared ids has nothing to do with it.
+# So nothing below asserts that a one-element lineage skips exclusion.
+
+#: The lineage of R15's worked example, and C16's night 14: thirteen nights under
+#: one id and the fourteenth under its successor, declared together by the
+#: operator. The two ids differ *only* in the version suffix, deliberately -- this
+#: is the pair a `rstrip("-v2")` implementation would join by itself, and R15.1
+#: forbids exactly that, so the fixture has to be the shape that tempts it.
+_LINEAGE_V1 = "synthetic-candidate-b-v1"
+_LINEAGE_V2 = "synthetic-candidate-b-v2"
+_LINEAGE = (_LINEAGE_V1, _LINEAGE_V2)
+
+#: The baseline every point in this section was measured from -- `_comparison`'s
+#: own, so that `_point()` needs no override to belong to the line.
+_BASELINE = "gpt-baseline-v1"
+
+#: The fourteen nights, as literals rather than as a comprehension, so that the
+#: assertion about the order the trend returns them in is a transcription and not a
+#: second run of the formula that built them.
+_FOURTEEN_NIGHTS = (
+    "2026-08-01T22:40:58+00:00",
+    "2026-08-02T22:40:58+00:00",
+    "2026-08-03T22:40:58+00:00",
+    "2026-08-04T22:40:58+00:00",
+    "2026-08-05T22:40:58+00:00",
+    "2026-08-06T22:40:58+00:00",
+    "2026-08-07T22:40:58+00:00",
+    "2026-08-08T22:40:58+00:00",
+    "2026-08-09T22:40:58+00:00",
+    "2026-08-10T22:40:58+00:00",
+    "2026-08-11T22:40:58+00:00",
+    "2026-08-12T22:40:58+00:00",
+    "2026-08-13T22:40:58+00:00",
+    "2026-08-14T22:40:58+00:00",
+)
+
+#: The six tracked parameters, in the order the contract's table lists them and the
+#: order its `ParameterChange.name` comment repeats. Two independent statements of
+#: one order, so the order is asserted and not merely the membership.
+_TRACKED = ("model_id", "n_per_item", "items", "judges", "golden set", "config")
+
+#: Two hashes sharing their first sixteen characters and differing at the
+#: seventeenth. **This pair is the whole point of one test below.** On C4 the
+#: mutant that compares truncated hashes survived the entire suite, because every
+#: fixture hash in the file differs from character 0 and a 16-character comparison
+#: is indistinguishable from a full one on such a pair. A strip that truncates
+#: before comparing reports "judges unchanged" on these two.
+_TWIN_PREFIX = "0123456789abcdef"
+_TWIN_A = _TWIN_PREFIX + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+_TWIN_B = _TWIN_PREFIX + "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+#: Each tracked hash row, with the `RunPoint` field it reads and the sixteen
+#: characters the unmodified fixture displays. The truncations are transcribed from
+#: `_GROUP_GOLDENSET`, `_GROUP_JUDGES` and `_comparison`'s `config_hash` by hand;
+#: `test_a_hash_is_truncated_to_sixteen_characters_for_display` checks the
+#: transcription against the full strings before it checks anything of the code's.
+_HASH_ROWS = (
+    ("judges_hash", "judges", "bb624f0ed1781d85"),
+    ("goldenset_hash", "golden set", "5fef50364057cad8"),
+    ("config_hash", "config", "1ad89c46dcbd426d"),
+)
+
+
+def _night(day: int, candidate: str, **changes: typing.Any) -> RunPoint:
+    """One night of the lineage: the C1 fixture point, dated and re-badged."""
+    return _point(created=_FOURTEEN_NIGHTS[day - 1], candidate_model=candidate, **changes)
+
+
+def _fourteen_nights() -> list[RunPoint]:
+    """R15's worked example: thirteen nights on `-b-v1`, the fourteenth on `-b-v2`."""
+    nights = [_night(day, _LINEAGE_V1) for day in range(1, 14)]
+    nights.append(_night(14, _LINEAGE_V2))
+    return nights
+
+
+def _rows(previous: RunPoint | None, current: RunPoint) -> dict[str, typing.Any]:
+    """`parameter_strip`'s output as a mapping, for tests that name one row."""
+    return {row.name: row for row in series.parameter_strip(previous, current)}
+
+
+# ----------------------------------------------------------------------------------
+# The parameter strip: one row per tracked parameter, always
+# ----------------------------------------------------------------------------------
+
+
+def test_the_parameter_strip_lists_every_tracked_parameter_including_the_ones_that_did_not_change():
+    """The contract's named first-failing test, and the chunk's whole argument:
+    "when one row moved and everything else held, the drop is attributable rather
+    than merely observed". A strip that lists only what changed cannot make that
+    claim, because absence of a row is indistinguishable from absence of a record --
+    a reader who sees no judges row cannot tell whether the judges held or whether
+    the tool never looked.
+
+    All six names are asserted in order and every one of the six `changed` flags is
+    asserted `False`, because a strip that returned the two rows it felt were
+    interesting would pass any assertion phrased as a subset."""
+    rows = series.parameter_strip(
+        _point(created=_FOURTEEN_NIGHTS[0]), _point(created=_FOURTEEN_NIGHTS[1])
+    )
+    assert [row.name for row in rows] == list(_TRACKED)
+    assert [row.changed for row in rows] == [False, False, False, False, False, False]
+    assert [row.before for row in rows] == [
+        "claude-candidate-v2",
+        "5",
+        "12",
+        "bb624f0ed1781d85",
+        "5fef50364057cad8",
+        "1ad89c46dcbd426d",
+    ]
+    assert [row.after for row in rows] == [row.before for row in rows]
+
+
+def test_a_parameter_change_is_a_frozen_record_of_a_name_two_values_and_a_verdict():
+    """Four fields, no more: a fifth that a renderer could read instead of `changed`
+    is a second opinion about whether the run moved, and the two would disagree on
+    the row that matters. Frozen because a strip that can be edited after it is
+    built is a strip that can be made to disagree with the chart above it."""
+    row = _rows(_point(), _point())["model_id"]
+    assert dataclasses.is_dataclass(row)
+    assert [field.name for field in dataclasses.fields(row)] == [
+        "name",
+        "before",
+        "after",
+        "changed",
+    ]
+    assert isinstance(row.name, str)
+    assert isinstance(row.before, str)
+    assert isinstance(row.after, str)
+    assert isinstance(row.changed, bool)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        row.changed = True  # type: ignore[misc]
+
+
+def test_the_first_run_of_a_series_has_nothing_to_change_from_and_says_so_on_every_row():
+    """`previous is None` -- the first night, which has no predecessor. Every row
+    still renders, `changed=False`, and every `before` says *in words* that there was
+    no previous run: the first run changed nothing because there was nothing to
+    change from, and the cell has to say that rather than merely be empty.
+
+    Six rows here too. The first night is precisely when a reader most wants to know
+    what the parameters *were*, and a strip that returned nothing at all for it
+    would leave the top of every series blank.
+
+    **The empty `before` this test used to assert is gone, and the contract has been
+    amended.** The contract said `""` twice and the blank is *true* -- there really
+    was no previous run -- but true is not the bar here, legible is. A blank cell in
+    a column of values reads as "same as the row above", which is the one reading
+    this chunk exists to prevent. And the first run is not the only thing that
+    renders `previous=None`: a wrongly-split series renders it too, so six blanks
+    were both the honest top of a real line and the middle of a broken one, with
+    nothing in the output to tell them apart. That indistinguishability is precisely
+    what R15 was written to kill, and it was sitting at the top of every line.
+
+    Three assertions carry the ruling, and the non-empty one is what makes it stick.
+    The marker is read off the output rather than compared against a constant, so
+    this pins the guarantee and not the wording: it must be *something*, it must be
+    the same something on all six rows, and it must not be what an unrecorded value
+    renders as -- "there was no previous run" and "this run recorded no value" are
+    facts about different things, the comparison and the log, and a reader who is
+    handed one word for both draws a conclusion about the run from a gap in the
+    log."""
+    rows = series.parameter_strip(None, _point())
+    marker = rows[0].before
+    unrecorded = _rows(_point(judges_hash=""), _point(judges_hash=""))["judges"].before
+    assert [row.name for row in rows] == list(_TRACKED)
+    assert [row.before for row in rows] == [marker] * len(_TRACKED)
+    assert [row.changed for row in rows] == [False, False, False, False, False, False]
+    assert marker != ""
+    assert marker.strip() != ""
+    assert marker != unrecorded
+    assert [row.after for row in rows] == [
+        "claude-candidate-v2",
+        "5",
+        "12",
+        "bb624f0ed1781d85",
+        "5fef50364057cad8",
+        "1ad89c46dcbd426d",
+    ]
+
+
+def test_when_only_the_model_moved_exactly_one_row_says_so_and_the_other_five_hold():
+    """The attributable-drop claim in one assertion. The claim the strip licenses is
+    "this and nothing else moved", and it is licensed by the five `False`s quite as
+    much as by the one `True`."""
+    rows = series.parameter_strip(
+        _point(candidate_model=_LINEAGE_V1), _point(candidate_model=_LINEAGE_V2)
+    )
+    assert [row.name for row in rows if row.changed] == ["model_id"]
+    moved = _rows(_point(candidate_model=_LINEAGE_V1), _point(candidate_model=_LINEAGE_V2))[
+        "model_id"
+    ]
+    assert moved.before == _LINEAGE_V1
+    assert moved.after == _LINEAGE_V2
+    assert moved.changed is True
+
+
+@pytest.mark.parametrize(("field", "name", "shown"), _HASH_ROWS, ids=[row[1] for row in _HASH_ROWS])
+def test_a_hash_is_truncated_to_sixteen_characters_for_display(field, name, shown):
+    """`_require_comparable`'s own convention, and the report's, so that one page
+    cannot print two different-looking prefixes of one hash and send a reader
+    looking for a change that did not happen."""
+    full = getattr(_point(), field)
+    assert len(shown) == 16 and full.startswith(shown), "the transcribed prefix is wrong"
+    assert len(full) > 16, "the fixture hash must be longer than the truncation"
+    row = _rows(_point(), _point())[name]
+    assert row.before == shown
+    assert row.after == shown
+
+
+@pytest.mark.parametrize(("field", "name", "shown"), _HASH_ROWS, ids=[row[1] for row in _HASH_ROWS])
+def test_two_hashes_that_differ_only_after_the_sixteenth_character_are_still_a_change(
+    field, name, shown
+):
+    """Truncate for display, compare in full. **On C4 exactly this mutant survived
+    the whole suite** -- every fixture hash in this file differed from character 0,
+    so a comparison of two 16-character prefixes was indistinguishable from a
+    comparison of the whole strings, and nothing went red.
+
+    A strip that compares the truncation reports "judges unchanged" on a night the
+    panel was replaced, which is the contract's stated failure mode almost word for
+    word: "says 'judges unchanged' on a run where the judge model changed and only
+    the panel hash happened to collide". The displayed values are asserted equal
+    *and* `changed` asserted `True` in the same test, because that combination --
+    two identical-looking cells and a verdict of "changed" -- is the whole
+    behaviour, and a test that checked only the flag would pass on an
+    implementation that also stopped truncating."""
+    row = _rows(_point(**{field: _TWIN_A}), _point(**{field: _TWIN_B}))[name]
+    assert row.changed is True
+    assert row.before == _TWIN_PREFIX
+    assert row.after == _TWIN_PREFIX
+    assert _TWIN_A[:16] == _TWIN_B[:16] and _TWIN_A != _TWIN_B, "the fixture twins are wrong"
+
+
+@pytest.mark.parametrize(
+    ("field", "name", "recorded"),
+    [
+        ("candidate_model", "model_id", "claude-candidate-v2"),
+        ("judges_hash", "judges", "bb624f0ed1781d85"),
+        ("goldenset_hash", "golden set", "5fef50364057cad8"),
+        ("config_hash", "config", "1ad89c46dcbd426d"),
+    ],
+    ids=["model_id", "judges", "golden set", "config"],
+)
+def test_a_value_that_one_of_the_two_runs_never_recorded_never_renders_as_unchanged(
+    field, name, recorded
+):
+    """The highest-consequence, lowest-visibility bug in the plan, per the
+    reviewer's note: "the strip's entire job is to license an attribution, and a
+    blank that reads as 'held' licenses a false one".
+
+    Two claims are separated here and they are separated on purpose. The *verdict*
+    is `changed=False` -- a field one side never wrote down is no evidence that it
+    moved, and the contract's edge table says so. The *rendering* must nonetheless
+    not be a blank cell beside a filled one, because a reader reads that pair as
+    "same as above". So the assertion is that the unrecorded side is non-empty,
+    differs from the recorded side, and says in a word that nothing was recorded --
+    `series._UNRECORDED` and `report.THRESHOLD_SOURCE_UNRECORDED` both contain
+    "recorded", and neither a hash nor a model id does.
+
+    Both directions, because they are different nights: recorded then silent is a
+    pipeline that stopped writing the field, silent then recorded is one that
+    started, and an implementation that special-cased `current` would pass on
+    half."""
+    forgotten = _rows(_point(), _point(**{field: ""}))[name]
+    assert forgotten.changed is False
+    assert forgotten.before == recorded
+    assert forgotten.after != ""
+    assert forgotten.after != forgotten.before
+    assert "recorded" in forgotten.after.lower()
+
+    remembered = _rows(_point(**{field: ""}), _point())[name]
+    assert remembered.changed is False
+    assert remembered.after == recorded
+    assert remembered.before != ""
+    assert remembered.before != remembered.after
+    assert "recorded" in remembered.before.lower()
+
+
+def test_a_depth_or_an_item_count_nobody_recorded_never_renders_as_unchanged_either():
+    """The section banner's third ruling, and the only assertion here the contract
+    does not spell out: `n_per_item` and `items` record their absence as `0`, not as
+    `""`. `RunPoint.items` documents "`0` when unrecorded" in as many words and
+    `series._depth` already prints `0` as the word, so a strip that renders "5" in
+    one cell and "0" in the next has published a 100% collapse in sampling depth
+    that may never have happened -- and the row beneath it is then read as an
+    explanation for the drop.
+
+    `changed` is `False` for the same reason as the string fields: a number nobody
+    wrote down is not evidence that the number moved."""
+    depth = _rows(_point(), _point(n_per_item=0))["n_per_item"]
+    assert depth.changed is False
+    assert depth.before == "5"
+    assert "recorded" in depth.after.lower()
+
+    covered = _rows(_point(), _point(items=0))["items"]
+    assert covered.changed is False
+    assert covered.before == "12"
+    assert "recorded" in covered.after.lower()
+
+
+def test_a_run_that_sampled_to_a_different_depth_moves_the_n_per_item_row_and_only_that_row():
+    """A recorded difference is a real change and reads as one, which is what makes
+    the unrecorded rule above a distinction rather than a blanket refusal to
+    report."""
+    rows = series.parameter_strip(_point(), _point(n_per_item=3, items=9))
+    assert [row.name for row in rows if row.changed] == ["n_per_item", "items"]
+    moved = {row.name: row for row in rows}
+    assert (moved["n_per_item"].before, moved["n_per_item"].after) == ("5", "3")
+    assert (moved["items"].before, moved["items"].after) == ("12", "9")
+
+
+# ----------------------------------------------------------------------------------
+# The trend: one declared lineage, one line, and the change still visible
+# ----------------------------------------------------------------------------------
+
+
+def test_fourteen_nights_across_two_declared_model_ids_are_one_line_with_one_visible_change():
+    """**The test that carries this chunk.** R14.6 framed the two properties as a
+    choice -- either candidate B's fourteen nights are one line and the v1 -> v2
+    change is hidden inside it, or the change is visible and the line splits 13+1 --
+    and R15 ruled that the tension was manufactured by the filter. `trend` used to
+    filter by `candidate_model`, the very field that moves, so night 14 was not in
+    the same series as night 13, so `parameter_strip` saw `previous is None` and the
+    `model_id` row said `changed=False` against an empty `before`.
+
+    All three halves of the ruling are asserted here because each is silent without
+    the others: fourteen points on one line, exactly one `Succession` at the index
+    of the first run under the new id, and -- fed back through the strip that needed
+    no change at all -- exactly one `changed=True` row across the whole fortnight,
+    which is `model_id`."""
+    line = series.trend(_fourteen_nights(), baseline_model=_BASELINE, candidate_models=_LINEAGE)
+
+    assert len(line.points) == 14
+    assert [point.created for point in line.points] == list(_FOURTEEN_NIGHTS)
+    assert [point.candidate_model for point in line.points] == [_LINEAGE_V1] * 13 + [_LINEAGE_V2]
+    assert line.excluded == ()
+    assert line.undated == 0
+    assert line.caveats == ()
+
+    assert len(line.successions) == 1
+    succession = line.successions[0]
+    assert succession.index == 13
+    assert succession.before == _LINEAGE_V1
+    assert succession.after == _LINEAGE_V2
+    assert succession.created == "2026-08-14T22:40:58+00:00"
+    assert line.points[succession.index].candidate_model == _LINEAGE_V2
+
+    moved = [
+        row
+        for previous, current in zip(line.points, line.points[1:], strict=False)
+        for row in series.parameter_strip(previous, current)
+        if row.changed
+    ]
+    assert [row.name for row in moved] == ["model_id"]
+    assert moved[0].before == _LINEAGE_V1
+    assert moved[0].after == _LINEAGE_V2
+
+
+def test_a_lineage_is_never_inferred_by_stripping_a_version_suffix():
+    """R15.1, and the forbidden implementation is named in it: "the tool must not
+    infer that `-b-v2` succeeds `-b-v1`. Stripping a trailing version suffix is the
+    obvious implementation and it is forbidden."
+
+    Whether two model ids name the same lineage is a fact about the world that no
+    log records, and a wrong guess silently joins two unrelated models into one
+    line -- which is the "two unrelated numbers side by side" failure
+    `_require_comparable` exists to prevent, arrived at from a new direction. The
+    operator knows the lineage; the operator says so. Given only `-b-v1`, the
+    fourteenth night is somebody else's series.
+
+    The fixture is the one that tempts the guess: the two ids differ only in the
+    suffix, so an implementation that normalised them would pass every other test in
+    this section."""
+    line = series.trend(
+        _fourteen_nights(), baseline_model=_BASELINE, candidate_models=(_LINEAGE_V1,)
+    )
+    assert len(line.points) == 13
+    assert [point.candidate_model for point in line.points] == [_LINEAGE_V1] * 13
+    assert _LINEAGE_V2 not in {point.candidate_model for point in line.points}
+    assert "2026-08-14T22:40:58+00:00" not in [point.created for point in line.points]
+    assert line.successions == ()
+
+
+def test_a_single_element_lineage_reproduces_the_old_single_candidate_behaviour():
+    """R15.1's closing claim: "a single-element sequence reproduces today's
+    behaviour exactly, so this is a strict generalisation and not a behaviour change
+    for any existing caller." One candidate declared, one candidate drawn, sorted
+    ascending, and no succession to draw a rule at.
+
+    The unrelated candidate is interleaved rather than appended, so an
+    implementation that took a prefix of the input would be visible."""
+    nights = [
+        _night(3, "gpt-candidate-v9"),
+        _night(1, _LINEAGE_V1),
+        _night(2, "gpt-candidate-v9"),
+        _night(4, _LINEAGE_V1),
+    ]
+    line = series.trend(nights, baseline_model=_BASELINE, candidate_models=(_LINEAGE_V1,))
+    assert [point.created for point in line.points] == [
+        "2026-08-01T22:40:58+00:00",
+        "2026-08-04T22:40:58+00:00",
+    ]
+    assert line.successions == ()
+    assert line.undated == 0
+
+
+def test_a_run_of_a_candidate_outside_the_declared_lineage_is_not_on_the_line():
+    """The filter that survives R15: the operator declared which ids are this line,
+    and a candidate they did not name is a different experiment. Asserted as absence
+    from `points` only -- see the section banner's first ruling for why nothing is
+    claimed about where it goes instead."""
+    stranger = _night(2, "some-other-vendor-v1")
+    line = series.trend(
+        [_night(1, _LINEAGE_V1), stranger, _night(3, _LINEAGE_V2)],
+        baseline_model=_BASELINE,
+        candidate_models=_LINEAGE,
+    )
+    assert stranger not in line.points
+    assert [point.candidate_model for point in line.points] == [_LINEAGE_V1, _LINEAGE_V2]
+
+
+def test_a_run_measured_from_a_different_baseline_is_not_on_the_line():
+    """A column of deltas measured from two different baselines is not a column.
+    `baseline_model` stayed a scalar keyword through R15 precisely because it is not
+    the field that moves."""
+    rebased = _night(2, _LINEAGE_V1, baseline_model="gpt-baseline-v0")
+    line = series.trend(
+        [_night(1, _LINEAGE_V1), rebased, _night(3, _LINEAGE_V2)],
+        baseline_model=_BASELINE,
+        candidate_models=_LINEAGE,
+    )
+    assert rebased not in line.points
+    assert [point.created for point in line.points] == [
+        "2026-08-01T22:40:58+00:00",
+        "2026-08-03T22:40:58+00:00",
+    ]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"goldenset_hash": _OTHER_GOLDENSET},
+        {"judges_hash": _OTHER_JUDGES},
+        {"n_per_item": 3},
+    ],
+    ids=["goldenset_hash", "judges_hash", "n_per_item"],
+)
+def test_a_lineage_member_that_is_not_comparable_is_excluded_rather_than_drawn(change):
+    """R15.2: "putting two model ids on one line is a claim that the runs are
+    comparable. That claim is C4's to adjudicate", so `trend` partitions through
+    `partition_comparable` and carries the exclusions out with it. "A lineage whose
+    members disagree on golden set, judges or `n_per_item` is not one line and must
+    not be drawn as one."
+
+    The odd night is neither first in the input nor first by date, so an
+    implementation that anchored the group key on it would draw the odd run and
+    exclude the three good ones -- and this assertion would go red rather than
+    silently pass on a line built from the wrong anchor.
+
+    The exclusion is asserted to carry a reason, because a point that vanishes with
+    no sentence is the table C4 exists to prevent."""
+    odd = _night(2, _LINEAGE_V1, **change)
+    line = series.trend(
+        [_night(1, _LINEAGE_V1), odd, _night(3, _LINEAGE_V1), _night(4, _LINEAGE_V2)],
+        baseline_model=_BASELINE,
+        candidate_models=_LINEAGE,
+    )
+    assert odd not in line.points
+    assert [point.created for point in line.points] == [
+        "2026-08-01T22:40:58+00:00",
+        "2026-08-03T22:40:58+00:00",
+        "2026-08-04T22:40:58+00:00",
+    ]
+    assert [exclusion.point.created for exclusion in line.excluded] == ["2026-08-02T22:40:58+00:00"]
+    assert isinstance(line.excluded[0], series.Exclusion)
+    assert line.excluded[0].reason.strip(), (
+        "an excluded point with no sentence is a run that vanished"
+    )
+
+
+def test_a_night_the_partition_kept_with_a_note_is_drawn_and_carries_the_note_out():
+    """The fifth field, and the reason it exists: a caveat annotates a row, it does
+    not remove one. A night whose baseline was graded 60 times and whose candidate
+    was graded 57 has the right hashes and the right depth, so it stays on the line
+    -- the payload cannot tell a truncated run from one that lost a few judge
+    replies, and excluding on that suspicion would silently shrink the field. What
+    must not happen is the third thing: drawing it silently, as an ordinary point
+    whose shortfall flatters whichever side finished.
+
+    The point is asserted to be in `points` *and* in `caveats`, because those are
+    not alternatives and an implementation that treated the caveat as a removal
+    would drop the run twice over."""
+    lopsided = _night(2, _LINEAGE_V1, judged_baseline=60, judged_candidate=57)
+    line = series.trend(
+        [_night(1, _LINEAGE_V1), lopsided, _night(3, _LINEAGE_V2)],
+        baseline_model=_BASELINE,
+        candidate_models=_LINEAGE,
+    )
+    assert [point.created for point in line.points] == [
+        "2026-08-01T22:40:58+00:00",
+        "2026-08-02T22:40:58+00:00",
+        "2026-08-03T22:40:58+00:00",
+    ]
+    assert line.excluded == ()
+    assert [caveat.point.created for caveat in line.caveats] == ["2026-08-02T22:40:58+00:00"]
+    assert isinstance(line.caveats[0], series.Caveat)
+    assert line.caveats[0].reason.strip(), "a note with no sentence tells a reader nothing"
+
+
+def test_the_a_a_calibration_run_is_drawn_and_named_rather_than_drawn_silently():
+    """A model compared against itself always looks safe, which is why the pipeline
+    refuses one unless it is passed `allow_same_model=True`. It is passed it: the
+    A/A run is deliberate, and it is the one row on the page that shows what "no
+    difference" measures like on this panel. So it is drawn -- and it is drawn with
+    the note that says which row it is, because a flat delta with no label is a
+    result a reader will quote."""
+    calibration = _night(1, _BASELINE)
+    line = series.trend(
+        [calibration, _night(2, _LINEAGE_V1)],
+        baseline_model=_BASELINE,
+        candidate_models=(_BASELINE, _LINEAGE_V1),
+    )
+    assert calibration in line.points
+    assert [caveat.point.created for caveat in line.caveats] == ["2026-08-01T22:40:58+00:00"]
+
+
+def test_points_whose_created_will_not_parse_are_counted_in_undated_and_left_off_the_line():
+    """R15.3, and the defect it fixes: C7's own contract said undated points "are
+    excluded from the return and the caller learns of them separately", and then
+    returned a bare `tuple[RunPoint, ...]` through which the caller can learn
+    nothing. `undated` is the field they learn through.
+
+    Two of them, spelled the two ways a payload goes undated -- a `created` nobody
+    wrote and a `created` no parser will take. A count of 1 would pass on an
+    implementation that noticed only one kind."""
+    line = series.trend(
+        [
+            _night(1, _LINEAGE_V1),
+            _point(created="", candidate_model=_LINEAGE_V1),
+            _point(created="the twenty-first", candidate_model=_LINEAGE_V1),
+            _night(2, _LINEAGE_V2),
+        ],
+        baseline_model=_BASELINE,
+        candidate_models=_LINEAGE,
+    )
+    assert line.undated == 2
+    assert [point.created for point in line.points] == [
+        "2026-08-01T22:40:58+00:00",
+        "2026-08-02T22:40:58+00:00",
+    ]
+    assert "" not in [point.created for point in line.points]
+
+
+def test_the_line_is_sorted_by_the_parsed_instant_and_not_by_the_recorded_string():
+    """Ascending by *parsed* `created`. The three timestamps below sort one way as
+    text and the other way as instants: `+05:00` at 02:00 on the 10th is 21:00 UTC
+    on the 9th, which is earlier than 23:00Z on the 9th, which is earlier than 09:00
+    UTC on the 10th. A `sorted(points, key=lambda p: p.created)` -- which is the
+    cheap implementation, and reads correctly on every log this project has
+    written -- puts them in exactly the wrong order and draws a line that runs
+    backwards through the evening."""
+    line = series.trend(
+        [
+            _point(created="2026-08-10T09:00:00+00:00", candidate_model=_LINEAGE_V1),
+            _point(created="2026-08-09T23:00:00Z", candidate_model=_LINEAGE_V1),
+            _point(created="2026-08-10T02:00:00+05:00", candidate_model=_LINEAGE_V1),
+        ],
+        baseline_model=_BASELINE,
+        candidate_models=_LINEAGE,
+    )
+    assert [point.created for point in line.points] == [
+        "2026-08-10T02:00:00+05:00",
+        "2026-08-09T23:00:00Z",
+        "2026-08-10T09:00:00+00:00",
+    ]
+
+
+def test_two_points_recorded_at_the_identical_instant_keep_the_order_they_arrived_in():
+    """A stable sort, asserted the only way it can be: the same pair fed in both
+    orders and required to come out in the order it went in. One direction alone
+    passes on a sort that breaks ties on any field at all, and the field it happened
+    to choose would decide which of two runs a reader believes came first."""
+    same = "2026-08-05T12:00:00+00:00"
+    forwards = series.trend(
+        [
+            _point(created=same, candidate_model=_LINEAGE_V1, reason="first"),
+            _point(created=same, candidate_model=_LINEAGE_V1, reason="second"),
+        ],
+        baseline_model=_BASELINE,
+        candidate_models=_LINEAGE,
+    )
+    assert [point.reason for point in forwards.points] == ["first", "second"]
+
+    backwards = series.trend(
+        [
+            _point(created=same, candidate_model=_LINEAGE_V1, reason="second"),
+            _point(created=same, candidate_model=_LINEAGE_V1, reason="first"),
+        ],
+        baseline_model=_BASELINE,
+        candidate_models=_LINEAGE,
+    )
+    assert [point.reason for point in backwards.points] == ["second", "first"]
+
+
+def test_an_empty_log_is_an_empty_trend_and_never_an_error():
+    """A pipeline whose first night has not run yet, which is the commonest input
+    this code will ever see. Not an exception, not a `None` the caller has to test
+    for before unpacking."""
+    empty = series.trend([], baseline_model=_BASELINE, candidate_models=_LINEAGE)
+    assert empty == ((), (), (), 0, ())
+    assert isinstance(empty, tuple)
+    assert len(empty) == 5
+    points, successions, excluded, undated, caveats = empty
+    assert (points, successions, excluded, undated, caveats) == ((), (), (), 0, ())
+    assert empty.points == ()
+    assert empty.successions == ()
+    assert empty.excluded == ()
+    assert empty.undated == 0
+    assert empty.caveats == ()
+
+
+def test_the_lineage_and_the_baseline_must_both_be_passed_by_keyword():
+    """`trend(points, baseline, lineage)` positionally would read identically at
+    every call site whichever order the two were declared in, and R15 changed one of
+    them from a string to a sequence -- a caller that had not been updated would
+    then pass a model id where a lineage belongs and get a line built from its
+    individual characters."""
+    with pytest.raises(TypeError):
+        series.trend([_point()], _BASELINE, _LINEAGE)  # type: ignore[misc]
+
+
+def test_the_trend_and_the_succession_are_named_tuples_with_the_fields_r15_names():
+    """A bare tuple has nowhere to put the answer -- R15.3's heading, and the third
+    instance in this plan of one defect class: a contract that tells the caller
+    about an *absence* through a return type with room only for presences. C4's flag
+    with no field to live in was the first, C13's counts that had to become a
+    `Timeline` the second, and `undated` is the third. `caveats` is the fourth, and
+    it was committed inside the very type written to fix the third: the partition
+    computes caveats and the four-field `Trend` had nowhere to put them, so an A/A
+    calibration run was drawn as an ordinary row whose flat delta a reader takes for
+    a result. It is fifth and last so that unpacking the first four still reads.
+
+    Resolved at runtime rather than read off the source, because `from __future__
+    import annotations` makes a misspelled type invisible until something calls
+    `get_type_hints` -- and C10 and C14 will type against these."""
+    hints = typing.get_type_hints(series.trend)
+    assert hints["return"] is series.Trend
+
+    fields = typing.get_type_hints(series.Trend)
+    assert list(fields) == ["points", "successions", "excluded", "undated", "caveats"]
+    assert fields["points"] == tuple[RunPoint, ...]
+    assert fields["successions"] == tuple[series.Succession, ...]
+    assert fields["excluded"] == tuple[series.Exclusion, ...]
+    assert fields["undated"] is int
+    assert fields["caveats"] == tuple[series.Caveat, ...]
+
+    succession = typing.get_type_hints(series.Succession)
+    assert list(succession) == ["index", "before", "after", "created"]
+    assert succession["index"] is int
+    assert succession["before"] is str
+    assert succession["after"] is str
+    assert succession["created"] is str
+
+
+def test_the_new_names_are_exported_so_the_rendering_chunks_can_reach_them():
+    """C10 and C14 render these. A name that works under `series.Trend` and is
+    missing from `__all__` is a name a star-import consumer cannot see, and the
+    module has been strict about this since C1."""
+    for name in ("ParameterChange", "Succession", "Trend", "parameter_strip", "trend"):
+        assert name in series.__all__, f"{name} is not exported"
