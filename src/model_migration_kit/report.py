@@ -1446,8 +1446,19 @@ def _dimension_counts(
     """Close the tally against the golden set, or hand back the golden set's own words.
 
     Nothing here opens a file and nothing here reads the log a second time: the
-    tally already holds everything the log had to say, in a form bounded by the
-    golden set rather than by the log.
+    tally already holds everything the log had to say, in a form keyed by distinct
+    input rather than by record -- so repeated draws of one item collapse onto one
+    entry and a set sampled fifty times costs what the same set sampled once costs.
+
+    That is *not* "bounded by the golden set rather than by the log", which is what
+    this sentence used to claim and which
+    :class:`~model_migration_kit.dimensions.DimensionTally` had already corrected
+    on its own copy in the same commit series. Distinct inputs are the golden set's
+    size only while the inputs come from the golden set. On the single pass this
+    function closes, the join has not happened yet, so an input that joins to
+    nothing cannot be recognised and is filed like any other: a log full of them
+    grows the tally linearly, with no bound but the log. The tally's own docstring
+    carries the measured constant and the ceiling it implies.
 
     **A golden-set refusal is quoted, never re-worded.** ``gs_view["reason"]``
     already explains a missing, unreadable, unrecorded or changed golden set in the

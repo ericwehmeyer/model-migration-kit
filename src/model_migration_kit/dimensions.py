@@ -227,10 +227,37 @@ def _shown(text: object) -> str:
 
 
 #: Bytes of digest standing in for an input while the golden set is not yet in
-#: hand. Sixteen rather than thirty-two because a digest here is ever compared
-#: only against digests of the golden set's *own* inputs -- hundreds or thousands
-#: of them, where 128 bits is not a collision anybody meets -- and because the
-#: store this sits in is the one thing that has to stay small.
+#: hand. Sixteen rather than thirty-two, and the number holds by a wide margin --
+#: but the sentence that used to justify it named neither place where a collision
+#: would actually matter, so it is worth setting down properly.
+#:
+#: That sentence said a digest here "is ever compared only against digests of the
+#: golden set's *own* inputs -- hundreds or thousands of them". It is not. The
+#: digest is the **key of the tally store**: ``_Run.group``, ``_Run.closed`` and
+#: ``_Run.excerpts`` are all keyed by it, so digests of *log* inputs are compared
+#: against each other, and that population is the log's distinct inputs rather
+#: than the set's. ``DimensionTally``'s own scale paragraph puts it near 19,000
+#: entries at the guard's ceiling -- roughly eighteen times the golden-set
+#: surface, and with no bound but the log above it.
+#:
+#: There are therefore two populations, and 128 bits clears both by about thirty
+#: orders of magnitude. Over a thousand golden-set items the birthday probability
+#: is ~1.5e-33; over the ~19,000 entries a tally holds at the scale guard's
+#: ceiling, ~5e-31; over the ~100,000 verdicts an 86 MB log carries, ~1.5e-29.
+#: Thirty-two bytes would buy nothing measurable and would double the one store
+#: this module exists to keep small.
+#:
+#: **What a collision would do, since nothing would catch it.** ``_index`` builds
+#: ``by_digest`` by assignment, so two golden-set inputs landing on one digest
+#: silently overwrite an item id rather than refusing -- unlike two items sharing
+#: an *input*, which is refused as a precondition. Every verdict for either then
+#: joins to whichever item was seen last, and the matrix comes back available,
+#: complete and wrong. That is the failure mode the width is buying off;
+#: ``test_a_digest_collision_attributes_verdicts_to_the_wrong_item`` demonstrates
+#: it by narrowing the digest to one byte, and
+#: ``test_the_digest_is_sixteen_bytes_wide`` pins the width, because no test at a
+#: realistic scale can tell fifteen bytes from sixteen and the width is the only
+#: control there is.
 _DIGEST_BYTES = 16
 
 
@@ -373,11 +400,21 @@ class _NoModelClose:
 class _Run:
     """One run's tally: everything a single ``migkit.comparison`` closes over.
 
-    Every field here is bounded by the golden set and the panel rather than by the
-    log. ``closed`` and ``group`` are keyed by *distinct input*, so a set sampled
-    fifty times per item costs what the same set sampled once costs; ``excerpts``
-    holds at most :data:`_INPUT_SHOWN` characters per distinct input, which is the
-    one thing a refusal has to be able to quote.
+    Every field here is keyed by *distinct input* and by the panel rather than by
+    the record, so a set sampled fifty times per item costs what the same set
+    sampled once costs, and ``excerpts`` holds at most :data:`_INPUT_SHOWN`
+    characters per distinct input -- the one thing a refusal has to be able to
+    quote.
+
+    **That is not the same as being bounded by the golden set, and this docstring
+    used to say it was.** Distinct inputs are the golden set's size only while the
+    inputs come from the golden set, which is true of a real judging pass and is
+    not true of a log. An input that joins to no item is filed like any other while
+    the join is deferred -- the deferred phase cannot recognise it, which is what
+    "deferred" means -- so a log of such inputs grows these fields linearly at a
+    measured 317 bytes each, with no bound but the log. See
+    :class:`DimensionTally`, which sets out where the bound is the golden set's and
+    where it is not, and what that costs at the scale guard's ceiling.
     """
 
     #: judge -> model -> key -> [n, passes]. A model reaches this only once a
@@ -475,12 +512,39 @@ class DimensionTally:
     ``tests/test_evidence_scale.py`` writes, one distinct synthetic input per
     record, and therefore what the peak-allocation guard there measures. It passes
     with room: 2.68 MB peak on a 24 MB log against that test's 8 MB ceiling, where
-    the same guard measured 2.28 MB before this module was wired in. The ceiling is
-    not reached until roughly 18,000 non-joining verdicts, about 220 MB of log; the
-    86 MB log that motivated ``stream_records`` lands near 4.5 MB. It is recorded
-    rather than fixed because no fix preserves the semantics: the entries are
-    needed if a later ``migkit.comparison`` closes the run they are accumulating
-    into, and nothing in a stream can see that coming.
+    the same guard measured 2.28 MB before this module was wired in. That leaves
+    about 5.7 MB of headroom, which is roughly **19,000 entries** at 317 bytes.
+
+    **How much log 19,000 entries is depends entirely on the log's shape, and this
+    paragraph used to answer it with the wrong log's.** It said "about 220 MB of
+    log; the 86 MB log that motivated ``stream_records`` lands near 4.5 MB" --
+    which computes at ``_inflate``'s shape, a measured 12,243 bytes per record,
+    while naming the 86 MB log from ``test_evidence_scale.py``'s own header. Those
+    are two different logs. The irony is worth recording in the place it happened:
+    the sentence takes one log's identity and another log's shape, which is the
+    class of error it was written to correct.
+
+    Both shapes, computed:
+
+    * At ``_inflate``'s 12,243 bytes per record, one verdict each, the ceiling
+      arrives at about **232 MB** of log, and 86 MB of it holds ~7,000 verdicts
+      for a peak near 4.6 MB. Those are the two numbers the old sentence gave, and
+      they are right about ``_inflate``.
+    * The header's 86 MB log is ~200,000 records at ~430 bytes, of which ~100,000
+      are verdicts. All non-joining, that is ~100,000 entries -- **about 32 MB**,
+      four times the ceiling -- and the ceiling arrives at roughly **15 MB** of
+      such a log, not 220 MB.
+
+    So the guard passes because ``_inflate`` writes very large records, not because
+    the bound is comfortable. On a real log of rigor-shaped verdicts the margin is
+    an order of magnitude smaller than the old sentence suggested, and the case
+    that matters is a log whose inputs join to nothing -- a golden set swapped
+    under a run, which is precisely the disagreement the unjoinable refusal exists
+    to name.
+
+    It is recorded rather than fixed because no fix preserves the semantics: the
+    entries are needed if a later ``migkit.comparison`` closes the run they are
+    accumulating into, and nothing in a stream can see that coming.
 
     An input that is not a string is refused where it is read rather than filed. It
     can join to no golden set at all, so nothing is learned by keeping it.

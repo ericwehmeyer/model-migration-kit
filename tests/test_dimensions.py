@@ -1353,7 +1353,9 @@ _HUGE = "H" * 500_000
 
 def _reason_for(records, items=None, *, judge=JUDGE) -> str:
     """Drive the deferred phase and hand back the refusal it declined with."""
-    result = _tallied(records, items if items is not None else _by_id(_item("a", "alpha", ("t",))), judge=judge)
+    if items is None:
+        items = _by_id(_item("a", "alpha", ("t",)))
+    result = _tallied(records, items, judge=judge)
     assert result.available is False, "expected a refusal, got a matrix"
     return result.reason
 
