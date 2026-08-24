@@ -222,8 +222,25 @@ Four agents per chunk, none sharing context:
 5. **Fix pass** — acts on the review; may edit both.
 
 Implementer and tester run **in parallel**. The reviewer is where most of the
-value has come from — three of three reviews found defects both other roles
-missed, and mutation testing found holes a green suite hid.
+value has come from — **six of six** reviews have now found defects both other
+roles missed, and mutation testing found holes a green suite hid.
+
+### The fix pass must unfix itself
+
+Added 2026-08-24, from C4's fix pass, which did this unprompted and should not
+have had to. After implementing its rulings and killing the reviewer's mutants,
+it **reverted each ruling one at a time and confirmed the suite went red for
+each**.
+
+Mutation testing asks *"does the suite notice a defect the reviewer invented?"*
+The unfix asks the question that actually matters once a fix has landed: **"does
+the suite notice if this fix is undone?"** A ruling can be implemented perfectly
+and left completely unguarded — the code is right, every test passes, and the
+next editor deletes it without one failure. That is how three of C4's eight
+surviving mutants came to exist in the first place.
+
+It costs one script and one suite run. **A ruling that survives its own reversal
+was written down, not enforced.**
 
 ### Every worktree carries a stale copy of the plan, and agents read theirs
 

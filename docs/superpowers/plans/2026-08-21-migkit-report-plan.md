@@ -3791,3 +3791,99 @@ that was genuinely its own. Recorded because a tidy story about independent
 convergence was one inference away from being believed, and the difference
 between "two agents agreed" and "two agents were told the same thing" is the
 whole value of running them blind.
+
+---
+
+### R19 — what the C4 and C11 fix passes changed, and one technique worth stealing
+
+#### R19.1 — the unfix harness, which should be standard from here
+
+C4's fix pass did something no previous role on this project has done, and it is
+the cheapest good idea in the pipeline. Having implemented seven rulings and
+killed eight mutants, it then **reverted each ruling one at a time and confirmed
+the suite went red for each**.
+
+Mutation testing asks "does the suite notice a defect the reviewer invented?"
+The unfix asks the question that actually matters after a fix pass: **"does the
+suite notice if this fix is undone?"** A ruling can be implemented correctly and
+left entirely unguarded — the code is right, the tests pass, and the next editor
+removes it without a single failure. That is how three of C4's eight survivors
+came to exist in the first place.
+
+**Do this in every fix pass.** It is one script, it runs in the time the suite
+takes, and a ruling that survives its own reversal is a ruling that was written
+down rather than enforced.
+
+#### R19.2 — a mutant whose obvious test is green, and a review claim corrected
+
+C4's review said its S3 mutant (checking only one side of the hash-recorded test)
+left "a point *with* a hash measured against a group key *without* one … kept".
+The fix pass built exactly that test, watched it **pass against the mutant**, and
+came back rather than declaring the mutant dead. It was right: the point falls
+through to the *mismatch* branch, `hash != ""` holds, and it is excluded anyway.
+
+What S3 actually costs is the **sentence**. The report prints `golden set
+5fef50364057cad8 against the group's unrecorded … two unrelated numbers` —
+asserting a second golden set that does not exist and sending the reader to
+find it.
+
+And the sting: **the obvious keyword assertion is green against the mutant**,
+because `"unrecorded"` is exactly what the mismatch branch prints for the absent
+side. Only an assertion that classifies *which rule did the excluding* kills it.
+
+Two things to carry forward. A reviewer's stated *mechanism* can be wrong while
+its instinct is right — the mutant was real, the explanation was not. And when a
+test passes against a mutant it was written to kill, that is information, not a
+formality: it means the failure is somewhere other than where it was predicted.
+
+#### R19.3 — `hashes_recorded` became a lie the moment its neighbours grew
+
+`ComparabilityKey.hashes_recorded` was added by C4's implementer, unrequested,
+to make a real hazard actionable: naive dataclass equality merges every hash-less
+run into one confident-looking group, and C5 groups on this object.
+
+R18.4 then added three more grounds for exclusion — both sides graded zero,
+`n_per_item == 0`, unrecorded `baseline_model`. The property's first line said it
+reported "whether this key can establish comparability at all", which was true
+when only hashes could exclude and false immediately afterwards. A key with both
+hashes and `n_per_item == 0` answers `True` and is then excluded: C5 would build
+a group and be told every member was removed.
+
+**Ruled: widen it and rename to `is_identifying`, covering all four fields**,
+using the same emptiness test the exclusion rules use so the two cannot drift.
+The fix pass correctly declined to do this in flight — widening is a contract
+change and C5 and C7 are about to type against it — and flagged it for a ruling
+instead. That is the right instinct and the right moment: it is the same
+argument that made `Flag` → `Caveat` free rather than a three-chunk rewrite.
+
+The guard against it becoming a lie a third time is a test asserting the property
+is `False` for a key `partition_comparable` excludes on each of the four grounds,
+one row per ground — so adding a fifth rule without the property goes red.
+
+#### R19.4 — C11's inversion had a sibling nobody listed
+
+The fix pass for R18.1 found that `test_..._so_the_number_never_flatters_the_
+tool` carried the **same** inversion in its own name and docstring ("drop the
+probability, which reads as a *better* argument for the tool"). It was not in the
+ruling and it was fixed anyway.
+
+The replacement test does something better than assert the corrected wording: it
+measures both probabilities, asserts the rule's is the larger, and requires the
+docstring to quote the drop **interpolated from the measured values**. Prose and
+arithmetic can no longer drift apart, which is the failure that produced this
+entire revision.
+
+Also settled: `N == k` returns `None` (a draw taking every item is a census), the
+rendered sentence now names how many items failed, `_percent` is tested directly
+across thirteen rows because exact halves are what separate rounding rules and
+`comb(N-F,k)/comb(N,k)` cannot be steered onto one — which is why testing only
+through `spot_check` let the always-round-up mutant live.
+
+#### R19.5 — the numbers
+
+| | before fix | after fix | mutants |
+|---|---|---|---|
+| C4 | 138 tests | **191** | 8 introduced, 8 dead, plus 7 unfix reversals all red |
+| C11 | 120 tests | **150** | 12 introduced, 12 dead |
+
+Both green on all seven merge checks. Full suite at C4's branch: 1692 passed.
