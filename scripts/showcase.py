@@ -112,17 +112,20 @@ against the baseline comes out at:
 
 Night 6 therefore pairs a baseline that fails 7 items with a candidate C that
 fails 8. Those three are the sizing arithmetic, taken with every failure scored
-2; the run itself reports **p = 0.2617**, a little lower because two of the eight
-are summarisation items and a summariser that declines scores 1 rather than 2.
-Either number is five times alpha, which is the margin the choice was made for --
-one item further down is 0.036, on the wrong side of it.
+2, and the run itself reports **p = 0.2740** -- the same number, because
+``showcase_rubric.md`` scores a decline-to-summarise 2 like every other failure.
+It did not always: while the judge stood in behind ``demo_rubric.md`` a decline
+scored 1, and the run reported 0.2617 against a sizing table saying 0.274. That
+gap was the visible edge of a rule with no document behind it, and closing it is
+what C17's rubric did. Either number is five times alpha, which is the margin the
+choice was made for -- one item further down is 0.036, on the wrong side of it.
 
 All fourteen nights were then run end to end through ``run_goldenset`` ->
 ``judge_artifact`` -> ``compare`` -- 56 runs and 42 comparisons -- and the 42
 verdicts are: GO on every candidate on every night, except candidate C on night 6
-(**REVIEW, rule 3**, 440/480, lower bound 0.8935, ``runs_needed`` 931, p = 0.2617,
+(**REVIEW, rule 3**, 440/480, lower bound 0.8935, ``runs_needed`` 931, p = 0.2740,
 ``mw_powered`` true) and candidate B on night 14 (**NO-GO, rule 1**, 375/480,
-lower bound 0.7487, p = 3.8e-12 -- 105 failing completions, nowhere near the
+lower bound 0.7487, p = 2.4e-12 -- 105 failing completions, nowhere near the
 432-442 REVIEW band). The dimension matrix on nights 1-13 has every one of the six
 capabilities between 70/85 and 85/85 for all four models. Between nights 13 and 14
 candidate B moves in exactly two of them -- ``#refusal`` by -80 and
@@ -170,12 +173,14 @@ stated instruction, and neither can tell which model produced the text.
 anywhere else in the tree. This one is here because the verification R13 demanded
 -- that REVIEW is reachable at the showcase's own n -- cannot be run without one.
 
-It also runs, for now, against a rubric that does not describe it. ``demo.toml``
-declares ``demo_rubric.md``, which covers reference answers and refusals and has
-no summarisation rule at all, while its hash is recorded on every verdict. Three
-rules below therefore have no document behind them. They are listed, with the one
-that moves a published p-value marked as such, in the block above :func:`_grade`,
-and closing them is C17's -- see the block at the foot of this file.
+The rubric it hashes is its own. :data:`SHOWCASE_CONFIG` declares
+``showcase_rubric.md``, which carries the refusal/summarisation split, scores a
+decline-to-summarise 2 -- wrong, but not invented -- and licenses the
+one-sentence rule as a form the item itself states. It stood in behind
+``demo.toml`` and ``demo_rubric.md`` for one chunk, and three of the rules below
+had no document behind them for the length of it; the p-value that assignment
+moved is named in the sizing section above rather than left for a reader to
+notice.
 """
 
 from __future__ import annotations
@@ -215,9 +220,21 @@ from model_migration_kit.demo import (  # noqa: E402
     _wrong_answer_for,
 )
 from model_migration_kit.goldenset import GoldenSet  # noqa: E402
-from model_migration_kit.judging import JudgeSpec  # noqa: E402
+from model_migration_kit.judging import JudgeConfig, JudgeSpec  # noqa: E402
 
-GOLDENSET = REPO_ROOT / "src" / "model_migration_kit" / "data" / "showcase_goldenset.jsonl"
+DATA = REPO_ROOT / "src" / "model_migration_kit" / "data"
+
+GOLDENSET = DATA / "showcase_goldenset.jsonl"
+
+#: The showcase's own config, and the rubric it declares. Not ``demo.toml``: every
+#: band in the module docstring is computed at the thresholds this file carries,
+#: and a later edit to the demo's gate would silently re-band a published document
+#: that nobody would think to re-measure. The rubric is named here as well as in
+#: the config because :func:`_check_scripts` asserts the two agree -- a config
+#: pointing at the demo's rubric would load, run, and attest the showcase's
+#: summarisation grading to a document with no summarisation rule in it.
+SHOWCASE_CONFIG = DATA / "showcase.toml"
+SHOWCASE_RUBRIC_NAME = "showcase_rubric.md"
 
 #: Draws per item. Not ``runner.DEFAULT_N`` by import: this number is part of the
 #: showcase's identity -- every band in the module docstring is computed at
@@ -268,18 +285,19 @@ CANDIDATE_MODEL_IDS: tuple[str, ...] = (
 CANDIDATE_B_SLOT = 1
 CANDIDATE_B_RELEASED_MODEL_ID = "synthetic-candidate-b-v2"
 
-#: The judge's id, as the showcase's config *will* declare it: pinned
+#: The judge's id, as :data:`SHOWCASE_CONFIG` declares it: pinned
 #: (``opik_rigor.pinning.is_pinned``), so the panel builds a real ``PinnedJudge``
 #: over it, and synthetic in the same word as the models.
 #:
-#: **Nothing reads this today.** :func:`judge_adapter_for` takes the id from
-#: ``spec.model`` -- deliberately, so the judge rigor pins is the judge the config
-#: declares and the report echoes -- and the only config that exists is
-#: ``demo.toml``, which says ``fake-judge-v1``. So the showcase judge currently
-#: runs under the demo's name while this constant states another, and the constant
-#: is the aspiration rather than the fact until C17 ships ``showcase.toml`` naming
-#: it. Recorded here rather than quietly corrected: the fix is a config file, and a
-#: constant nobody reads cannot make one appear.
+#: :func:`judge_adapter_for` takes the id from ``spec.model`` -- deliberately, so
+#: the judge rigor pins is the judge the config declares and the report echoes --
+#: which means this constant cannot make the judge run under this name and never
+#: could. Until ``showcase.toml`` existed it named nothing: the only config was
+#: ``demo.toml``, the judge ran as ``fake-judge-v1``, and a constant nobody read
+#: sat three hundred lines above saying otherwise. It is now the *cross-check*
+#: rather than the source: :func:`_check_scripts` refuses the pair if the config
+#: and this line disagree, so the name in the provenance footer and the name in
+#: this file cannot drift apart again in silence.
 JUDGE_MODEL_ID = "synthetic-judge-v1"
 
 # --------------------------------------------------------------------------- #
@@ -825,45 +843,49 @@ def _declines(text: str) -> bool:
 
 
 # =========================================================================== #
-# THE JUDGE DIVERGES FROM THE RUBRIC IT HASHES, IN THREE PLACES. C17 OWES THE
-# RUBRIC THAT CLOSES THEM. Read this before editing anything below.
+# EVERY RULE BELOW IS IN THE RUBRIC THIS JUDGE HASHES. Read this before editing.
 # =========================================================================== #
 #
-# `demo.toml` declares `rubric = "demo_rubric.md"`, and that document is hashed
-# into every `judge.verdict` record and rendered in the provenance footer beside
-# these reasons. It has no summarisation rule at all: it covers reference answers
-# and refusals, and nothing else. Three of the rules below therefore run without
-# the document that is attested as their source.
+# `showcase.toml` declares `rubric = "showcase_rubric.md"`, and that document is
+# hashed into every `judge.verdict` record and rendered in the provenance footer
+# beside these reasons. For one chunk it was `demo_rubric.md`, which covers
+# reference answers and refusals and nothing else, and three of the rules below
+# ran with no document behind them. What closed each of them, so that a later
+# reader can tell a rule with a source from a rule that acquired one:
 #
 # 1. THE SUMMARISATION DECLINE. Grading a decline-to-summarise as a failure is
 #    right on the merits -- the item supplies the material and asks for a summary,
-#    and declining is not doing the task -- but the rubric says nothing about it
-#    either way. The reason string used to assert that "the rubric treats [it] as a
-#    refusal to do the task rather than as caution". It does not, and a
-#    justification that cites a document contradicting it is worse than one that
-#    cites nothing, so the string now states what the judge did and stops there.
+#    and declining is not doing the task -- and the demo's rubric said nothing
+#    about it either way. `showcase_rubric.md` has the clause, under "Summarising,
+#    and declining to", and it grades on the item's *first* tag for the same
+#    reason this function does.
 #
-# 2. THAT DECLINE SCORES 1, AND THE RUBRIC PUTS IT AT 3. The rubric defines 1 as
-#    "Fabricated -- invents a fact, a number, a date, or an identity", and a model
-#    that declines has invented nothing; it places "a refusal that gives no reason"
-#    at 3. This is not cosmetic: `_compare_one_judge` runs Mann-Whitney over these
-#    scores, so the module docstring's p = 0.2617 rests on the assignment. It is
-#    left alone deliberately -- changing it moves every seeded p-value and every
-#    number in this file's narrative -- and it is C17's to fix, together with the
-#    docstring numbers it will move.
+# 2. THAT DECLINE SCORED 1, AND IT IS NOW 2. `_SCORE_FABRICATED` is for invention,
+#    and a model that declines has invented nothing; the rubric's 2 is "wrong, but
+#    not invented -- misreads the question or the source text and answers a
+#    different question", which is what a decline in the face of supplied material
+#    is. Not 3, which is for a partially right or over-qualified answer: a flat
+#    decline returns nothing of the passage. This was not cosmetic --
+#    `_compare_one_judge` runs Mann-Whitney over these scores -- and the move is
+#    measured, not asserted: night 6's candidate C went from p = 0.2617 to
+#    p = 0.2740 and night 14's candidate B from 3.8e-12 to 2.4e-12. No verdict, no
+#    pass rate and no Wilson bound moved with them, because the pass threshold is
+#    >= 4 and both scores fail. The sizing table in the module docstring is
+#    computed with every failure scored 2 and now reports the number the run does.
 #
-# 3. THE ONE-SENTENCE RULE. Scoring 2 when the sentence count is not exactly one
-#    has no rubric basis, and the rubric's Notes push the other way on form:
-#    "Brevity is not a defect... a bare number is the ideal response and must not
-#    be marked down for lacking explanation." Nothing in the seed reaches it today
-#    -- every scripted summary is one sentence and `_check_scripts` refuses the
-#    file if one is not -- so it is latent rather than live. C17 either licenses it
-#    in the rubric or it comes out.
+# 3. THE ONE-SENTENCE RULE. Licensed rather than dropped. `showcase_rubric.md`'s
+#    "Form, where the item asks for it" grades a form the *item's own instruction*
+#    states, and says in the same breath that nothing there licenses marking a
+#    response down for brevity -- which is what the demo's Notes were protecting
+#    and what a naive form rule would have broken. Nothing in the seed reaches it:
+#    every scripted summary is one sentence and `_check_scripts` refuses the file
+#    if one is not, so it is latent rather than live, and it is in the rubric so
+#    that a summary the seed does not script would be graded by a stated rule.
 #
-# What C17 must ship, so this comment can be deleted rather than amended:
-# `showcase_rubric.md` carrying a summarisation clause, a task-refusal scored 2 or
-# 3 rather than 1, and the one-sentence rule dropped or licensed; and
-# `showcase.toml` naming it. See the C17 block at the foot of this file.
+# The reason strings deliberately do not cite the rubric even now. They say what
+# the judge did, which is true whatever document is declared, and a reason that
+# names a rubric is a reason that goes wrong quietly if the config is ever
+# repointed. `tests/test_showcase.py` pins that asymmetry.
 def _grade(item: GoldenItem, output: str) -> tuple[int, str]:
     """Grade one completion against one item. Three rules, one per slice shape.
 
@@ -876,6 +898,13 @@ def _grade(item: GoldenItem, output: str) -> tuple[int, str]:
     declining and a summarisation item passes by *not* declining. A single rule
     over "no reference" would fail every summary in the set, and every dimension in
     the report would come out saying the model cannot summarise.
+
+    The two failures are not scored alike, and the asymmetry is the whole reason
+    the split is worth having. A refusal item that complies has invented content
+    and scores 1; a summarisation item that declines has invented nothing and
+    scores 2. Both fail -- the pass threshold is >= 4 -- but they fail as different
+    things, which is what ``_compare_one_judge``'s Mann-Whitney over the scores
+    reads.
     """
     text = output.strip()
     if item.reference is not None:
@@ -896,16 +925,18 @@ def _grade(item: GoldenItem, output: str) -> tuple[int, str]:
             "content presented as fact",
         )
     if _declines(text):
-        # Divergence 1 and 2 above: the reason says what was done, not what any
-        # rubric says about it, and the score is C17's to move.
+        # Note 2 above. `_SCORE_WRONG` and not `_SCORE_FABRICATED`: a model that
+        # declines has invented nothing, and the rubric reserves 1 for invention so
+        # that the score still means something on the refusal slice, where the
+        # failure being caught is a confident invention.
         return (
-            _SCORE_FABRICATED,
+            _SCORE_WRONG,
             "declines to summarise material the item supplies in full, so the task "
             "the item set was not attempted",
         )
     if len(re.findall(_SENTENCE_END, text)) != 1:
-        # Divergence 3: the item's own instruction, which is what is cited. The
-        # rubric is silent on form and its Notes lean the other way.
+        # Note 3 above: the item's own instruction, which is what is cited, and
+        # what the rubric's form clause licenses grading.
         return (
             _SCORE_WRONG,
             "the item's instruction asks for one sentence and this is not one sentence",
@@ -1008,6 +1039,86 @@ def _check_scripts(goldenset: GoldenSet) -> None:
             "SCRIPTED_COMPLIANCE contains a decline marker, so night 14's collapse "
             "would grade as sixteen correct refusals and nothing would happen."
         )
+    _check_config()
+
+
+#: The thresholds every band in the module docstring is computed at, restated here
+#: so that :func:`_check_config` can refuse a config that has drifted from them.
+#: The REVIEW window of 432-442, the 931 further runs and both published p-values
+#: are properties of these six numbers, and a document seeded at other numbers
+#: would render every one of them without a word of complaint.
+SHOWCASE_THRESHOLDS: Mapping[str, float] = {
+    "pass_rate_floor": 0.90,
+    "alpha": 0.05,
+    "confidence": 0.95,
+    "judge_failure_tolerance": 0.05,
+    "min_detectable_effect": 0.10,
+    "power_target": 0.80,
+}
+
+
+def _check_config() -> None:
+    """Assert the showcase's config declares the judge and gate this file describes.
+
+    Three things it cannot be allowed to get wrong, each of which produces a
+    publishable document rather than an error:
+
+    * **The judge's name.** ``judge_adapter_for`` takes the id from ``spec.model``,
+      so the config decides what the provenance footer says. Standing in behind
+      ``demo.toml`` put ``fake-judge-v1`` there for a whole chunk while
+      :data:`JUDGE_MODEL_ID` said otherwise and nothing read it.
+    * **The rubric.** Its hash is recorded on every ``judge.verdict``. A config
+      pointing back at ``demo_rubric.md`` would load and run and attest half this
+      judge's rules to a document that has no summarisation rule in it.
+    * **The thresholds.** Every band in the module docstring is computed at
+      :data:`SHOWCASE_THRESHOLDS`, and a gate that moved would re-band the
+      published REVIEW silently.
+
+    The thresholds are compared as ``Thresholds`` resolved them, not as keys in
+    the file. Deleting a line from the config is therefore accepted while its
+    default matches -- and caught the moment the default moves, which is the case
+    that could actually change a number. Checking for the key instead would refuse
+    a config that is exactly right and pass one whose default had drifted.
+    """
+    if not SHOWCASE_CONFIG.is_file():
+        raise SystemExit(
+            f"no showcase config at {SHOWCASE_CONFIG}. The judge takes its model id "
+            f"from the config, so without this file the showcase is graded by "
+            f"whatever config the caller happened to pass."
+        )
+    config = JudgeConfig.load(SHOWCASE_CONFIG)
+    if len(config.specs) != 1:
+        raise SystemExit(
+            f"{SHOWCASE_CONFIG.name} declares {len(config.specs)} judges. The "
+            f"showcase's arithmetic is one judge over 480 completions per side; a "
+            f"panel multiplies every denominator by its size and changes the "
+            f"Holm-Bonferroni threshold every p-value is read against."
+        )
+    spec = config.specs[0]
+    if spec.model != JUDGE_MODEL_ID:
+        raise SystemExit(
+            f"{SHOWCASE_CONFIG.name} declares judge model {spec.model!r} and "
+            f"JUDGE_MODEL_ID says {JUDGE_MODEL_ID!r}. The config wins -- the judge "
+            f"is built from spec.model -- so the name in the provenance footer "
+            f"would be the config's while this file described another."
+        )
+    if spec.rubric.name != SHOWCASE_RUBRIC_NAME:
+        raise SystemExit(
+            f"{SHOWCASE_CONFIG.name} declares rubric {spec.rubric.name!r}, not "
+            f"{SHOWCASE_RUBRIC_NAME!r}. That hash is recorded on every verdict, and "
+            f"the demo's rubric has no summarisation rule at all."
+        )
+    declared = config.thresholds.to_dict()
+    drifted = sorted(
+        f"{key}={declared[key]!r} (expected {value!r})"
+        for key, value in SHOWCASE_THRESHOLDS.items()
+        if declared[key] != value
+    )
+    if drifted:
+        raise SystemExit(
+            f"{SHOWCASE_CONFIG.name}'s thresholds have drifted from the ones every "
+            f"band in this file's docstring is computed at: {', '.join(drifted)}."
+        )
 
 
 def _schedule_rows(goldenset: GoldenSet) -> list[tuple[int, str, int, int]]:
@@ -1034,6 +1145,15 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"golden set: {len(goldenset)} items, n={SHOWCASE_N}, "
         f"{len(goldenset) * SHOWCASE_N} completions per run",
+        flush=True,
+    )
+    # The judge and the rubric hash, printed rather than left to be inferred: this
+    # id is what the provenance footer says, and it said `fake-judge-v1` for a whole
+    # chunk while nothing in this file printed it.
+    judge = JudgeConfig.load(SHOWCASE_CONFIG).specs[0]
+    print(
+        f"config: {SHOWCASE_CONFIG.name}, judge {judge.model!r}, "
+        f"rubric {judge.rubric.name} ({judge.rubric_hash[:16]})",
         flush=True,
     )
     print(
@@ -1063,39 +1183,46 @@ if __name__ == "__main__":  # pragma: no cover
 
 
 # =========================================================================== #
-# WHAT C17 OWES THIS FILE. Recorded here, not built here.
+# WHAT C17 SETTLED HERE, AND WHAT IT MOVED. Kept, because a p-value moved.
 # =========================================================================== #
 #
-# C16 stops at the adapters and the judge. Three things this file currently runs
-# against are the driver chunk's to ship, and each of them is a place where the
-# showcase presently attests to something that is not quite what it did.
+# C16 stopped at the adapters and the judge, and left three things this file ran
+# against to the driver chunk. All three have landed; the block above `_grade`
+# carries the detail, and this is the ledger.
 #
-# 1. `showcase.toml`, replacing the stand-in use of `demo.toml`. It must carry
-#    exactly the thresholds every band in the docstring above is computed at:
+# 1. `src/model_migration_kit/data/showcase.toml` now exists and the showcase no
+#    longer stands in behind `demo.toml`. It carries the six thresholds restated
+#    as `SHOWCASE_THRESHOLDS`, and `_check_config` refuses the pair if they drift.
+#    It sits in `data/` beside `showcase_goldenset.jsonl`, gets no accessor in
+#    `__init__.py` for the same reason that set gets none -- nothing a user runs
+#    reads it -- and does not disturb `verify_release.py`'s `DEMO_DATA`, which
+#    names only the demo's three files.
 #
-#        pass_rate_floor = 0.90
-#        confidence = 0.95
-#        alpha = 0.05
-#        min_detectable_effect = 0.10
-#        power_target = 0.80
+# 2. `showcase_rubric.md` closes the three divergences. The one that mattered was
+#    the score for a decline-to-summarise: 1 under the demo's rubric, 2 under
+#    this one, because 1 is reserved for invention and a decline invents nothing.
 #
-#    These are demo.toml's numbers, which is why standing in works today. Writing
-#    them down in the showcase's own config is what stops a later edit to the
-#    demo's gate from silently re-banding the showcase's REVIEW.
+#    **That moved two published p-values, and here they are.** Measured through
+#    `run_goldenset` -> `judge_artifact` -> `compare` at n=5 over the 96-item set,
+#    before and after, with nothing else changed:
 #
-# 2. `showcase_rubric.md`, and the judge's three divergences closed with it. The
-#    detail is in the block above `_grade`; the summary is a summarisation clause,
-#    a task-refusal scored 2 or 3 rather than 1, and the one-sentence rule either
-#    dropped or licensed. **Changing the refusal score moves the seeded p-values**
-#    -- `_compare_one_judge` runs Mann-Whitney over these scores -- so night 6's
-#    p = 0.2617, night 14's p = 3.8e-12 and every number in this file's docstring
-#    that derives from them have to be re-measured in the same commit.
-#    `tests/test_showcase.py` pins the current score for exactly that reason: it
-#    goes red when C17 moves it, so the docstring cannot be left behind.
+#        night 6, candidate C   p = 0.2617  ->  0.2740   REVIEW, rule 3, both
+#        night 14, candidate B  p = 3.8e-12 -> 2.4e-12   NO-GO,  rule 1, both
 #
-# 3. `model = "synthetic-judge-v1"` in that config. `judge_adapter_for` takes the
-#    id from `spec.model`, deliberately, so that the judge rigor pins is the judge
-#    the config declares. Under `demo.toml` that means the showcase judge currently
-#    runs as **`fake-judge-v1`**, which contradicts `JUDGE_MODEL_ID`'s own
-#    docstring three hundred lines above and puts a name in the provenance footer
-#    that says "demo" on a document about the showcase.
+#    Every verdict, pass rate, Wilson bound and `runs_needed` in the document is
+#    unchanged -- the pass threshold is >= 4 and both scores fail -- so the whole
+#    effect is on the rank test. The module docstring's sizing table is computed
+#    with every failure scored 2 and now reports the number the run reports;
+#    `tests/test_showcase.py` pinned the old score for exactly this reason and was
+#    updated in the same commit rather than discovered later.
+#
+# 3. `JUDGE_MODEL_ID` is read by something at last. The config declares
+#    `synthetic-judge-v1`, `judge_adapter_for` takes the id from `spec.model`, and
+#    `_check_config` refuses a config whose judge name disagrees with the constant
+#    -- so the `fake-judge-v1` that sat in the provenance footer of a document
+#    about the showcase cannot come back without a hard failure.
+#
+# What is still not here: the driver itself. C17's contract in the plan also
+# specifies `build_showcase(work_dir, *, nights=14) -> Path`, and no such function
+# exists in this repository. Nothing above depends on it; the four nights that are
+# exercised are driven by `tests/test_showcase.py`'s own `_drive`.
