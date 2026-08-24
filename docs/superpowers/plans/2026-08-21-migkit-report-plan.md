@@ -3365,9 +3365,20 @@ precisely the "two unrelated numbers side by side" failure
 operator knows the lineage. The operator says so.
 
 Order within `candidate_models` is not significant; time ordering comes from
-`created`. A single-element sequence reproduces today's behaviour exactly, so
+`created`. A single-element sequence reproduces today's **selection** exactly, so
 this is a strict generalisation and not a behaviour change for any existing
 caller.
+
+**Amended 2026-08-24: "reproduces today's behaviour exactly" and R15.2's
+unconditional partitioning contradict each other**, because the old `trend`
+partitioned nothing — so on a log containing an incomparable run the two rules
+give different answers. C7's implementer found this and followed R15.2. Ruled the
+same way: **partitioning is unconditional.** A line joining one model's runs
+across an edited golden set is the same false line R15.2 exists to prevent, and
+the number of ids in the lineage has nothing to do with it. On any log where the
+selected runs are comparable — every normal nightly case — the two readings
+coincide, so the promise this sentence was making is kept everywhere it was
+actually being relied on.
 
 #### R15.2 — joining two ids asserts comparability, so it must be checked
 
@@ -3393,7 +3404,24 @@ class Trend(NamedTuple):
     successions: tuple[Succession, ...]
     excluded: tuple[Exclusion, ...]        # C4's type, from R15.2
     undated: int                           # dropped for unparseable created
+    caveats: tuple[Caveat, ...]            # added after the fact -- see below
 ```
+
+> **`caveats` was added on 2026-08-24, and the reason is embarrassing enough to
+> keep.** C7's implementer found that `partition_comparable` computes the
+> A/A-calibration and uneven-coverage caveats and `Trend` had nowhere to put
+> them, so they were computed and discarded — **which is precisely the defect
+> class the next three paragraphs name, committed in the type written to fix
+> it.** It went last so that tuple-prefix unpacking and any assertion about the
+> first four positions survive. Every point in `Trend.points` is drawn, so every
+> caveat on a kept point has a row to print against and none are filtered — this
+> is not C5, where a caveat on a superseded run has no row and is dropped.
+>
+> The implementer declined to add the field unilaterally, correctly: the contract
+> fixed four fields, and a blind tester asserting `len(t) == 4` would have gone
+> red against correct code. It reported the defect and waited for a ruling. That
+> is the judgement call this pipeline wants, and it is the only reason the
+> amendment reached the tester before the tests were written rather than after.
 
 `undated` fixes a defect C7's contract already had: it says undated points "are
 excluded from the return and the caller learns of them separately", and then
