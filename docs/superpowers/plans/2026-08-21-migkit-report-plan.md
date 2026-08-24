@@ -249,7 +249,7 @@ Settle these before C1, because every chunk downstream assumes them.
 
 The comparison payload carries its own `created`, stamped by
 `contracts.utc_now()` at `comparison.py:903`. The envelope `ts` is stamped inside
-rigor, `opik_rigor/evidence.py:89`, by `datetime.now(timezone.utc)`.
+rigor, `opik-rigor/src/opik_rigor/evidence.py:89`, by `datetime.now(timezone.utc)`.
 
 `created` is the better field on the merits — it is a recorded fact about the
 comparison rather than about when a line was written, and it survives a log that
@@ -1378,7 +1378,7 @@ Four facts, established by reading and by running the demo, that shape how this
 is possible at all:
 
 1. **`FakeAdapter` accepts a callable** `Callable[[str], str]`
-   (`opik_rigor/adapters/fake.py:47`), not only a prompt→response mapping. A
+   (`opik-rigor/src/opik_rigor/adapters/fake.py:47`), not only a prompt→response mapping. A
    mapping gives every draw of an item the same answer, so every item is 0/n or
    n/n and the pass rate is quantised to multiples of 1/N. A callable holding a
    private per-prompt counter gives per-draw variation, which is what any
@@ -2736,9 +2736,9 @@ already written against the current signature. **C9's reviewer decides.**
 
 ### R12 — what C8's and C9's reviews changed, and the errors they found in my contracts
 
-**R12.1 — a fifth factual error, which R11 missed.** C8's contract says *"read
-`judge.py:318-328` before you write a line of this."* There is no `judge.py` in
-`model_migration_kit`. The verdict is emitted at **`opik_rigor/judge.py:315-329`**
+**R12.1 — a fifth factual error, which R11 missed.** C8's contract told the
+implementer to read judge&#46;py, lines 318-328, before writing a line of the
+chunk. There is no such file in `model_migration_kit`. The verdict is emitted at **`opik-rigor/src/opik_rigor/judge.py:315-329`**
 — a different package. Same class as R11.3's `Item`/`GoldenItem`, and this one is
 in the sentence telling the implementer that this is the single most likely way to
 get the chunk wrong. Both C8 agents inherited it into their docstrings.
@@ -2899,3 +2899,159 @@ unavailable. Second: reason strings re-worded rather than reused. Third, and new
 a `dict.items` bound method, the other an int. `report.py:1206` already renamed a
 field to avoid exactly this, and here the mapping is the thing that cannot be
 renamed away, so check every call site by hand.
+
+---
+
+### R13 — C16 leaves one question open and answers another one wrongly
+
+Both are settled here, before dispatch, because either would have sent the
+implementer and the tester down different roads with neither of them wrong.
+
+**R13.1 — the file is `scripts/showcase.py`.** C16's Files line says "New
+`src/model_migration_kit/showcase.py`, **or** `scripts/`" and leaves it there.
+
+`scripts/`, for two reasons and one precedent. The showcase generator is a
+build-time tool: it seeds 56 runs so a document can be published, and no user of
+the library ever calls it. Putting it in `src/` would add it to the shipped API
+and give it a row in `COMPATIBILITY.md`'s rigor-surface table for imports nobody
+outside this repo can reach. And `scripts/make_showcase_goldenset.py` — which
+generates the golden set this chunk drives — already lives there, so the pair
+that produces the showcase stays together.
+
+Testability is not a reason to move it. `tests/test_release_checks.py:30` already
+imports a script with `importlib.util.spec_from_file_location`, so
+`tests/test_showcase.py` has a working pattern to copy.
+
+**R13.2 — the callable form is not required, and the contract's reason for it is
+already disproven.** C16 says night 6's REVIEW "requires per-draw variation,
+hence the callable form."
+
+It does not. The de-risk check recorded in `RESTART.md` found the opposite, on a
+real run: *"A genuine REVIEW is seedable with a plain `Mapping` FakeAdapter — no
+callable, no per-draw variation. The REVIEW band at n=200 is seven completions
+wide. All three verdicts come from one parameter set with only the candidate's
+script differing, so the comparability guard is never approached."*
+
+This matters more than a simplification. C16's own Reviewer note says *"The
+per-draw counter is state, and state plus a thread pool is a flake."* The
+contract creates the hazard in its Contract section and then asks the reviewer to
+police it — when the hazard is not needed at all. **Default to a plain `Mapping`.
+No counter, no state, and the flake the reviewer was told to hunt cannot exist.**
+
+Two things carried over from the same de-risk note: **avoid `k = 180` exactly**,
+where `runs_needed` returns `None`, and **rule 4 is a trap for a timeline** — a
+band that is REVIEW for power rather than for the floor reads as the same colour
+and is a different fact.
+
+The measurement behind this was taken at n=200, and the showcase runs a different
+n. **Verify the REVIEW band is reachable at the showcase's own n before
+building.** If a plain `Mapping` genuinely cannot reach it there, say so loudly
+and stop — do not reach for a stateful adapter on your own authority. That would
+be a real finding and it changes the chunk.
+
+**Determinism is unaffected either way** and remains the contract:
+`showcase_adapters(gs, night=6)` called twice must yield byte-identical artifacts
+through `run_goldenset` at `concurrency=1`. A stateless adapter makes that
+cheaper to hold, not harder.
+
+---
+
+### C14a — the two charts that exist, and the evidence made legible
+
+C14 lists nine elements and **seven of them depend on chunks that are unbuilt or
+in flight** — the spot-check sentence (C11), the candidate table (C5), the
+multiplicity note (C6), the excluded-runs list (C4), the dimension matrix (C10,
+blocked), and the parameter strip (C7). Waiting for all of them means the
+document shows none of the work, which is where it stands today: `timeline_svg`
+and `interval_bar_svg` are merged, reviewed and mutation-tested, and **nothing
+calls them**.
+
+This chunk renders the two that are ready and fixes what a reader actually
+complained about. C14 keeps the other seven.
+
+**Files.** `report.py` — `_TEMPLATE`, `_CHANGES_MACRO`, `_environment`.
+`tests/test_report.py`. **Not** `from_evidence`, **not** `ReportModel`, **not**
+`dimensions.py`: another chunk is inside those right now.
+
+**In scope, and nothing else.**
+
+| Element | `id` | Present when |
+|---|---|---|
+| verdict banner gains an inline interval bar | `verdict` | always |
+| timeline | `timeline` | `len(model.series) >= 1` |
+
+Leave the other seven `id`s unused. A later chunk claims them, and a placeholder
+that says "coming soon" is worse than an absence — it is a promise in a document
+whose whole claim is that it does not promise what it cannot show.
+
+**The rendering defects, which are the other half of this chunk.**
+
+**1. Identical draws are printed once, not N times.** Today `extract-01` prints
+`98.10` five times and `refuse-02` prints the same 260-character paragraph five
+times. Repetition is not evidence. When every draw of a side is byte-identical,
+print the text once above a line reading `all 5 draws identical`. When they
+differ, print each and say how many differed — **that** is the fact a reader
+needs, and today it is invisible because uniformity and variation look the same.
+
+**The completeness claim must survive this and must not quietly change meaning.**
+`report.py`'s detail-budget sentence currently says every changed item "carries
+its full outputs: 5,821 characters ... against a budget of 10,000,000". Collapsing
+identical draws changes the character count. The sentence must keep counting what
+was *produced*, not what was *printed*, or it becomes a completeness claim about a
+smaller thing — which is the R5 failure ("missing data stated as zero") in a new
+coat. State both numbers if that is what it takes.
+
+**2. The finding is not hidden behind a closed disclosure triangle.** The most
+important result of the demo run is that the candidate writes a fabricated
+data-breach notice on request and invents a refund figure the source thread never
+states. Both sit inside `<details>` that render closed. A reader who does not
+click sees a NO-GO and a p-value.
+
+Flips are the point of the document. Open them by default, or lift the judge's
+reason and a short quote to the summary line so the closed state still carries
+the finding. **Do not** open gains by default — they are context, not the finding,
+and the document already argues that netting the two is how a bad migration
+ships.
+
+**3. Paths are shown once, in full, where they can be checked.** The demo report
+prints an absolute temp path eight times, each about 130 characters, in a document
+whose readable width is 60rem. Provenance and "What was compared" are where a path
+belongs at full length. Elsewhere the basename is enough, and the full path stays
+in `title=` — which is not in `FETCHING_ATTRS` and is not dereferenced.
+
+**4. A row that can never say anything is not printed.** Latency on a run whose
+adapters are scripted reads `0.000 / 0.000`. `RunSummary.is_fake` already knows.
+Suppress the table and say why in one line, rather than printing two zeros that a
+reader has to work out are meaningless.
+
+**Must not.** Add `<script>`, `<link>`, a web font, or any attribute in
+`FETCHING_ATTRS`. Add a `| safe` anywhere except the single point each SVG helper
+is injected — the helpers return trusted markup, everything derived from model
+output stays escaped, and a test asserts the set of `| safe` filters equals the
+known injection points by name. Work around `StrictUndefined`: a `{{ }}` reference
+to a field `ReportModel` does not define must raise, which is the designed
+behaviour. Reference `model.dimensions` — it does not exist yet.
+
+**Failure mode when wrong.** `assert_self_contained` runs inside `render_html`
+before the file is written, so an external reference fails the render rather than
+shipping. The failure that *does* ship is a `| safe` on a path that can carry
+model output, which turns an escaped `<img src="https://tracker/x.png">` in a
+completion into a real fetch.
+
+**Test that fails first.**
+`test_the_document_marks_exactly_one_expression_safe_per_hand_rolled_svg_and_no_others`
+— parse `_TEMPLATE + _CHANGES_MACRO`, assert the set of `| safe` filters equals
+the known SVG injection points by name.
+
+**Then.** `test_the_rendered_report_has_no_external_url` and
+`test_the_rendered_report_has_zero_script_and_zero_link_elements` must pass
+unchanged against a fixture exercising both new sections.
+
+**Reviewer.** Three things. **One:** the identical-draws collapse must not weaken
+the completeness claim — check the sentence says what it counts. **Two:** C20 has
+just narrowed the self-containment scanner, and its reviewer found that SVG
+presentation attributes taking a CSS `<url>` (`fill`, `filter`, `mask`,
+`clip-path`, `marker-end`, `cursor`) are invisible to it. This chunk injects
+inline SVG into the document for the first time, so `fill="url(...)"` is now
+reachable in a way it was not before. Check what the two helpers actually emit.
+**Three:** mutate each `| safe` off and confirm something goes red.
