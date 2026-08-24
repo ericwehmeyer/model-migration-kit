@@ -976,7 +976,16 @@ class Candidate:
     #: night. Subtracting this candidate's rate from the field's summary baseline
     #: instead would measure it against a baseline observed three weeks away from
     #: it, which is precisely the drift this chunk exists to expose rather than
-    #: to commit.
+    #: to commit. It follows that
+    #: :attr:`CandidateField.baseline_pass_rate` **must not be added back to this
+    #: number** to recover a pass rate: the two were measured on different runs
+    #: whenever the baseline moved, and the sum is then a rate no run recorded.
+    #:
+    #: **Never rounded.** Rounding is a rendering decision and this is the model:
+    #: a renderer that wants one decimal place can take one, and a model that has
+    #: already rounded cannot give back what it dropped. Expect the ordinary
+    #: binary-float residue -- ``9.999999999999998`` where the arithmetic says
+    #: ten -- and format it at the edge.
     delta_pp: float | None
     #: This run's age against the newest run in the field, in days; ``0.0`` for
     #: the newest itself. ``None`` when this run carries no readable ``created``,
@@ -984,6 +993,25 @@ class Candidate:
     #: undated run is neither fresh nor stale, and ``0.0`` here would say it was
     #: measured alongside the newest.
     stale_days: float | None
+
+    @property
+    def model(self) -> str:
+        """The candidate model this row is about -- ``point.candidate_model``.
+
+        A row of this table *is* a candidate model: it is what
+        :func:`_newest_per_model` keys on, what the rows are ordered by, and what
+        a run has to record to have a row at all -- see
+        :func:`_unnamed_candidate`. Every consumer that joins anything onto a row
+        joins it on this string, so reaching two attributes deep for the one
+        field that identifies the row is a reach every call site would otherwise
+        repeat.
+
+        It is a property and not a dataclass field on purpose. There is exactly
+        one candidate model on a row and it lives on the point, so copying it
+        into a second slot would create a pair that can be made to disagree --
+        the same reason :class:`Candidate` is frozen. This reads through.
+        """
+        return self.point.candidate_model
 
 
 @dataclass(frozen=True)
@@ -996,7 +1024,8 @@ class CandidateField:
     answer. :attr:`key` says what the rows share; :attr:`excluded` says who is
     not in the table and why; :attr:`caveats` says which rows are in it under
     protest; :attr:`spread_days` and :attr:`spread_flagged` say whether the rows
-    were measured close enough together to be read side by side at all.
+    were measured close enough together to be read side by side at all, and
+    :attr:`stale_after_days` says what "close enough" was taken to mean.
     """
 
     #: The key every candidate shares, and the reason this group was the one
@@ -1023,23 +1052,48 @@ class CandidateField:
     #: not in :attr:`candidates` has no row to be printed against.
     caveats: tuple[Caveat, ...]
     #: Newest minus oldest candidate in days, over the rows that carry a date.
-    #: ``None`` when no row carries one -- not ``0.0``, which would claim the
-    #: field was measured in a single sitting.
+    #: ``None`` unless **at least two** rows carry one -- not ``0.0``, which would
+    #: claim the field was measured in a single sitting. One dated row and one
+    #: undated one is a single observation, and a single observation cannot make
+    #: that claim any more than no observation can.
+    #:
+    #: **Never rounded**, for :attr:`Candidate.delta_pp`'s reason: two runs eleven
+    #: hours apart are not "0 days apart" on a page whose subject is whether they
+    #: were measured close enough together to be read side by side, and a renderer
+    #: that wants whole days can round while a model that rounded cannot undo it.
     spread_days: float | None
-    #: Whether :attr:`spread_days` exceeds the caller's ``stale_after_days``.
+    #: Whether :attr:`spread_days` exceeds :attr:`stale_after_days`.
     #: ``False`` when :attr:`spread_days` is ``None``: an unmeasurable spread is
     #: not a measured narrow one, and what says so honestly is the absent number
     #: beside this flag rather than a ``False`` that reads as an all-clear.
     spread_flagged: bool
     #: The baseline's own pass rate on the *newest* run in the field -- see
     #: :func:`_baseline_pass_rate`, which reconstructs it, because
-    #: :class:`RunPoint` records only the candidate side. One header number over
-    #: rows whose baselines were each measured separately: the newest is the most
-    #: recent reading of the baseline this field has, where they disagree that
-    #: disagreement is what :attr:`spread_flagged` announces, and no
-    #: :attr:`Candidate.delta_pp` is computed against this. ``None`` when that run
-    #: graded no baseline completion at all.
+    #: :class:`RunPoint` records only the candidate side. ``None`` when that run's
+    #: baseline-side counts do not describe a rate.
+    #:
+    #: **This is a header number and not an operand.** It is one reading, taken
+    #: from one run; every :attr:`Candidate.delta_pp` below it is computed against
+    #: the baseline *its own* run measured, so adding this number back to a delta
+    #: does not recover that row's candidate pass rate -- it produces a rate no
+    #: run recorded, whenever the baseline moved between the two nights. The
+    #: newest is quoted because it is the most recent reading of the baseline this
+    #: field has and a header has to come from some row; where the rows disagree
+    #: about it, a caveat against this run says so in words -- see
+    #: :func:`_drifted_baselines`, which is the check that makes the header safe
+    #: to print beside deltas it is not the baseline of.
     baseline_pass_rate: float | None
+    #: The window this field was built with, in days: the ``stale_after_days``
+    #: :func:`candidate_field` was called with, default included.
+    #:
+    #: Carried rather than left on the call, because :attr:`spread_flagged` is a
+    #: bare ``bool`` and a renderer holding only this field would otherwise have
+    #: to name a number it cannot see. Both halves of "measured more than 7 days
+    #: apart" would then be true of a field built with ``stale_after_days=30.0``
+    #: and the sentence false -- which is the failure this chunk is shaped
+    #: against, one layer down: a plausible line of prose no number on the page
+    #: supports. The sentence has to be writable where the number is.
+    stale_after_days: float
 
 
 def candidate_field(
@@ -1050,7 +1104,10 @@ def candidate_field(
     Args:
         points: Every point in the log, in the order it was read.
         stale_after_days: How far apart the field's oldest and newest run may sit
-            before :attr:`CandidateField.spread_flagged`.
+            before :attr:`CandidateField.spread_flagged`. Carried through onto
+            :attr:`CandidateField.stale_after_days`, so that a renderer holding
+            the field can name the window it is reporting against instead of
+            printing this module's default beside somebody else's number.
 
     Returns:
         A :class:`CandidateField`, or ``None`` when no group holds two distinct
@@ -1068,15 +1125,31 @@ def candidate_field(
 
     Only groups whose key :attr:`~ComparabilityKey.is_identifying` are eligible.
     A key with an unrecorded field says two logs were equally silent, not that
-    they measured the same thing, and every member of such a group is removed by
-    :func:`partition_comparable` anyway -- so admitting one lets the biggest pile
-    of silence in the log win the selection and then partition down to nothing,
-    which renders as no table for a log that had one.
+    they measured the same thing. **The guard does not change the answer, and its
+    docstring used to claim it did.** Every member of such a group is removed by
+    :func:`partition_comparable`, so the group's rank is ``(0, 0, _UNDATED)`` and
+    it loses to any group that keeps a single named candidate; where *every*
+    group is non-identifying, dropping the guard would elect one, keep nothing
+    from it, and return ``None`` -- which is what happens with the guard too. It
+    is kept because it is cheap, because it saves a partition pass over the whole
+    log per silent key, and because it states at the point of selection which
+    groups are groups at all. It is not what stops the biggest pile of silence in
+    the log from winning; the rank is.
 
     Within the winning group the newest run per distinct ``candidate_model``
-    survives, so a candidate compared twice is one row and not two. Runs with no
-    recorded candidate model are excluded rather than merged -- see
-    :func:`_unnamed_candidate`.
+    survives, so a candidate compared twice is one row and not two. The run that
+    lost leaves through :func:`_superseded` with a sentence, and a run with no
+    recorded candidate model is excluded rather than merged -- see
+    :func:`_unnamed_candidate`. Both are in :attr:`~CandidateField.excluded`:
+    a run that was in the log and is in none of the three tuples has vanished
+    silently, which is the quietly-shrunk table this pair of chunks exists to
+    prevent.
+
+    **Nothing this returns is rounded.** :attr:`Candidate.delta_pp` and
+    :attr:`CandidateField.spread_days` are the unrounded results of the
+    arithmetic, binary-float residue and all, because rounding is a rendering
+    decision and a model that has already rounded cannot give back what it
+    dropped.
 
     **The selection is total, and that is not a detail.** Largest field first,
     then most rows, then the group holding the newest point, then the key itself
@@ -1096,8 +1169,9 @@ def candidate_field(
         return None
     dated = [moment for moment in map(_instant, rendered) if moment is not None]
     newest = max(dated) if dated else None
-    spread = _days(max(dated), min(dated)) if dated else None
+    spread = _days(max(dated), min(dated)) if len(dated) > 1 else None
     shown = {id(point) for point in rendered}
+    anchor = _latest(rendered)
     return CandidateField(
         key=key,
         candidates=tuple(
@@ -1108,11 +1182,15 @@ def candidate_field(
             )
             for point in rendered
         ),
-        excluded=_excluded(points, partition),
-        caveats=tuple(note for note in partition.caveats if id(note.point) in shown),
+        excluded=_excluded(points, partition, rendered),
+        caveats=(
+            tuple(note for note in partition.caveats if id(note.point) in shown)
+            + _drifted_baselines(anchor, rendered)
+        ),
         spread_days=spread,
         spread_flagged=spread is not None and spread > stale_after_days,
-        baseline_pass_rate=_baseline_pass_rate(_latest(rendered)),
+        baseline_pass_rate=_baseline_pass_rate(anchor),
+        stale_after_days=stale_after_days,
     )
 
 
@@ -1137,6 +1215,16 @@ def _widest_field(points: Sequence[RunPoint]) -> tuple[ComparabilityKey, Partiti
     eligible group can render a table, the group chosen here renders one -- and
     row count as the second term still gives the literal reading whenever the
     first term ties.
+
+    **The :attr:`~ComparabilityKey.is_identifying` filter below is a pre-filter
+    and not a rule.** A non-identifying key keeps nothing -- every member of its
+    group is excluded by :func:`partition_comparable` on the very field that made
+    the key non-identifying -- so it ranks ``(0, 0, _UNDATED)`` and is beaten by
+    any group with one named candidate in it. Removing the filter changes no
+    answer this function gives. It stays because it costs one property call and
+    saves a whole-log partition pass per silent key, and because a selection that
+    said nothing about which groups are groups would invite the next reader to
+    add the check somewhere it *would* change an answer.
     """
     eligible: list[ComparabilityKey] = []
     for point in points:
@@ -1206,19 +1294,35 @@ def _newest_per_model(kept: Sequence[RunPoint]) -> tuple[RunPoint, ...]:
     return tuple(winners[model][1] for model in sorted(winners))
 
 
-def _excluded(points: Sequence[RunPoint], partition: Partition) -> tuple[Exclusion, ...]:
+def _excluded(
+    points: Sequence[RunPoint], partition: Partition, rendered: Sequence[RunPoint]
+) -> tuple[Exclusion, ...]:
     """Every run the table does not hold, in log order, whichever rule removed it.
 
-    Two rules produce exclusions and they are asked in different places:
+    Three rules produce exclusions and they are asked in different places:
     :func:`partition_comparable` decides comparability, and this section decides
-    whether a comparable run can be a *row*. Concatenating their outputs would
-    put the whole of one before the whole of the other and read as two lists; a
-    reader working through why a run is missing wants the log.
+    twice over whether a comparable run can be a *row* -- once for a run that
+    records no candidate model (:func:`_unnamed_candidate`) and once for a run
+    beaten to its row by a newer run of the same model (:func:`_superseded`).
+    Concatenating their outputs would put the whole of one before the whole of
+    the other and read as three lists; a reader working through why a run is
+    missing wants the log.
+
+    **Together with ``candidates`` these account for every point handed in.** A
+    run that is in the log and in neither tuple has disappeared without a
+    sentence, which is exactly the quietly-shrunk table :class:`Exclusion` was
+    minted to prevent -- and until the superseded rule was added here, the second
+    run of a nightly candidate was such a run.
     """
     removed = {id(one.point): one for one in partition.excluded}
+    winners = {point.candidate_model: point for point in rendered}
+    shown = {id(point) for point in rendered}
     for point in partition.kept:
         if not _recorded(point.candidate_model):
             removed[id(point)] = Exclusion(point=point, reason=_unnamed_candidate(point))
+        elif id(point) not in shown:
+            reason = _superseded(point, winners[point.candidate_model])
+            removed[id(point)] = Exclusion(point=point, reason=reason)
     return tuple(removed[id(point)] for point in points if id(point) in removed)
 
 
@@ -1248,6 +1352,113 @@ def _unnamed_candidate(point: RunPoint) -> str:
         f"cannot be folded in with another unrecorded one: that would print one run's "
         f"numbers under both runs' authority and lose the other run entirely."
     )
+
+
+def _superseded(point: RunPoint, winner: RunPoint) -> str:
+    """A run kept by the partition and beaten to its row by a newer run of itself.
+
+    The table's rows are candidate models and this candidate has more than one
+    run under the group's key, so only the newest is a row -- the older one's
+    delta is a measurement of a different night, and printing both would invite a
+    reader to compare a model against itself and read the difference as a result.
+
+    **It is named here for :func:`_unnamed_candidate`'s reason, not for a new
+    one.** That function refuses to let a run leave the table without a sentence
+    because a run present in the log and absent from every tuple this field
+    returns has vanished, and a reader cannot tell a run that was dropped from a
+    run that was never written. This is the same disappearance one rule over: the
+    nightly job that re-ran a candidate on Tuesday and Thursday is the commonest
+    log this module will ever see, and until this sentence existed its Tuesday
+    run was in no tuple at all.
+
+    The winner's date is named rather than merely asserted so that the sentence
+    is checkable against the log, on the precedent of every exclusion in
+    :func:`_incomparable`: "not comparable" is a verdict, and the reader needed
+    the evidence. Where nothing was dated the position in the log is what decided
+    it, and the sentence says that instead of printing a date it does not have.
+    """
+    moment = _instant(winner)
+    beaten_by = (
+        f"this candidate's run of {moment.date().isoformat()}"
+        if moment is not None
+        else "a later record of this candidate in the same log, neither run having recorded a date"
+    )
+    return (
+        f"excluded: superseded by {beaten_by}. The rows of this table are candidate models "
+        f"and {point.candidate_model} has more than one run under the group's key, so the "
+        f"newest of them is the row and this one is not: a stale delta printed beside a "
+        f"fresh one compares two nights rather than two models. Its numbers were not "
+        f"doubted and it was not incomparable -- it is simply not the most recent reading "
+        f"of this candidate, and it is named here rather than dropped because a run that "
+        f"is in the log and in none of this field's tuples has disappeared with nothing "
+        f"said about it."
+    )
+
+
+def _drifted_baselines(anchor: RunPoint, rendered: Sequence[RunPoint]) -> tuple[Caveat, ...]:
+    """A caveat when the rows were not all measured against the same baseline.
+
+    :attr:`CandidateField.baseline_pass_rate` is one number taken from one run,
+    and every :attr:`Candidate.delta_pp` beside it is computed against the
+    baseline *its own* run measured. While those agree the header is a summary;
+    the moment they do not, it is a number from one row printed above rows it is
+    not the baseline of, and a reader who adds it back to a delta gets a pass
+    rate no run recorded.
+
+    **This is the chunk's named failure mode, reached from the type alone.**
+    "Three candidates measured three weeks apart render as a fair field, with the
+    baseline having drifted underneath them" is a claim about the baseline, and
+    :attr:`~CandidateField.spread_flagged` answers it with a *proxy*: it reports
+    that the runs are far apart in time, which is neither necessary nor
+    sufficient. A baseline can move overnight -- a re-scored golden set, a
+    provider silently changing a hosted model -- and ``spread_flagged`` is
+    ``False`` for a one-day drift. Here the drift is read off the numbers
+    themselves.
+
+    It is a caveat and not an exclusion because nothing is wrong with any row:
+    each delta is against its own baseline and is correct. What is unsafe is the
+    header, so the note is attached to the run the header came from, which is the
+    row a reader would otherwise take the number to be about.
+
+    Rates are compared and the counts are printed. A ``None`` rate -- a baseline
+    side whose counts do not describe one, see :func:`_baseline_pass_rate` -- is
+    a value the others do not share, and it counts as disagreement for the same
+    reason ``""`` never matches ``""`` in this module: not knowing is not the
+    same fact as agreeing.
+    """
+    if len({_baseline_pass_rate(point) for point in rendered}) < 2:
+        return ()
+    seen = ", ".join(
+        f"{point.candidate_model} {_graded_baseline(point)}" for point in rendered
+    )
+    return (
+        Caveat(
+            point=anchor,
+            reason=(
+                f"flagged: the field's baseline pass rate is this run's -- "
+                f"{_graded_baseline(anchor)} graded on the baseline side -- and the rows do "
+                f"not share it: {seen}. Every row's delta is against the baseline that row's "
+                f"own run measured and each of those is sound, so this is a caveat and not an "
+                f"exclusion; what it warns against is the header. Do not add it back to a "
+                f"delta to recover a pass rate -- the sum would be a number no run measured. "
+                f"A baseline that moved underneath the rows is the drift this field exists to "
+                f"expose, and it can move overnight, which is why it is read off the counts "
+                f"here rather than inferred from how far apart the runs are in time."
+            ),
+        ),
+    )
+
+
+def _graded_baseline(point: RunPoint) -> str:
+    """The baseline side's counts as the fraction its pass rate was rebuilt from.
+
+    Printed as ``passed/graded`` rather than as a rate because it is exact: a
+    rate has to be rounded to be written into a sentence, and a sentence whose
+    whole subject is that two numbers differ is the wrong place to round. It also
+    shows an impossible pair -- ``-10/50``, ``60/50`` -- as the nonsense it is,
+    where a refused rate would print only as an absence.
+    """
+    return f"{point.judged_baseline - point.judge_failures_baseline}/{point.judged_baseline}"
 
 
 def _delta_pp(point: RunPoint) -> float | None:
@@ -1283,8 +1494,22 @@ def _baseline_pass_rate(point: RunPoint) -> float | None:
     floor of the chart for a run that measured nothing, which reads as a total
     collapse rather than as an absence. A ``delta_pp`` of ``-100.0`` against a
     baseline that measured nothing is the same lie one subtraction later.
+
+    **``None`` also when the two counts cannot both be true**, which is the one
+    guard this module's other rates do not need. Every other number here is read
+    off a payload and passed on; this one is *computed*, and the arithmetic is
+    happy to hand back ``1.2`` from ``-10`` failures out of ``50`` or ``-0.2``
+    from ``60`` out of ``50``. Those are pass rates outside ``[0, 1]``, and one of
+    them is a candidate that beat its baseline by minus twenty points -- a number
+    a reader would act on. Neither count is validated anywhere upstream:
+    :func:`_count` reads whatever integer the JSON held, because a payload is
+    JSON and not a type, and the same class of hole is what four of C4's
+    exclusions exist to close. A rate that would be a lie is refused, and the
+    counts themselves survive on the point for anyone who wants to see why.
     """
     if point.judged_baseline <= 0:
+        return None
+    if not 0 <= point.judge_failures_baseline <= point.judged_baseline:
         return None
     return (point.judged_baseline - point.judge_failures_baseline) / point.judged_baseline
 
@@ -1315,7 +1540,11 @@ def _instant(point: RunPoint) -> datetime | None:
 
 
 def _days(later: datetime, earlier: datetime) -> float:
-    """The interval between two instants in days, fractional and never rounded.
+    """The span between two instants in days, fractional and never rounded.
+
+    "Span" and not "interval": in this one chunk ``interval`` is the word for the
+    thing :attr:`Candidate.delta_pp` must never carry, and a helper that opens by
+    calling its own result one is a helper somebody quotes back.
 
     Days rather than seconds because every consumer of this module's durations
     prints days, and fractional rather than whole because two runs eleven hours
