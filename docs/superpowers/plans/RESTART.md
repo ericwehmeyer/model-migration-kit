@@ -275,6 +275,28 @@ judge)`, which cannot be called inside a single pass. **See R16 in the plan**
 for the two-phase form that replaces it, and for two further corrections to
 C10's contract. Do not dispatch C10 until C21's review lands.
 
+### Label every dispatch with its stage and its chunk
+
+Set the agent's `description` to a fixed format, so the running-agent list says
+what each one is without cross-referencing anything:
+
+```
+C18 impl · stage 1/5 · chunk 18/22
+```
+
+The five stages are **implementer, blind tester, merge, reviewer, fix pass**,
+and stage 3 is the orchestrator's, so agents occupy 1, 2, 4 and 5. Put the same
+line in the brief as well: an agent that knows a fix pass follows it will hand
+off rather than over-reach, which is exactly the boundary C22a's implementer had
+to reason out unaided when it shipped half a chunk and stopped.
+
+**Two limits, both learned the hard way.** A **resumed** agent keeps the
+description from its original dispatch and it cannot be changed -- so the label
+is only ever as good as the first dispatch. And the label must be set at
+dispatch time; there is no way to add it afterwards without restarting the
+agent, which costs its accumulated context and is almost never worth a tidier
+name.
+
 ## Four defects a reader found in the rendered report
 
 Worth knowing because they are not in any chunk contract and they are what a
