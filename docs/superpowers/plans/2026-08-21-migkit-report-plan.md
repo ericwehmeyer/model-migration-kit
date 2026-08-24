@@ -4486,7 +4486,12 @@ on, and R21 is what that assumption cost at the level of the architecture.
 Scoping C22 against what is actually merged. Two findings, one of them a
 design ruling that would otherwise be made badly by whoever implements it.
 
-#### R23.1 — verified: `spot_check`'s inputs are already on the model
+#### R23.1 — WRONG, superseded by R26. `spot_check`'s inputs are NOT on the model
+
+> **This section is false and is kept only so the error is legible.** Read R26.
+> `ReportModel.item_counts` has no `passing`/`failing`/`unstable` keys; it is
+> `{"unit", "per_judge": {...}}`, keyed by judge and then by side. The claim
+> below that it was "checked rather than assumed" is itself the error.
 
 R21.3 claimed `spot_check` needs no records and no golden set, only three
 integers. Checked rather than assumed:
@@ -4821,3 +4826,130 @@ to the contract's refusal table so it is not read as an invention.
 Related and also right: levels are compared as `repr` strings rather than
 floats, because `nan != nan` would otherwise report a family of two identical
 NaN levels as "tested at different levels: nan, nan".
+
+### R26 — R23.1 was wrong, and I made the same mistake twice in an hour
+
+C22a's implementer delivered `candidates` and **stopped on `spot_check`**,
+reporting that its contract does not hold against the code. It is right, and it
+was right to stop.
+
+#### R26.1 — the error
+
+R23.1 claimed, in those words, *"Checked rather than assumed"*:
+
+> `ReportModel.item_counts` is a mapping whose keys are read by `_item_counts`
+> (`report.py:2643`) as exactly `passing`, `failing` and `unstable`. The three
+> inputs are already carried, under the names the function wants.
+
+**Measured on a freshly generated demo log:**
+
+```python
+item_counts = {"unit": "item",
+               "per_judge": {"accuracy": {"baseline":  {"passing": 11, "failing": 1, "unstable": 0},
+                                          "candidate": {"passing":  9, "failing": 3, "unstable": 0},
+                                          "items": 12}}}
+```
+
+`model.item_counts["passing"]` raises `KeyError`. Three independent
+confirmations: the producer is `comparison._item_counts_by_judge`, which returns
+exactly `{"unit", "per_judge"}`; `report.py:1299` passes it through verbatim; and
+`_item_counts` at `report.py:2643` is **never called with
+`model.item_counts`** — its only call sites are `judge.items_baseline` and
+`judge.items_candidate` (`report.py:2577-2578`) and the `counts` Jinja filter.
+
+What I actually did: I grepped for `item_counts`, found a function reading
+`passing`/`failing`/`unstable`, and concluded it read the model field of the
+same name. I never called the function or printed the field.
+
+#### R26.2 — the same mistake as R25, one hour apart
+
+R25 recorded that R17.1's mechanism was inferred rather than measured, and that
+a worked example confirming the *conclusion* does not confirm the
+*explanation*. R23.1 is the identical failure with the identical signature: a
+real observation (the function does read those keys), an inferred connection
+(therefore the field has them), and a confident sentence claiming verification.
+
+**Twice in one hour, and the second time immediately after writing down the
+lesson from the first.** Writing the lesson down is not the same as applying
+it, and the tell is available in both cases: I described the check in prose
+instead of pasting its output. R20.1's rule for fixtures generalises here.
+
+> **When a revision claims something was checked, it must carry the output that
+> checked it.** A sentence saying "verified" is not evidence; a pasted
+> `KeyError` or a printed dict is. Every claim of the form "X already carries
+> Y" needs the two lines that produced it, or it is an inference wearing a
+> verification's clothes.
+
+Both errors were caught by agents rather than by me, and in both cases for the
+same reason: **the agent needed the actual value to do its job and so could not
+take my sentence on trust.** That is an argument for briefs that require an
+agent to derive a number rather than accept one.
+
+#### R26.3 — ruling: which judge, and which side
+
+The error turned one decision into three, two of which nobody had named.
+
+**Which judge: `judges[0]`, the counting judge, and refuse rather than
+aggregate.** `item_counts["per_judge"]` is keyed by judge name and the panel
+case is real. C10 already chose `counting_judge = judges[0].name`
+(`report.py:1213`) for the tag matrix; **one document must not select its
+judge two different ways**, and a second rule would be a defect waiting for the
+first panel whose judges disagree. Summing across a panel is separately wrong
+for `_per_judge_counts`' own stated reason: two judges grading the same 60
+completions are 120 records and 60 completions.
+
+**Which side: the candidate.** `SpotCheck`'s docstring says the number exists to
+say *what a cheaper method would have missed, which is the argument for having
+run the harness at all.* The failures that argument is about are the ones that
+bear on the decision, and those are the candidate's. The baseline's failing
+items are context for the comparison, not the thing a hand check would have been
+run to catch.
+
+#### R26.4 — ruling: the sentence, and a contradiction that was mine
+
+C22a's brief demanded that the printed sentence name which side it speaks
+about, **and** forbade editing a producer. Those cannot both be satisfied:
+`spot_check` takes no label, and `SpotCheck.sentence` is composed inside
+`series.py` —
+
+> *"A 12-prompt spot check drawn at random from these 96 items, 8 of which
+> failed, would have shown no failures at all in 33% of such checks."*
+
+— with no side, no judge, and no parameter that could carry one. The only ways
+to satisfy the brief were to edit `series.py` (forbidden outright) or to build
+the prose in `report.py`, which is inventing a producer's sentence in the
+plumbing — the exact shape R21.5 refused for the `trend` caveat.
+
+**Ruling: a C11 follow-up, on R21.5's precedent.** `spot_check` gains a
+caller-supplied subject that its sentence names, so the sentence stays written
+where the number is computed. The renderer must **not** caption around it. This
+is the second time a chunk's honesty obligation has had to go back to its
+producer rather than be satisfied downstream, and the consistency is the point:
+if plumbing may compose a producer's prose once, the rule is gone.
+
+`C22a`'s `candidates` half is complete, green and independent of all of this,
+and merges on its own.
+
+#### R26.5 — and R23.3's headline claim was also false
+
+R23.3 said C22a "is what finally moves *spot check* off zero in the measured
+render." **It is not, at the bundled demo's defaults.** The golden set is 12
+items and `k` defaults to 12, so `items <= k` and `spot_check` correctly returns
+`None` on both sides:
+
+```
+spot_check(9, 3, 0)   -> None      # candidate
+spot_check(11, 1, 0)  -> None      # baseline
+spot_check(9, 3, 0, k=6) -> SpotCheck(..., probability=0.0909, '...9% of such checks.')
+```
+
+So after every ruling above is implemented, the demo will **still** render no
+spot-check sentence. That absence is correct behaviour and will read exactly
+like a wiring bug — the third distinct cause on this project of "the number
+didn't appear", after the `.pth` trap and the missing view model.
+
+It also raises a product question this plan has not asked: `k` defaults to 12
+while the bundled golden set is 12 items, so the headline demo can never show
+the number the chunk exists to produce. Flagged, not ruled — but whoever
+schedules C14's spot-check element should know the section will be empty on the
+demo unless `k` or the demo set moves.
