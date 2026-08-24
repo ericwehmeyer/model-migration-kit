@@ -3646,6 +3646,12 @@ against the code, and two of the five were confirmed by running it.
 
 #### R17.1 — C6's `changed` rule is wrong, and C6's own first test does not catch it
 
+> **CORRECTED — read R25.** The ruling, the worked table and the conclusion
+> below are right. The *mechanism* sentence is wrong: `holm_bonferroni` does
+> not return the uncorrected `alpha` for candidates after the stop. The real
+> reason is simpler and stronger, and the error matters because it implies the
+> bug only bites after a step-down stop, when in fact it bites every family.
+
 C6 defines the set that "makes the honesty guard demonstrable" as candidates
 where `p_value < alpha` **and** `p_value >= holm_threshold`.
 
@@ -4701,3 +4707,117 @@ point (A1), or a whitespace-only value anywhere in the file (C6).
 still be a monoculture in pairs.** The survivors here are made of exactly that,
 and the cheapest defence is to ask, for each pair of conditions the code branches
 on, whether any single fixture carries both.
+
+### R25 — R17.1's mechanism was wrong, and both C6 agents caught it independently
+
+C6 is merged (2083 passing, seven gates green) and its blind pair produced
+**zero disagreement** for the third chunk running — all 31 of the tester's tests
+pass against the implementer's code.
+
+Both of them, separately and without seeing each other, reported that R17.1's
+explanation of *why* the contract's `changed` rule fails is factually wrong.
+They are right.
+
+#### R25.1 — what R17.1 claimed, and what actually happens
+
+R17.1 says: *"For every candidate after the stop, the returned threshold is the
+uncorrected `alpha` itself — so `p >= threshold` is vacuously false and the
+candidate silently drops out."*
+
+`holm_bonferroni` does not do that. Every position is overwritten in the loop
+with `alpha / (k - rank)`; the `[(False, alpha)] * k` initializer never
+survives. Measured on the merged implementation:
+
+```
+holm_bonferroni([0.03, 0.04, 0.045], alpha=0.05)
+  -> ((False, 0.01667), (False, 0.025), (False, 0.05))
+holm_bonferroni([0.001, 0.002, 0.049], alpha=0.05)
+  -> ((True,  0.01667), (True,  0.025), (True,  0.05))
+```
+
+The stop in the first family is at rank 0, yet the two candidates "after the
+stop" carry `0.01667` and `0.025`, not `alpha`. The threshold sequence is
+identical in both families and is **independent of whether anything rejected**.
+
+#### R25.2 — the real mechanism, which is stronger
+
+The **largest** p-value in any family is always tested against `alpha / 1`,
+which *is* `alpha`. So for that candidate `p_value >= holm_threshold` is false
+whenever `p_value < alpha` — **in every family, whether or not a step-down stop
+occurred.**
+
+The contract's rule therefore misses the largest sub-alpha p-value *always*,
+not merely after a stop. R17.1's ruling and its worked table were right for a
+reason it did not state, and its stated reason would let the next reader
+conclude the defect is conditional on a stop and stop looking. That is worse
+than an incomplete explanation: it is a wrong one that survives the cases most
+likely to be checked.
+
+**The ruling is unchanged:** `changed` is `p_value < alpha and not rejected`,
+with `rejected` from `holm_bonferroni`'s own return, and a p-value is never
+compared against the returned threshold to decide significance. The threshold
+is diagnostic output for display.
+
+The merged code carries the accurate mechanism in `Multiplicity.changed`'s
+docstring, and the tester pinned it as an invariant in
+`test_the_largest_sub_alpha_p_value_is_named_as_changed_although_its_threshold_
+is_alpha_itself` — `thresholds[largest] == alpha` **and** that model is in
+`changed`, which is exactly the pair the broken rule cannot produce.
+
+#### R25.3 — why two blind agents caught it and I did not
+
+Both derived the thresholds from the merged `holm_bonferroni` rather than from
+this plan: the implementer probed it, the tester computed expected values from
+`alpha / (k - rank)` to write its fixtures. Neither could have taken my sentence
+on trust even if it had wanted to, because both needed the actual numbers to do
+their jobs.
+
+I wrote R17.1 from reading the function and reasoning about the initializer
+without running it. The worked table in R17.1 *is* real output — I ran the
+comparison — but I explained it with a mechanism I had inferred rather than
+measured, and the two agreed on the conclusion, so nothing forced them apart.
+
+**A worked example that confirms the conclusion does not confirm the
+explanation.** The output was right, the reasoning was wrong, and only an agent
+that needed the intermediate values found the gap. That is the same shape as
+R20.1 in a different medium: agreement between two things that were never
+independent is not evidence.
+
+#### R25.4 — five things C6's contract does not say
+
+Both C6 agents flagged the first of these; the tester listed all five and
+deliberately wrote no assertion that picks a reading on any of them. **Nothing
+below blocks the merge** — the implementer chose defensibly and the tester's
+assertions hold either way, which is why the pair still agreed. They need
+ruling before anything consumes `Multiplicity`.
+
+1. **What the returned `CandidateField` differs in.** The contract says
+   `correct_field` returns one and never says what changes. Verdicts, deltas,
+   spread and header are all off-limits or unaffected, leaving `caveats`. The
+   implementer appends one `Caveat` per candidate in `changed`, on that
+   candidate's own point, naming the recorded verdict and the second-correction
+   fact, preserving existing caveats unedited, and returns `field` itself
+   unchanged when the correction changed nothing or was refused. **Ruling: this
+   stands.** C5's own `caveats` docstring says a caveat that reaches nobody is
+   the same as one never computed, and R17.3 ruled that shape. Record it in the
+   contract rather than leaving it as silence.
+2. `Multiplicity.alpha` when refused for *differing* levels — unstated.
+3. Whether candidates with `p_value is None` contribute their alpha to the
+   uniformity check — unstated.
+4. `thresholds` when `applied=False` — unstated.
+5. `family_size` when no candidate was tested at all — unstated.
+
+Items 2 to 5 are open. They are cheap now and expensive once C22b renders this.
+
+#### R25.5 — a sixth refusal the contract does not list
+
+`holm_bonferroni` raises `ValueError` unless `0.0 < alpha < 1.0`, and `RunPoint`
+is a public frozen dataclass anyone may construct, so `alpha=5.0` or `alpha=nan`
+reaches `correct_field` without passing through `_number`. The module's stated
+hard rule is that nothing here raises. The implementer refuses with
+`applied=False` and a note naming the level. **Correct — keep it**, and add it
+to the contract's refusal table so it is not read as an invention.
+
+Related and also right: levels are compared as `repr` strings rather than
+floats, because `nan != nan` would otherwise report a family of two identical
+NaN levels as "tested at different levels: nan, nan".
