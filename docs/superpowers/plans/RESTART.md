@@ -130,6 +130,40 @@ Implementer and tester run **in parallel**. The reviewer is where most of the
 value has come from — three of three reviews found defects both other roles
 missed, and mutation testing found holes a green suite hid.
 
+### The blindness leaks through the scratchpad, and what that cost
+
+Found on C4, 2026-08-24. Worktrees isolate the repo. They do **not** isolate the
+session scratchpad, and both agents of a pair default to the same directory. The
+tester wrote its test file over the implementer's staging file, and the harness's
+change notification put ~140 lines of the tester's file into the implementer's
+context unrequested.
+
+**Give every agent of a pair its own scratchpad subdirectory in its brief.** That
+is the fix and it is one line per brief.
+
+But the interesting part is what leaked, not that something did. The two agents
+had **independently reached opposite readings** of the same paragraph — §4.4's
+coverage flag, which the implementer read as across two runs and the tester read
+as across the two sides of one comparison. Both readings are defensible; the
+contract does not say; and my pre-dispatch ruling did not disambiguate it either,
+which is my defect and the root cause.
+
+That disagreement was not a problem. **It was the entire product of running a
+blind pair** — two independent readings of an ambiguous contract, surfaced as a
+conflict for the orchestrator to rule on. The leak did not merely contaminate the
+implementer. It *destroyed the signal*, by letting the disagreement resolve itself
+silently inside one agent instead of reaching me. The implementer capitulated to a
+comment it should never have seen, changed a correct implementation to the other
+reading, and the conflict very nearly disappeared into a commit message.
+
+It survived only because the implementer volunteered the leak in its report. Two
+lessons, and the second is the one worth keeping:
+
+1. Isolate the scratchpad.
+2. **Say in every brief: if you find yourself agreeing with something you were not
+   supposed to see, stop and report it.** An agent that hides a leak costs a
+   contract defect. An agent that reports one hands you the defect for free.
+
 ### When it is safe to go wide
 
 Width is not limited by worktrees — those already solved file collisions. It is
@@ -180,6 +214,29 @@ Do **not** watch `tasks/<id>.output`. Those are zero-length placeholders and
 their mtime does not track tool activity: one agent was demonstrably working at
 04:23 with an `.output` untouched since 04:02. A watchdog on that signal reports
 health it cannot see, which is worse than no watchdog.
+
+**Liveness and completion are two different questions and need two different
+signals.** Built 2026-08-24 with only the first, and it false-alarmed on the
+first agent to finish: a completed agent's transcript stops growing, so it
+crosses the 20-minute line looking exactly like a hung one. Left alone that is
+one false alarm per completed agent, which is a watchdog nobody reads by the
+third chunk — the same failure as watching `.output`, arrived at from the other
+side.
+
+Two completion signals were tried and **both failed**; do not retry them:
+
+- `tasks/<id>.output` being non-empty — still 0 bytes for agents that had
+  completed and reported minutes earlier. RESTART's warning about `.output`
+  covers completion as well as liveness.
+- the last transcript line being an assistant message with no `tool_use` —
+  identical for agents that had finished and agents still working.
+
+What works is the one thing that is actually reliable: **the orchestrator is told
+when an agent completes, so the orchestrator writes it down.** One line of
+`<agent-id> <epoch>` appended to a file the watchdog reads. Store the timestamp,
+not just the id, so an agent that is later resumed — its transcript moving again
+*after* that time — is watched normally instead of being suppressed forever. That
+case is real: C4's implementer was resumed to act on a ruling.
 
 **A self-imposed bound in every brief.** "If one problem resists three genuine
 attempts, commit what you have, write down the blocker, and return." The watchdog
