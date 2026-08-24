@@ -473,7 +473,7 @@ class ComparabilityKey:
     **Equality here is deliberately naive, and that is a trap for callers who
     group on it.** Two keys with empty hashes compare equal, because a frozen
     dataclass compares field by field and nothing else would be a sane ``__eq__``.
-    An empty hash is not a match -- see :attr:`hashes_recorded` and
+    An unrecorded field is not a match -- see :attr:`is_identifying` and
     :func:`partition_comparable`, which is where that rule is enforced.
     """
 
@@ -483,30 +483,51 @@ class ComparabilityKey:
     baseline_model: str
 
     @property
-    def hashes_recorded(self) -> bool:
-        """Whether this key's two *hashes* were recorded. Not the whole question.
+    def is_identifying(self) -> bool:
+        """Whether this key identifies a group at all, over all four of its fields.
 
-        A key missing either hash identifies nothing: it says only that two logs
-        were equally silent. Anything that groups on :class:`ComparabilityKey`
-        needs this, because dataclass equality alone will happily merge every
-        run that failed to record a hash into one confident-looking group.
+        A key with an unrecorded field identifies nothing: it says only that two
+        logs were equally silent there. Anything that groups on
+        :class:`ComparabilityKey` needs this, because dataclass equality alone
+        will happily merge every run that recorded nothing into one
+        confident-looking group -- ``"" == ""`` and ``0 == 0`` both read
+        perfectly and both mean "neither of us said".
 
-        **It is a necessary condition and not a sufficient one, and the name is
-        the honest half.** ``n_per_item == 0`` and ``baseline_model == ""`` are
-        the same absence in the two fields this property does not look at, and
-        :func:`partition_comparable` excludes on both. So a caller that groups on
-        this and then partitions can still be told that every member of a group
-        it vouched for was excluded. Widening this to all four fields is a change
-        to a contract two unwritten chunks are about to type against; the reason
-        it has not been made in passing is recorded here rather than discovered
-        by whoever writes them.
+        **This tracks the exclusion rules in :func:`_incomparable`, and it has to
+        be changed whenever they are.** It is not an independent opinion about
+        what a key needs; it is the same four "was this recorded" questions the
+        partition asks, answered ahead of time for a caller that has to *build*
+        groups before it can partition them. The two must give one answer, so
+        they share one emptiness test -- :func:`_recorded`, ``.strip()``
+        included -- rather than each spelling out its own. If they can drift they
+        will, and the drift is silent: a group vouched for here whose every
+        member the partition then removes is a table that renders empty with no
+        sentence anywhere saying why.
 
-        A hash of nothing but whitespace counts as unrecorded, the same judgement
-        :func:`partition_comparable` makes: the two have to agree, or a caller
-        could group on this and then be told by the partition that every member
-        was excluded.
+        There is a test whose whole job is to catch that drift, over every
+        combination of the four fields, and adding a fifth ground to
+        :func:`_incomparable` without adding it here is meant to turn it red.
+
+        **Named for the question and not for two of its four fields.** It was
+        ``hashes_recorded`` while only the hashes could exclude. Once
+        ``n_per_item`` and ``baseline_model`` could, that name described the
+        implementation of a stale version of the rule while the docstring
+        described the question -- and a property that answers a question nobody
+        is asking, sitting beside four rules that answer the real one, invites
+        precisely the reading that makes it a lie.
+
+        This says nothing about :func:`_ungraded`, which is not a rule about the
+        key: a key cannot see what a run graded, which is why that check takes a
+        whole :class:`RunPoint`. A caller still has to partition. What this
+        promises is that grouping on an identifying key is not futile, not that
+        every member survives.
         """
-        return _recorded(self.goldenset_hash) and _recorded(self.judges_hash)
+        return (
+            _recorded(self.goldenset_hash)
+            and _recorded(self.judges_hash)
+            and self.n_per_item > 0
+            and _recorded(self.baseline_model)
+        )
 
 
 @dataclass(frozen=True)

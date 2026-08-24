@@ -3655,61 +3655,141 @@ def test_three_identical_caveated_points_are_three_caveats_and_not_one():
 
 
 # ----------------------------------------------------------------------------------
-# Mutant S6: `hashes_recorded` had no test at all
+# Mutant S6: `is_identifying` had no test at all, and answered the wrong question
 # ----------------------------------------------------------------------------------
+#
+# The property was `hashes_recorded` and looked at two of the key's four fields.
+# That answered the question C5 actually asks -- "can this key establish
+# comparability?" -- only while the two hashes were the only grounds for exclusion.
+# Once an unrecorded `n_per_item` and an unrecorded `baseline_model` became grounds
+# too (ruling 2), a key with both hashes and `n_per_item == 0` answered `True` and
+# then had every member removed by the partition: C5 builds a group and is told it
+# is empty, with no sentence on the page saying why.
+#
+# So it is widened to all four fields and renamed for the question rather than for
+# a stale version of the implementation. The rename is made here, before C5 and C7
+# type against it, on the same argument that made `Flag` -> `Caveat` free.
+
+#: Each field of the key, blanked the way a payload that never recorded it blanks
+#: it. `n_per_item` is the odd one and that is the whole point of ruling 2: its
+#: absence is an `int`, so it reads as a recorded zero rather than as a silence.
+_KEY_BLANKS = {
+    "goldenset_hash": "",
+    "judges_hash": "",
+    "n_per_item": 0,
+    "baseline_model": "",
+}
 
 
 @pytest.mark.parametrize(
-    ("changes", "recorded"),
+    ("changes", "identifying"),
     [
         ({}, True),
         ({"goldenset_hash": ""}, False),
         ({"judges_hash": ""}, False),
+        ({"n_per_item": 0}, False),
+        ({"baseline_model": ""}, False),
         ({"goldenset_hash": "", "judges_hash": ""}, False),
+        (dict(_KEY_BLANKS), False),
         ({"goldenset_hash": "   "}, False),
         ({"judges_hash": "\t"}, False),
+        ({"baseline_model": " "}, False),
+        ({"n_per_item": -1}, False),
     ],
     ids=[
-        "both-recorded",
+        "all-four-recorded",
         "no-golden-set",
         "no-panel",
-        "neither",
+        "no-depth",
+        "no-baseline",
+        "neither-hash",
+        "nothing-at-all",
         "a-golden-set-of-spaces",
         "a-panel-of-one-tab",
+        "a-baseline-of-one-space",
+        "a-negative-depth",
     ],
 )
-def test_a_key_knows_whether_it_can_establish_comparability_at_all(changes, recorded):
-    """Mutant S6: `hashes_recorded` is a public property of a public type with zero
-    tests, so `and` became `or`, `bool(...)` became `True`, and nothing anywhere
-    went red.
+def test_a_key_knows_whether_it_can_establish_comparability_at_all(changes, identifying):
+    """Mutant S6: this is a public property of a public type and it had zero tests,
+    so `and` became `or`, `bool(...)` became `True`, and nothing anywhere went red.
 
-    It is not decoration. Its docstring says what it is for -- "anything that
-    groups on `ComparabilityKey` needs this, because dataclass equality alone will
-    happily merge every run that failed to record a hash into one confident-looking
-    group" -- and C5 is the chunk that will group. A property that answers `True`
-    for a key made of two empty strings hands C5 the exact failure this chunk
-    exists to prevent, one layer up and with no sentence attached."""
-    assert series.comparability_key(_point(**changes)).hashes_recorded is recorded
+    It is not decoration. Its docstring says what it is for -- anything that groups
+    on `ComparabilityKey` needs it, because dataclass equality alone will happily
+    merge every run that recorded nothing into one confident-looking group -- and
+    C5 is the chunk that will group. A property that answers `True` for a key made
+    of two empty strings hands C5 the exact failure this chunk exists to prevent,
+    one layer up and with no sentence attached.
+
+    A negative depth is in the table because `_count` will return one: `n_per_item`
+    recorded as `-1` is not a depth, and the property's test has to be the
+    partition's test rather than a bare `!= 0`."""
+    assert series.comparability_key(_point(**changes)).is_identifying is identifying
 
 
-def test_the_key_and_the_partition_agree_about_what_counts_as_recorded():
-    """The property and the rule have to give one answer, or a caller does the
-    honest thing -- group on `hashes_recorded`, then partition -- and is told that
-    every member of a group the property vouched for was excluded.
+def test_the_property_is_false_on_every_ground_the_partition_excludes_a_key_on():
+    """One row per exclusion ground, which is the cheap form of a drift test.
 
-    Scoped to the hashes on purpose, which is a gap and is named as one. The
-    property looks at two of the key's four fields, and the partition now excludes
-    on all four, so a key with both hashes and `n_per_item == 0` answers `True`
-    here and is excluded there. Widening the property is a contract change that C5
-    and C7 are about to type against; this test asserts the agreement that exists
-    rather than pretending to the one that does not."""
-    for changes in ({}, {"goldenset_hash": ""}, {"judges_hash": "  "}, {"goldenset_hash": " "}):
+    The property is not an independent opinion about what a key needs; it is the
+    same four questions `_incomparable` asks, answered ahead of time for a caller
+    that has to *build* groups before it can partition them. Every ground the
+    partition removes a point on has to be a ground the property refuses to vouch
+    for, or the two have drifted -- and the drift is silent, because a group that
+    renders empty looks like a group with nothing in it.
+
+    The exclusion is checked to be the ground this row is about, through `_blamed`,
+    so a test that passed for the wrong reason -- excluded, but on some other
+    field -- is not available."""
+    for field, blank in _KEY_BLANKS.items():
+        point = _point(**{field: blank})
+        key = series.comparability_key(point)
+        kept, excluded, _caveats = series.partition_comparable([point], against=key)
+        assert kept == (), f"the partition kept a point whose {field} is unrecorded"
+        assert _blamed(excluded[0].reason) == f"{field} unrecorded", excluded[0].reason
+        assert key.is_identifying is False, (
+            f"`is_identifying` vouches for a key the partition excludes on its "
+            f"{field}, so a caller that groups on it builds a group whose every "
+            f"member is then removed: {key}"
+        )
+
+
+def test_the_key_and_the_partition_agree_over_every_combination_of_the_four_fields():
+    """The drift test proper, and the reason a fifth ground cannot be added to
+    `_incomparable` without being added to the property as well.
+
+    Sixteen keys -- each of the four fields recorded or not -- each partitioned
+    against itself. A point compared against its own key is excluded exactly when
+    the key fails to identify anything, so `bool(kept)` and `is_identifying` are
+    two computations of one answer and any disagreement is the drift.
+
+    Self-partitioning is what makes this total rather than a sample. The fixture
+    grades 60 against 60 and names two different models, so neither `_ungraded` nor
+    the self-comparison caveat can fire and change the answer for a reason that has
+    nothing to do with the key -- which is also why the property is documented as
+    saying nothing about either.
+
+    The field list is read off `ComparabilityKey` rather than typed here, so that
+    a *fifth* field added to the key -- which is what "a new ground" concretely
+    looks like -- fails on the next line with a sentence naming it, instead of
+    being quietly enumerated over the old four and reported as agreement."""
+    named = {field.name for field in dataclasses.fields(series.ComparabilityKey)}
+    assert named == set(_KEY_BLANKS), (
+        f"the key gained or lost a field, so this test no longer covers it and "
+        f"`is_identifying` has to be told about it too: {named ^ set(_KEY_BLANKS)}"
+    )
+    fields = list(_KEY_BLANKS)
+    for mask in range(1 << len(fields)):
+        changes = {
+            name: _KEY_BLANKS[name] for index, name in enumerate(fields) if mask >> index & 1
+        }
         point = _point(**changes)
         key = series.comparability_key(point)
-        kept, _excluded, _caveats = series.partition_comparable([point], against=key)
-        assert bool(kept) is key.hashes_recorded, (
-            f"`hashes_recorded` says {key.hashes_recorded} and the partition "
-            f"{'kept' if kept else 'excluded'} the point it was taken from: {changes}"
+        kept, _excluded, caveats = series.partition_comparable([point], against=key)
+        assert caveats == (), f"the fixture must be plain, so only the key decides: {changes}"
+        assert bool(kept) is key.is_identifying, (
+            f"`is_identifying` says {key.is_identifying} and the partition "
+            f"{'kept' if kept else 'excluded'} the point the key was taken from. "
+            f"A rule was added to one of them and not the other: unrecorded {changes}"
         )
 
 
