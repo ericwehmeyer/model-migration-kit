@@ -4349,3 +4349,49 @@ raise it, that is a C7 follow-up and C22 stops and reports rather than
 compensating in the wiring. **Plumbing that quietly patches a producer's honesty
 is the one shape of this defect nobody would find**, because no reviewer reads
 the wiring for claims about the data.
+
+#### R21.6 — counted, not argued: the report imports three names from `series`
+
+R21.1 is an argument from two contract clauses. This is the measurement, taken
+on `main` at `4ddd07e`, and it settles it.
+
+**Every production caller of C4's, C7's and C11's work, outside `series.py`
+itself:**
+
+```
+$ grep -rn "spot_check|candidate_field|parameter_strip|correct_field|
+            partition_comparable|trend(" src/ --include=*.py
+          | grep -v src/model_migration_kit/series.py
+(no matches)
+```
+
+**Everything `report.py` takes from `series.py`:**
+
+```python
+from .series import RunPoint, SeriesBuilder, parse_created   # report.py:190
+```
+
+Three names, all of them C3's. `SpotCheck`, `Trend`, `Succession`,
+`ParameterChange`, `Partition`, `Exclusion`, `Caveat`, `ComparabilityKey` and
+every function that builds them are exported from `series.py` and **imported by
+nothing**. They are reachable only from `tests/test_series.py`.
+
+So the position is not that six elements are awkward to render. It is that
+**four merged chunks — C4, C7, C11, and C21's counting work before C10 wired
+it — produce values no production code path ever reads.** They are exercised
+exclusively by their own tests, which is why every gate stays green and why the
+rendered document is byte-identical across three of those merges.
+
+This also settles what C22 is worth. It is not plumbing tidy-up: it is the
+single edit that connects roughly two thousand lines of reviewed, tested,
+merged work to the artifact, and until it lands the honest description of those
+chunks is *written and verified, not shipped*.
+
+**And it explains the byte-identical render**, which is worth spelling out
+because that symptom is overloaded on this project: a render that does not move
+is *also* the symptom of the `PYTHONPATH` trap, where a bare `migkit demo`
+silently renders the main checkout's code. Two very different causes, one
+identical observation. The way to tell them apart is to print
+`model_migration_kit.__file__` before believing either — and after C10 the
+correct render genuinely is unchanged, which is the first time on this plan that
+"nothing moved" has been the right answer rather than a mistake.
