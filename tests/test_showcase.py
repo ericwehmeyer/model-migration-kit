@@ -67,7 +67,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from opik_rigor import EvidenceLog, FakeAdapter, assert_pass_rate
+from opik_rigor import EvidenceLog, FakeAdapter, PassRateError, assert_pass_rate
 
 from model_migration_kit.comparison import ComparisonReport, compare
 from model_migration_kit.contracts import GoldenItem, hash_file
@@ -416,6 +416,7 @@ def test_the_showcase_lives_in_scripts_beside_the_generator_of_the_set_it_drives
 
 
 def test_the_showcase_reaches_for_no_http_client_so_seeding_the_document_stays_offline() -> None:
+    _showcase()  # so a missing module fails here as ModuleNotFoundError, not as an OSError
     source = SCRIPT.read_text(encoding="utf-8")
     found = sorted({match.group(1) for match in NETWORK_IMPORTS.finditer(source)})
     assert not found, (
@@ -748,8 +749,8 @@ def _review_band(n: int) -> tuple[int, ...]:
     for successes in range(n + 1):
         try:
             assert_pass_rate((successes, n), PASS_RATE_FLOOR, confidence=CONFIDENCE)
-        except Exception as exc:  # noqa: BLE001 - rigor's PassRateError, by duck type
-            stats = dict(getattr(exc, "stats", {}))
+        except PassRateError as exc:
+            stats = dict(exc.stats)
             if stats.get("underpowered"):
                 band.append(successes)
     return tuple(band)
