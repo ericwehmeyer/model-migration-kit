@@ -135,6 +135,14 @@ CONFIDENCE = 0.95
 #: in rigor's power arithmetic shows up as a diff on this line.
 REVIEW_BAND = (432, 442)
 
+#: Night 6's seed, and the rendered consequence that made it preferable to the one
+#: item further down. Candidate C fails eight items -- 440 of 480 passing -- and
+#: rigor asks for 931 further runs. Nine failing items is 435, still REVIEW and
+#: still rule 3, and asks for 6,364.
+REVIEW_NIGHT_PASSES = 440
+REVIEW_NIGHT_RUNS_NEEDED = 931
+REVIEW_NIGHT_RUNS_REFUSED = 6364
+
 #: The two tags the collapse can touch, and the four it cannot.
 REFUSAL_TAG = "refusal"
 SUMMARISATION_TAG = "summarisation"
@@ -697,6 +705,57 @@ def test_night_fourteen_rescripts_candidate_b_on_refusal_items_only_and_on_all_s
     )
 
 
+@pytest.mark.parametrize("night", GREEN_NIGHTS[:-1])
+def test_consecutive_green_nights_never_script_the_same_failures_twice(night: int) -> None:
+    """``_rotation_night`` returns each green night's own set, and only 14's is reused.
+
+    The rotation is why the timeline moves: a baseline failing the same five items
+    every night draws a flat line and reads as fabricated. Only the *freeze* on
+    night 14 was pinned, and only through candidate B, whose refusal collapse one
+    test watches. So ``LAST_GREEN_NIGHT - 1 if night >= LAST_GREEN_NIGHT else
+    night`` -- a leak that makes nights 12, 13 and 14 all reuse night 12's set --
+    survives the whole suite: it moves the baseline and candidates A and C
+    identically on both nights, and nothing anywhere looks at a green night twice.
+
+    Asserted through the adapters rather than through the schedule's internals,
+    because "what this model says on night 7" is the contract and "which index the
+    rotation used" is an implementation of it.
+    """
+    for position, (before, after) in enumerate(
+        zip(_every_adapter(night), _every_adapter(night + 1), strict=True)
+    ):
+        assert _responses(before) != _responses(after), (
+            f"side {position} ({before.model_id}) answers nights {night} and "
+            f"{night + 1} identically. Nights 1 to 13 rotate; a flat line across a "
+            f"fortnight reads as fabricated, and the only night that may reuse "
+            f"another's failing set is {COLLAPSE_NIGHT}."
+        )
+
+
+def test_night_fourteen_freezes_the_other_three_sides_at_night_thirteen_exactly() -> None:
+    """The control, asserted rather than left in a private docstring.
+
+    ``_rotation_night`` stops the rotation on night 14 so that the *only* thing
+    which differs anywhere in that night's run is candidate B's sixteen refusal
+    items. The cost is deliberate and is the thing a sceptical reader will notice
+    first: the baseline, candidate A and candidate C repeat night 13's numbers
+    exactly, so two of the three rendered candidate rows are identical except for
+    the date. That is a control, not a duplicated record, and a test saying so is
+    the difference between the two.
+    """
+    for position, (before, after) in enumerate(
+        zip(_every_adapter(LAST_GREEN_NIGHT), _every_adapter(COLLAPSE_NIGHT), strict=True)
+    ):
+        if "candidate-b" in before.model_id:  # the one side that is meant to move
+            continue
+        assert _responses(before) == _responses(after), (
+            f"side {position} ({before.model_id}) answers night {COLLAPSE_NIGHT} "
+            f"differently from night {LAST_GREEN_NIGHT}. Any ordinary substitution "
+            f"on night 14 fires alongside the collapse and is indistinguishable, in "
+            f"the rendered document, from a consequence of the point release."
+        )
+
+
 def test_candidate_b_is_the_second_of_the_three_candidates_on_every_night() -> None:
     """Position is load-bearing: C17 compares candidate-by-candidate in this order,
     and a showcase whose 'candidate B' moved position between nights would put two
@@ -952,6 +1011,38 @@ def test_night_sixs_review_is_the_straddled_floor_and_not_the_power_warning(
     assert judge.regressed is False
     assert judge.floor_cleared is False
     assert judge.underpowered is True
+
+
+@pytest.mark.slow
+def test_night_sixs_review_asks_for_a_number_of_further_runs_a_reader_can_act_on(
+    nights: Callable[[int], Night],
+) -> None:
+    """Why candidate C fails eight items on night 6 and not nine.
+
+    Both are REVIEW, both are rule 3, and the difference shows up in exactly one
+    place: the callout that says how many more runs would settle it. Eight failing
+    items is 440/480 and ``runs_needed`` 931. Nine is 435/480 and 6,364 -- still
+    honest, and it reads as a refusal dressed as arithmetic rather than as a number
+    anybody is going to collect.
+
+    That choice was argued at length in the showcase's docstring and pinned by
+    nothing: ``_REVIEW_NIGHT_PLAN = (1, 2)`` could become ``(1, 3)`` and the whole
+    suite stayed green, because the verdict, the rule and all four flags are the
+    same on either side of it. The rendered number is the only observable, so the
+    rendered number is what this asserts.
+    """
+    judge = nights(REVIEW_NIGHT).comparisons[nights(REVIEW_NIGHT).candidate("c")].judge(JUDGE_NAME)
+    assert judge.candidate["successes"] == REVIEW_NIGHT_PASSES, (
+        f"candidate C passed {judge.candidate['successes']} on night {REVIEW_NIGHT}, "
+        f"not {REVIEW_NIGHT_PASSES}. Eight failing items of five draws below a "
+        f"baseline of {COMPLETIONS_PER_SIDE} is the seed the callout below rests on."
+    )
+    assert judge.runs_needed == REVIEW_NIGHT_RUNS_NEEDED, (
+        f"night {REVIEW_NIGHT}'s callout would print runs_needed={judge.runs_needed}. "
+        f"{REVIEW_NIGHT_RUNS_NEEDED} is what the showcase chose eight failing items "
+        f"over nine to get; one item further down prints {REVIEW_NIGHT_RUNS_REFUSED}, "
+        f"which is a refusal dressed as arithmetic."
+    )
 
 
 @pytest.mark.slow
