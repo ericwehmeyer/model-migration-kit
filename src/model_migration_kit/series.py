@@ -1436,13 +1436,21 @@ class Succession(NamedTuple):
 class Trend(NamedTuple):
     """One candidate lineage as one line, plus everything that did not make it.
 
-    Four fields rather than the bare ``tuple[RunPoint, ...]`` C7 first specified,
+    Five fields rather than the bare ``tuple[RunPoint, ...]`` C7 first specified,
     because a bare tuple has room only for presences. C7's contract said the
     caller "learns of [undated points] separately" and then returned a type
     through which nothing whatever could be learned; R15.3 names that as the
     third instance of one defect class in this plan (C4's flag with no field,
     C13's counts, this). A contract that promises to report an absence needs
     somewhere to report it.
+
+    :attr:`caveats` is the fourth instance, caught in the type R15.3 wrote to
+    close the class: :func:`partition_comparable` returns three tuples and the
+    first draft of this one had room for two, so the A/A-calibration and
+    uneven-coverage notes were computed and dropped on the floor. It is appended
+    **last**, deliberately -- prefix unpacking and every four-element comparison
+    written against the earlier shape still hold, which is the same
+    backward-compatible discipline R15.5 applies to ``timeline_svg``.
     """
 
     #: Ascending by parsed ``created``; points sharing an instant keep input order.
@@ -1456,6 +1464,10 @@ class Trend(NamedTuple):
     #: axis can place them on. A count, because a count is what the caller was
     #: promised and what C10/C14 render.
     undated: int
+    #: Notes on points that were **kept**, not reasons for removing any -- C4's
+    #: type again, and one point may carry more than one. Unfiltered: see
+    #: :func:`trend`.
+    caveats: tuple[Caveat, ...]
 
 
 def trend(
@@ -1512,6 +1524,15 @@ def trend(
     both would report one lost night as two, and counting it only as undated
     would trade a reason for a tally.
 
+    **The caveats come out whole, and are not filtered to the drawn rows.** Every
+    point in :attr:`Trend.points` has a row for its note to print against, so
+    there is nothing to filter on that count; and a point kept by the partition
+    but dropped as undated has no row at all, which makes its caveat the *only*
+    surviving trace of it -- :attr:`Trend.undated` is a bare count and names no
+    point. Dropping it to tidy the tuple would be this plan's own defect class a
+    fifth time. A :class:`Caveat` carries its own point, so a renderer that has
+    no row for one can say so; it cannot invent one it was never handed.
+
     Nothing is de-duplicated, here or anywhere else in this module: two identical
     runs are two runs.
     """
@@ -1523,9 +1544,9 @@ def trend(
     ]
     anchor = _anchor(mine)
     if anchor is None:
-        return Trend((), (), (), 0)
+        return Trend((), (), (), 0, ())
 
-    kept, excluded, _ = partition_comparable(mine, against=comparability_key(anchor))
+    kept, excluded, caveats = partition_comparable(mine, against=comparability_key(anchor))
     dated = [
         (moment, point) for point in kept if (moment := parse_created(point.created)) is not None
     ]
@@ -1534,7 +1555,7 @@ def trend(
     # `sorted` is stable, which is the whole of how "input order preserved" for
     # points sharing an instant is kept.
     ordered = tuple(point for _, point in sorted(dated, key=lambda pair: pair[0]))
-    return Trend(ordered, _successions(ordered), excluded, len(kept) - len(dated))
+    return Trend(ordered, _successions(ordered), excluded, len(kept) - len(dated), caveats)
 
 
 def _anchor(points: Sequence[RunPoint]) -> RunPoint | None:
