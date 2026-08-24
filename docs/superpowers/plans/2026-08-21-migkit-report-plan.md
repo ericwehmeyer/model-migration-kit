@@ -4563,3 +4563,141 @@ cost is worth paying: the alternative is that nothing renders until C6 and C7's
 follow-up both land, which is the scheduling mistake this plan has already made
 once and written at the top of its handoff — **order the chunks so the artifact
 moves.**
+
+### R24 — rulings on C7's review, and a run that R15 made invisible
+
+C7's reviewer ran 43 mutants; **11 survived both `tests/test_series.py` and the
+full 1998-test suite**, and all 11 were confirmed non-equivalent by probe. The
+first-run marker ruling came through clean — the mutation I asked for goes red,
+and four variants I did not ask for go red too, so R20.2's failure is not
+repeated here. Everything below is what the review found underneath that.
+
+#### R24.1 — a run in the log, on the same baseline, that the page never mentions
+
+**The finding.** A run whose `candidate_model` is not in the declared lineage
+disappears from `points`, `excluded`, `undated` **and** `caveats`. Probed with
+the 14-night lineage declared one character wrong:
+
+```
+13 points, 0 excluded, 0 undated, 0 caveats, no succession
+the strip reports model_id UNCHANGED, six changed=False rows
+```
+
+The reader gets a clean thirteen-night line stating that nothing moved, and
+night 14 appears nowhere on the page.
+
+**R15 created this**, and said so without noticing: R15.1 replaced suffix
+inference with operator declaration and observed that a wrong split now
+*"requires the operator to declare it wrong… precisely the case where a reader
+most needs to notice."* `Trend` has no field in which to notice it.
+
+**Ruling: `Trend` gains two fields, and the distinction between them matters.**
+
+- **`outside_lineage: tuple[RunPoint, ...]`** — runs sharing the
+  `baseline_model` whose `candidate_model` is not in the declared lineage.
+- **`absent_models: tuple[str, ...]`** — declared models with no run in the log
+  at all. The one-character typo shows up here, which is the case most likely
+  to be an operator error rather than a fact about the data.
+
+**These do not go in `excluded`, and `trend`'s existing docstring is right about
+why:** a differently-*based* run "is simply not selected — putting it in
+`Trend.excluded` would bury the exclusions that matter under every other
+experiment in the log." That reasoning holds for a different `baseline_model`,
+which really is somebody else's experiment. It does **not** hold for a run on
+the same baseline whose candidate is merely undeclared: that run is in this
+comparison family, and its absence from the chart is a claim about the
+declaration, not about the run. Keeping the two apart is the whole point.
+
+This is the fifth chunk turning on *an absence must not render as a
+measurement*, and the second time R15's own correction created the next
+instance of the class it was written to remove.
+
+#### R24.2 — `_anchor` has three rulings in its docstring and no tests
+
+All four `_anchor` mutants survive, all four are genuine divergences, and A1 is
+the worst thing in this review after R24.1:
+
+| | shipped | mutated | what the reader sees |
+|---|---|---|---|
+| **A1** the newest run anchors | 13 nights drawn, night 14 excluded | **1 point, 13 exclusions** | a single dot where a fortnight's line belongs; the newcomer evicts its own history |
+| **A2** the `is_identifying` skip removed | night 1 excluded, 2–4 drawn | **nothing drawn**, 4 exclusions | an empty chart with four refusals where three nights agreed |
+| **A3** undated points rank first | 3 dated drawn | **nothing drawn** | a run with no timestamp silently defines the axis for the whole line |
+| **A4** dates ignored entirely | same | same as A3 | the line changes when `read_series` changes its read order |
+
+A1 inverts `_anchor`'s own stated principle — the established series keeps the
+axis — and nothing tests it. **Each of the four gets a test.**
+
+#### R24.3 — the two absence words, and the marker that could re-fuse them
+
+`_NO_PREVIOUS_RUN = "no previous run recorded"` **survives all 1998 tests.** The
+suite asserts the marker differs from `_UNRECORDED`, but nothing keeps it out of
+the *"recorded"* vocabulary — so a marker satisfying every assertion can still
+print both absences as the same idea, which is exactly what the ruling forbade.
+**One assertion closes it: `"recorded" not in marker.lower()`.**
+
+#### R24.4 — C5 and C7 rank undated runs in opposite directions, and both are right
+
+C5 ruled dateless rows sort **oldest**; C7's `_anchor` ranks undated runs
+**after every dated one**. Neither module's docstring acknowledges the other,
+which reads like a contradiction and is not one:
+
+- C5's question is **display order in a table**, where the reader can see the
+  blank `stale_days` cell and position carries no ranking claim.
+- C7's question is **which run defines the axis**, and A3 shows what happens
+  when an undated run wins it: the whole line vanishes.
+
+*Sort it oldest; never let it anchor.* **No behaviour changes. Both docstrings
+must cross-reference the other**, because the next reader who notices the
+asymmetry will otherwise "fix" one of them.
+
+#### R24.5 — a docstring that invites the tidy that breaks the code
+
+`_Cell` states: *"`value` is `""` exactly when the run recorded nothing… so one
+emptiness test decides for hashes, ids and counts alike."* **False for a
+whitespace-padded field**, where `value` is `"   "` and the run recorded
+nothing. The shipped code is safe because `_parameter_change` guards with
+`_recorded(...)` rather than `== ""` — but the sentence tells the next reader
+the two are interchangeable, and survivor C6 means the suite would not object to
+the swap. Probed: it turns a padded hash against a real one into
+`changed=True, "judges changed"` **from a padding artifact**.
+
+Same root: `ParameterChange.before`'s *"Never `""`"* is true and is the wrong
+guarantee — the failure mode is a *blank* cell, and `"   "` satisfies the
+docstring while failing the intent. Fix both sentences, and fix C6 with them.
+
+Also: `trend`'s caveats paragraph still **leads** with the reason `0b84d52`
+retracted before giving the corrected one. The leading sentence is true and does
+no work, and it is the sentence a tidier keeps.
+
+#### R24.6 — two rulings for C14, taken now because renames get expensive
+
+1. **`_UNRECORDED` and `_NO_PREVIOUS_RUN` become public.** A template that wants
+   to style a first-run cell differently from an unrecorded one currently has
+   only two options: import a private name, or hard-code the literal — which the
+   constant's own docstring forbids. `report.py` already sets the opposite
+   precedent deliberately (`THRESHOLD_SOURCE_UNRECORDED`,
+   `INTERVAL_BAR_NO_RATE`), and R7 ruled the general case: *import the constant,
+   never hard-code its value.* Promote both **before C14 types against them**.
+2. **`ParameterChange.name` for the golden set becomes `goldenset`**, without a
+   space. Five of the six names are identifier-safe and exactly one is not, so a
+   template deriving a CSS class, an anchor id or a dict key from `row.name`
+   breaks on one row in six. The contract fixed these strings, so this is a
+   ruling and not a fix: **the display label is the template's job**, which is
+   where labels belong. `ParameterChange` stays at four fields.
+
+`Succession.created` stays a raw string — `parse_created` is public, so the
+caption parses it. Say so in the field comment, which currently justifies the
+field by *not* indexing back into `points`.
+
+#### R24.7 — the monoculture here is pairwise
+
+R20.1 has been about a single field held constant. C7's fixtures vary nearly
+every field individually; what they never do is **combine** two. No C7 fixture
+has undated *and* a caveat (M4a), undated *and* an exclusion (M5a), an unsorted
+input *and* a succession (C13), a key disagreement *on the oldest or newest*
+point (A1), or a whitespace-only value anywhere in the file (C6).
+
+**So R20.1 needs widening: a fixture set can vary every field one at a time and
+still be a monoculture in pairs.** The survivors here are made of exactly that,
+and the cheapest defence is to ask, for each pair of conditions the code branches
+on, whether any single fixture carries both.
