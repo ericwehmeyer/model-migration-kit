@@ -1146,6 +1146,23 @@ stale, which is the reasoning already written at `report.py:645-650`.
 
 #### C11 — the spot-check line, with its assumption stated
 
+> **AMENDED — the signature below is stale; read R26.4 first.** `spot_check`
+> now takes a **required** keyword-only `subject: SpotCheckSubject`
+> (`judge: str`, `side: str`), and `SpotCheck` carries it as a seventh field.
+> The sentence names it: *"A 12-prompt spot check **of the candidate under
+> judge accuracy**, drawn at random from these 96 items…"*. `side` is validated
+> against `{"baseline", "candidate"}`; an unnamed judge is rendered in words
+> rather than as a gap. Everything else below — the hypergeometric, the
+> unstable-counts-as-passing choice, and every `None` case — is unchanged.
+>
+> Two measured facts that belong with it. **At the bundled demo's defaults the
+> golden set is 12 items and `k` defaults to 12, so `items <= k` and
+> `spot_check` correctly returns `None` on both sides** — the demo renders no
+> spot-check sentence however well this is wired, and that absence is correct
+> behaviour, not a bug to chase (R26.5). And R23.1's claim that
+> `ReportModel.item_counts` carries `passing`/`failing`/`unstable` at its top
+> level is **wrong** — they are two levels down, per judge and per side.
+
 > **AMENDED — read R14.1, R18.1, R18.2 and R18.3 before this section.** Four
 > corrections, one of which reverses this contract's own argument.
 > (1) The probability for the `88/8/0, k=12` row is **0.32877**, not `0.351`;
