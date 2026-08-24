@@ -1243,6 +1243,189 @@ def test_an_unjoinable_input_is_truncated_and_quoted_in_the_reason():
     assert len(result.reason) < len(long_input)
 
 
+# --------------------------------------------------------------------------- #
+# ... and so is every *other* value a refusal names
+#
+# The test above pins the one path that was always bounded: an input that is a
+# string. Every other value a refusal quotes comes out of the same log and was
+# not bounded at all. ``tests/test_report_untrusted_input.py`` opens with the
+# premise -- an evidence log is designed to be shared, so a reviewer renders one
+# they did not write -- and that premise is about a value's length as much as
+# about its content.
+#
+# Measured on the build before the fix, through the deferred path:
+#
+#   a 2 MB JSON list as one verdict's `input`   ->  1,500,253-char reason
+#   a 500,000-char `model_id` on a failure      ->    500,145-char reason
+#   10,000 models known only from failures      ->    139,248-char reason
+#   a 2,000,000-char *string* input             ->        335-char reason
+#
+# The last line is the control: the string path truncated correctly the whole
+# time, which is what made the others easy to miss. A `reason` is carried on the
+# run, handed out on `ReportModel.dimension_counts`, and printed by whatever
+# renders it.
+#
+# The ceiling below is generous on purpose. It is not a formatting assertion --
+# the sentences here run to a few hundred characters and are allowed to grow --
+# it is the assertion that the length is a property of *this module* and not of
+# the log.
+# --------------------------------------------------------------------------- #
+
+#: What no refusal sentence may exceed, however large the log's strings are.
+#: Roughly four times the longest sentence this module writes.
+_REASON_CEILING = 2000
+
+#: Big enough that an untruncated value is unmistakable in the failure message.
+_HUGE = "H" * 500_000
+
+
+def _reason_for(records, items=None, *, judge=JUDGE) -> str:
+    """Drive the deferred phase and hand back the refusal it declined with."""
+    result = _tallied(records, items if items is not None else _by_id(_item("a", "alpha", ("t",))), judge=judge)
+    assert result.available is False, "expected a refusal, got a matrix"
+    return result.reason
+
+
+def _bounded(reason: str, needle: str, what: str) -> None:
+    assert needle not in reason, (
+        f"the whole {what} was pasted into the reason ({len(reason):,} characters)"
+    )
+    assert len(reason) < _REASON_CEILING, (
+        f"the reason naming a huge {what} is {len(reason):,} characters; its length "
+        f"is a property of the log rather than of this module"
+    )
+
+
+def test_a_verdict_input_that_is_not_a_string_is_quoted_at_the_same_width():
+    """The headline: `repr` of an arbitrary payload value, previously kept whole.
+
+    A JSON log can put anything in the ``input`` slot. A list of 500,000 integers
+    is a two-megabyte payload whose ``repr`` is longer still, and it reached the
+    reason untouched because the truncation only ran on the ``str`` branch.
+    """
+    payload_list = list(range(500_000))
+    records = [
+        _record(_JUDGE_VERDICT, {"judge": JUDGE, "passed": True, "input": payload_list}),
+        _completed(BASELINE, {JUDGE: 1}),
+    ]
+
+    reason = _reason_for(records)
+
+    _bounded(reason, repr(payload_list), "payload value")
+    assert "in no golden-set item" in reason, "and it is still the right sentence"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param({"prompt": "H" * 500_000}, id="a dict"),
+        pytest.param(["H" * 500_000], id="a list"),
+        pytest.param(500_000 * 10**9, id="a very large int"),
+        pytest.param(None, id="null"),
+        pytest.param(True, id="a bool"),
+    ],
+)
+def test_no_shape_of_non_string_input_escapes_the_bound(value):
+    """One branch, so one bound -- but JSON has more than one non-string shape."""
+    records = [
+        _record(_JUDGE_VERDICT, {"judge": JUDGE, "passed": True, "input": value}),
+        _completed(BASELINE, {JUDGE: 1}),
+    ]
+
+    assert len(_reason_for(records)) < _REASON_CEILING
+
+
+def test_a_huge_model_id_on_a_failed_completion_does_not_reach_the_reason_whole():
+    """``_unknown_item`` interpolated both of its arguments with a bare ``!r``."""
+    records = [_record(EVENT_COMPLETION, {"model_id": _HUGE, "item_id": 7, "ok": False})]
+
+    _bounded(_reason_for(records), _HUGE, "model_id")
+
+
+@pytest.mark.parametrize(
+    ("what", "item_id"),
+    [
+        pytest.param("string item_id", _HUGE, id="a string"),
+        pytest.param("non-string item_id", [_HUGE], id="wrapped in a list"),
+        pytest.param("non-string item_id", {_HUGE: 1}, id="wrapped in a dict"),
+    ],
+)
+def test_a_huge_item_id_on_a_failed_completion_is_bounded_too(what, item_id):
+    """The other half of ``_unknown_item``, in both of the shapes that reach it.
+
+    A string item id that is simply unknown takes the deferred branch and is
+    refused at the join; a non-string one is refused where it is read. Both write
+    the same sentence, so both have to bound the same value.
+    """
+    records = [
+        _record(EVENT_COMPLETION, {"model_id": BASELINE, "item_id": item_id, "ok": False}),
+        _verdict("alpha", True),
+        _completed(BASELINE, {JUDGE: 1}),
+    ]
+
+    _bounded(_reason_for(records), _HUGE, what)
+
+
+def test_a_huge_judge_name_does_not_reach_the_reason_whole():
+    """``judge`` comes off the log too, and four refusals name it."""
+    records = [_verdict("alpha", True), _completed(BASELINE, {JUDGE: 1})]
+
+    _bounded(_reason_for(records, judge=_HUGE), _HUGE, "judge name")
+
+
+def test_a_huge_model_id_on_judging_completed_does_not_reach_the_reason_whole():
+    """The group-shortfall refusal names the model the close was for."""
+    records = [_verdict("alpha", True), _completed(_HUGE, {JUDGE: 99})]
+
+    _bounded(_reason_for(records), _HUGE, "model_id")
+
+
+def test_a_huge_model_id_known_only_from_failures_does_not_reach_the_reason_whole():
+    records = [
+        _completion(_HUGE, "a", ok=False),
+        _verdict("alpha", True),
+        _completed(BASELINE, {JUDGE: 1}),
+    ]
+
+    _bounded(_reason_for(records), _HUGE, "model_id")
+
+
+def test_the_refusal_that_lists_models_bounds_how_many_it_lists():
+    """The one path whose length is unbounded in *count* rather than in width.
+
+    Bounding each name leaves the sentence proportional to how many models the log
+    names, and nothing bounds that: the models here reach the tally from failed
+    ``migkit.completion`` records, which a log may hold any number of. Ten
+    thousand of them measured 139,248 characters with every individual name short.
+    """
+    records = [_completion(f"model-{n}", "a", ok=False) for n in range(10_000)]
+    records += [_verdict("alpha", True), _completed(BASELINE, {JUDGE: 1})]
+
+    reason = _reason_for(records)
+
+    assert len(reason) < _REASON_CEILING, (
+        f"the reason is {len(reason):,} characters: each name is bounded but the "
+        f"list is not, so its length is still a property of the log"
+    )
+    assert "more" in reason, "and it says how many it did not name"
+
+
+def test_a_huge_golden_set_item_id_in_the_duplicate_input_refusal_is_bounded():
+    """The golden set arrives by a path the log names, so it is bounded here too."""
+    items = _by_id(_item(_HUGE, "alpha"), _item("b", "alpha"))
+
+    _bounded(_reason_for([_verdict("alpha", True)], items), _HUGE, "item id")
+
+
+def test_a_short_value_is_quoted_exactly_as_it_always_was():
+    """The bound is a ceiling and not a reformatting: nothing short changes shape."""
+    records = [_record(EVENT_COMPLETION, {"model_id": BASELINE, "item_id": 7, "ok": False})]
+
+    reason = _reason_for(records)
+
+    assert f"for {BASELINE!r} names item 7," in reason
+
+
 def test_a_golden_set_item_with_duplicate_tags_trips_the_invariant():
     """``goldenset._parse_tags`` returns a duplicate-free tuple, so this is a bug.
 

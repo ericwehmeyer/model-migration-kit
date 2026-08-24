@@ -21,7 +21,7 @@ no path, and does not import ``report`` -- ``report`` imports this.
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple
 
@@ -177,9 +177,52 @@ def _shown_excerpt(excerpt: str) -> str:
     return repr(excerpt)
 
 
+def _shown_value(value: object) -> str:
+    """``repr`` of anything the log supplied, at the width a quoted input gets.
+
+    Every value a refusal names comes out of an evidence log, and an evidence log
+    is *designed* to be shared -- ``report.py``'s own docstring says the happy path
+    is a log rendered later, on another machine, by somebody who was not there. So
+    a model id, an item id, a judge name and a payload value that should have been
+    a string are all input from outside the trust boundary, and the premise
+    ``tests/test_report_untrusted_input.py`` opens with applies to their *length*
+    as much as to their content.
+
+    The ellipsis sits outside the quotes rather than inside them, which is the one
+    place this differs from :func:`_shown_excerpt`. There the excerpt is a string
+    and ``'abc...'`` is still a readable quotation of a string; here what was cut
+    is a ``repr``, and a truncated ``repr`` is not a ``repr`` of anything. Putting
+    the marker outside says so instead of handing the reader a literal they might
+    trust.
+    """
+    shown = repr(value)
+    if len(shown) > _INPUT_SHOWN:
+        return shown[:_INPUT_SHOWN] + "..."
+    return shown
+
+
+#: How many names a refusal that lists them prints before it starts counting. The
+#: per-name width above bounds each entry and not how many there are, and the
+#: models a log can name is a property of the log rather than of the golden set.
+_MAX_NAMED = 5
+
+
+def _shown_names(names: Sequence[str]) -> str:
+    """A comma-joined list of names, bounded in width *and* in count."""
+    head = ", ".join(_shown_value(one) for one in names[:_MAX_NAMED])
+    rest = len(names) - _MAX_NAMED
+    return f"{head} and {rest} more" if rest > 0 else head
+
+
 def _shown(text: object) -> str:
     if not isinstance(text, str):
-        return repr(text)
+        # Not a string, so there is no excerpt to take: what gets quoted is the
+        # ``repr``, and it is bounded here rather than filed whole. An earlier
+        # version of this returned the bare ``repr``, and a 2 MB JSON list in the
+        # ``input`` slot of one judge.verdict produced a 1,500,253-character
+        # ``reason`` -- carried on the run, onto ``ReportModel.dimension_counts``,
+        # and into whatever renders it.
+        return _shown_value(text)
     return _shown_excerpt(_excerpt(text))
 
 
@@ -247,7 +290,8 @@ def _index(items: Mapping[str, GoldenItem]) -> _Index:
                 by_digest={},
                 tags=frozenset(),
                 reason=(
-                    f"golden-set items {first!r} and {item_id!r} share the same input "
+                    f"golden-set items {_shown_value(first)} and "
+                    f"{_shown_value(item_id)} share the same input "
                     f"text. A verdict joins to an item by its input -- judge.verdict "
                     f"carries no item id -- and a golden set enforces unique ids and "
                     f"not unique inputs, so these two cannot be told apart and every "
@@ -268,7 +312,7 @@ def _index(items: Mapping[str, GoldenItem]) -> _Index:
 
 def _unjoinable(judge: str, shown: str) -> str:
     return (
-        f"a judge.verdict for judge {judge!r} carries an input that is in "
+        f"a judge.verdict for judge {_shown_value(judge)} carries an input that is in "
         f"no golden-set item: {shown}. The golden set's hash was "
         f"already checked against the one the run used, so an unjoinable "
         f"input means the log and the set disagree in a way that hash did "
@@ -276,10 +320,10 @@ def _unjoinable(judge: str, shown: str) -> str:
     )
 
 
-def _unknown_item(model_id: str, item_id: object) -> str:
+def _unknown_item(model_id: object, item_id: object) -> str:
     return (
-        f"a failed migkit.completion for {model_id!r} names item "
-        f"{item_id!r}, which is in no golden-set item. Guessing "
+        f"a failed migkit.completion for {_shown_value(model_id)} names item "
+        f"{_shown_value(item_id)}, which is in no golden-set item. Guessing "
         f"which item failed would move a failure to the wrong tag."
     )
 
@@ -320,8 +364,8 @@ class _NoModelClose:
     def text(self, judge: str) -> str:
         return (
             f"a migkit.judging_completed record names no model, so the "
-            f"{self.sizes.get(judge, 0)} verdict(s) for judge {judge!r} that it "
-            f"closes cannot be attributed to a side."
+            f"{self.sizes.get(judge, 0)} verdict(s) for judge "
+            f"{_shown_value(judge)} that it closes cannot be attributed to a side."
         )
 
 
@@ -439,8 +483,24 @@ class DimensionTally:
     into, and nothing in a stream can see that coming.
 
     An input that is not a string is refused where it is read rather than filed. It
-    can join to no golden set at all, so nothing is learned by keeping it, and
-    ``repr`` of an arbitrary payload value has no length this module controls.
+    can join to no golden set at all, so nothing is learned by keeping it.
+
+    **A refusal sentence is bounded too, and it was not always.** This paragraph
+    used to end "``repr`` of an arbitrary payload value has no length this module
+    controls", offering that as the reason for refusing rather than filing -- and
+    the refusal then carried the whole ``repr`` anyway, so the value was not filed
+    but was still held, on the run, on ``ReportModel.dimension_counts``, and into
+    whatever renders it. Measured on the build before the fix: a 2 MB JSON list in
+    one ``judge.verdict``'s ``input`` slot produced a 1,500,253-character
+    ``reason``, and a 500,000-character ``model_id`` on one failed
+    ``migkit.completion`` produced a 500,145-character one, while a 2,000,000-
+    character *string* input truncated correctly to 335. Every value a refusal
+    names now goes through :func:`_shown_value`, and the one refusal that lists
+    names rather than naming one goes through :func:`_shown_names`, which bounds
+    the count as well -- 10,000 models known only from failed completions
+    measured 139,248 characters, and no golden set bounds how many models a log
+    may name.
+
 
     **Every judge on the panel is tallied, and the judge is named at the end.**
     ``report`` learns which judge to count from the ``judges`` list on that same
@@ -603,8 +663,9 @@ class DimensionTally:
             if written != expected:
                 run.refuse(
                     judge,
-                    f"judging for {model_id!r} closed a group of {written} "
-                    f"judge.verdict record(s) for judge {judge!r}, but that record "
+                    f"judging for {_shown_value(model_id)} closed a group of "
+                    f"{written} judge.verdict record(s) for judge "
+                    f"{_shown_value(judge)}, but that record "
                     f"says {expected} were written ({n_graded} graded - {n_imputed} "
                     f"imputed - {n_failed} unparseable, since an imputed or "
                     f"unparseable record never reaches evaluate() and so writes no "
@@ -735,26 +796,28 @@ class DimensionTally:
         if run.closes == 0:
             return _declined(
                 f"the log holds no migkit.judging_completed record, so no verdict can be "
-                f"attributed to a model and judge {judge!r} has no side to count under. A "
+                f"attributed to a model and judge {_shown_value(judge)} has no side to "
+                f"count under. A "
                 f"judging pass either did not run or did not finish."
             )
         if run.group.get(judge):
             return _declined(
                 f"{run.group_size.get(judge, 0)} judge.verdict record(s) for judge "
-                f"{judge!r} are still open at the end of the log: no "
+                f"{_shown_value(judge)} are still open at the end of the log: no "
                 f"migkit.judging_completed follows them, so nothing names which model "
                 f"they belong to. A judging pass did not complete."
             )
         if run.verdicts.get(judge, 0) == 0:
             return _declined(
-                f"judge {judge!r} produced no judge.verdict records anywhere in this log. "
+                f"judge {_shown_value(judge)} produced no judge.verdict records anywhere "
+                f"in this log. "
                 f"Either no judging pass ran under that name, or the panel spells it "
                 f"differently there."
             )
         unclosed = sorted(set(counts) - run.closed_models)
         if unclosed:
             return _declined(
-                f"the log names {', '.join(repr(one) for one in unclosed)} only in failed "
+                f"the log names {_shown_names(unclosed)} only in failed "
                 f"migkit.completion records: no migkit.judging_completed ever closes a "
                 f"group for that model, so its judging pass did not run or did not "
                 f"finish. Counting it anyway would publish a column built entirely out "
