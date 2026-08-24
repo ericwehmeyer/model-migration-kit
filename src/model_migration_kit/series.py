@@ -823,6 +823,14 @@ def spot_check(
     and not *runs*: nothing here is distributed over runs, and a director who
     reads "in X% of runs" and asks what a run is has found a hole.
 
+    Two further things the wording has to get right. It ends "in X% **of such
+    checks**", not "of spot checks", because "a spot check ... in X% of spot
+    checks" puts a singular subject inside its own plural denominator and eats
+    its own tail. And it names ``F`` in place -- "these 96 items, 8 of which
+    failed" -- because the first question a director asks the sentence is "out
+    of how many?", and a line whose answer lives only in a neighbouring field is
+    a line that cannot be checked where it is read.
+
     Returns ``None`` -- no sentence at all -- rather than a weaker one, when:
 
     * ``F == 0``. There was nothing to miss, so "a spot check would have found
@@ -855,9 +863,9 @@ def spot_check(
     # textbook expression rather than something they have to re-derive.
     probability = math.comb(items - items_failing, k) / math.comb(items, k)
     sentence = (
-        f"A {k}-prompt spot check drawn at random from these {items} items "
-        f"would have shown no failures at all in {_percent(probability)} "
-        "of spot checks."
+        f"A {k}-prompt spot check drawn at random from these {items} items, "
+        f"{items_failing} of which failed, would have shown no failures at all "
+        f"in {_percent(probability)} of such checks."
     )
     return SpotCheck(
         k=k,
@@ -876,16 +884,33 @@ def _percent(probability: float) -> str:
     a precision this estimate does not have: it assumes a random draw that no
     engineer actually performs.
 
-    The two guards exist because rounding here is not symmetric in its
-    consequences. Both ends of this scale flatter the argument the sentence is
-    making -- rounding a genuinely non-zero probability down to "0%" claims a
-    spot check would *always* have caught it, and rounding up to "100%" claims it
-    could never have. Neither is a claim the arithmetic made, so a value strictly
-    between the bound and the rounding threshold says so in words instead.
+    "Less than 1%", not "fewer than": a probability is a proportion, not a count
+    of things, and "fewer" wants a count noun. This phrase can land in the
+    most-quoted sentence in the document, where a grammatical slip reads as a
+    mistake in the arithmetic beside it.
+
+    The two guards exist because both ends of this scale assert a **certainty
+    the arithmetic did not compute**, and that is the whole of the reason. A
+    genuinely non-zero probability rounded down to "0%" says a spot check would
+    *always* have caught this; a probability below 1 rounded up to "100%" says it
+    could *never* have. Neither is a thing ``comb(N - F, k) / comb(N, k)``
+    returned, and a sentence that is quoted in a review must not put a certainty
+    in the reader's mouth that the calculation stopped short of.
+
+    Note that the two ends do not flatter the same party -- this docstring used
+    to claim they did. "0%" undercuts the tool, since a spot check that always
+    catches the regression is an argument against having run the harness; "100%"
+    flatters it. They are wrong in opposite directions, which is exactly why the
+    symmetric reason is the one that holds: it is not about which way the error
+    leans, it is that neither end was computed.
+
+    ``probability == 1`` is unreachable from :func:`spot_check` -- it needs
+    ``F == 0``, which returns ``None`` -- so the second guard is a plain
+    ``percent == 100`` and carries no dead test for it.
     """
     percent = round(probability * 100)
     if percent == 0 and probability > 0:
-        return "fewer than 1%"
-    if percent == 100 and probability < 1:
+        return "less than 1%"
+    if percent == 100:
         return "more than 99%"
     return f"{percent}%"

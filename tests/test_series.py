@@ -2636,22 +2636,138 @@ def test_the_sentence_is_about_spot_checks_and_never_about_runs():
     assert "runs" not in lowered
 
 
-def test_the_percentage_in_the_sentence_is_the_probability_that_was_computed():
+@pytest.mark.parametrize(
+    ("passing", "failing", "k"),
+    [
+        (88, 8, 12),
+        (90, 6, 12),
+        (80, 16, 12),
+        (48, 4, 12),
+        (36, 3, 12),
+        (56, 8, 12),
+    ],
+    ids=["33pct", "44pct", "10pct", "34pct-at-N=52", "32pct-at-N=39", "17pct-at-N=64"],
+)
+def test_the_percentage_in_the_sentence_is_the_probability_that_was_computed(
+    passing, failing, k
+):
     """A sentence carrying a different number from the field beside it is the
     exact shape of this chunk's failure mode: the arithmetic is corrected and the
     prose keeps the old constant, or the prose is written from the contract's
-    "34%" and the arithmetic is right. 0.32877 is 33%, and 34% or 35% appearing
-    anywhere in the sentence means one of those two happened.
+    "34%" and the arithmetic is right.
 
-    The rest pins the sentence to *this* set rather than a fixed string: twelve
-    prompts out of ninety-six items."""
+    This was one fixture asserting the literal `"33%"`, and **one fixture can
+    never establish agreement between two values**. An implementation that
+    ignores `probability` entirely and interpolates the constant `"33%"` passed
+    it, and passed the whole suite (mutant M27). Agreement is a claim about a
+    relation, and a relation needs at least two points that disagree with each
+    other. Six rows, five distinct percentages, and the expected string is
+    derived from the returned `probability` rather than written down -- so a
+    constant cannot satisfy them all and neither can a percentage computed from
+    something other than the number in the field.
+
+    The `34pct-at-N=52` row is deliberately the plan's old wrong answer arrived
+    at honestly: 52 items with 4 failing really is 34%, so a suite that forbids
+    the digits "34" everywhere would be forbidding a correct output."""
+    check = series.spot_check(passing, failing, 0, k=k)
+    assert check is not None
+    expected = f"{round(check.probability * 100)}%"
+    assert expected in check.sentence
+    # The sentence is about *this* set, not a remembered one.
+    assert f"{k}-prompt" in check.sentence
+    assert f"{check.items} items" in check.sentence
+    assert f"{failing} of which failed" in check.sentence
+
+
+def test_no_other_percentage_appears_in_the_demo_sentence():
+    """Kept from the original single-fixture test, scoped to the one set whose
+    number the plan twice got wrong. 0.32877 is 33%; "34" or "35" in this
+    particular sentence means the prose was written from the contract's struck
+    numbers rather than from the arithmetic."""
     check = series.spot_check(88, 8, 0, k=12)
     assert check is not None
     assert "33%" in check.sentence
     assert "34" not in check.sentence
     assert "35" not in check.sentence
-    assert "12" in check.sentence
-    assert "96" in check.sentence
+
+
+def test_the_sentence_counts_items_and_never_completions_or_prompts():
+    """The unit is the one word this chunk exists to get right, and until now no
+    test pinned it -- `"96 items"` could be mutated to `"96 completions"` or
+    `"96 prompts"` and all 120 tests stayed green (M21, M22).
+
+    The distinction is the entire content of section 7.4. The denominator is
+    ninety-six *items*, i.e. ninety-six decisions; it is not ninety-six
+    completions, and it is not ninety-six prompts either -- `k` is the count of
+    prompts in this sentence, and reusing the word for `N` would make the line
+    read as twelve prompts drawn from ninety-six prompts, which is the
+    completion-level reading wearing the right noun."""
+    check = series.spot_check(88, 8, 0, k=12)
+    assert check is not None
+    sentence = check.sentence
+    assert "96 items" in sentence
+    assert "completions" not in sentence
+    assert "96 completions" not in sentence
+    assert "96 prompts" not in sentence
+    # "prompt" survives exactly once, attached to k.
+    assert sentence.count("prompt") == 1
+    assert "12-prompt" in sentence
+
+
+def test_the_sentence_says_the_check_would_have_seen_nothing_not_caught_something():
+    """The most dangerous survivor. Rewriting the clause to `"would have caught
+    the regression in 33%"` inverts the meaning of the headline sentence -- the
+    same number now claims a spot check *succeeds* a third of the time, which is
+    an argument for skipping this harness rather than for running it -- and no
+    test went red (M20).
+
+    Nothing else in the suite constrained the verb, so the whole rendered
+    sentence is pinned here as a literal. It is the one string in this module
+    quoted directly into a document a director reads, and a change to it should
+    have to be made on purpose."""
+    check = series.spot_check(88, 8, 0, k=12)
+    assert check is not None
+    assert check.sentence == (
+        "A 12-prompt spot check drawn at random from these 96 items, 8 of "
+        "which failed, would have shown no failures at all in 33% of such "
+        "checks."
+    )
+    # And the inversion named explicitly, for the next reader of this test.
+    lowered = check.sentence.lower()
+    assert "shown no failures at all" in lowered
+    assert "caught" not in lowered
+    assert "found" not in lowered
+    assert "regression" not in lowered
+
+
+def test_the_sentence_says_how_many_items_failed_so_the_number_is_checkable_in_place():
+    """"Out of how many?" is the first question the line gets, and it used to be
+    unanswerable from the line itself: `SpotCheck.failing` held the count and the
+    sentence dropped it. A reader who cannot verify a claim where they read it
+    has to take it on trust, which is the posture this whole chunk is written
+    against."""
+    check = series.spot_check(88, 8, 0, k=12)
+    assert check is not None
+    assert "8 of which failed" in check.sentence
+    assert str(check.failing) in check.sentence
+    # A different F must move the sentence, not just the field.
+    other = series.spot_check(80, 16, 0, k=12)
+    assert other is not None
+    assert "16 of which failed" in other.sentence
+
+
+def test_the_sentence_does_not_put_a_spot_check_inside_its_own_plural_denominator():
+    """It read "A 12-prompt spot check ... in 33% of spot checks" -- a singular
+    subject inside the plural set it is a member of, which eats its own tail. "of
+    such checks" closes it while keeping the words the contract requires: the
+    subject is still a *spot check* and the sentence still never says "runs"."""
+    check = series.spot_check(88, 8, 0, k=12)
+    assert check is not None
+    lowered = check.sentence.lower()
+    assert "of such checks" in lowered
+    assert "of spot checks" not in lowered
+    assert lowered.count("spot check") == 1
+    assert "runs" not in lowered
 
 
 def test_a_set_smaller_than_the_check_offers_no_sentence_because_the_check_reads_everything():
@@ -2772,3 +2888,74 @@ def test_excluding_unstable_items_from_f_raises_the_probability_and_the_docstrin
     assert "larger, more quotable" not in lowered
     assert "would produce a larger" not in lowered
     assert "it is not a restraint on the number" in lowered
+
+
+# The rounding rule, which nothing exercised. `_percent` is private and tested
+# directly on purpose: the values that separate one rounding rule from another
+# are exact halves, and `comb(N - F, k) / comb(N, k)` cannot be steered onto one.
+# Pinning the rule only through `spot_check` pins it at 0.32877, which rounds to
+# 33 under round-half-even, round-half-up, ceiling and truncation alike -- the
+# single point where every candidate rule agrees, which is the one point that
+# distinguishes none of them. Mutant M29 replaced `round` with "always round up,
+# i.e. always toward the flattering number" and survived for exactly that reason.
+
+
+@pytest.mark.parametrize(
+    ("probability", "expected"),
+    [
+        # Exact zero is a computed certainty -- every item failed -- and must not
+        # be softened into the hedge. This is the guard's `probability > 0` half.
+        (0.0, "0%"),
+        # Non-zero but rounding to zero: the hedge, because "0%" would claim a
+        # spot check *always* catches it and nothing computed that.
+        (0.004, "less than 1%"),
+        # The half. Banker's rounding sends 0.5 to 0, so this is still the hedge.
+        # "Always round up" returns "1%" here and dies.
+        (0.005, "less than 1%"),
+        (0.0051, "1%"),
+        (0.006, "1%"),
+        # Truncation returns "31%" here and dies.
+        (0.315, "32%"),
+        # The half at the demo's own magnitude. Round-half-even gives 32;
+        # rounding up gives 33 -- the flattering number, and the demo's number,
+        # which is precisely why a rule pinned only at 0.32877 cannot see it.
+        (0.325, "32%"),
+        (0.335, "34%"),
+        # Rounding up gives 35 here and dies.
+        (0.345, "34%"),
+        # Rounding up gives 100, hence "more than 99%", and dies.
+        (0.994, "99%"),
+        # The upper guard: 99.5 rounds to 100, and "100%" would claim a spot
+        # check could *never* have caught it. Also not computed.
+        (0.995, "more than 99%"),
+        (0.9951, "more than 99%"),
+    ],
+)
+def test_the_percent_phrase_rounds_half_to_even_and_hedges_both_certainties(
+    probability, expected
+):
+    """Every boundary of the rendering rule, including the two guards.
+
+    The guards are not there because one end flatters the argument -- the
+    docstring used to say both ends did, and they do not. "0%" claims a spot
+    check *always* catches the regression, which undercuts the tool; "100%"
+    claims it never does, which flatters it. They are wrong in opposite
+    directions. The reason that actually holds is symmetric: **both ends assert
+    a certainty the arithmetic did not compute**, and neither belongs in a
+    sentence quoted in a review.
+
+    `probability == 1.0` is not a row here. It needs `F == 0`, which returns
+    `None` before any rendering happens, so the upper guard is a bare
+    `percent == 100` and a row for 1.0 would pin behaviour on an unreachable
+    input."""
+    assert series._percent(probability) == expected
+
+
+def test_the_small_probability_hedge_says_less_and_not_fewer():
+    """"Fewer" wants a count noun and a probability is a proportion. It reads as
+    a mistake, and it reads that way in the most-quoted sentence in the
+    document, right beside a number whose correctness is the thing under
+    review."""
+    for probability in (0.0001, 0.004, 0.005):
+        assert series._percent(probability) == "less than 1%"
+        assert "fewer" not in series._percent(probability)
