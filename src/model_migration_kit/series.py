@@ -634,12 +634,21 @@ def _unrecorded_hash(key: ComparabilityKey, against: ComparabilityKey) -> str | 
 
 
 def _judged_flags(kept: Sequence[RunPoint]) -> tuple[Flag, ...]:
-    """Kept points whose graded counts disagree with the rest of the group.
+    """Kept points whose two sides were not graded the same number of times.
 
-    The reference is the counts the most points agree on, ties going to whichever
-    appeared first -- not the first point's counts, so that one truncated run at
-    the head of a log flags itself rather than flagging the three healthy runs
-    behind it.
+    This is the one check ``_require_comparable`` makes that a key cannot: it
+    compares the baseline artifact against the candidate artifact of *one*
+    comparison, key by key, because matching hashes do not make a truncated
+    artifact comparable -- a baseline that died at 25 completions against a
+    candidate that finished 200 carries exactly the right hashes and flatters
+    whichever side finished. A payload cannot reproduce that key-by-key check,
+    but it does record how many completions each side was graded on, and a
+    difference between those two numbers is the shortfall showing through.
+
+    **It flags rather than excludes**, because the payload cannot tell a
+    truncated run from a run that simply lost a few judge replies, and a
+    shortfall is already surfaced by ``Completeness``. Excluding a run on a
+    suspicion the evidence does not settle would silently shrink the field.
 
     These are ``judged_*``, the judge's own ``n``, and the wording below says
     *graded* for the reason that field's docstring exists: a completion that was
@@ -647,38 +656,20 @@ def _judged_flags(kept: Sequence[RunPoint]) -> tuple[Flag, ...]:
     calling this "completions" would re-commit the exact conflation the point
     type went out of its way to separate.
     """
-    if not kept:
-        return ()
-    counts: dict[tuple[int, int], int] = {}
-    for point in kept:
-        pair = (point.judged_baseline, point.judged_candidate)
-        counts[pair] = counts.get(pair, 0) + 1
-    baseline, candidate = max(counts, key=lambda pair: counts[pair])
-
-    flags: list[Flag] = []
-    for point in kept:
-        differences: list[str] = []
-        if point.judged_baseline != baseline:
-            differences.append(
-                f"{point.judged_baseline} graded on the baseline against the group's {baseline}"
-            )
-        if point.judged_candidate != candidate:
-            differences.append(
-                f"{point.judged_candidate} graded on the candidate against the group's {candidate}"
-            )
-        if differences:
-            flags.append(
-                Flag(
-                    point=point,
-                    reason=(
-                        f"flagged: {' and '.join(differences)}. Graded is the judge's own "
-                        f"count, not the completions the run produced, so this may be lost "
-                        f"judge replies rather than a short run -- the point is kept because "
-                        f"a shortfall is already surfaced by Completeness."
-                    ),
-                )
-            )
-    return tuple(flags)
+    return tuple(
+        Flag(
+            point=point,
+            reason=(
+                f"flagged: {point.judged_baseline} graded on the baseline against "
+                f"{point.judged_candidate} on the candidate. Graded is the judge's own "
+                f"count, not the completions the run produced, so the gap may be lost "
+                f"judge replies rather than a truncated side -- the point is kept "
+                f"because a shortfall is already surfaced by Completeness."
+            ),
+        )
+        for point in kept
+        if point.judged_baseline != point.judged_candidate
+    )
 
 
 def _hash(value: str) -> str:
