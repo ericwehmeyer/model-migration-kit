@@ -962,6 +962,14 @@ _SECONDS_PER_DAY = 86_400.0
 #: at all. It is a sort position and never an operand -- an age measured from
 #: here would be two thousand years, and two thousand years is a number a
 #: renderer would print.
+#:
+#: **:func:`_anchor` ranks undated runs the other way -- last -- and the two do
+#: not disagree.** This decides *display order in a table*, where a reader can
+#: see the blank ``stale_days`` cell beside the row and position asserts nothing;
+#: that decides *which run defines a line's axis*, and an undated run winning
+#: that election excludes every dated night in the log and draws nothing. Sort it
+#: oldest; never let it anchor. R24.4, recorded in both places because an
+#: asymmetry with no note is an asymmetry the next reader flattens.
 _UNDATED = datetime.min.replace(tzinfo=timezone.utc)
 
 
@@ -2133,6 +2141,23 @@ class Trend(NamedTuple):
     #: type again, and one point may carry more than one. Unfiltered: see
     #: :func:`trend`.
     caveats: tuple[Caveat, ...]
+    #: Runs on **this baseline** whose ``candidate_model`` the operator did not
+    #: declare, in log order. Deliberately not an :class:`Exclusion` and
+    #: deliberately not in :attr:`excluded`: an exclusion is a comparability
+    #: verdict on a run of this line, and these were never adjudicated because
+    #: they were never selected. But neither are they somebody else's
+    #: experiment, which is what a differently-*based* run is -- they are in
+    #: this comparison family, measured against the same baseline, and their
+    #: absence from the chart is a claim about the *declaration* rather than
+    #: about the run. Keeping the two apart is the whole of R24.1.
+    outside_lineage: tuple[RunPoint, ...]
+    #: Declared candidate ids with **no run anywhere in the log**, in the order
+    #: they were declared and de-duplicated. This is where a one-character typo
+    #: in the declaration surfaces, which is the case most likely to be an
+    #: operator error rather than a fact about the data: a model the operator
+    #: named and the log has never heard of is not a quiet night, and a page
+    #: that omits it says the lineage was drawn in full when it was not.
+    absent_models: tuple[str, ...]
 
 
 def trend(
@@ -2147,7 +2172,8 @@ def trend(
         points: Every point in the log, in the order it was read.
         baseline_model: The other side of the comparison. A point measured
             against a different baseline is not a run of this line at all, so it
-            is simply not selected -- it is not "excluded", and putting it in
+            is simply not selected -- it is not "excluded", it is not
+            :attr:`Trend.outside_lineage` either, and putting it in
             :attr:`Trend.excluded` would bury the exclusions that matter under
             every other experiment in the log.
         candidate_models: **Declared by the caller, never inferred.** Every id
@@ -2189,27 +2215,57 @@ def trend(
     both would report one lost night as two, and counting it only as undated
     would trade a reason for a tally.
 
-    **The caveats come out whole, and are not filtered to the drawn rows.** Every
-    point in :attr:`Trend.points` has a row for its note to print against, so
-    there is nothing to filter on that count; and a point kept by the partition
-    but dropped as undated has no row at all, which makes its caveat the *only*
-    surviving trace of it -- :attr:`Trend.undated` is a bare count and names no
-    point. Dropping it to tidy the tuple would be this plan's own defect class a
-    fifth time. A :class:`Caveat` carries its own point, so a renderer that has
-    no row for one can say so; it cannot invent one it was never handed.
+    **The caveats come out whole, and are not filtered to the drawn rows.** A
+    point kept by the partition but dropped as undated has no row at all, which
+    makes its caveat the *only* surviving trace of it -- :attr:`Trend.undated` is
+    a bare count and names no point. Dropping it to tidy the tuple would be this
+    plan's own defect class a fifth time. A :class:`Caveat` carries its own
+    point, so a renderer that has no row for one can say so; it cannot invent one
+    it was never handed. (The reason first given for carrying them all was that
+    every point in :attr:`Trend.points` has a row for its note to print against,
+    so there was nothing to filter on that count. That is true, does no work, and
+    was retracted in ``0b84d52`` because it is silent about the kept-but-undated
+    point, which is the whole case. It is recorded here only so that nobody
+    reinstates it as the reason.)
+
+    **A run this line did not draw is still a run, and the reader is told which
+    kind.** Three fates are distinguished and they are three different claims.
+    A run on another ``baseline_model`` is not selected at all and appears
+    nowhere: it is somebody else's experiment, and listing it would bury the
+    refusals that matter under every other comparison in the log. A run on
+    *this* baseline whose candidate the operator did not declare leaves through
+    :attr:`Trend.outside_lineage` -- it is in this comparison family and its
+    absence is a claim about the declaration. A declared id with no run anywhere
+    in the log leaves through :attr:`Trend.absent_models`, which is where a
+    one-character typo in the declaration surfaces. Neither goes in
+    :attr:`Trend.excluded`, which is reserved for the comparability verdicts C4
+    actually reached (R24.1).
+
+    Both are computed before the anchor and are returned even when there is no
+    line at all: a lineage declared entirely wrong selects nothing, and that is
+    exactly the case where a page saying "no runs" and a page saying "fourteen
+    runs, none of them declared" must not look the same.
 
     Nothing is de-duplicated, here or anywhere else in this module: two identical
     runs are two runs.
     """
     lineage = frozenset(candidate_models)
-    mine = [
-        point
-        for point in points
-        if point.baseline_model == baseline_model and point.candidate_model in lineage
-    ]
+    mine: list[RunPoint] = []
+    strangers: list[RunPoint] = []
+    for point in points:
+        if point.baseline_model != baseline_model:
+            continue
+        (mine if point.candidate_model in lineage else strangers).append(point)
+    outside_lineage = tuple(strangers)
+    # Over the whole log and not over `mine`: "no run at all" is the claim, and a
+    # declared id that ran only against some other baseline has run. `dict` and
+    # not a `set` so the declaration's own order survives into the report.
+    logged = {point.candidate_model for point in points}
+    absent_models = tuple(dict.fromkeys(id_ for id_ in candidate_models if id_ not in logged))
+
     anchor = _anchor(mine)
     if anchor is None:
-        return Trend((), (), (), 0, ())
+        return Trend((), (), (), 0, (), outside_lineage, absent_models)
 
     kept, excluded, caveats = partition_comparable(mine, against=comparability_key(anchor))
     dated = [
@@ -2220,7 +2276,15 @@ def trend(
     # `sorted` is stable, which is the whole of how "input order preserved" for
     # points sharing an instant is kept.
     ordered = tuple(point for _, point in sorted(dated, key=lambda pair: pair[0]))
-    return Trend(ordered, _successions(ordered), excluded, len(kept) - len(dated), caveats)
+    return Trend(
+        ordered,
+        _successions(ordered),
+        excluded,
+        len(kept) - len(dated),
+        caveats,
+        outside_lineage,
+        absent_models,
+    )
 
 
 def _anchor(points: Sequence[RunPoint]) -> RunPoint | None:
@@ -2246,8 +2310,20 @@ def _anchor(points: Sequence[RunPoint]) -> RunPoint | None:
     a rescue: the partition then excludes everything, and an empty line with a
     reason per point beats an empty line with no reasons.
 
-    Undated points rank after every dated one and cannot displace one, since a
-    point with no instant has no claim to being first.
+    **Undated points rank after every dated one** and cannot displace one, since
+    a point with no instant has no claim to being first. Let one anchor and the
+    whole line vanishes: its key becomes the group's, every dated night that
+    disagrees is excluded, and the chart is empty with a refusal per night.
+
+    **This is the opposite of :data:`_UNDATED`, and both are right.** C5 sorts a
+    dateless row *oldest* and this ranks an undated run *last*, which reads like
+    a contradiction and is not one, because the two answer different questions.
+    C5's is display order in a table, where the reader can see the blank
+    ``stale_days`` cell and position carries no ranking claim. This one is which
+    run **defines the axis**, and an undated run that wins it takes the line with
+    it. *Sort it oldest; never let it anchor.* R24.4: the cross-reference is here
+    and on :data:`_UNDATED` so that the next reader who notices the asymmetry
+    does not "fix" one of them.
     """
     if not points:
         return None
