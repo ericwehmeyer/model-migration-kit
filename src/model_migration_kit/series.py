@@ -51,7 +51,7 @@ record and not the report.
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -62,7 +62,18 @@ from opik_rigor import EvidenceRecord
 from .contracts import EVENT_COMPARISON, EVENT_VERDICT
 from .evidence import resolve_evidence, stream_records
 
-__all__ = ["RunPoint", "SeriesBuilder", "parse_created", "read_series", "run_point"]
+__all__ = [
+    "ComparabilityKey",
+    "Exclusion",
+    "Flag",
+    "RunPoint",
+    "SeriesBuilder",
+    "comparability_key",
+    "parse_created",
+    "partition_comparable",
+    "read_series",
+    "run_point",
+]
 
 #: ``floor_source``'s three values. The word "unrecorded" is
 #: ``report.THRESHOLD_SOURCE_UNRECORDED``'s, deliberately: the report already has
@@ -415,6 +426,264 @@ def read_series(evidence: str | Path) -> tuple[RunPoint, ...]:
     for record in stream_records(resolve_evidence(evidence)):
         builder.add(record)
     return builder.points()
+
+
+# --------------------------------------------------------------------------- #
+# comparability: which points may share a table
+# --------------------------------------------------------------------------- #
+
+#: Both hashes are rendered at this width, and the number is not free: it is the
+#: width ``comparison._require_comparable`` already uses in the two errors it
+#: raises on the same two fields. A report that truncated at 12 while the
+#: exception truncated at 16 would print two different-looking prefixes of one
+#: hash on one page, and a reader comparing them would conclude the run changed.
+_HASH_WIDTH = 16
+
+#: What a hash reads as when the run never recorded one. Spelled out rather than
+#: left blank because these strings are read by a person: "against the group's "
+#: with nothing after it looks like a formatting bug, not like a missing fact.
+_HASH_UNRECORDED = "unrecorded"
+
+
+@dataclass(frozen=True)
+class ComparabilityKey:
+    """The four fields that decide whether two runs may be read against each other.
+
+    A strict subset of what ``comparison._require_comparable`` checks, and the
+    subset is forced rather than chosen: that guard takes two live
+    :class:`~model_migration_kit.artifacts.JudgedArtifact` objects, the report has
+    payloads, and the artifacts are usually gone by the time anything renders. So
+    this is a second, narrower predicate over what a payload actually carries.
+
+    The gap is coverage, and it is named here rather than papered over: two runs
+    with matching hashes and matching ``n_per_item`` can still have judged
+    different numbers of completions, because a truncated run carries the right
+    hashes. That difference cannot exclude -- nothing in a payload proves it --
+    so :func:`partition_comparable` raises it as a :class:`Flag` instead.
+
+    **Equality here is deliberately naive, and that is a trap for callers who
+    group on it.** Two keys with empty hashes compare equal, because a frozen
+    dataclass compares field by field and nothing else would be a sane ``__eq__``.
+    An empty hash is not a match -- see :attr:`hashes_recorded` and
+    :func:`partition_comparable`, which is where that rule is enforced.
+    """
+
+    goldenset_hash: str
+    judges_hash: str
+    n_per_item: int
+    baseline_model: str
+
+    @property
+    def hashes_recorded(self) -> bool:
+        """Whether this key can establish comparability at all.
+
+        A key missing either hash identifies nothing: it says only that two logs
+        were equally silent. Anything that groups on :class:`ComparabilityKey`
+        needs this, because dataclass equality alone will happily merge every
+        run that failed to record a hash into one confident-looking group.
+        """
+        return bool(self.goldenset_hash) and bool(self.judges_hash)
+
+
+@dataclass(frozen=True)
+class Exclusion:
+    """One point kept out of a comparison, with the sentence that says why.
+
+    The reason is carried beside the point rather than logged or dropped because
+    of the failure this whole chunk exists to prevent: "a table that quietly
+    compares a 60-item run against a 40-item run is worse than no table". A point
+    that vanishes with no sentence is exactly that table. The reason names the
+    field *and both values*, so a reader can act on it -- "not comparable" is a
+    verdict, and the reader needed the evidence.
+    """
+
+    point: RunPoint
+    reason: str
+
+
+@dataclass(frozen=True)
+class Flag:
+    """A note attached to a point that is *kept*, not a reason for removing it.
+
+    Some differences are worth printing and not worth excluding on. A run that
+    graded fewer completions than its neighbours may have been truncated, or may
+    simply have lost a few judge replies to parse failures -- the payload cannot
+    tell those apart, and excluding on a suspicion would silently shrink the
+    field on evidence that does not support it. So the point stays in ``kept``
+    and carries this instead. A flagged point appears in both returned tuples;
+    anything that treats a flag as a removal will drop a run twice over.
+    """
+
+    point: RunPoint
+    reason: str
+
+
+def comparability_key(point: RunPoint) -> ComparabilityKey:
+    """The comparability key of one point, extracted and not judged.
+
+    Deliberately total: every point has a key, including one whose hashes are
+    empty. Refusing to build a key for an unrecorded hash would move the
+    empty-hash rule into four callers instead of one, and the one place it
+    belongs is :func:`partition_comparable`, which has both sides to name.
+    """
+    return ComparabilityKey(
+        goldenset_hash=point.goldenset_hash,
+        judges_hash=point.judges_hash,
+        n_per_item=point.n_per_item,
+        baseline_model=point.baseline_model,
+    )
+
+
+def partition_comparable(
+    points: Sequence[RunPoint], *, against: ComparabilityKey
+) -> tuple[tuple[RunPoint, ...], tuple[Exclusion, ...], tuple[Flag, ...]]:
+    """Split ``points`` into those that may be tabled against ``against``, and why not.
+
+    Args:
+        points: The candidate points, in the order they should render.
+        against: The key the group is defined by -- normally
+            :func:`comparability_key` of whichever point anchors the table.
+
+    Returns:
+        ``(kept, excluded, flags)``. ``kept`` and ``excluded`` are disjoint and
+        each preserves input order; ``flags`` annotates points that are *in*
+        ``kept``. Three tuples rather than two because a flag has nowhere else to
+        live: :class:`RunPoint` is frozen and has no field for one, and adding
+        one would mean editing the producer while its consumers are in flight.
+
+    Every returned sequence is a tuple built by appending, never a set or a dict
+    view. The rendered list has to be stable between renders of the same log, and
+    set iteration order is stable only by accident of hashing.
+
+    **An unrecorded hash never matches, including another unrecorded hash.** Two
+    logs that both failed to record a golden set have equal keys under ``==`` and
+    are not comparable: equality there means "both silent", not "both the same
+    set". This is the one line in this function that a naive ``==`` gets wrong
+    while reading perfectly, so it is checked before any comparison.
+    """
+    kept: list[RunPoint] = []
+    excluded: list[Exclusion] = []
+    for point in points:
+        reason = _incomparable(comparability_key(point), against)
+        if reason is None:
+            kept.append(point)
+        else:
+            excluded.append(Exclusion(point=point, reason=reason))
+    return tuple(kept), tuple(excluded), _judged_flags(kept)
+
+
+def _incomparable(key: ComparabilityKey, against: ComparabilityKey) -> str | None:
+    """Why ``key`` may not be tabled against ``against``, or ``None`` if it may.
+
+    Fields are tested in ``_require_comparable``'s own order -- golden set, then
+    judges, then how much was drawn -- so that when a run differs in several ways
+    at once the two guards blame the same one, and a reader who has seen the CLI
+    error recognises the report's sentence.
+    """
+    unrecorded = _unrecorded_hash(key, against)
+    if unrecorded is not None:
+        return unrecorded
+    if key.goldenset_hash != against.goldenset_hash:
+        return (
+            f"excluded: golden set {_hash(key.goldenset_hash)} against the group's "
+            f"{_hash(against.goldenset_hash)}. Model A on one set and model B on another "
+            f"are two unrelated numbers, not a migration decision."
+        )
+    if key.judges_hash != against.judges_hash:
+        return (
+            f"excluded: judge panel {_hash(key.judges_hash)} against the group's "
+            f"{_hash(against.judges_hash)}. Two panels are two instruments, and the "
+            f"difference between them would measure the judges rather than the models."
+        )
+    if key.n_per_item != against.n_per_item:
+        return (
+            f"excluded: {key.n_per_item} draws per item against the group's "
+            f"{against.n_per_item}. The two runs sampled to different depths, so the "
+            f"quieter number is the smaller sample and not the steadier model."
+        )
+    if key.baseline_model != against.baseline_model:
+        return (
+            f"excluded: baseline {key.baseline_model or 'unrecorded'} against the group's "
+            f"{against.baseline_model or 'unrecorded'}. A column of deltas measured from "
+            f"two different baselines is not a column."
+        )
+    return None
+
+
+def _unrecorded_hash(key: ComparabilityKey, against: ComparabilityKey) -> str | None:
+    """The hole the reviewer hunts for, closed in one place.
+
+    ``"" == ""`` is ``True`` and means nothing here. Either side missing a hash
+    ends the question: no evidence exists that the two runs saw the same golden
+    set or the same panel, and absence of evidence rendered as a match is the
+    table this chunk exists to prevent.
+    """
+    for label, mine, theirs in (
+        ("golden-set", key.goldenset_hash, against.goldenset_hash),
+        ("judges", key.judges_hash, against.judges_hash),
+    ):
+        if mine and theirs:
+            continue
+        side = "this run" if not mine else "the group"
+        return (
+            f"excluded: no {label} hash recorded for {side} -- {_hash(mine)} against the "
+            f"group's {_hash(theirs)}. Two runs that both failed to record one are equally "
+            f"silent, which is not the same fact as having been judged against the same one."
+        )
+    return None
+
+
+def _judged_flags(kept: Sequence[RunPoint]) -> tuple[Flag, ...]:
+    """Kept points whose graded counts disagree with the rest of the group.
+
+    The reference is the counts the most points agree on, ties going to whichever
+    appeared first -- not the first point's counts, so that one truncated run at
+    the head of a log flags itself rather than flagging the three healthy runs
+    behind it.
+
+    These are ``judged_*``, the judge's own ``n``, and the wording below says
+    *graded* for the reason that field's docstring exists: a completion that was
+    produced and whose judge reply would not parse is counted by neither, so
+    calling this "completions" would re-commit the exact conflation the point
+    type went out of its way to separate.
+    """
+    if not kept:
+        return ()
+    counts: dict[tuple[int, int], int] = {}
+    for point in kept:
+        pair = (point.judged_baseline, point.judged_candidate)
+        counts[pair] = counts.get(pair, 0) + 1
+    baseline, candidate = max(counts, key=lambda pair: counts[pair])
+
+    flags: list[Flag] = []
+    for point in kept:
+        differences: list[str] = []
+        if point.judged_baseline != baseline:
+            differences.append(
+                f"{point.judged_baseline} graded on the baseline against the group's {baseline}"
+            )
+        if point.judged_candidate != candidate:
+            differences.append(
+                f"{point.judged_candidate} graded on the candidate against the group's {candidate}"
+            )
+        if differences:
+            flags.append(
+                Flag(
+                    point=point,
+                    reason=(
+                        f"flagged: {' and '.join(differences)}. Graded is the judge's own "
+                        f"count, not the completions the run produced, so this may be lost "
+                        f"judge replies rather than a short run -- the point is kept because "
+                        f"a shortfall is already surfaced by Completeness."
+                    ),
+                )
+            )
+    return tuple(flags)
+
+
+def _hash(value: str) -> str:
+    """One hash as it is printed: 16 characters, or the word for having none."""
+    return value[:_HASH_WIDTH] if value else _HASH_UNRECORDED
 
 
 def _decided(point: RunPoint, verdict: Mapping[str, Any]) -> RunPoint:
