@@ -158,7 +158,7 @@ import math
 import os
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from html.parser import HTMLParser
 from pathlib import Path
@@ -932,9 +932,13 @@ class DimensionMatrix:
     available: bool
     reason: str  # "" when available
     judge: str
-    #: The golden set's own tag order -- alphabetical, as
-    #: ``goldenset["tags"]`` is -- with :data:`~model_migration_kit.dimensions.UNTAGGED`
-    #: last. Last rather than first, which is where its empty string would sort:
+    #: Alphabetical, with :data:`~model_migration_kit.dimensions.UNTAGGED`
+    #: last. The contract said "golden-set tag order" and R27.3 corrected the
+    #: phrase: the set's *file* order is not reachable from anything this module
+    #: sees -- ``GoldenSet.stats()`` returns ``dict(sorted(...))`` and the counter
+    #: keys its inner mapping through ``sorted(index.tags)`` -- so a regression to
+    #: file order is unimplementable and alphabetical is the whole promise.
+    #: Last rather than first, which is where its empty string would sort:
     #: it is the leftover bucket, and a table that opens with the leftovers reads
     #: as one whose first row is the most important.
     tags: tuple[str, ...]
@@ -1778,9 +1782,14 @@ def _matrix_tags(by_model: Mapping[str, Mapping[str, TagCount]]) -> tuple[str, .
 
     Read off the columns rather than off ``goldenset["tags"]``, which looks like
     the same list and is not: that one is built from tag *counts* and so has no
-    entry for the untagged bucket at all, and it would disagree with the columns
-    the moment the two came from different golden sets. The columns are what the
-    cells will be built from, so they are what the header has to be built from.
+    entry for the untagged bucket at all. The columns are what the cells will be
+    built from, so they are what the header has to be built from.
+
+    They cannot disagree about anything else. :meth:`ReportModel.from_evidence` is
+    the only caller, and it takes the counts and ``goldenset["tags"]`` from the
+    same ``view.update(...)`` of the same loaded set -- so the "different golden
+    sets" hazard this docstring used to give as its second reason describes a
+    state the code cannot reach, and is gone (R27.7).
 
     The key is :data:`~model_migration_kit.dimensions.UNTAGGED` rather than an
     inline ``""``. The sentinel is empty on purpose -- ``"untagged"`` is a legal
@@ -1818,6 +1827,22 @@ def _matrix_models(
     return tuple(ordered)
 
 
+#: Appended to every cell of a side the comparison payload names and the counting
+#: never saw. Three different situations render as a column of zeros -- a judged
+#: side that produced nothing, a side no judging pass ever closed, and a tag no
+#: model produced -- and the first two have different fixes: check the judge
+#: configuration, versus check whether the run completed at all. The note is where
+#: this document says such things, so the distinction goes in the note rather than
+#: in a field nothing else on the page would carry (R27.5). The zeros themselves
+#: stay, because dropping the column would leave a one-column "comparison" with
+#: nothing saying where the other side went.
+_NEVER_CLOSED = (
+    "No judging pass closed for {model_id} in this log, so this side was never "
+    "counted at all: these zeros are a missing judging pass rather than a "
+    "measurement."
+)
+
+
 def _tag_column(
     model_id: str,
     counted: Mapping[str, TagCount],
@@ -1825,6 +1850,9 @@ def _tag_column(
     *,
     confidence: float | None,
     floor: float | None,
+    min_n: int,
+    min_items: int,
+    closed: bool,
 ) -> TagColumn:
     """One model's cells, one per tag in ``tags``, in that order.
 
@@ -1835,27 +1863,35 @@ def _tag_column(
     it is an aggregate and splitting it across tags by any rule at all would be
     the invention this whole module exists to refuse.
 
-    The floors are passed explicitly although they are also the defaults, so that
-    the numbers :class:`DimensionMatrix` publishes as what it refused against and
-    the numbers the cells actually refused against are one expression rather than
-    two that agree today.
+    ``closed`` is whether the counting saw this model at all -- a model with a
+    ``migkit.judging_completed`` is present in ``by_model`` even when it graded
+    nothing, and a model the payload names and no judging pass ever closed is not.
+    Both render as zeros and they are not the same finding, so the second one says
+    so in its note. See :data:`_NEVER_CLOSED`.
+
+    The floors arrive from :func:`_dimension_matrix` rather than being named again
+    here, so that the numbers :class:`DimensionMatrix` publishes as what it refused
+    against and the numbers the cells actually refused against are one expression
+    rather than three that agree today.
     """
     cells: list[DimensionCell] = []
     for tag in tags:
         one = counted.get(tag)
         passes, n, items = (0, 0, 0) if one is None else (one.passes, one.n, one.items)
-        cells.append(
-            dimension_cell(
-                tag,
-                passes,
-                n,
-                items,
-                confidence=confidence,
-                floor=floor,
-                min_n=MIN_N_FOR_A_VERDICT,
-                min_items=MIN_ITEMS_FOR_A_VERDICT,
-            )
+        cell = dimension_cell(
+            tag,
+            passes,
+            n,
+            items,
+            confidence=confidence,
+            floor=floor,
+            min_n=min_n,
+            min_items=min_items,
         )
+        if not closed:
+            said = _NEVER_CLOSED.format(model_id=model_id)
+            cell = replace(cell, note=f"{cell.note} {said}".strip())
+        cells.append(cell)
     return TagColumn(model_id=model_id, cells=tuple(cells))
 
 
@@ -1882,7 +1918,14 @@ def _dimension_matrix(
     being tempted by one. That is the promise
     :class:`~model_migration_kit.dimensions.DimensionCounts` makes about
     ``by_model``, kept one layer up.
+
+    **The two floors are read once, here.** They are the numbers the matrix
+    publishes as what it refused against *and* the numbers the cells are refused
+    against, and until R27.7 they were three separate references to the module
+    constants -- a design whose own docstring claimed it was one expression. One
+    local, passed to both, is what makes that sentence true.
     """
+    min_n, min_items = MIN_N_FOR_A_VERDICT, MIN_ITEMS_FOR_A_VERDICT
     if not counts.available:
         return DimensionMatrix(
             available=False,
@@ -1891,8 +1934,8 @@ def _dimension_matrix(
             tags=(),
             baseline=TagColumn(model_id="", cells=()),
             candidates=(),
-            min_n=MIN_N_FOR_A_VERDICT,
-            min_items=MIN_ITEMS_FOR_A_VERDICT,
+            min_n=min_n,
+            min_items=min_items,
         )
     tags = _matrix_tags(counts.by_model)
     columns = {
@@ -1902,6 +1945,9 @@ def _dimension_matrix(
             tags,
             confidence=confidence,
             floor=floor,
+            min_n=min_n,
+            min_items=min_items,
+            closed=model_id in counts.by_model,
         )
         for model_id in _matrix_models(counts.by_model, baseline_id, candidate_id)
     }
@@ -1914,8 +1960,8 @@ def _dimension_matrix(
         candidates=tuple(
             column for model_id, column in columns.items() if model_id != baseline_id
         ),
-        min_n=MIN_N_FOR_A_VERDICT,
-        min_items=MIN_ITEMS_FOR_A_VERDICT,
+        min_n=min_n,
+        min_items=min_items,
     )
 
 

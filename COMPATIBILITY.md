@@ -188,7 +188,7 @@ table — so the completeness claim is checkable rather than asserted.
 | `tests/test_evidence_scale.py` | `EvidenceError`, `EvidenceLog`, `FakeAdapter` |
 | `tests/test_judging.py` | `EvidenceLog`, `FakeAdapter`, `JudgeOutputError`, `ModelPinError`, `PinnedJudge`, `SCORE_MIN`, `hash_rubric_file`, `is_pinned` |
 | `tests/test_property_based.py` | `FakeAdapter`, `SCORE_MAX`, `SCORE_MIN` |
-| `tests/test_report.py` | `EvidenceLog`, `wilson_interval` -- **plus** the module itself (`import opik_rigor`), read for `__version__` |
+| `tests/test_report.py` | `DEFAULT_CONFIDENCE`, `EvidenceLog`, `wilson_interval` -- **plus** the module itself (`import opik_rigor`), read for `__version__` |
 | `tests/test_report_scale.py` | `EvidenceLog`, `FakeAdapter` |
 | `tests/test_runner.py` | `EvidenceLog`, `FakeAdapter`, `PassRateError`, `assert_pass_rate`, `sample_of` |
 | `tests/test_series.py` | `EvidenceError`, `EvidenceLog`, `EvidenceRecord` |
@@ -226,7 +226,8 @@ tests/test_judging.py:46 from opik_rigor import EvidenceLog, FakeAdapter, ModelP
 tests/test_judging.py:436 from opik_rigor import JudgeOutputError
 tests/test_property_based.py:58 from opik_rigor import FakeAdapter, SCORE_MAX, SCORE_MIN
 tests/test_report.py:65 from opik_rigor import EvidenceLog, wilson_interval
-tests/test_report.py:2248 import opik_rigor
+tests/test_report.py:66 from opik_rigor.distribution import DEFAULT_CONFIDENCE
+tests/test_report.py:2267 import opik_rigor
 tests/test_report_scale.py:72 from opik_rigor import EvidenceLog, FakeAdapter
 tests/test_runner.py:29 from opik_rigor import EvidenceLog, FakeAdapter, PassRateError, assert_pass_rate, sample_of
 tests/test_stranger_path.py:677 from opik_rigor import EvidenceLog

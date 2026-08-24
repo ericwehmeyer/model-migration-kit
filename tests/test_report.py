@@ -63,6 +63,7 @@ from typing import Any
 
 import pytest
 from opik_rigor import EvidenceLog, wilson_interval
+from opik_rigor.distribution import DEFAULT_CONFIDENCE
 
 from model_migration_kit.contracts import (
     ARTIFACT_SCHEMA_VERSION,
@@ -76,7 +77,10 @@ from model_migration_kit.dimensions import (
     MIN_ITEMS_FOR_A_VERDICT,
     MIN_N_FOR_A_VERDICT,
     UNTAGGED,
+    DimensionCounts,
     DimensionTally,
+    TagCount,
+    dimension_cell,
 )
 from model_migration_kit.errors import MigrationKitError
 from model_migration_kit.evidence import stream_records
@@ -8080,6 +8084,45 @@ def _both_sides(scenario: Scenario, *, draws: int = N_PER_ITEM) -> list[dict[str
     ]
 
 
+def _mixed_pass(
+    model_id: str,
+    item_ids: Sequence[str],
+    *,
+    passing: Sequence[str],
+    draws: int = N_PER_ITEM,
+) -> list[Mapping[str, Any]]:
+    """One side that passes some items and fails the rest, closed once.
+
+    ``_judging_pass`` passes or fails a whole side, which is enough while a log
+    holds two models and they are each other's opposite. A third model needs to be
+    distinguishable from *both* of them, and "passed some of them" is the only
+    remaining answer -- so its cells differ from the baseline's on one tag and from
+    the candidate's on the other.
+
+    One ``migkit.judging_completed`` for the whole side, not one per outcome: the
+    counter attributes a group of verdicts to the model whose close follows them,
+    and two closes for one model is a shape a real run never writes.
+    """
+    records: list[Mapping[str, Any]] = [
+        _dim_verdict(item_id, passed=item_id in set(passing))
+        for item_id in item_ids
+        for _ in range(draws)
+    ]
+    records.append(
+        _record(
+            EVENT_JUDGING_COMPLETED,
+            {
+                "model_id": model_id,
+                "graded": {J: len(item_ids) * draws},
+                "imputed": {},
+                "parse_failures": {},
+            },
+            TS_JUDGING,
+        )
+    )
+    return records
+
+
 def _retag(scenario: Scenario, tags_by_id: Mapping[str, Sequence[str]]) -> Scenario:
     """Rewrite the scenario's golden set with different tags, ids and inputs unchanged.
 
@@ -8128,6 +8171,55 @@ ONE_TAG: Mapping[str, Sequence[str]] = {item_id: ("solo",) for item_id in ITEM_I
 #: items and, at five draws an item, thirty completions.
 DEFAULT_TAG_ITEMS = 6
 DEFAULT_TAG_N = DEFAULT_TAG_ITEMS * N_PER_ITEM
+
+#: Eight items under one tag and four under the other, so **no two cells in a
+#: column hold the same three numbers**. Every other fixture in this section
+#: splits the twelve evenly, and R27.4 records what that cost: ``TagColumn.cell()``
+#: returning the first cell whose tag does *not* match survived all 1998 tests,
+#: because the wrong cell and the right one were the same cell by value. This is
+#: C5's M01 exactly -- a fixture set that hard-codes one value everywhere cannot
+#: tell the correct computation from the broken one.
+SPLIT_TAGS: Mapping[str, Sequence[str]] = {
+    **{item_id: ("arithmetic",) for item_id in ITEM_IDS[:8]},
+    **{item_id: ("extraction",) for item_id in ITEM_IDS[8:]},
+}
+#: The two halves of every uneven split in this section, so that a fixture whose
+#: two tags must differ can say which of them is which.
+LARGER_TAG_ITEMS = 8
+SMALLER_TAG_ITEMS = 4
+LARGER_TAG_N = LARGER_TAG_ITEMS * N_PER_ITEM
+SMALLER_TAG_N = SMALLER_TAG_ITEMS * N_PER_ITEM
+
+#: Two tags whose alphabetical order is the reverse of the order they are written
+#: in, so the ordering claim is asserted on a fixture that can fail it. R27.3
+#: replaced the contract's "golden-set tag order" with "alphabetical, ``UNTAGGED``
+#: last", and every other fixture here names its tags in alphabetical order
+#: already, which is a fixture that agrees with any ordering rule at all.
+#: Split eight/four for the same reason ``SPLIT_TAGS`` is: two rows carrying the
+#: same three numbers cannot tell a reordering from a relabelling.
+ZETA_TAGS: Mapping[str, Sequence[str]] = {
+    **{item_id: ("zeta",) for item_id in ITEM_IDS[:8]},
+    **{item_id: ("alpha",) for item_id in ITEM_IDS[8:]},
+}
+
+#: A third model, judged in the same log. R27.4: ``candidates`` was a 1-tuple in
+#: every test anywhere, so its plurality was untested and both "reverse the
+#: candidate order" and "make the extra models non-deterministic" survived.
+#:
+#: The id sorts **between** the baseline's and the candidate's -- ``model-a-`` <
+#: ``model-a2-`` < ``model-b-``, because ``'-' < '2' < 'b'``. That is the whole
+#: point of the name: the contract says the comparison's candidate comes first and
+#: the rest follow in sorted order, so a matrix that simply sorted everything that
+#: is not the baseline would put this model in front of the candidate, and a
+#: fixture whose third model sorted last could not see the difference.
+THIRD_MODEL = "model-a2-20260101"
+
+#: And a fourth, judged *after* the third and sorting *before* it. The contract is
+#: "the payload's candidate first, then the rest in sorted order", and with only
+#: one extra model there is no difference between sorted order and the order the
+#: counter happened to file them in. Two extras is the smallest fixture in which
+#: dropping the ``sorted()`` shows.
+FOURTH_MODEL = "model-a1-20260101"
 
 
 # -- accessors. As everywhere in this file, they adapt to names, never values -- #
@@ -8191,21 +8283,34 @@ def _baseline_column(matrix: Any) -> Any:
     return _get(matrix, "baseline")
 
 
-def _candidate_ids(matrix: Any) -> list[str]:
+def _candidates(matrix: Any) -> tuple[Any, ...]:
+    """The candidate columns, in the order the matrix publishes them.
+
+    These three helpers each used to accept a ``Mapping`` of columns and reach
+    through it, which is how a regression from ``tuple[TagColumn, ...]`` back to
+    ``Mapping[str, TagColumn]`` survived all of C10's tests: it died only in
+    section 20, and only because ``column()`` unpacked the dict to its keys and
+    crashed on ``str.model_id``. A crash is not an assertion, and refactoring
+    ``column()`` would have reopened the hazard silently (R27.4). The shape is
+    settled now, so the fallback is gone and
+    ``test_the_candidate_columns_are_a_tuple_and_never_a_mapping_of_them`` asserts
+    it directly.
+    """
     candidates = _get(matrix, "candidates")
-    if isinstance(candidates, Mapping):
-        return sorted(str(key) for key in candidates)
-    return sorted(str(_get(one, "model_id")) for one in candidates)
+    assert isinstance(candidates, tuple), (
+        f"the matrix's candidates are a {type(candidates).__name__}; the contract "
+        f"says tuple[TagColumn, ...], and a Mapping puts `.items` back within one "
+        f"keystroke of `cell.items`"
+    )
+    return candidates
+
+
+def _candidate_ids(matrix: Any) -> list[str]:
+    return sorted(str(_get(one, "model_id")) for one in _candidates(matrix))
 
 
 def _candidate_column(matrix: Any, model_id: str) -> Any:
-    candidates = _get(matrix, "candidates")
-    if isinstance(candidates, Mapping):
-        assert model_id in candidates, (
-            f"no candidate column for {model_id!r}; the matrix holds {_candidate_ids(matrix)}"
-        )
-        return candidates[model_id]
-    for one in candidates:
+    for one in _candidates(matrix):
         if _get(one, "model_id") == model_id:
             return one
     raise AssertionError(
@@ -8214,9 +8319,7 @@ def _candidate_column(matrix: Any, model_id: str) -> Any:
 
 
 def _all_columns(matrix: Any) -> list[Any]:
-    candidates = _get(matrix, "candidates")
-    inner = list(candidates.values()) if isinstance(candidates, Mapping) else list(candidates)
-    return [_baseline_column(matrix), *inner]
+    return [_baseline_column(matrix), *_candidates(matrix)]
 
 
 def _counter_reason(log: Path, goldenset: Path, judge: str = J) -> str:
@@ -8382,6 +8485,234 @@ def test_the_candidate_columns_are_keyed_by_model_and_hold_no_second_baseline(
     )
 
 
+def test_the_candidate_columns_are_a_tuple_and_never_a_mapping_of_them(
+    tmp_path: Path,
+) -> None:
+    """The shape, asserted rather than inferred from something that crashes.
+
+    R27.4: regressing ``candidates`` to ``Mapping[str, TagColumn]`` survived all
+    twenty-two of this section's tests. It died in section 20 alone, and only
+    because ``DimensionMatrix.column()`` iterates ``candidates`` and a dict yields
+    its *keys*, so the loop asked a ``str`` for ``.model_id`` and crashed. That is
+    an incidental crash, not an assertion: rewrite ``column()`` to iterate
+    ``.values()`` when it is handed a mapping -- a reasonable-looking fix -- and
+    the hazard reopens with nothing anywhere to notice.
+
+    What the shape is protecting is in
+    ``test_a_matrix_column_is_not_a_mapping_whose_items_is_a_bound_method``: a
+    mapping's ``.items`` is a bound method and a cell's ``.items`` is an int.
+    """
+    scenario = _scenario(tmp_path / "tupleshape")
+    matrix = _available_matrix(_model_from(_counted_log(scenario, "evidence-tuple.jsonl")))
+    candidates = _get(matrix, "candidates")
+
+    assert isinstance(candidates, tuple), (
+        f"`candidates` is a {type(candidates).__name__}; the contract says "
+        f"tuple[TagColumn, ...]"
+    )
+    assert not isinstance(candidates, Mapping)
+    assert candidates, "this fixture judged a candidate, so the tuple is not empty"
+    for one in candidates:
+        assert _get(one, "model_id"), "a column in the tuple carries no model id"
+
+
+def test_a_columns_cell_lookup_answers_for_the_tag_it_was_asked_about(
+    tmp_path: Path,
+) -> None:
+    """``TagColumn.cell(tag)`` returns *that* tag's cell, on a column where it matters.
+
+    R27.4, and C5's M01 a second time: ``cell()`` returning the first cell whose
+    tag does not match survived all 1998 tests, because every fixture in the file
+    gave both tags identical counts and the wrong answer was numerically the right
+    one. Eight items under ``arithmetic`` and four under ``extraction`` here, so
+    the two cells of one column disagree in all three numbers and a lookup that
+    ignores its argument is legible.
+
+    Driven through the production method rather than through this section's
+    ``_cell`` helper, because the method is the thing under test -- ``_cell``
+    walks the tuple itself and would pass over a broken ``cell()``.
+    """
+    scenario = _retag(_scenario(tmp_path / "identity"), SPLIT_TAGS)
+    log = _matrix_log(scenario, "evidence-identity.jsonl", judging=_both_sides(scenario))
+    matrix = _available_matrix(_model_from(log))
+    column = _baseline_column(matrix)
+
+    assert _cell_counts(column, "arithmetic") != _cell_counts(column, "extraction"), (
+        "the two tags hold the same counts in this fixture, so a cell lookup that "
+        "returned the wrong one would be indistinguishable from a correct one"
+    )
+    for tag, expected in (
+        ("arithmetic", (LARGER_TAG_N, LARGER_TAG_N, LARGER_TAG_ITEMS)),
+        ("extraction", (SMALLER_TAG_N, SMALLER_TAG_N, SMALLER_TAG_ITEMS)),
+    ):
+        one = column.cell(tag)
+        assert one is not None, f"the column has no cell for {tag!r}"
+        assert _get(one, "tag") == tag, (
+            f"`cell({tag!r})` came back with the cell for {_get(one, 'tag')!r}"
+        )
+        assert (_get(one, "passes"), _get(one, "n"), _get(one, "items")) == expected
+
+    assert column.cell("no-such-tag") is None, (
+        "a tag that was in no golden set has to come back as None rather than as a "
+        "cell of zeros, which would say it was measured and produced nothing"
+    )
+
+
+def _extra_models_log(scenario: Scenario, name: str) -> Path:
+    """``_counted_log``'s shape with two more models judged beside the two sides.
+
+    The third passes the ``arithmetic`` items and fails the ``extraction`` ones and
+    the fourth does the reverse, so all four columns hold different pairs of cells:
+    each extra matches the baseline on one tag and the candidate on the other and
+    neither of them overall. A matrix that dropped an extra, duplicated one column
+    into another, or reordered the candidates has to show it.
+
+    The fourth is judged last and sorts first, which is the only way to tell "the
+    rest, sorted" from "the rest, in the order the counter filed them".
+    """
+    return _matrix_log(
+        scenario,
+        name,
+        judging=[
+            *_both_sides(scenario),
+            *_mixed_pass(THIRD_MODEL, scenario.items, passing=scenario.items[::2]),
+            *_mixed_pass(FOURTH_MODEL, scenario.items, passing=scenario.items[1::2]),
+        ],
+    )
+
+
+def test_a_matrix_lookup_by_model_answers_for_the_model_it_was_asked_about(
+    tmp_path: Path,
+) -> None:
+    """``DimensionMatrix.column(model_id)`` reaches both sides, and the right one.
+
+    The same shape as the cell lookup above and the same fixture problem: with two
+    models whose counts differ only in ``passes``, a ``column()`` that returned
+    the baseline whatever it was asked is caught, but a log with more than one
+    candidate is what makes "the first candidate" and "some candidate"
+    distinguishable.
+    """
+    scenario = _scenario(tmp_path / "columnlookup")
+    matrix = _available_matrix(_model_from(_extra_models_log(scenario, "evidence-lookup.jsonl")))
+
+    for model_id in (BASELINE_MODEL, CANDIDATE_MODEL, THIRD_MODEL, FOURTH_MODEL):
+        column = matrix.column(model_id)
+        assert column is not None, f"the matrix has no column for {model_id!r}"
+        assert _get(column, "model_id") == model_id, (
+            f"`column({model_id!r})` came back with {_get(column, 'model_id')!r}"
+        )
+
+    assert matrix.column("model-nobody-ran") is None
+
+
+def test_a_log_that_judged_four_models_carries_a_column_for_each_of_them(
+    tmp_path: Path,
+) -> None:
+    """``candidates`` is plural, and until now no fixture anywhere made it plural.
+
+    R27.4: it was a 1-tuple in every test in the suite, so nothing pinned that a
+    third model reaches the page at all -- ``by_model`` holds every model a
+    ``migkit.judging_completed`` named, and dropping one because the payload did
+    not call it the candidate discards a column of real measurements in silence.
+
+    Each extra model's two cells are asserted, and the two extras are each other's
+    inverse: a matrix that filled every extra column from one model's counts would
+    hold four columns and still be wrong about two of them.
+    """
+    scenario = _scenario(tmp_path / "extras")
+    matrix = _available_matrix(_model_from(_extra_models_log(scenario, "evidence-extras.jsonl")))
+    passed = (DEFAULT_TAG_N, DEFAULT_TAG_N, DEFAULT_TAG_ITEMS)
+    failed = (0, DEFAULT_TAG_N, DEFAULT_TAG_ITEMS)
+
+    assert _candidate_ids(matrix) == sorted([CANDIDATE_MODEL, THIRD_MODEL, FOURTH_MODEL]), (
+        f"the matrix holds candidate columns for {_candidate_ids(matrix)}; this log "
+        f"judged three models beside the baseline"
+    )
+    for model_id, arithmetic, extraction in (
+        (CANDIDATE_MODEL, failed, failed),
+        (THIRD_MODEL, passed, failed),
+        (FOURTH_MODEL, failed, passed),
+    ):
+        column = _candidate_column(matrix, model_id)
+        assert (
+            _cell_counts(column, "arithmetic"),
+            _cell_counts(column, "extraction"),
+        ) == (arithmetic, extraction), (
+            f"{model_id!r}'s column holds another model's numbers; no two sides in "
+            f"this log passed the same items"
+        )
+
+
+def test_the_first_candidate_column_is_the_one_the_comparison_names(
+    tmp_path: Path,
+) -> None:
+    """R27.8.1: ``candidates[0]`` is the comparison's candidate, by construction.
+
+    C14 will read it that way, and C14 is told to read it that way rather than to
+    be given a second accessor -- a second way to name one side is a second thing
+    to disagree. So the construction has to be pinned here, and only a log with
+    more than one candidate can pin it.
+
+    Both extras sort *before* ``CANDIDATE_MODEL``, so "the payload's candidate
+    first, then the rest in sorted order" and "everything that is not the baseline,
+    sorted" put different models in front. And the fourth is judged after the third
+    and sorts before it, so the tail tells sorted order from the order the counter
+    filed them in -- with only one extra model those two are the same order and the
+    ``sorted()`` is unfalsifiable.
+    """
+    scenario = _scenario(tmp_path / "candidate-first")
+    matrix = _available_matrix(_model_from(_extra_models_log(scenario, "evidence-first.jsonl")))
+    candidates = _candidates(matrix)
+
+    assert FOURTH_MODEL < THIRD_MODEL < CANDIDATE_MODEL, (
+        "the extra models no longer sort in front of the candidate and of each "
+        "other in this order, so this test cannot tell payload order from sorted "
+        "order or sorted order from log order"
+    )
+    assert [_get(one, "model_id") for one in candidates] == [
+        CANDIDATE_MODEL,
+        FOURTH_MODEL,
+        THIRD_MODEL,
+    ], (
+        f"the candidate columns are {[_get(one, 'model_id') for one in candidates]}; "
+        f"the comparison payload's candidate comes first and the rest follow in "
+        f"sorted order"
+    )
+
+
+def test_an_extra_model_the_payload_never_named_is_still_counted_the_same_way(
+    tmp_path: Path,
+) -> None:
+    """The extra column is a measurement, not a placeholder: it moves with its log.
+
+    A column that is present but always reads the same is a column nobody can act
+    on. This is the same log with the third model's outcomes inverted -- it fails
+    the arithmetic items and passes the extraction ones -- and the two runs have to
+    disagree in the cells that changed and agree in the ones that did not.
+    """
+    scenario = _scenario(tmp_path / "three-inverted")
+    log = _matrix_log(
+        scenario,
+        "evidence-three-inverted.jsonl",
+        judging=[
+            *_both_sides(scenario),
+            *_mixed_pass(THIRD_MODEL, scenario.items, passing=scenario.items[1::2]),
+        ],
+    )
+    matrix = _available_matrix(_model_from(log))
+    column = _candidate_column(matrix, THIRD_MODEL)
+
+    assert _cell_counts(column, "arithmetic") == (0, DEFAULT_TAG_N, DEFAULT_TAG_ITEMS)
+    assert _cell_counts(column, "extraction") == (
+        DEFAULT_TAG_N,
+        DEFAULT_TAG_N,
+        DEFAULT_TAG_ITEMS,
+    ), (
+        "the third model's cells did not follow its verdicts: this log inverts the "
+        "outcomes the fixture above records and the column reads the same"
+    )
+
+
 def test_a_side_that_was_judged_and_produced_nothing_is_a_column_of_zeros(
     tmp_path: Path,
 ) -> None:
@@ -8414,6 +8745,114 @@ def test_a_side_that_was_judged_and_produced_nothing_is_a_column_of_zeros(
         (0, 0, 0),
     ]
     assert _get(_cell(column, "arithmetic"), "verdict_refused") is True
+
+
+def _silent_side_note(tmp_path: Path) -> str:
+    """A side that was judged and graded nothing: its first cell's note.
+
+    A ``migkit.judging_completed`` names the candidate, so the counting saw it and
+    zero-filled it. The fix a reader needs is "look at why this judging pass graded
+    nothing".
+    """
+    scenario = _scenario(tmp_path / "silent-side")
+    log = _matrix_log(
+        scenario,
+        "evidence-silent-side.jsonl",
+        judging=[
+            *_judging_pass(BASELINE_MODEL, scenario.items, passed=True),
+            _record(
+                EVENT_JUDGING_COMPLETED,
+                {
+                    "model_id": CANDIDATE_MODEL,
+                    "graded": {J: 0},
+                    "imputed": {},
+                    "parse_failures": {},
+                },
+                TS_JUDGING,
+            ),
+        ],
+    )
+    matrix = _available_matrix(_model_from(log))
+    return str(_get(_cell(_candidate_column(matrix, CANDIDATE_MODEL), "arithmetic"), "note"))
+
+
+def _never_judged_note(tmp_path: Path) -> tuple[Any, str]:
+    """A side the payload names and no judging pass ever closed: the matrix, and a note.
+
+    Nothing in this log mentions the candidate except the comparison payload. The
+    fix a reader needs is "look at whether the run completed at all", which is not
+    the fix above.
+    """
+    scenario = _scenario(tmp_path / "never-judged")
+    log = _matrix_log(
+        scenario,
+        "evidence-never-judged.jsonl",
+        judging=_judging_pass(BASELINE_MODEL, scenario.items, passed=True),
+    )
+    matrix = _available_matrix(_model_from(log))
+    column = _candidate_column(matrix, CANDIDATE_MODEL)
+    return matrix, str(_get(_cell(column, "arithmetic"), "note"))
+
+
+def test_a_side_no_judging_pass_ever_closed_is_still_a_column(tmp_path: Path) -> None:
+    """The implementer's own extension, which had no test at all until R27.5.
+
+    Dropping the never-seen side entirely -- leaving a one-column "comparison"
+    with nothing on the page saying where the other side went -- survived all 1998
+    tests. It is the same failure as a vanishing judged-but-silent column, arrived
+    at from a different direction: here the counting never heard of the model,
+    because ``by_model`` holds only what a ``migkit.judging_completed`` closed, and
+    the payload's own candidate is not in it.
+    """
+    matrix, _note = _never_judged_note(tmp_path)
+    column = _candidate_column(matrix, CANDIDATE_MODEL)
+
+    assert _candidate_ids(matrix) == [CANDIDATE_MODEL], (
+        f"the candidate named by the comparison payload is missing from the "
+        f"matrix, which holds {_candidate_ids(matrix)}"
+    )
+    assert _tags_of(column) == _tags_of(_baseline_column(matrix)), (
+        "the never-judged side lost rows the other side has, so the two columns no "
+        "longer line up beside each other"
+    )
+    assert [_cell_counts(column, tag) for tag in _tags_of(column)] == [(0, 0, 0), (0, 0, 0)]
+
+
+def test_a_never_judged_side_and_a_judged_silent_side_do_not_read_identically(
+    tmp_path: Path,
+) -> None:
+    """Two situations, two fixes, and until R27.5 one rendering.
+
+    A judged side that graded nothing and a side no judging pass ever closed both
+    arrive as ``(0, 0, 0)``, ``rate=None``, ``verdict_refused=True`` and the same
+    note. The note is right about the thing that matters -- it says nothing was
+    measured, not that a zero was measured -- but it sends both readers to the same
+    place, and one of them should be checking the judge configuration while the
+    other should be checking whether the run finished.
+
+    The distinction goes in the note rather than in a new field, because the note
+    is where this document already says such things.
+    """
+    silent = _silent_side_note(tmp_path)
+    _matrix, never = _never_judged_note(tmp_path)
+
+    assert silent, "the judged-but-silent cell says nothing at all"
+    assert never != silent, (
+        f"a side that was judged and graded nothing and a side no judging pass ever "
+        f"closed render byte-identically:\n  {silent!r}"
+    )
+    assert CANDIDATE_MODEL in never, (
+        f"the never-judged column does not name the side that was never judged, so "
+        f"a reader cannot tell which one to go looking for: {never!r}"
+    )
+    assert CANDIDATE_MODEL not in silent, (
+        "the judged-but-silent column has picked up the never-judged sentence, so "
+        "the two are distinguishable from each other and from nothing else"
+    )
+    assert never.startswith(silent), (
+        f"the never-judged note replaced what the cell already said rather than "
+        f"adding to it; 'nothing was measured' is still true here:\n  {never!r}"
+    )
 
 
 def test_the_dimension_matrix_still_renders_when_the_artifacts_are_not_beside_the_log(
@@ -8478,6 +8917,88 @@ def test_the_tags_are_the_golden_sets_own_with_the_untagged_bucket_last(
     )
 
 
+def test_the_tags_are_alphabetical_on_a_set_whose_tags_are_not_written_that_way(
+    tmp_path: Path,
+) -> None:
+    """R27.3 corrected the contract's phrase, and this is the fixture that can fail it.
+
+    "Golden-set tag order" is not reachable from anything ``report.py`` sees:
+    ``GoldenSet.stats()`` hands back ``dict(sorted(...))`` and the counter keys its
+    inner mapping through ``sorted(index.tags)``, so a regression to *file* order is
+    unimplementable and what is left to promise is alphabetical, ``UNTAGGED`` last.
+
+    Every other fixture in this section names its tags in alphabetical order to
+    begin with, which is a fixture that agrees with any ordering rule at all. Here
+    ``zeta`` is written first and has to come out second.
+    """
+    scenario = _retag(_scenario(tmp_path / "zeta"), ZETA_TAGS)
+    log = _matrix_log(scenario, "evidence-zeta.jsonl", judging=_both_sides(scenario))
+    matrix = _available_matrix(_model_from(log))
+
+    assert _get(matrix, "tags") == ("alpha", "zeta"), (
+        f"the tags came back as {_get(matrix, 'tags')}; this golden set writes zeta "
+        f"first and the matrix publishes them alphabetically"
+    )
+    assert _tags_of(_baseline_column(matrix)) == ("alpha", "zeta")
+    assert _cell_counts(_baseline_column(matrix), "zeta") == (
+        LARGER_TAG_N,
+        LARGER_TAG_N,
+        LARGER_TAG_ITEMS,
+    ), "the rows were relabelled rather than reordered, so zeta holds alpha's counts"
+
+
+def test_the_report_orders_the_tags_itself_and_does_not_inherit_the_counters_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The zeta fixture above does not close this, and it was ruled that it would.
+
+    R27.3 asked for a ``zeta``/``alpha`` fixture on the ground that deleting
+    ``report.py``'s own ``sorted()`` and taking the counter's key order "is
+    invisible only because ``dimensions.py`` happens to sort". The fixture is
+    above; it does not close it, and that was measured rather than argued --
+    ``dimensions.py`` keys every column through ``sorted(index.tags)``, so on
+    *every* input ``from_evidence`` can build, the counter's key order and
+    alphabetical order are the same order. The mutant survives the zeta fixture.
+
+    Two modules agreeing today is not one module ordering for itself: the
+    counter's contract is what its keys *mean*, not what order they arrive in, and
+    a day it stops sorting is a day this table opens with a nameless row. So the
+    counting is replaced with one that does not sort -- the one input no log can
+    produce -- and everything downstream of it runs unchanged.
+    """
+    module = _module()
+    scenario = _scenario(tmp_path / "unsorted")
+    log = _counted_log(scenario, "evidence-unsorted.jsonl")
+    by_model = {
+        BASELINE_MODEL: {
+            "zeta": TagCount(3, 3, 1),
+            UNTAGGED: TagCount(2, 2, 1),
+            "alpha": TagCount(1, 1, 1),
+        },
+        CANDIDATE_MODEL: {"middle": TagCount(0, 4, 1)},
+    }
+
+    def unsorted_counts(_tally: Any, _view: Any, _judge: str) -> Any:
+        return DimensionCounts(available=True, reason="", by_model=by_model)
+
+    monkeypatch.setattr(module, "_close_the_tally", unsorted_counts)
+    matrix = _available_matrix(_model_from(log))
+
+    assert tuple(by_model[BASELINE_MODEL]) != ("alpha", "middle", "zeta", UNTAGGED), (
+        "the stubbed counts are already in the order the matrix must publish, so "
+        "this test cannot tell the two apart"
+    )
+    assert _get(matrix, "tags") == ("alpha", "middle", "zeta", UNTAGGED), (
+        f"the matrix published {_get(matrix, 'tags')}: it took the order the "
+        f"counting handed it rather than ordering the tags for itself"
+    )
+    assert _tags_of(_baseline_column(matrix)) == ("alpha", "middle", "zeta", UNTAGGED)
+    assert _cell_counts(_baseline_column(matrix), "zeta") == (3, 3, 1), (
+        "the rows were relabelled rather than reordered, so a cell carries another "
+        "tag's counts"
+    )
+
+
 def test_a_golden_set_in_which_every_item_is_untagged_is_available_and_not_a_refusal(
     tmp_path: Path,
 ) -> None:
@@ -8527,16 +9048,33 @@ def test_the_report_module_names_the_untagged_sentinel_rather_than_typing_it() -
 
     They are the same string, which is exactly why the contract says to import it:
     an inline ``""`` is correct today and is one edit away from being wrong, with
-    nothing at that edit site to say what the empty string meant. This is the only
-    assertion in this section that reads the module's source, and it reads it for
-    a name and not for a shape.
-    """
-    source = inspect.getsource(_module())
+    nothing at that edit site to say what the empty string meant.
 
-    assert "UNTAGGED" in source, (
-        "report.py never names UNTAGGED, so the untagged row is keyed by an inline "
-        "empty string; dimensions.py exports the sentinel for exactly this and "
-        "carries the comment explaining why it is empty rather than the word"
+    **Parsed rather than grepped, and R27.2 is why.** This was
+    ``"UNTAGGED" in inspect.getsource(report)``. C10's reviewer replaced every
+    executable use of the sentinel with ``""`` *and deleted the import*, and the
+    test still passed -- because ``report.py``'s docstrings name ``UNTAGGED``
+    several times and a docstring survives that regression untouched. A source-text
+    assertion cannot tell code from commentary, and this project writes long
+    docstrings, so the better a module is documented the weaker such a test gets.
+
+    Matching ``Name`` and ``Attribute`` and nothing else is deliberate: it accepts
+    both spellings the contract allows -- the bare name after a ``from ... import``
+    and ``dimensions.UNTAGGED`` -- and rejects the one it does not, importing the
+    sentinel and then typing ``""`` anyway, because the ``ImportFrom`` alias is not
+    either node type.
+    """
+    tree = ast.parse(inspect.getsource(_module()))
+    reached = any(
+        (isinstance(node, ast.Name) and node.id == "UNTAGGED")
+        or (isinstance(node, ast.Attribute) and node.attr == "UNTAGGED")
+        for node in ast.walk(tree)
+    )
+
+    assert reached, (
+        "report.py never evaluates UNTAGGED, so the untagged row is keyed by an "
+        "inline empty string; dimensions.py exports the sentinel for exactly this "
+        "and carries the comment explaining why it is empty rather than the word"
     )
 
 
@@ -8609,6 +9147,244 @@ def test_a_tag_that_clears_both_floors_is_not_refused_a_verdict(tmp_path: Path) 
 
     assert _get(one, "verdict_refused") is False, _get(one, "note")
     assert (_get(one, "needed"), _get(one, "needed_unit")) == (None, "")
+
+
+def test_the_published_floors_are_the_floors_the_cells_were_actually_refused_against(
+    tmp_path: Path,
+) -> None:
+    """One expression, not three that agree today. R27.7.
+
+    ``min_n`` and ``min_items`` travel on the matrix so that a document refusing a
+    cell can say what it refused against -- which is worth nothing if the number it
+    publishes and the number the cell was judged by are two separate references
+    that happen to name the same constant. Moving the constant here has to move
+    both, and a cell that was not refused before has to be refused after.
+
+    The constant is patched on ``report`` rather than on ``dimensions``, because
+    ``report`` is what threads the floors into ``dimension_cell`` and patching the
+    definition would only test that ``dimensions`` reads its own default.
+    """
+    module = _module()
+    scenario = _scenario(tmp_path / "onefloor")
+    log = _counted_log(scenario, "evidence-onefloor.jsonl")
+
+    raised = DEFAULT_TAG_ITEMS + 1
+    before = _cell(_baseline_column(_available_matrix(_model_from(log))), "arithmetic")
+    assert (_get(before, "items"), _get(before, "needed")) == (
+        DEFAULT_TAG_ITEMS,
+        MIN_ITEMS - DEFAULT_TAG_ITEMS,
+    ), (
+        "this tag does not hold the item count the shortfall below is computed "
+        "from, so moving the floor would not be visible as a different shortfall"
+    )
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(module, "MIN_ITEMS_FOR_A_VERDICT", raised)
+        matrix = _available_matrix(_model_from(log))
+
+    one = _cell(_baseline_column(matrix), "arithmetic")
+
+    assert _get(matrix, "min_items") == raised, (
+        f"the matrix publishes {_get(matrix, 'min_items')} as the item floor while "
+        f"the module's constant says {raised}"
+    )
+    assert _get(one, "needed") == raised - DEFAULT_TAG_ITEMS, (
+        f"the cell was refused against a different item floor from the one the "
+        f"matrix publishes: it wants {_get(one, 'needed')} more items to reach "
+        f"{_get(matrix, 'min_items')} from {DEFAULT_TAG_ITEMS}"
+    )
+    assert f"{raised} items needed for a verdict here" in _get(one, "note")
+
+
+# -- the confidence and the floor the run recorded, threaded and not re-derived - #
+#
+# R27.1. The wiring is four lines of `from_evidence` and six mutants of it
+# survived all 1998 tests, each publishing a false document: an interval at the
+# wrong level, an empty floor column, the two swapped, rigor's default applied
+# twice, `min_detectable_effect` used as the pass-rate floor, and a string
+# threshold reaching `wilson_interval` unconverted. `THRESHOLDS` is deliberately
+# all-distinct and deliberately not rigor's defaults, which is what makes each of
+# those visible from a cell.
+# --------------------------------------------------------------------------- #
+
+
+def test_the_cells_carry_the_pass_rate_floor_this_run_recorded(tmp_path: Path) -> None:
+    """The floor is echoed onto every cell, and it is *this* run's floor.
+
+    A document that refuses a cell has to be able to say what it refused against.
+    ``floor=None`` empties that column and the page loses the sentence; the floor
+    read out of ``min_detectable_effect`` fills it with 0.13 while the gate above
+    ran at 0.87, which is two floors in one document and neither of them flagged.
+    """
+    scenario = _scenario(tmp_path / "cellfloor")
+    matrix = _available_matrix(_model_from(_counted_log(scenario, "evidence-cellfloor.jsonl")))
+
+    assert len(set(THRESHOLDS.values())) == len(THRESHOLDS), (
+        "two thresholds in this file share a value, so a cell reading the wrong one "
+        "would be indistinguishable from a cell reading the right one"
+    )
+    for column in _all_columns(matrix):
+        for one in _cells(column):
+            assert _get(one, "floor") == THRESHOLDS["pass_rate_floor"], (
+                f"a {_get(one, 'tag')!r} cell of {_get(column, 'model_id')!r} carries "
+                f"floor={_get(one, 'floor')!r}; this run recorded "
+                f"{THRESHOLDS['pass_rate_floor']}"
+            )
+
+
+def test_the_floor_on_a_cell_follows_the_run_and_is_not_a_constant(tmp_path: Path) -> None:
+    """The other half: a second run at a different floor produces different cells.
+
+    The test above passes on any implementation that hard-codes 0.87, which is the
+    number this file happens to use everywhere.
+    """
+    loose = dict(THRESHOLDS, pass_rate_floor=0.55)
+    scenario = _scenario(tmp_path / "loosefloor", thresholds=loose)
+    matrix = _available_matrix(_model_from(_counted_log(scenario, "evidence-loosefloor.jsonl")))
+
+    assert _get(_cell(_baseline_column(matrix), "arithmetic"), "floor") == 0.55
+
+
+def test_the_interval_on_a_cell_is_wilson_at_the_runs_confidence(tmp_path: Path) -> None:
+    """0.99, not rigor's 0.95, and the difference is on the page as a wider bar.
+
+    ``confidence=None`` widens the baseline's ``arithmetic`` interval from
+    (0.819, 1.0) to (0.886, 1.0) and adds a sentence to every cell saying rigor's
+    default of 95% was used -- about a run whose evidence log records 99%. The
+    swap with ``pass_rate_floor`` computes the interval at 87%. All three are
+    complete, plausible, unflagged documents.
+    """
+    scenario = _scenario(tmp_path / "conf")
+    matrix = _available_matrix(_model_from(_counted_log(scenario, "evidence-conf.jsonl")))
+    one = _cell(_baseline_column(matrix), "arithmetic")
+
+    assert THRESHOLDS["confidence"] != DEFAULT_CONFIDENCE, (
+        "this file's confidence is rigor's own default, so an interval computed at "
+        "either would be the same interval and this test asserts nothing"
+    )
+    assert _get(one, "interval") == wilson_interval(
+        DEFAULT_TAG_N, DEFAULT_TAG_N, THRESHOLDS["confidence"]
+    )
+    assert _get(one, "interval") != wilson_interval(
+        DEFAULT_TAG_N, DEFAULT_TAG_N, DEFAULT_CONFIDENCE
+    ), "the interval is at rigor's default; this run recorded a confidence of its own"
+    assert _get(one, "interval") != wilson_interval(
+        DEFAULT_TAG_N, DEFAULT_TAG_N, THRESHOLDS["pass_rate_floor"]
+    ), "the interval is at 87%: the confidence and the pass-rate floor are swapped"
+    assert "rigor's default" not in _get(one, "note"), (
+        f"the cell discloses a defaulted confidence on a run that recorded one: "
+        f"{_get(one, 'note')!r}"
+    )
+
+
+def _without_confidence(tmp_path: Path, name: str) -> Any:
+    """A run whose threshold block records no confidence level at all.
+
+    ``thresholds`` is the only place ``from_evidence`` looks, so the judge rows
+    keep this file's ordinary gates -- a fixture that also emptied them would be
+    exercising a different absence in the same test.
+    """
+    thresholds = {key: value for key, value in THRESHOLDS.items() if key != "confidence"}
+    scenario = _scenario(tmp_path / name, thresholds=thresholds, judges=[_judge_payload()])
+    assert "confidence" not in scenario.comparison["thresholds"], (
+        "the fixture recorded a confidence after all, so the disclosure below would "
+        "be asserting nothing"
+    )
+    return _model_from(_counted_log(scenario, f"evidence-{name}.jsonl"))
+
+
+def test_a_run_that_recorded_no_confidence_discloses_rigors_default_exactly_once(
+    tmp_path: Path,
+) -> None:
+    """An absent confidence stays absent all the way to the cell, which discloses it.
+
+    Two mutants live on either side of this. Defaulting in ``report.py`` -- ``or
+    DEFAULT_CONFIDENCE`` on the way past -- computes the identical interval and
+    drops the sentence, so the reader is shown a bar whose level nothing on the
+    page states. Applying the default twice would print the sentence twice. The
+    count is what separates the three, so it is a count and not a substring.
+
+    The expected note comes from ``dimension_cell`` driven directly, which is the
+    module ``report.py`` is required to delegate this to and shares none of the
+    path under test -- the thresholds, ``_number``, the matrix and the column are
+    all skipped.
+    """
+    model = _without_confidence(tmp_path, "noconf")
+    matrix = _available_matrix(model)
+    one = _cell(_baseline_column(matrix), "arithmetic")
+    expected = dimension_cell(
+        "arithmetic",
+        DEFAULT_TAG_N,
+        DEFAULT_TAG_N,
+        DEFAULT_TAG_ITEMS,
+        confidence=None,
+        floor=THRESHOLDS["pass_rate_floor"],
+    )
+
+    assert "rigor's default" in expected.note, (
+        "dimensions no longer discloses a defaulted confidence, so this test is "
+        "asserting the absence of something that was never there"
+    )
+    note = str(_get(one, "note"))
+    said = note.count("rigor's default")
+
+    assert note == expected.note
+    assert said == 1, f"the default-confidence disclosure appears {said} times: {note!r}"
+    assert _get(one, "interval") == wilson_interval(
+        DEFAULT_TAG_N, DEFAULT_TAG_N, DEFAULT_CONFIDENCE
+    )
+
+
+def test_the_disclosure_is_absent_from_every_cell_of_a_run_that_recorded_one(
+    tmp_path: Path,
+) -> None:
+    """The count above is zero when there is nothing to disclose, on every cell.
+
+    A disclaimer that is true of the run above is false of this one, and a
+    published false disclaimer is worse than a missing true one: it names a number
+    the evidence log contradicts.
+    """
+    scenario = _scenario(tmp_path / "nodisclosure")
+    matrix = _available_matrix(
+        _model_from(_counted_log(scenario, "evidence-nodisclosure.jsonl"))
+    )
+
+    for column in _all_columns(matrix):
+        for one in _cells(column):
+            assert "rigor's default" not in _get(one, "note"), (
+                f"a {_get(one, 'tag')!r} cell of {_get(column, 'model_id')!r} says a "
+                f"default confidence was used; this run recorded "
+                f"{THRESHOLDS['confidence']}"
+            )
+
+
+def test_a_threshold_recorded_as_a_string_is_not_threaded_into_the_statistics(
+    tmp_path: Path,
+) -> None:
+    """``_number`` is what stands between a JSON string and ``wilson_interval``.
+
+    An evidence log is written by one machine and read by another, and every value
+    in it is input from outside the trust boundary -- ``"0.99"`` is a shape a
+    hand-edited or re-serialised payload really produces. Without the conversion
+    the string reaches the interval arithmetic unconverted; with it the run reads
+    as one that recorded no usable threshold, which is the true statement and is
+    disclosed as one.
+    """
+    thresholds = dict(THRESHOLDS, confidence="0.99", pass_rate_floor="0.87")
+    scenario = _scenario(tmp_path / "strings", thresholds=thresholds, judges=[_judge_payload()])
+    matrix = _available_matrix(_model_from(_counted_log(scenario, "evidence-strings.jsonl")))
+    one = _cell(_baseline_column(matrix), "arithmetic")
+
+    assert _get(one, "floor") is None, (
+        f"a string floor was carried onto the cell as {_get(one, 'floor')!r}, so the "
+        f"page prints a threshold it cannot compare anything against"
+    )
+    assert _get(one, "interval") == wilson_interval(
+        DEFAULT_TAG_N, DEFAULT_TAG_N, DEFAULT_CONFIDENCE
+    )
+    assert "rigor's default" in _get(one, "note"), (
+        "the string confidence was consumed silently: the cell shows an interval "
+        "and says nothing about what level it is at"
+    )
 
 
 # -- the judge, which the raw counts erased ---------------------------------- #
@@ -8818,10 +9594,26 @@ def _declines(tmp_path: Path) -> list[tuple[str, Any, str]]:
     return cases
 
 
+def _diagnosis(reason: str) -> str:
+    """One decline's template: the sentence with every interpolated value removed.
+
+    R27.6. The distinctness assertion below used to compare the six *strings*, and
+    six strings are trivially distinct: every one of these refusals interpolates a
+    judge name, a model id, an item id or a count, so collapsing ``_unknown_item``
+    onto ``_unjoinable``'s sentence leaves two unequal strings carrying one
+    diagnosis. A reader shown either would learn the same thing and be sent to the
+    same fix, which is what the claim "six distinguishable ways" is actually about.
+
+    Every value ``dimensions`` names in a refusal goes through ``repr``, so the
+    interpolations are the quoted runs; counts are the digit runs.
+    """
+    return re.sub(r"\d+", "N", re.sub(r"'[^']*'", "'...'", reason))
+
+
 def test_the_matrix_declines_in_six_distinguishable_ways_and_re_words_none_of_them(
     tmp_path: Path,
 ) -> None:
-    """Six causes, six sentences, each quoted from the place that produced it.
+    """Six causes, six diagnoses, each quoted from the place that produced it.
 
     The contract's list, asserted as a list rather than as six independent tests,
     because the claim that makes it worth writing down is that the six are
@@ -8829,9 +9621,14 @@ def test_the_matrix_declines_in_six_distinguishable_ways_and_re_words_none_of_th
     pass six separate tests for containing a keyword and would still have told the
     reader nothing about which fix to apply.
 
-    Byte-identical, not "mentions the judge" and not "is non-empty". A re-worded
-    refusal is a third copy of a disclosure that already has two, and the copy
-    that goes stale is never the one anybody is looking at.
+    Byte-identical against the source, not "mentions the judge" and not "is
+    non-empty": a re-worded refusal is a third copy of a disclosure that already
+    has two, and the copy that goes stale is never the one anybody is looking at.
+    That pins ``report.py``, which is the part C10 owns. It cannot pin
+    ``dimensions.py``, because the expected sentence is produced by the same
+    function -- so the *wording* of a decline is pinned in ``test_dimensions.py``,
+    where the wording lives, and what is asserted here is that no two of them
+    share a template.
     """
     seen: dict[str, str] = {}
     for label, model, expected in _declines(tmp_path):
@@ -8846,9 +9643,12 @@ def test_the_matrix_declines_in_six_distinguishable_ways_and_re_words_none_of_th
         assert _candidate_ids(matrix) == [], f"{label}: a refusal carried candidate columns"
         seen[label] = _get(matrix, "reason")
 
-    assert len(set(seen.values())) == len(seen) == 6, (
-        f"the six causes did not produce six distinguishable sentences: "
-        f"{sorted(seen)} gave {len(set(seen.values()))} distinct reasons"
+    assert len(seen) == 6
+    diagnoses = {label: _diagnosis(reason) for label, reason in seen.items()}
+    assert len(set(diagnoses.values())) == 6, (
+        f"the six causes did not produce six distinguishable *diagnoses*: "
+        f"{sorted(seen)} gave {len(set(diagnoses.values()))} distinct templates.\n"
+        + "\n".join(f"  {label}: {one!r}" for label, one in sorted(diagnoses.items()))
     )
 
 
