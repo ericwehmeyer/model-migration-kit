@@ -8531,16 +8531,33 @@ def test_the_report_module_names_the_untagged_sentinel_rather_than_typing_it() -
 
     They are the same string, which is exactly why the contract says to import it:
     an inline ``""`` is correct today and is one edit away from being wrong, with
-    nothing at that edit site to say what the empty string meant. This is the only
-    assertion in this section that reads the module's source, and it reads it for
-    a name and not for a shape.
-    """
-    source = inspect.getsource(_module())
+    nothing at that edit site to say what the empty string meant.
 
-    assert "UNTAGGED" in source, (
-        "report.py never names UNTAGGED, so the untagged row is keyed by an inline "
-        "empty string; dimensions.py exports the sentinel for exactly this and "
-        "carries the comment explaining why it is empty rather than the word"
+    **Parsed rather than grepped, and R27.2 is why.** This was
+    ``"UNTAGGED" in inspect.getsource(report)``. C10's reviewer replaced every
+    executable use of the sentinel with ``""`` *and deleted the import*, and the
+    test still passed -- because ``report.py``'s docstrings name ``UNTAGGED``
+    several times and a docstring survives that regression untouched. A source-text
+    assertion cannot tell code from commentary, and this project writes long
+    docstrings, so the better a module is documented the weaker such a test gets.
+
+    Matching ``Name`` and ``Attribute`` and nothing else is deliberate: it accepts
+    both spellings the contract allows -- the bare name after a ``from ... import``
+    and ``dimensions.UNTAGGED`` -- and rejects the one it does not, importing the
+    sentinel and then typing ``""`` anyway, because the ``ImportFrom`` alias is not
+    either node type.
+    """
+    tree = ast.parse(inspect.getsource(_module()))
+    reached = any(
+        (isinstance(node, ast.Name) and node.id == "UNTAGGED")
+        or (isinstance(node, ast.Attribute) and node.attr == "UNTAGGED")
+        for node in ast.walk(tree)
+    )
+
+    assert reached, (
+        "report.py never evaluates UNTAGGED, so the untagged row is keyed by an "
+        "inline empty string; dimensions.py exports the sentinel for exactly this "
+        "and carries the comment explaining why it is empty rather than the word"
     )
 
 
