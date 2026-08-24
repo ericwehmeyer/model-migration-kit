@@ -5229,3 +5229,120 @@ seventh row:
 Also endorsed and worth keeping: levels are compared as `repr` strings rather
 than floats, because `nan != nan` would otherwise report a family of two
 identical NaN levels as "tested at different levels: nan, nan".
+
+### R29 — C18's three unimplementable clauses, and a false sentence already shipping
+
+C18's implementer shipped one clause and stopped on three, reporting that each
+needed a reading it was not entitled to choose. It was right on all three, and
+it found a defect nobody had asked about that is live in the rendered document
+today.
+
+Shipped and merged: `render_html_string` replaced the `<title>` outright, so the
+`FAKE MODELS` prefix vanished from a **contracted disclosure surface** — one of
+the five the spec names, "and none of them is a footnote" — while the body band
+stayed. One argument removed it. Now guarded.
+
+#### R29.1 — the defect that is shipping: a headline sentence making a series claim
+
+With a real headline over a scripted history, the methodology paragraph
+(`report.py:2255`) prints, verbatim:
+
+> These numbers describe scripted responses, not a real provider. At least one
+> side of **this comparison** was produced by a Fake adapter
+> (**AnthropicAdapter** for the baseline, **OpenAICompatAdapter** for the
+> candidate).
+
+**Both named adapters are real.** The sentence is *headline*-scoped while
+`is_demo` is *series*-scoped, so it makes a false claim about the comparison in
+front of the reader and never states the true one — that the history behind it
+was scripted. Reproduced against the current build.
+
+This is worse than an absence rendering as a measurement: it is a **disclosure
+that discloses the wrong thing**, and it appears in the paragraph a sceptical
+reader goes to first. **Ruling: the sentence must say what `is_demo` actually
+measured.** When the headline is fake, name the headline's adapters as now. When
+the headline is real and the *history* is scripted, say that, and name no
+adapters as evidence — the evidence is in runs the sentence is not about. The
+two cases are different sentences, not one sentence with a variable in it.
+
+#### R29.2 — clause 1 is unsatisfiable as written; the escape is a third state
+
+C18's contract says the band must not be defeatable "by an empty adapter
+string". Verified by the implementer: blank both sides' adapters in the payload
+**and** delete the run artifacts (the artifact wins at `report.py:1918`), and a
+fully scripted demo renders as a clean report with a verdict and pass rates.
+§5.3's claim is broken.
+
+But `test_a_series_of_real_runs_does_not_band_the_report`, parametrized
+`("", "")`, asserts exactly the opposite for exactly that input, on C3's
+reviewer note. And the two inputs are **byte-identical in the evidence**: a
+scripted run with its adapter blanked and a real run whose adapter was never
+recorded produce the same log. No implementation satisfies both, because the
+distinction the contract demands is not in the data.
+
+**Ruling: a third state — provenance not recorded — which is neither "scripted"
+nor "real".** This is the document's own central rule applied to its most
+important disclosure: an absence must not render as a measurement, and a silent
+report is currently asserting *real* on the strength of nothing. It also
+survives the merged test, which asserts only that the **fake** markers are
+absent, so C3's reviewer note is honoured rather than overridden.
+
+The four things the contract never decided, decided:
+
+1. **Wording** — a band saying the adapters were not recorded, so the report
+   cannot say whether these numbers came from a real provider or a script. It
+   states the gap, and claims nothing on either side.
+2. **The `<title>`: no.** The prefix is reserved for the positive claim *these
+   are fake*, and unrecorded provenance is not that claim. Prefixing it would
+   band every legacy log that predates adapter recording, which trains readers
+   to ignore the prefix — and a disclosure readers learn to skip is worse than
+   one that is merely absent.
+3. **`render_terminal`: yes.** The terminal and the HTML must say the same
+   words; that discipline is why `DetailBudget.sentence` and C6's `note` are
+   written where their numbers are computed.
+4. **One side unrecorded** — if either side is *fake*, the fake band wins,
+   because that is a positive finding and outranks a gap. Otherwise, if either
+   side is unrecorded, the unrecorded band shows and names **which side**.
+
+#### R29.3 — clause 2: detect the asymmetry, or say nothing
+
+The C17 timestamp asymmetry has no trigger in the repo: `build_showcase` does
+not exist, and it is invisible from the series because `series.py:1674`
+`_created` returns the payload's `created` and **discards the envelope `ts`**,
+keeping only a `created_source` label.
+
+**Ruling: take the implementer's recommendation.** Detect it in `report.py` from
+the comparison records' own `record.ts` against `payload["created"]`, with the
+threshold stated as **different UTC calendar dates**, and **say nothing when
+they agree**. Do not touch `series.py` — it is outside C18's declared files, and
+a second report-local accumulation is the cheaper of the two.
+
+Unconditional prose is refused: it is **false on `migkit demo`**, whose
+comparison `created` and envelope `ts` are the same instant. *An asymmetry
+asserted where none was measured is this document's rule inverted* — and it
+would be inverted inside the very chunk whose subject is unsuppressible honesty.
+
+#### R29.4 — clause 3: count comparisons, never runs
+
+`ReportModel.series` is one point per comparison, each naming two adapter
+strings, and `RunPoint` carries no run id or artifact path to dedupe by. In the
+showcase shape a night is 4 runs but 3 points × 2 sides = **6 adapter
+mentions**, so "how many of the runs" would render 84 for a 42-comparison
+document over 56 actual runs.
+
+A true run count is reachable from `migkit.run_started`, which does carry
+`adapter` — but a resumed run writes a second one, and a log produced by
+`compare` from two artifacts has none, so the count would be **absent on exactly
+the logs this clause exists to protect**.
+
+**Ruling: count comparisons, and say "comparisons".** Never publish a run count
+this data cannot dedupe. A precise-looking number that is wrong is worse here
+than a coarser one that is right, because the whole clause is about a disclosure
+a reader must be able to trust.
+
+#### R29.5 — and tell C18's blind tester its first test is already green
+
+C18's named first-failing test is **largely already passing**: clause 4 ("not by
+a real headline run appended to a seeded log") is C3's third `is_demo` disjunct,
+merged, and covered by two existing tests. A tester that reads a passing test as
+a gap will write around it. Say so in the brief.
