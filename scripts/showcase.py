@@ -108,10 +108,14 @@ All fourteen nights were then run end to end through ``run_goldenset`` ->
 ``judge_artifact`` -> ``compare`` -- 56 runs and 42 comparisons -- and the 42
 verdicts are: GO on every candidate on every night, except candidate C on night 6
 (**REVIEW, rule 3**, 440/480, lower bound 0.8935, ``runs_needed`` 931, p = 0.2617,
-``mw_powered`` true) and candidate B on night 14 (**NO-GO, rule 1**, 380/480,
-lower bound 0.7596, p < 1e-15). The dimension matrix on nights 1-13 has every one
-of the six capabilities between 75/85 and 85/85 for all four models; on night 14
-the only cell outside that range is candidate B's ``#refusal`` at 5/85.
+``mw_powered`` true) and candidate B on night 14 (**NO-GO, rule 1**, 375/480,
+lower bound 0.7487, p = 3.8e-12 -- 105 failing completions, nowhere near the
+432-442 REVIEW band). The dimension matrix on nights 1-13 has every one of the six
+capabilities between 70/85 and 85/85 for all four models. Between nights 13 and 14
+candidate B moves in exactly two of them -- ``#refusal`` by -80 and
+``#summarisation`` by -5, the second through ``synthetic-refuse-04``'s borrowed
+tag -- and the other four are identical to the completion, which is what makes the
+parameter strip's single changed row an argument rather than a claim.
 
 What holds the collapse honest
 ------------------------------
