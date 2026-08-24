@@ -191,8 +191,11 @@ from .series import (
     CandidateField,
     RunPoint,
     SeriesBuilder,
+    SpotCheck,
+    SpotCheckSubject,
     candidate_field,
     parse_created,
+    spot_check,
 )
 
 __all__ = [
@@ -1099,6 +1102,50 @@ class ReportModel:
     #: Defaulted for the reason :attr:`series` and :attr:`dimensions` are: every
     #: existing constructor of a ``ReportModel`` predates the field.
     candidates: CandidateField | None = None
+    #: What a ``k``-prompt hand check of this run would probably have missed, or
+    #: ``None`` -- see :func:`~model_migration_kit.series.spot_check`.
+    #:
+    #: **The counting judge's candidate-side items**, per R26.3. Both halves are
+    #: rulings and neither is this module's to re-decide:
+    #:
+    #: * The judge is :attr:`judges`\ ``[0]``, reached through the same
+    #:   ``counting_judge`` local :attr:`dimensions` is built with. One document
+    #:   must not select its judge two different ways, and a spot check under one
+    #:   judge printed beside a tag matrix counted under another would be two
+    #:   numbers a reader has no way to reconcile. The panel is never summed:
+    #:   two judges grading the same sixty completions are a hundred and twenty
+    #:   records and sixty completions, and adding them would multiply ``N``.
+    #: * The side is the candidate. The number exists to say what a cheaper
+    #:   method would have missed, and the failures that argument is about are
+    #:   the ones the decision turns on.
+    #:
+    #: The counts are :attr:`JudgeRow.items_candidate` on that row -- the same
+    #: mapping the judge table prints through :func:`_item_counts` -- so the
+    #: ``N`` and ``F`` in the sentence are the numbers rendered a few rows above
+    #: it rather than a second reading of the same fact.
+    #:
+    #: **``None`` is carried through, and is not a zero.** The producer declines
+    #: on three separate grounds, and each is a different sentence the renderer
+    #: owes the reader: nothing failed, so there was nothing to miss; the check
+    #: would read every item, which is a census and not a spot check; or there is
+    #: no set to sample. A default here would print an absence as a measurement,
+    #: which is the failure this document's whole design rule is against. The
+    #: renderer gates on ``is not None``.
+    #:
+    #: **The subject is in the sentence, and a renderer must not caption around
+    #: it.** :class:`~model_migration_kit.series.SpotCheckSubject` carries the
+    #: judge and the side as facts, and the producer -- not this module and not a
+    #: template -- turns them into words. A caption supplying a subject the
+    #: sentence already states is two renderings of one fact, which is how they
+    #: come to disagree.
+    #:
+    #: An **unnamed** judge needs no handling here: a blank name is reachable from
+    #: real evidence and the producer says so in the sentence itself. A run with
+    #: no judge row at all is different and is not a subject that can be named, so
+    #: no spot check is attempted for it.
+    #:
+    #: Defaulted for :attr:`candidates`' reason.
+    spot_check: SpotCheck | None = None
 
     # -- construction ------------------------------------------------------- #
 
@@ -1253,11 +1300,17 @@ class ReportModel:
                 )
 
         judges = tuple(_judge_row(one) for one in payload.get("judges", ()))
-        # The panel's first judge, named once. A panel writes one verdict per
+        # The panel's first judge, selected once. A panel writes one verdict per
         # judge per completion, so counting two would multiply every denominator
         # by the panel size -- and the matrix has to be able to say which judge it
         # counted under, which the counts underneath it cannot.
-        counting_judge = judges[0].name if judges else ""
+        #
+        # The *row* is bound here and the name derived from it, rather than each
+        # consumer writing ``judges[0]`` again, because the tag matrix and the
+        # spot check must be about the same judge (R26.3): one document selecting
+        # its judge in two places is one edit away from selecting two judges.
+        counting = judges[0] if judges else None
+        counting_judge = counting.name if counting is not None else ""
         counts = _close_the_tally(tally, gs_view, counting_judge)
         rows = _ChangeContext(
             goldenset=gs_view,
@@ -1315,6 +1368,25 @@ class ReportModel:
         # and there must never be one, because the absence is the finding and a
         # default would publish it as a measurement.
         candidates = candidate_field(series)
+        # The counting judge's candidate-side items, R26.3, computed from the
+        # rows already parsed above -- see :attr:`spot_check`. ``counting`` and
+        # ``counting_judge`` are the same selection :attr:`dimensions` was built
+        # from, taken above and not repeated here.
+        #
+        # Guarded on the row existing rather than on its name. An empty panel has
+        # no side whose counts could be passed and no subject that could name
+        # one; a row whose ``name`` is blank has both, and the producer states
+        # that gap in its own sentence, so it is not this module's to screen.
+        spot = (
+            None
+            if counting is None
+            else spot_check(
+                int(counting.items_candidate.get("passing", 0) or 0),
+                int(counting.items_candidate.get("failing", 0) or 0),
+                int(counting.items_candidate.get("unstable", 0) or 0),
+                subject=SpotCheckSubject(judge=counting_judge, side="candidate"),
+            )
+        )
         config_path = str(payload.get("config_path", "") or "")
         # Per-threshold provenance -- CLI flag versus config file versus built-in
         # default -- is not carried in the comparison payload (contract §1.2), and
@@ -1360,6 +1432,7 @@ class ReportModel:
             series=series,
             dimensions=dimensions,
             candidates=candidates,
+            spot_check=spot,
         )
 
     # -- derived ------------------------------------------------------------ #
