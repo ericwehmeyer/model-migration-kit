@@ -2914,6 +2914,26 @@ require a rigor release and migkit pins `>=0.2,<0.3`.**
 > comparison record resolves it. The `__all__` quoted below is stale — it has
 > since gained `DimensionTally`. And `dimensions: DimensionMatrix` **replaces**
 > `ReportModel.dimension_counts`; it does not sit beside it.
+>
+> **Three more, from C21's review (2026-08-24):**
+>
+> 1. The helper is now **`report._close_the_tally`**, not `_dimension_counts` —
+>    it never wrapped `dimension_counts`, it calls `tally.counts()`. Already
+>    merged; this is the name to type.
+> 2. **Do not ship `baseline` and `candidates` as `Mapping`s.** They reproduce
+>    *exactly* the `column.items` hazard this contract's own Reviewer note tells
+>    the reviewer to check for: `baseline.items` is `dict.items` and renders as a
+>    bound method. C21 documented the hazard on `DimensionCounts.by_model` and
+>    could not fix it there; C10 can, and if C10 ships mappings the hazard
+>    survives the very chunk that was told to look for it. Use
+>    `tuple[DimensionCell, ...]` — each cell already carries its `tag` — or a
+>    small frozen `TagColumn`.
+> 3. **Re-point C21's seven wiring tests at the new field; do not delete them.**
+>    They exist because deleting `tally.add(record)` from the loop once left the
+>    entire suite green, and a mutant that swapped `judges[0]` for `judges[-1]`
+>    survived until C21's fix pass. `DimensionMatrix` already carries `judge:
+>    str`, which fixes the missing-judge defect for free — `DimensionCounts` is
+>    a per-judge table with the judge erased.
 
 This replaces the C10 section at line 989 and the `### C10 (amended)` note after
 R9. Read R1, this, and nothing else in the plan.
