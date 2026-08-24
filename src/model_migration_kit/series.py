@@ -59,6 +59,7 @@ from typing import Any, NamedTuple
 
 from opik_rigor import EvidenceRecord
 
+from .comparison import holm_bonferroni
 from .contracts import EVENT_COMPARISON, EVENT_VERDICT
 from .evidence import resolve_evidence, stream_records
 
@@ -68,6 +69,7 @@ __all__ = [
     "Caveat",
     "ComparabilityKey",
     "Exclusion",
+    "Multiplicity",
     "ParameterChange",
     "Partition",
     "RunPoint",
@@ -77,6 +79,7 @@ __all__ = [
     "Trend",
     "candidate_field",
     "comparability_key",
+    "correct_field",
     "parameter_strip",
     "parse_created",
     "partition_comparable",
@@ -1835,6 +1838,396 @@ def _count_or_none(value: Any) -> int | None:
     """
     number = _numeric(value)
     return None if number is None else int(number)
+
+
+# --------------------------------------------------------------------------- #
+# C6: multiplicity, corrected at render and said out loud
+# --------------------------------------------------------------------------- #
+
+#: The method every :class:`Multiplicity` names, applied or refused. Written once
+#: because a refusal names it too: a record whose ``method`` went empty when the
+#: correction was declined would let a renderer print "no method" for "this
+#: method, and here is why it was not run", which are different facts.
+_HOLM_BONFERRONI = "holm-bonferroni"
+
+#: How a level with no number is written into a note and compared for sameness. A
+#: point that recorded no ``alpha`` has not agreed with one that recorded ``0.05``
+#: -- not knowing is not the same fact as agreeing, which is the rule
+#: :func:`_drifted_baselines` keeps about rates one section up.
+_UNRECORDED_LEVEL = "unrecorded"
+
+
+@dataclass(frozen=True)
+class Multiplicity:
+    """What correcting a field's p-values *across its candidates* did, and in words.
+
+    Three candidates measured against one baseline are three tests, and three
+    tests against one floor at a nominal 5% flag a regression between identical
+    models far more often than 5% of the time. :func:`~.comparison.compare`
+    already corrects across the *judges* within one run; nothing until here
+    corrects across the *candidates* of one table, so a field of three renders
+    three independently-significant p-values and a reader adds them up by eye.
+
+    **This record is what makes the correction sayable rather than merely done.**
+    The failure it is shaped against is not an uncorrected report -- it is a
+    report that states the correction was applied while showing nothing it did,
+    or that names a smaller set of affected candidates than the correction
+    actually touched. Claiming a guard you did not apply is worse than applying
+    none, and under-stating a guard you did apply is the quieter cousin of the
+    same lie.
+
+    Frozen for :class:`RunPoint`'s reason: a record that can be edited after the
+    table beside it was rendered is a record that can be made to disagree with it.
+    """
+
+    #: Whether the correction ran. ``False`` is a refusal and never a silence:
+    #: :attr:`note` says which refusal it was, in the sentence the report prints.
+    applied: bool
+    #: ``"holm-bonferroni"``, applied or refused -- see :data:`_HOLM_BONFERRONI`.
+    method: str
+    #: The family-wise level the correction ran at, or would have run at: the one
+    #: level every member of the family records. ``None`` when the members do not
+    #: agree on one, when none of them recorded one, or when the one they agree on
+    #: is not a probability in ``(0, 1)`` and so is not a level at all.
+    #:
+    #: It is populated on a refusal wherever the family did agree -- a family of
+    #: one has a perfectly good level and simply has nothing to correct against.
+    alpha: float | None
+    #: How many candidates were **in the family**: those whose ``point.p_value``
+    #: is not ``None``. A candidate that recorded no p-value was not tested, so it
+    #: is not a test to correct, and counting it would tighten every other
+    #: candidate's threshold on the strength of a measurement nobody took.
+    #:
+    #: A ``NaN`` p-value *is* counted. It was tested and produced no answer, which
+    #: is not the same fact as not having been tested -- see :attr:`changed`.
+    family_size: int
+    #: ``candidate_model`` -> the Holm threshold that model's p-value was held to.
+    #: Keyed on :attr:`Candidate.model`, which is the join every consumer of a row
+    #: already uses. Empty whenever :attr:`applied` is ``False``, and **never**
+    #: empty when it is ``True``: "Holm-Bonferroni was applied" printed above no
+    #: thresholds is precisely the overclaim this record exists to prevent, so the
+    #: mapping is built before ``applied`` is set and asserted non-empty after.
+    #:
+    #: These are for **display and diagnosis**. A threshold is not a decision
+    #: boundary once the step-down has stopped -- see :attr:`changed`, which is
+    #: the only place significance is decided and does not read this mapping.
+    thresholds: Mapping[str, float]
+    #: The candidate models the correction took significance **away** from:
+    #: ``p_value < alpha and not rejected``, with ``rejected`` taken from
+    #: :func:`~.comparison.holm_bonferroni`'s own return. Ordered as
+    #: :attr:`CandidateField.candidates` is, so two renders of one log agree.
+    #:
+    #: **A p-value is never compared against a threshold in :attr:`thresholds` to
+    #: decide this.** Holm *steps down*: once a test fails to reject, nothing
+    #: larger is rejected either, whatever its own threshold says. And the largest
+    #: p-value in any family is tested against ``alpha / 1`` -- alpha itself -- so
+    #: ``p_value >= threshold`` is false for it whenever ``p_value < alpha``, and
+    #: the rule "significant uncorrected, not significant corrected" written as
+    #: ``p >= threshold`` drops the largest sub-alpha p-value in every family.
+    #: Measured on the real function at ``alpha=0.05`` over
+    #: ``p = [0.03, 0.04, 0.045]``: none of the three is rejected, so all three
+    #: belong here, and the threshold rule names two of them -- missing the
+    #: largest, in the one set whose whole purpose is to make the correction's
+    #: effect visible.
+    #:
+    #: A ``NaN`` p-value never appears here. ``holm_bonferroni`` reads it as 1.0
+    #: before anything else happens, and ``NaN < alpha`` is ``False`` -- a test
+    #: that produced no answer had no significance for the correction to remove.
+    changed: tuple[str, ...]
+    #: The sentence the report prints. Written here rather than in a template so
+    #: that the terminal render and the HTML say the same words -- the discipline
+    #: :attr:`~model_migration_kit.report.DetailBudget.sentence` already keeps,
+    #: for the reason :attr:`CandidateField.stale_after_days` exists: a sentence
+    #: assembled where the numbers are not is a sentence that goes stale against
+    #: them, and two copies of a disclosure are two chances for one to be wrong.
+    #:
+    #: It always says that this is a *second* correction, on p-values already
+    #: corrected across each run's own judges. A note that did not would let a
+    #: reader take these thresholds for the whole of the multiplicity in the
+    #: number, when they are one of two corrections stacked on it.
+    note: str
+
+
+def correct_field(field: CandidateField) -> tuple[CandidateField, Multiplicity]:
+    """Correct a candidate field's p-values across its candidates, and say what that did.
+
+    The family is the field's candidates that carry a ``point.p_value``; each
+    contributes that one number. The level is read off the points and must be the
+    same across them -- a family-wise level is not defined over members tested at
+    different levels, so where they differ the correction is refused rather than
+    run at whichever level happened to come first.
+
+    **No point's ``verdict`` is touched, ever.** The correction changes what this
+    *table* says about significance across the field; it does not retroactively
+    overturn a verdict a gate recorded on the night it ran. "NO-GO as recorded;
+    not significant once corrected across three candidates" is the honest cell,
+    and it is more interesting than either half -- so both halves have to survive
+    this function.
+
+    What the returned field carries instead is one :class:`Caveat` per candidate
+    in :attr:`Multiplicity.changed`, appended to :attr:`CandidateField.caveats`
+    and attached to that candidate's own point. Appended, never filtered or
+    re-worded: the drift caveat and the superseded exclusion C5 mints are notes
+    this function has no standing to edit. A field whose correction changed
+    nothing is returned unchanged, and so is one whose correction was refused --
+    :class:`Multiplicity` is where a refusal is recorded, and a caveat saying
+    nothing happened is a caveat that trains a reader to skip caveats.
+
+    Args:
+        field: The field to correct, from :func:`candidate_field`.
+
+    Returns:
+        The field with its multiplicity caveats appended, and the record of what
+        the correction did or why it was declined.
+    """
+    family = [
+        (candidate, candidate.point.p_value)
+        for candidate in field.candidates
+        if candidate.point.p_value is not None
+    ]
+    untested = len(field.candidates) - len(family)
+    refusal = _refused(family, untested)
+    if refusal is not None:
+        return field, refusal
+
+    alpha = _family_level(family)
+    assert alpha is not None, "_refused declines every family without one usable level"
+    decisions = holm_bonferroni([p_value for _, p_value in family], alpha=alpha)
+    thresholds = {
+        candidate.model: threshold
+        for (candidate, _), (_, threshold) in zip(family, decisions, strict=True)
+    }
+    # ``not rejected`` and never ``p_value >= threshold`` -- see Multiplicity.changed.
+    changed = tuple(
+        candidate.model
+        for (candidate, p_value), (rejected, _) in zip(family, decisions, strict=True)
+        if p_value < alpha and not rejected
+    )
+    assert len(thresholds) == len(family) >= 2, (
+        "one threshold per candidate, and never applied=True over an empty mapping: "
+        "a report that says Holm-Bonferroni was applied while showing no thresholds "
+        "is the overclaim this record exists to prevent"
+    )
+    multiplicity = Multiplicity(
+        applied=True,
+        method=_HOLM_BONFERRONI,
+        alpha=alpha,
+        family_size=len(family),
+        thresholds=thresholds,
+        changed=changed,
+        note=_applied_note(len(family), alpha, changed, untested),
+    )
+    caveats = _multiplicity_caveats(field, changed, alpha, len(family))
+    if not caveats:
+        return field, multiplicity
+    return replace(field, caveats=field.caveats + caveats), multiplicity
+
+
+def _refused(
+    family: Sequence[tuple[Candidate, float]], untested: int
+) -> Multiplicity | None:
+    """The refusal this family earns, or ``None`` when it earns none.
+
+    Five grounds, each with a note naming it, because "the correction did not run"
+    with no reason attached is the absence a reader fills in with the most
+    flattering guess available.
+
+    The order matters in one place: levels that *differ* are reported as differing
+    before an unrecorded level is reported as missing, so a field where one point
+    recorded ``0.05`` and another recorded nothing names both rather than claiming
+    nobody recorded one.
+    """
+    levels = _levels(family)
+    if not family:
+        # ``untested`` is every row here, and :func:`_untested_clause` would print
+        # the same fact a second time in the same sentence, so this branch names
+        # the count itself and passes none on.
+        return _no_correction(
+            0,
+            None,
+            0,
+            f"none of the {untested} candidate(s) in this field recorded a p-value, so there "
+            f"is no family to correct",
+        )
+    if len(family) == 1:
+        return _no_correction(
+            1,
+            _family_level(family),
+            untested,
+            "a family of one is a single test, and correcting one p-value against itself "
+            "changes nothing -- its Holm threshold would be the uncorrected alpha",
+        )
+    if len(levels) > 1:
+        return _no_correction(
+            len(family),
+            None,
+            untested,
+            f"the candidates carrying a p-value were tested at different levels "
+            f"({', '.join(levels)}), and a family-wise level is not defined over members "
+            f"tested at different levels",
+        )
+    if levels == [_UNRECORDED_LEVEL]:
+        return _no_correction(
+            len(family),
+            None,
+            untested,
+            "no candidate carrying a p-value recorded the alpha it was tested at, and a "
+            "family-wise level cannot be substituted for one nobody wrote down",
+        )
+    if _family_level(family) is None:
+        return _no_correction(
+            len(family),
+            None,
+            untested,
+            f"the level every candidate carrying a p-value records, {levels[0]}, is not a "
+            f"probability in (0, 1), so it is not a level to correct at",
+        )
+    return None
+
+
+def _no_correction(
+    family_size: int, alpha: float | None, untested: int, because: str
+) -> Multiplicity:
+    """A refusal, assembled so that no refusal can carry thresholds or a changed set.
+
+    ``applied=False`` beside a populated :attr:`Multiplicity.thresholds` would be
+    the mirror of the overclaim the applied branch asserts against: a mapping of
+    thresholds printed under a sentence saying they were never used.
+    """
+    return Multiplicity(
+        applied=False,
+        method=_HOLM_BONFERRONI,
+        alpha=alpha,
+        family_size=family_size,
+        thresholds={},
+        changed=(),
+        note=(
+            f"Holm-Bonferroni was not applied across this field's candidates: "
+            f"{because}{_untested_clause(untested)}."
+        ),
+    )
+
+
+def _applied_note(
+    family_size: int, alpha: float, changed: Sequence[str], untested: int
+) -> str:
+    """One sentence: what ran, over what, on top of what, and what it changed.
+
+    The clause about the *second* correction is not decoration. Each p-value in
+    this family was already Holm-corrected across its own run's judges by
+    :func:`~.comparison.compare`, so every threshold here is family-wise over
+    candidates and over nothing else, and a note that left that out would let a
+    reader take these thresholds for the whole of the multiplicity in the number.
+    """
+    if changed:
+        took = (
+            f"the correction took significance from {', '.join(changed)} -- below the alpha "
+            f"each was tested at, and not rejected once corrected across the family"
+        )
+    else:
+        took = "the correction took significance from no candidate in the field"
+    return (
+        f"Holm-Bonferroni was applied across the {family_size} candidates in this field at a "
+        f"family-wise alpha of {alpha!r}, a second correction on p-values that compare had "
+        f"already corrected across each run's own judges, so these thresholds are family-wise "
+        f"over candidates and not over judges{_untested_clause(untested)}; {took}, and no "
+        f"recorded verdict was changed -- each stands as the gate that ran it recorded it."
+    )
+
+
+def _untested_clause(untested: int) -> str:
+    """How many rows are in the table and not in the family, or nothing.
+
+    Named in every note, applied or refused, because a family size printed beside
+    a table with more rows than that reads as a miscount rather than as a
+    statement that some rows were never tested.
+    """
+    if not untested:
+        return ""
+    return (
+        f"; {untested} candidate(s) in the table recorded no p-value, were not tested, and "
+        f"are not in the family"
+    )
+
+
+def _levels(family: Sequence[tuple[Candidate, float]]) -> list[str]:
+    """Every distinct level the family records, in the rows' own order, as text.
+
+    Text rather than floats because the comparison has to be *total*. ``NaN`` is
+    an alpha a directly-built :class:`RunPoint` can carry, and ``NaN != NaN``, so
+    a set of alphas would report a family of two identical ``NaN`` levels as two
+    different levels and print "tested at different levels: nan, nan". Comparing
+    ``repr`` makes sameness total, and gives the note the words it prints.
+
+    Distinctness is exact, deliberately. ``0.05`` and ``0.05000000000000001`` are
+    two levels and the correction is right to refuse them: a family-wise level is
+    a number the whole family was held to, and these are two numbers.
+    """
+    labels: list[str] = []
+    for candidate, _ in family:
+        label = _level_label(candidate.point.alpha)
+        if label not in labels:
+            labels.append(label)
+    return labels
+
+
+def _level_label(alpha: float | None) -> str:
+    """One level as it is compared and printed. ``repr``, so nothing is rounded away."""
+    return _UNRECORDED_LEVEL if alpha is None else repr(alpha)
+
+
+def _family_level(family: Sequence[tuple[Candidate, float]]) -> float | None:
+    """The one usable family-wise level, or ``None``.
+
+    Usable means three things at once: the family agrees on it, it was recorded,
+    and it is a probability in ``(0, 1)``. The last is not pedantry --
+    :func:`~.comparison.holm_bonferroni` raises ``ValueError`` outside that range,
+    and this module's one hard rule is that nothing here raises on a payload.
+    ``alpha`` reaches a point through :func:`_number` on a live read, but a
+    :class:`RunPoint` is a public frozen dataclass anyone may build directly, so
+    the guard is at the call and not at the constructor.
+    """
+    if len(_levels(family)) != 1:
+        return None
+    alpha = family[0][0].point.alpha
+    if alpha is None or not 0.0 < alpha < 1.0:
+        return None
+    return float(alpha)
+
+
+def _multiplicity_caveats(
+    field: CandidateField, changed: Sequence[str], alpha: float, family_size: int
+) -> tuple[Caveat, ...]:
+    """One caveat per candidate the correction changed, attached to its own point.
+
+    A caveat and not an exclusion, on :func:`_drifted_baselines`' reasoning:
+    nothing is wrong with the row. Its p-value is what its run measured and its
+    delta is against its own baseline. What changed is what the *field* can say
+    about it, which is a note against the row and not a reason to remove it.
+
+    Carried on the field rather than left in :class:`Multiplicity` alone because
+    :attr:`CandidateField.caveats` is where a renderer looks for the sentence that
+    belongs beside a row, and a caveat that reaches nobody is the same as a caveat
+    never computed.
+    """
+    rows = {candidate.model: candidate for candidate in field.candidates}
+    return tuple(
+        Caveat(
+            point=rows[model].point,
+            reason=(
+                f"flagged: this run's p-value is below the alpha it was tested at ({alpha!r}) "
+                f"and Holm-Bonferroni across the {family_size} candidates in this field does "
+                f"not reject it -- significant as recorded, not significant once corrected "
+                f"across the field. The p-value was already corrected across this run's own "
+                f"judges, so this is a second correction on an already-corrected number and "
+                f"the threshold applied here is family-wise over candidates only. The verdict "
+                f"this run recorded -- {rows[model].point.verdict or 'none'} -- is untouched: "
+                f"the correction changes what this table says about significance across the "
+                f"field and does not overturn a verdict a gate recorded on the night it ran."
+            ),
+        )
+        for model in changed
+    )
 
 
 # --------------------------------------------------------------------------- #
