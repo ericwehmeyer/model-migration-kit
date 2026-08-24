@@ -59,16 +59,30 @@ forty lines below it.
 
 | Branch | Contains | State |
 |---|---|---|
-| `main` | C1-C3, **C4**, C8, C9, **C11**, C12, C13, **C14a**, C15, C19, C20, **C21** (+fix), R1-R19 | all seven gates green |
-| `chunk/c5-impl` | the candidate field | **green, 269 tests**, review in flight |
-| `chunk/c7-impl` | the trend and the parameter strip | **green**, blind tester in flight |
+| `main` | C1-C3, **C4**, **C7**, C8, C9, **C11**, C12, C13, **C14a**, C15, C19, C20, **C21** (+fix), R1-R20 | all seven gates green, **1849 passed** |
+| `chunk/c5-impl` | the candidate field | green at 269, **reviewed**, fix pass in flight |
 | `chunk/c16-impl` | narrative adapters | green at 88, fix pass in flight |
-| `chunk/c10-impl2` / `c10-test2` | the matrix wired into `ReportModel` | **dispatched** -- unblocked at last |
+| `chunk/c10-impl2` / `c10-test2` | the matrix wired into `ReportModel` | impl **done and green at 1816**, blind tester in flight |
 
-Updated 2026-08-24, main at `0b84d52`. The old `chunk/c10-impl` and
+Updated 2026-08-24, main at `0fb907f`. The old `chunk/c10-impl` and
 `chunk/c10-test` branches are **dead**: they were written against a contract
 prescribing an impossible call and against a `dimensions.py` that C21 has since
 rewritten. Ignore them; `c10-impl2` / `c10-test2` are the live pair.
+
+**C7 is merged and needs a reviewer** -- it has had implementer, blind tester
+and merge, but not the mutation-testing pass. Its blind pair produced **zero
+disagreement**, the first time on this plan, and that is a reason to review it
+sooner rather than later: an agreeing pair has never yet meant a defect-free
+chunk, and on C5 a 269-test green suite was hiding its own named failure mode.
+
+**When C10's tester reports, expect one likely false red.** Its implementer made
+`baseline` and `candidates` both `TagColumn`, where the amendment offered
+`tuple[DimensionCell, ...]` for `baseline`. It flagged this itself as the one
+place a blind test writer could reasonably have guessed differently. The
+implementer's reasoning is sound -- symmetric shapes, and every `.items` in the
+matrix becomes an `AttributeError` rather than a bound method, which is the
+hazard C10's reviewer note says to close -- so adjudicate on that, not on which
+side wrote first.
 
 **Merged and reviewed** means the blind pair ran, a reviewer mutation-tested it,
 and a fix pass acted on the review. Every chunk on `main` above has been through
@@ -106,19 +120,54 @@ nothing".
 
 ## Do these next, in this order
 
-1. **Land the four in flight** -- C5's review, C7's pair, C16's fix, C10's pair.
-2. **C6** -- consumes C5's `CandidateField`, so it waits for C5's review to
-   clear. Producer beside consumer is the one thing width cannot buy. R17.1 is
-   the thing to read first: C6's rule for which candidates lost significance is
-   **not the Holm procedure**, and C6's own named first test passes against the
-   broken version.
-3. **C17** -- owes `showcase.toml` and `showcase_rubric.md`. Counted, not
+1. **Land the three in flight** -- C5's fix pass, C16's fix pass, C10's blind
+   tester.
+2. **C6** -- consumes C5's `CandidateField`, so it waits for C5's **fix pass**,
+   not merely its review: the fix changes the type C6 reads (an eighth field
+   `stale_after_days`, a new `Candidate.model` property, `spread_days` and
+   `baseline_pass_rate` gaining `None` cases, and a superseded exclusion).
+   Producer beside consumer is the one thing width cannot buy.
+
+   **Both briefs are already written** and waiting in the scratchpad as
+   `c6_impl_brief.md` and `c6_test_brief.md`. Re-read them against C5 as merged
+   before dispatching -- they were drafted before the fix pass was scoped and
+   say `CandidateField` is "already merged and reviewed", which will be true
+   only once the fix lands.
+
+   R17.1 is the thing to read first: C6's rule for which candidates lost
+   significance is **not** the Holm procedure, and C6's own named first test
+   passes against the broken version. Both briefs carry the correction and the
+   second assertion that closes it.
+3. **C7's reviewer** -- merged but never mutation-tested. Its blind pair agreed
+   completely, which on this plan has never yet meant the chunk was clean.
+4. **C17** -- owes `showcase.toml` and `showcase_rubric.md`. Counted, not
    guessed: the demo set's 4 reference-less items are all refusals, so the
    shipped demo is fine; the showcase set's 32 split 16 refusal / 16
    summarisation, so the demo's decline-based judge is right for half and
    inverted for the other half. C16's judge also makes three claims
    `demo_rubric.md` does not contain, one of which moves a published p-value.
-4. **C14's remaining seven elements**, then **C18**.
+5. **C14's remaining seven elements**, then **C18**.
+
+### Running anything at all: there is no venv in the worktrees
+
+The only interpreter is `C:\Users\ewehm\repos\migration-kit\.venv\Scripts\
+python.exe`, in the **main checkout**. A bare `python` on PATH is a bare 3.14
+with no pytest installed, which fails loudly and is therefore harmless. The
+dangerous half is the editable install's `.pth`, which hardcodes the main
+checkout's `src`: run that venv's python from a worktree and you silently import
+**the main checkout's code**. `conftest.py` corrects this for pytest only.
+
+So for anything ad-hoc, both halves are needed:
+
+```
+PYTHONPATH="C:/Users/ewehm/repos/<worktree>/src" \
+  /c/Users/ewehm/repos/migration-kit/.venv/Scripts/python.exe -c ...
+```
+
+and print `model_migration_kit.__file__` before trusting the output. This was
+warned about six times and then walked into anyway, and the symptom is a render
+that comes back byte-identical to the before-state -- which reads exactly like
+"the merge did nothing".
 
 ### The merge map, measured rather than guessed
 
