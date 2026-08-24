@@ -4786,16 +4786,41 @@ def test_a_parameter_change_is_a_frozen_record_of_a_name_two_values_and_a_verdic
 
 def test_the_first_run_of_a_series_has_nothing_to_change_from_and_says_so_on_every_row():
     """`previous is None` -- the first night, which has no predecessor. Every row
-    still renders, with an empty `before` and `changed=False`, because the first run
-    changed nothing because there was nothing to change from.
+    still renders, `changed=False`, and every `before` says *in words* that there was
+    no previous run: the first run changed nothing because there was nothing to
+    change from, and the cell has to say that rather than merely be empty.
 
     Six rows here too. The first night is precisely when a reader most wants to know
     what the parameters *were*, and a strip that returned nothing at all for it
-    would leave the top of every series blank."""
+    would leave the top of every series blank.
+
+    **The empty `before` this test used to assert is gone, and the contract has been
+    amended.** The contract said `""` twice and the blank is *true* -- there really
+    was no previous run -- but true is not the bar here, legible is. A blank cell in
+    a column of values reads as "same as the row above", which is the one reading
+    this chunk exists to prevent. And the first run is not the only thing that
+    renders `previous=None`: a wrongly-split series renders it too, so six blanks
+    were both the honest top of a real line and the middle of a broken one, with
+    nothing in the output to tell them apart. That indistinguishability is precisely
+    what R15 was written to kill, and it was sitting at the top of every line.
+
+    Three assertions carry the ruling, and the non-empty one is what makes it stick.
+    The marker is read off the output rather than compared against a constant, so
+    this pins the guarantee and not the wording: it must be *something*, it must be
+    the same something on all six rows, and it must not be what an unrecorded value
+    renders as -- "there was no previous run" and "this run recorded no value" are
+    facts about different things, the comparison and the log, and a reader who is
+    handed one word for both draws a conclusion about the run from a gap in the
+    log."""
     rows = series.parameter_strip(None, _point())
+    marker = rows[0].before
+    unrecorded = _rows(_point(judges_hash=""), _point(judges_hash=""))["judges"].before
     assert [row.name for row in rows] == list(_TRACKED)
-    assert [row.before for row in rows] == ["", "", "", "", "", ""]
+    assert [row.before for row in rows] == [marker] * len(_TRACKED)
     assert [row.changed for row in rows] == [False, False, False, False, False, False]
+    assert marker != ""
+    assert marker.strip() != ""
+    assert marker != unrecorded
     assert [row.after for row in rows] == [
         "claude-candidate-v2",
         "5",

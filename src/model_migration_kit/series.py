@@ -1627,9 +1627,9 @@ class ParameterChange:
     """
 
     name: str
-    #: Rendered for a reader, not for a comparison: hashes are truncated here and
-    #: an unrecorded value is spelled out. ``""`` means only "there was no
-    #: previous run".
+    #: Rendered for a reader, never compared: hashes are truncated here, and both
+    #: of the ways a value can be missing are spelled out in words rather than
+    #: left blank. Never ``""``.
     before: str
     after: str
     changed: bool
@@ -1666,10 +1666,34 @@ class _Cell(NamedTuple):
     shown: str
 
 
-#: The ``before`` side when there is no previous run at all. Blank, per contract,
-#: and deliberately *not* the word for "unrecorded": nothing failed to be
-#: recorded here, there is simply no earlier run to have recorded it.
-_NO_PREVIOUS_RUN = _Cell("", "")
+#: What a ``before`` cell reads when there was no previous run at all. Display
+#: text in a value position, on :data:`_UNRECORDED`'s precedent and for its
+#: reason: an absence a reader has to act on is spelled out in words, because a
+#: blank cell in a table of values reads as "same as the row above" and this one
+#: is not.
+#:
+#: **A distinct word, because these are two different absences.** "There was no
+#: previous run" and "the value was not recorded" must not print the same word:
+#: the first says the comparison could not be made, the second says one side of
+#: it was never written down, and a reader who conflates them draws a conclusion
+#: about the run from a fact about the log.
+#:
+#: The contract said ``""`` here, twice, and it was wrong -- ruled after the
+#: blind suite pinned it. The defence was that on a genuine first run the blank
+#: is *true*, and it is; what it is not is legible. Six blank cells are also
+#: exactly what a wrongly-split series renders, since a split makes ``previous``
+#: ``None`` too, so the top of a real series and the middle of a broken one are
+#: the same six blanks and the same six ``changed=False``. That
+#: indistinguishability is the whole of what R15 exists to kill. R15 made the
+#: split need a wrong declaration from the operator rather than a version
+#: suffix, which makes it rare -- and rare is exactly when a reader needs the
+#: cell to say something rather than nothing.
+_NO_PREVIOUS_RUN = "no previous run"
+
+#: The whole ``before`` side of a first run. ``value`` stays ``""`` so that
+#: :func:`_parameter_change` reads it as nothing to compare: the marker is a
+#: rendering and must never become a value two runs could be found equal on.
+_BEFORE_FIRST_RUN = _Cell("", _NO_PREVIOUS_RUN)
 
 
 def parameter_strip(previous: RunPoint | None, current: RunPoint) -> tuple[ParameterChange, ...]:
@@ -1691,17 +1715,21 @@ def parameter_strip(previous: RunPoint | None, current: RunPoint) -> tuple[Param
     a run did not record is not evidence that it changed, and not evidence that
     it did not.
 
-    ``previous is None`` yields every row with ``before=""`` and
-    ``changed=False`` -- the first run of a line changed nothing because there
-    was nothing to change from. After R15 that case is rare and means what it
-    says; before R15 it fired on every model succession, which is exactly how the
-    succession stayed invisible.
+    ``previous is None`` yields every row with ``changed=False`` -- the first run
+    of a line changed nothing because there was nothing to change from -- and a
+    ``before`` of :data:`_NO_PREVIOUS_RUN`, which is a *word* and not a blank.
+    See that constant: a blank there is true and illegible, and it renders a
+    first run identically to a wrongly-split one. After R15 that case is rare and
+    means what it says; before R15 it fired on every model succession, which is
+    exactly how the succession stayed invisible.
 
     Comparison is on full values and display is truncated to
     :data:`_HASH_WIDTH`, in that order and never the reverse.
     """
     before = (
-        _cells(previous) if previous is not None else (_NO_PREVIOUS_RUN,) * len(_TRACKED_PARAMETERS)
+        _cells(previous)
+        if previous is not None
+        else (_BEFORE_FIRST_RUN,) * len(_TRACKED_PARAMETERS)
     )
     return tuple(
         _parameter_change(name, was, now)
