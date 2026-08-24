@@ -55,7 +55,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from opik_rigor import EvidenceRecord
 
@@ -63,9 +63,10 @@ from .contracts import EVENT_COMPARISON, EVENT_VERDICT
 from .evidence import resolve_evidence, stream_records
 
 __all__ = [
+    "Caveat",
     "ComparabilityKey",
     "Exclusion",
-    "Flag",
+    "Partition",
     "RunPoint",
     "SeriesBuilder",
     "comparability_key",
@@ -439,10 +440,12 @@ def read_series(evidence: str | Path) -> tuple[RunPoint, ...]:
 #: hash on one page, and a reader comparing them would conclude the run changed.
 _HASH_WIDTH = 16
 
-#: What a hash reads as when the run never recorded one. Spelled out rather than
-#: left blank because these strings are read by a person: "against the group's "
-#: with nothing after it looks like a formatting bug, not like a missing fact.
-_HASH_UNRECORDED = "unrecorded"
+#: What any of the key's fields reads as when the run never recorded one -- a
+#: hash, a draw count, a baseline model id. Spelled out rather than left blank
+#: because these strings are read by a person: "against the group's " with
+#: nothing after it looks like a formatting bug, not like a missing fact. One
+#: word for all three so that a page cannot describe the same absence three ways.
+_UNRECORDED = "unrecorded"
 
 
 @dataclass(frozen=True)
@@ -459,7 +462,13 @@ class ComparabilityKey:
     with matching hashes and matching ``n_per_item`` can still have judged
     different numbers of completions, because a truncated run carries the right
     hashes. That difference cannot exclude -- nothing in a payload proves it --
-    so :func:`partition_comparable` raises it as a :class:`Flag` instead.
+    so :func:`partition_comparable` raises it as a :class:`Caveat` instead.
+
+    The key is also silent about two refusals ``_require_comparable`` makes and
+    :func:`partition_comparable` has to make elsewhere: a comparison in which
+    neither side was graded at all (:func:`_ungraded`), and a run whose two sides
+    are the same model, which is excluded there and merely named here because the
+    A/A calibration run is logged deliberately.
 
     **Equality here is deliberately naive, and that is a trap for callers who
     group on it.** Two keys with empty hashes compare equal, because a frozen
@@ -481,8 +490,13 @@ class ComparabilityKey:
         were equally silent. Anything that groups on :class:`ComparabilityKey`
         needs this, because dataclass equality alone will happily merge every
         run that failed to record a hash into one confident-looking group.
+
+        A hash of nothing but whitespace counts as unrecorded, the same judgement
+        :func:`partition_comparable` makes: the two have to agree, or a caller
+        could group on this and then be told by the partition that every member
+        was excluded.
         """
-        return bool(self.goldenset_hash) and bool(self.judges_hash)
+        return _recorded(self.goldenset_hash) and _recorded(self.judges_hash)
 
 
 @dataclass(frozen=True)
@@ -502,20 +516,48 @@ class Exclusion:
 
 
 @dataclass(frozen=True)
-class Flag:
+class Caveat:
     """A note attached to a point that is *kept*, not a reason for removing it.
 
     Some differences are worth printing and not worth excluding on. A run that
-    graded fewer completions than its neighbours may have been truncated, or may
-    simply have lost a few judge replies to parse failures -- the payload cannot
-    tell those apart, and excluding on a suspicion would silently shrink the
-    field on evidence that does not support it. So the point stays in ``kept``
-    and carries this instead. A flagged point appears in both returned tuples;
-    anything that treats a flag as a removal will drop a run twice over.
+    graded fewer completions on one side than the other may have been truncated,
+    or may simply have lost a few judge replies to parse failures -- the payload
+    cannot tell those apart, and excluding on a suspicion would silently shrink
+    the field on evidence that does not support it. A run whose two sides are the
+    same model is the A/A calibration run the pipeline explicitly permits
+    (``allow_same_model=True``), and excluding it would remove the one row that
+    tells a reader what "no difference" looks like on this panel. So the point
+    stays in ``kept`` and carries this instead. A point carrying a caveat appears
+    in both returned tuples; anything that treats one as a removal will drop a
+    run twice over. One point may carry more than one.
+
+    **Named ``Caveat`` and deliberately not ``Flag``.** ``Flag`` collides with
+    ``enum.Flag``, which a rendering chunk downstream could import and shadow this
+    with in silence, and it would share a page with ``spread_flagged`` and
+    ``RunPoint.warnings`` -- three concepts and one word. ``Exclusion`` names an
+    outcome, so its twin should too: removed, versus kept with a note.
     """
 
     point: RunPoint
     reason: str
+
+
+class Partition(NamedTuple):
+    """What :func:`partition_comparable` returns: two outcomes and the notes.
+
+    A ``NamedTuple`` rather than a bare three-tuple because the third element is
+    the one a caller forgets. A contract that tells the caller about an *absence*
+    -- a run kept only with a caveat, a run removed -- through a return type with
+    room only for presences is a contract whose warning is unpacked into
+    ``_flagged`` and dropped, and this is the third place in this plan that shape
+    turned up. Naming the fields costs nothing at the call sites that already
+    unpack positionally: this compares equal to the plain tuple, passes
+    ``isinstance(x, tuple)``, has ``len() == 3`` and unpacks in the same order.
+    """
+
+    kept: tuple[RunPoint, ...]
+    excluded: tuple[Exclusion, ...]
+    caveats: tuple[Caveat, ...]
 
 
 def comparability_key(point: RunPoint) -> ComparabilityKey:
@@ -534,9 +576,7 @@ def comparability_key(point: RunPoint) -> ComparabilityKey:
     )
 
 
-def partition_comparable(
-    points: Sequence[RunPoint], *, against: ComparabilityKey
-) -> tuple[tuple[RunPoint, ...], tuple[Exclusion, ...], tuple[Flag, ...]]:
+def partition_comparable(points: Sequence[RunPoint], *, against: ComparabilityKey) -> Partition:
     """Split ``points`` into those that may be tabled against ``against``, and why not.
 
     Args:
@@ -545,31 +585,46 @@ def partition_comparable(
             :func:`comparability_key` of whichever point anchors the table.
 
     Returns:
-        ``(kept, excluded, flags)``. ``kept`` and ``excluded`` are disjoint and
-        each preserves input order; ``flags`` annotates points that are *in*
-        ``kept``. Three tuples rather than two because a flag has nowhere else to
-        live: :class:`RunPoint` is frozen and has no field for one, and adding
-        one would mean editing the producer while its consumers are in flight.
+        A :class:`Partition`. ``kept`` and ``excluded`` are disjoint and each
+        preserves input order; ``caveats`` annotates points that are *in*
+        ``kept``, in that order, and one point may carry more than one. Three
+        tuples rather than two because a caveat has nowhere else to live:
+        :class:`RunPoint` is frozen and has no field for one, and adding one
+        would mean editing the producer while its consumers are in flight.
 
     Every returned sequence is a tuple built by appending, never a set or a dict
     view. The rendered list has to be stable between renders of the same log, and
-    set iteration order is stable only by accident of hashing.
+    set iteration order is stable only by accident of hashing. Nothing is
+    de-duplicated on either side, for the reason ``read_series`` does not
+    de-duplicate either: two identical runs are two runs, and three identical
+    exclusions are three rows missing from the table rather than one.
 
-    **An unrecorded hash never matches, including another unrecorded hash.** Two
+    **An unrecorded value never matches, including another unrecorded one.** Two
     logs that both failed to record a golden set have equal keys under ``==`` and
     are not comparable: equality there means "both silent", not "both the same
-    set". This is the one line in this function that a naive ``==`` gets wrong
-    while reading perfectly, so it is checked before any comparison.
+    set". The same is true of a depth nobody recorded and a baseline nobody
+    recorded -- ``0 == 0`` and ``"" == ""`` read perfectly and say nothing -- and
+    it is true a third time of :func:`_ungraded`, over a field the key does not
+    carry at all. Those are the lines a naive ``==`` gets wrong while looking
+    right, and each is checked before the comparison beside it.
+
+    The two questions are asked in that order: whether the *group* may hold this
+    point, then whether the point compares anything at all. That is
+    ``_require_comparable``'s own order -- it checks the hashes before it looks at
+    coverage -- so a run that is wrong in both ways is blamed here for the same
+    thing the CLI blames it for.
     """
     kept: list[RunPoint] = []
     excluded: list[Exclusion] = []
+    caveats: list[Caveat] = []
     for point in points:
-        reason = _incomparable(comparability_key(point), against)
+        reason = _incomparable(comparability_key(point), against) or _ungraded(point)
         if reason is None:
             kept.append(point)
+            caveats.extend(_caveats(point))
         else:
             excluded.append(Exclusion(point=point, reason=reason))
-    return tuple(kept), tuple(excluded), _judged_flags(kept)
+    return Partition(tuple(kept), tuple(excluded), tuple(caveats))
 
 
 def _incomparable(key: ComparabilityKey, against: ComparabilityKey) -> str | None:
@@ -579,68 +634,152 @@ def _incomparable(key: ComparabilityKey, against: ComparabilityKey) -> str | Non
     judges, then how much was drawn -- so that when a run differs in several ways
     at once the two guards blame the same one, and a reader who has seen the CLI
     error recognises the report's sentence.
+
+    **"Unrecorded" and "differs" are asked field by field, not in two sweeps.**
+    An earlier arrangement checked *both* hashes for absence before testing
+    *either* for a mismatch, and the docstring above was false while it did: a run
+    against an edited golden set, written by a pipeline version that recorded no
+    panel hash, was blamed here for the judges and by ``_require_comparable`` for
+    the golden set. That is not a contrived pair; it is what upgrading the
+    pipeline mid-week looks like. So each field is finished before the next is
+    begun.
     """
-    unrecorded = _unrecorded_hash(key, against)
-    if unrecorded is not None:
-        return unrecorded
+    if not _recorded(key.goldenset_hash) or not _recorded(against.goldenset_hash):
+        return _unrecorded_hash("golden-set", key.goldenset_hash, against.goldenset_hash)
     if key.goldenset_hash != against.goldenset_hash:
         return (
             f"excluded: golden set {_hash(key.goldenset_hash)} against the group's "
             f"{_hash(against.goldenset_hash)}. Model A on one set and model B on another "
             f"are two unrelated numbers, not a migration decision."
         )
+    if not _recorded(key.judges_hash) or not _recorded(against.judges_hash):
+        return _unrecorded_hash("judges", key.judges_hash, against.judges_hash)
     if key.judges_hash != against.judges_hash:
         return (
             f"excluded: judge panel {_hash(key.judges_hash)} against the group's "
             f"{_hash(against.judges_hash)}. Two panels are two instruments, and the "
             f"difference between them would measure the judges rather than the models."
         )
-    # KNOWN HOLE, left open deliberately: ``n_per_item`` is ``0`` when the payload
-    # never recorded one, so two runs that both failed to record a depth compare
-    # equal here -- the same hole ``_unrecorded_hash`` closes one field up. It is
-    # not closed because the contract's edge table names only the hashes, and an
-    # exclusion nothing predicts is worse than a documented gap. Close it in a
-    # chunk that can change the edge table, not in passing.
+    if key.n_per_item <= 0 or against.n_per_item <= 0:
+        return (
+            f"excluded: no draws per item recorded for "
+            f"{_silent_side(key.n_per_item > 0, against.n_per_item > 0)} -- "
+            f"{_depth(key.n_per_item)} against the group's {_depth(against.n_per_item)}. "
+            f"``n_per_item`` is 0 when the payload never carried one, so a run whose "
+            f"depth nobody recorded and a run that really drew nothing are the same "
+            f"number here. Two unknown depths presented as one is the 60-item run "
+            f"tabled against the 40-item run, which is the table this refuses."
+        )
     if key.n_per_item != against.n_per_item:
         return (
             f"excluded: {key.n_per_item} draws per item against the group's "
             f"{against.n_per_item}. The two runs sampled to different depths, so the "
             f"quieter number is the smaller sample and not the steadier model."
         )
+    if not _recorded(key.baseline_model) or not _recorded(against.baseline_model):
+        return (
+            f"excluded: no baseline model recorded for "
+            f"{_silent_side(_recorded(key.baseline_model), _recorded(against.baseline_model))}"
+            f" -- {key.baseline_model.strip() or _UNRECORDED} against the group's "
+            f"{against.baseline_model.strip() or _UNRECORDED}. Two runs whose baseline "
+            f"nobody wrote down were not shown to have been measured from the same one, "
+            f"and a column of deltas is a column only if they were."
+        )
     if key.baseline_model != against.baseline_model:
         return (
-            f"excluded: baseline {key.baseline_model or 'unrecorded'} against the group's "
-            f"{against.baseline_model or 'unrecorded'}. A column of deltas measured from "
+            f"excluded: baseline {key.baseline_model} against the group's "
+            f"{against.baseline_model}. A column of deltas measured from "
             f"two different baselines is not a column."
         )
     return None
 
 
-def _unrecorded_hash(key: ComparabilityKey, against: ComparabilityKey) -> str | None:
+def _unrecorded_hash(label: str, mine: str, theirs: str) -> str:
     """The hole the reviewer hunts for, closed in one place.
 
     ``"" == ""`` is ``True`` and means nothing here. Either side missing a hash
     ends the question: no evidence exists that the two runs saw the same golden
     set or the same panel, and absence of evidence rendered as a match is the
     table this chunk exists to prevent.
+
+    The closing sentence is chosen from the case, because the two cases are
+    different claims and only one of them used to be printed. "Two runs that both
+    failed to record one are equally silent" is a statement *about this pair*, and
+    on the commoner case -- one hash recorded, one not -- it is simply false.
     """
-    for label, mine, theirs in (
-        ("golden-set", key.goldenset_hash, against.goldenset_hash),
-        ("judges", key.judges_hash, against.judges_hash),
-    ):
-        if mine and theirs:
-            continue
-        side = "this run" if not mine else "the group"
+    if not _recorded(mine) and not _recorded(theirs):
+        side = "either run"
+        closing = (
+            "Two runs that both failed to record one are equally silent, which is not "
+            "the same fact as having been judged against the same one."
+        )
+    else:
+        side = "this run" if not _recorded(mine) else "the group"
+        closing = (
+            "A hash on one side and none on the other is no evidence that the two were "
+            "judged against the same one, which is what sharing a table claims."
+        )
+    return (
+        f"excluded: no {label} hash recorded for {side} -- {_hash(mine)} against the "
+        f"group's {_hash(theirs)}. {closing}"
+    )
+
+
+def _ungraded(point: RunPoint) -> str | None:
+    """Why a point that *matches* the group still compares nothing, or ``None``.
+
+    The one refusal ``_require_comparable`` makes on a field the key cannot carry
+    at all: "neither artifact contains a judged completion, so there is nothing to
+    compare. An empty comparison must not resolve to a verdict." A point with
+    ``judged_baseline == judged_candidate == 0`` is that comparison, and it slips
+    past every ``!=`` in this module because ``0 != 0`` is false -- the empty-hash
+    hole in a third costume, where ``0 == 0`` means "both sides silent" rather
+    than "both sides the same". Left alone it renders as an ordinary row: no pass
+    rate, no floor, and nothing on the page saying so.
+
+    **One side at zero is excluded too, and for a reason of wording as much as of
+    principle.** The coverage caveat's own sentence says the gap "may be lost
+    judge replies rather than a truncated side". A side that graded nothing did
+    not lose a few replies, so keeping this as a caveat would print a reason that
+    is not true of the run it is printed beside. ``_require_comparable`` refuses
+    the same pair, by the other route: a side with no judged completion cannot
+    have the same coverage map as one that has them.
+    """
+    if point.judged_baseline <= 0 and point.judged_candidate <= 0:
         return (
-            f"excluded: no {label} hash recorded for {side} -- {_hash(mine)} against the "
-            f"group's {_hash(theirs)}. Two runs that both failed to record one are equally "
-            f"silent, which is not the same fact as having been judged against the same one."
+            "excluded: neither side of this run holds a judged completion, so there is "
+            "nothing to compare. An empty comparison must not resolve to a verdict, and "
+            "a row with no pass rate and no floor behind it is a verdict drawn from "
+            "nothing at all."
+        )
+    if point.judged_baseline <= 0 or point.judged_candidate <= 0:
+        return (
+            f"excluded: {point.judged_baseline} graded on the baseline against "
+            f"{point.judged_candidate} on the candidate, and a side that graded nothing "
+            f"has nothing for the other to be compared against. This is not the "
+            f"shortfall the coverage caveat describes: lost judge replies cost a run a "
+            f"few completions, not all of them."
         )
     return None
 
 
-def _judged_flags(kept: Sequence[RunPoint]) -> tuple[Flag, ...]:
-    """Kept points whose two sides were not graded the same number of times.
+def _caveats(point: RunPoint) -> tuple[Caveat, ...]:
+    """Every note a *kept* point carries, in a fixed order, possibly none.
+
+    Coverage first, then self-comparison: the first is a doubt about the numbers
+    on the row and the second is a statement about what the row is for, and a
+    reader wants the doubt first.
+    """
+    notes: list[Caveat] = []
+    if point.judged_baseline != point.judged_candidate:
+        notes.append(Caveat(point=point, reason=_uneven_coverage(point)))
+    if point.baseline_model == point.candidate_model:
+        notes.append(Caveat(point=point, reason=_self_comparison(point)))
+    return tuple(notes)
+
+
+def _uneven_coverage(point: RunPoint) -> str:
+    """A run whose two sides were not graded the same number of times.
 
     This is the one check ``_require_comparable`` makes that a key cannot: it
     compares the baseline artifact against the candidate artifact of *one*
@@ -651,10 +790,12 @@ def _judged_flags(kept: Sequence[RunPoint]) -> tuple[Flag, ...]:
     but it does record how many completions each side was graded on, and a
     difference between those two numbers is the shortfall showing through.
 
-    **It flags rather than excludes**, because the payload cannot tell a
+    **It is a caveat rather than an exclusion**, because the payload cannot tell a
     truncated run from a run that simply lost a few judge replies, and a
     shortfall is already surfaced by ``Completeness``. Excluding a run on a
-    suspicion the evidence does not settle would silently shrink the field.
+    suspicion the evidence does not settle would silently shrink the field. That
+    argument holds only while both sides graded *something*, which is why
+    :func:`_ungraded` runs first and takes the zeroes away.
 
     These are ``judged_*``, the judge's own ``n``, and the wording below says
     *graded* for the reason that field's docstring exists: a completion that was
@@ -662,25 +803,66 @@ def _judged_flags(kept: Sequence[RunPoint]) -> tuple[Flag, ...]:
     calling this "completions" would re-commit the exact conflation the point
     type went out of its way to separate.
     """
-    return tuple(
-        Flag(
-            point=point,
-            reason=(
-                f"flagged: {point.judged_baseline} graded on the baseline against "
-                f"{point.judged_candidate} on the candidate. Graded is the judge's own "
-                f"count, not the completions the run produced, so the gap may be lost "
-                f"judge replies rather than a truncated side -- the point is kept "
-                f"because a shortfall is already surfaced by Completeness."
-            ),
-        )
-        for point in kept
-        if point.judged_baseline != point.judged_candidate
+    return (
+        f"flagged: {point.judged_baseline} graded on the baseline against "
+        f"{point.judged_candidate} on the candidate. Graded is the judge's own "
+        f"count, not the completions the run produced, so the gap may be lost "
+        f"judge replies rather than a truncated side -- the point is kept "
+        f"because a shortfall is already surfaced by Completeness."
     )
+
+
+def _self_comparison(point: RunPoint) -> str:
+    """A run whose two sides are the same model.
+
+    ``_require_comparable`` refuses this outright unless it is told not to, and
+    the reason it gives is the whole of it: a model compared against itself always
+    looks safe. But it *is* told not to -- ``allow_same_model=True`` is how the A/A
+    calibration run is logged, and that run is legitimate, deliberate, and the one
+    row on the page that shows what "no difference" measures like on this panel.
+    Excluding it would delete the control.
+
+    So it is named and kept. What must not happen is the third thing: admitting it
+    silently, as an ordinary row whose flat delta a reader takes for a result.
+    Which of the two it is -- calibration or a mis-wired config -- is not in the
+    payload, so this says both and leaves the choice to whoever is rendering.
+    """
+    return (
+        f"flagged: both sides of this run are {point.baseline_model}. A model compared "
+        f"against itself always looks safe, which is why the pipeline refuses one "
+        f"unless it is passed allow_same_model=True. This row is therefore either the "
+        f"A/A calibration run, which is worth reading and worth labelling, or a "
+        f"mis-wired config -- the payload does not record which, so the point is kept "
+        f"and named rather than dropped."
+    )
+
+
+def _recorded(value: str) -> bool:
+    """Whether a field holds a value rather than an admission that it holds none.
+
+    ``.strip()`` because a writer that padded the field recorded nothing either,
+    and this is the one place the difference between ``""`` and ``"  "`` decides
+    whether an absence is read as a match. Essentially unreachable and one call
+    wide.
+    """
+    return bool(value.strip())
+
+
+def _depth(draws: int) -> str:
+    """``n_per_item`` as it is printed, with ``0`` spelled out as the absence it is."""
+    return str(draws) if draws > 0 else _UNRECORDED
+
+
+def _silent_side(mine: bool, theirs: bool) -> str:
+    """Which of the two sides failed to record the field, named for a reader."""
+    if not mine and not theirs:
+        return "either run"
+    return "this run" if not mine else "the group"
 
 
 def _hash(value: str) -> str:
     """One hash as it is printed: 16 characters, or the word for having none."""
-    return value[:_HASH_WIDTH] if value else _HASH_UNRECORDED
+    return value[:_HASH_WIDTH] if _recorded(value) else _UNRECORDED
 
 
 def _decided(point: RunPoint, verdict: Mapping[str, Any]) -> RunPoint:
