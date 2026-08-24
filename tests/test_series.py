@@ -2677,6 +2677,11 @@ def test_the_percentage_in_the_sentence_is_the_probability_that_was_computed(
     assert f"{k}-prompt" in check.sentence
     assert f"{check.items} items" in check.sentence
     assert f"{failing} of which failed" in check.sentence
+    # And the percentage is the chance of seeing *nothing*, on every row. The
+    # clause is pinned here as well as in the literal-sentence test because the
+    # inversion (M20) makes the same number mean the opposite thing, and a
+    # meaning-inverting mutant should not hang on one assertion.
+    assert "would have shown no failures at all in" in check.sentence
 
 
 def test_no_other_percentage_appears_in_the_demo_sentence():
