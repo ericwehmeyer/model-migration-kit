@@ -49,6 +49,34 @@ are merged, reviewed and mutation-tested — 115 and 23 mutants, zero survivors 
 and **nothing calls them**. Render `migkit demo` and you get the same document
 you got before any of this started.
 
+Measured on `main` at `294457b`, 2026-08-24, after C21 merged — so this is the
+current state and not a remembered one:
+
+| | |
+|---|---|
+| `<svg>` elements | **0** |
+| the word "dimension" | **0** |
+| `id="timeline"` present | **no** |
+| `<pre>` blocks | 44 |
+| absolute drive paths | 11 |
+| `<details>` open / closed | **0 / 4** |
+| table cells reading `0.000` | 4 |
+| the string `98.10` | 6 |
+
+Two charts that exist and are mutation-tested draw **nothing**. Every dimension
+chunk — C8, C9, C21 — contributes **not one word** to the page. All four
+reader-reported defects below are present, in the numbers: the finding sits
+behind a closed triangle, `extract-01` prints the same draw five times, an
+absolute path appears eleven times, and latency prints `0.000` in four cells on
+scripted adapters.
+
+One caution about that table, because it nearly misled me. The latency row was
+first probed as the string `"0.000 / 0.000"` — the shape the defect is
+*described* in — and came back **0**, which reads as "already fixed". The defect
+renders as four separate table cells. **A probe written from the prose
+description of a defect can report the defect gone.** Measure the artifact, not
+the sentence about it.
+
 The cause is an ordering mistake, not a defect: C14, the template that renders
 everything, was scheduled after all nine of its inputs. Ten chunks landed out of
 sight. **C14a exists to fix that** — see below.
