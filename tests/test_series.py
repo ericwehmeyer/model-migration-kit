@@ -6637,3 +6637,485 @@ def test_the_field_records_the_window_it_was_built_with():
     assert tight.stale_after_days == 3.0
     assert tight.spread_flagged is True
 
+
+# ----------------------------------------------------------------------------------
+# C6 -- multiplicity, corrected at render and said out loud
+# ----------------------------------------------------------------------------------
+#
+# Written blind, against the contract and R17.1, in a worktree cut from before the
+# implementation existed. No expected value below was obtained by running
+# `correct_field`; every one was derived from `comparison.holm_bonferroni`, which
+# is merged code this section is entitled to read, and from the arithmetic
+# `alpha / (k - rank)`.
+#
+# **Every new name is reached as `series.something`**, on the precedent the C4 and
+# C5 sections set above: a module-level import of a function that does not exist
+# yet fails at *collection* and takes the whole file down with it, which is a red
+# suite that says nothing about which chunk is unfinished.
+#
+# **R17.1 is the whole of this section's reason for existing.** The contract body
+# defines `changed` as `p_value < alpha and p_value >= holm_threshold`. That is not
+# the Holm procedure: Holm steps down, so once a test fails to reject nothing
+# larger is rejected either, *whatever its own threshold*, and for every candidate
+# after the stop `holm_bonferroni` returns the uncorrected `alpha` as the
+# threshold. `p >= alpha` is then vacuously false for any sub-alpha p-value, and
+# the largest sub-alpha candidate in the family silently drops out of the one set
+# whose purpose is to make the correction's effect visible. The ruling: `changed`
+# is `p_value < alpha and not rejected`, taking `rejected` from
+# `holm_bonferroni`'s own return, and a p-value is never compared against the
+# returned threshold to decide significance.
+#
+# **The contract's named first test passes against the broken rule**, which is why
+# it is written below with a second assertion. At alpha=0.05 over
+# `[0.03, 0.04, 0.045]` nothing is rejected, so all three are `changed`; the broken
+# rule returns only the first two, and the contract's own test asserts on the
+# first alone. `test_..._when_two_more_candidates_are_added` therefore asserts all
+# three, and 0.045 by name.
+#
+# **On fixture choice (R20.1).** A fixture where the broken and the correct
+# implementation agree is a fixture that tests nothing. Concretely, in this
+# section:
+#
+# * the three-candidate p-values are `0.03/0.04/0.045`, where correct names three
+#   models and the R17.1 rule names two;
+# * the models are named so that **alphabetical order is the exact reverse of
+#   p-value order** -- `alfa` holds the largest p-value and `zeta` the smallest --
+#   so an implementation that zips `holm_bonferroni`'s positional return back onto
+#   the rows without carrying the p-values with it gets every threshold wrong;
+# * the untested-candidate fixture uses `0.02/0.04` beside **three** untested rows,
+#   where a family of two rejects both (`changed` empty) and a family of five --
+#   untested candidates miscounted in -- rejects neither (`changed` names two).
+#   Counting the family wrong changes the answer rather than merely the
+#   arithmetic, and two tested against three untested means the note cannot pass an
+#   assertion about the untested count by naming the family size instead;
+# * the NaN fixture uses `0.02/0.02/nan`, where reading NaN as 1.0 inside the
+#   family leaves both 0.02s unrejected and `changed`, while re-guarding it out of
+#   the family rejects both and `changed` is empty;
+# * the baselines are **not** uniform across fixtures -- 50/10 on one row and 50/20
+#   on the next -- because C5's whole 269-test suite could not see its own named
+#   mutant while every fixture hard-coded one baseline.
+
+#: The family-wise level every uniform fixture here is tested at.
+_ALPHA = 0.05
+
+#: NaN as a p-value. rigor's distribution layer documents that it can return one
+#: and `compare` passes `float(regression["p_value"])` straight through, so this is
+#: reachable the moment a scipy release starts producing it.
+_NAN = float("nan")
+
+#: The three candidates of the contract's named test. The names are deliberate:
+#: alphabetically `alfa < mike < zeta`, and by p-value `zeta < mike < alfa`, so row
+#: order is the exact reverse of family order. A fixture whose rows happened to be
+#: in p-value order cannot see an implementation that never sorted at all.
+_HIGH_P = "alfa-candidate"  # p = 0.045, the largest -- Holm's threshold for it is alpha itself
+_MID_P = "mike-candidate"  # p = 0.040
+_LOW_P = "zeta-candidate"  # p = 0.030, the smallest -- the tightest threshold
+
+
+def _tested(model: str, p_value: float | None, *, alpha: float | None = _ALPHA, **changes):
+    """One candidate run on the shared key, carrying a p-value and a level.
+
+    Built on C5's `_run`, so every field neither C6 nor C5 names holds the value a
+    real `migkit.comparison` payload puts there rather than one typed in beside the
+    assertion.
+    """
+    return _run(model, p_value=p_value, alpha=alpha, **changes)
+
+
+def _three_candidates(**changes):
+    """The contract's named case: 0.03, and two more at 0.04 and 0.045."""
+    return [
+        _tested(_LOW_P, 0.03, **changes),
+        _tested(_MID_P, 0.04, **changes),
+        _tested(_HIGH_P, 0.045, **changes),
+    ]
+
+
+def _hand_built_field(*candidates, **overrides):
+    """A `CandidateField` assembled directly, for shapes `candidate_field` refuses.
+
+    A family of one is the edge the contract names first and `candidate_field`
+    returns `None` below two candidate models, so the only way to hand
+    `correct_field` one is to build it. Built from the real eight-field type
+    (R20.3) rather than from a stand-in, because a stub that drifts from the merged
+    dataclass tests the stub.
+    """
+    fields: dict[str, typing.Any] = {
+        "key": series.comparability_key(candidates[0].point),
+        "candidates": tuple(candidates),
+        "excluded": (),
+        "caveats": (),
+        "spread_days": None,
+        "spread_flagged": False,
+        "baseline_pass_rate": 0.8,
+        "stale_after_days": 7.0,
+    }
+    fields.update(overrides)
+    return series.CandidateField(**fields)
+
+
+def _row(point, *, delta_pp=-15.0, stale_days=0.0):
+    """One hand-built row. The derived numbers are given distinct, odd values so
+    that a correction which recomputes them instead of carrying them through is
+    visible rather than accidentally right."""
+    return series.Candidate(point=point, delta_pp=delta_pp, stale_days=stale_days)
+
+
+def _drifted_log():
+    """A log whose baseline moved underneath the rows, with a run superseded by a
+    newer run of itself and a run from another group entirely.
+
+    Three of R22.3's facts live in one fixture: the drift caveat, the superseded
+    exclusion, and two rows whose reconstructed baselines differ (0.60 against
+    0.80), so nothing here can be computed from a single shared baseline. The
+    p-values are 0.03 and 0.045 -- correct names both as `changed`, R17.1's broken
+    rule names only the first.
+    """
+    return [
+        _tested("alpha-candidate", 0.03, created=_AUG_10),
+        _tested(
+            "alpha-candidate", 0.03, created=_AUG_20, judge_failures_baseline=20
+        ),  # baseline 30/50 = 0.60, and the newest run, so the header is this one's
+        _tested("gamma-candidate", 0.045, created=_AUG_13),  # baseline 40/50 = 0.80
+        _other_group("delta-candidate", p_value=0.01, alpha=_ALPHA),
+    ]
+
+
+def _corrected(field):
+    """`correct_field`'s two returns, unpacked and shape-checked once here rather
+    than in twenty assertions."""
+    result = series.correct_field(field)
+    assert isinstance(result, tuple) and len(result) == 2, (
+        "correct_field returns the field and the multiplicity, in that order"
+    )
+    corrected, multiplicity = result
+    assert isinstance(corrected, series.CandidateField)
+    assert isinstance(multiplicity, series.Multiplicity)
+    return corrected, multiplicity
+
+
+# ----------------------------------------------------------------------------------
+# The named test, and the assertion the contract's own version is missing
+# ----------------------------------------------------------------------------------
+
+
+def test_the_correction_changes_a_candidates_significance_when_two_more_candidates_are_added():  # noqa: E501
+    """The contract's named first-failing test, plus the assertion R17.1 says it
+    needs. One candidate at p=0.03 against alpha=0.05 is significant and there is no
+    family to correct over; add two more at 0.04 and 0.045 and all three become
+    "significant uncorrected, not significant corrected".
+
+    **The second and third assertions are the point.** The contract's version
+    asserts only that the first candidate appears in `changed`, and 0.03 appears
+    there under the broken rule too -- so that test alone is green against an
+    implementation that misses the largest sub-alpha p-value in every family. At
+    alpha=0.05 over three candidates the step-down stops at the first test
+    (0.03 >= 0.05/3), so nothing is rejected and every sub-alpha candidate has had
+    its significance taken away by the correction.
+    """
+    alone = _hand_built_field(_row(_tested(_LOW_P, 0.03)))
+    _, single = _corrected(alone)
+    assert single.applied is False
+    assert single.family_size == 1
+    assert single.changed == (), "a family of one corrects nothing, so nothing changed"
+
+    field = _field_of(_three_candidates())
+    _, three = _corrected(field)
+    assert three.applied is True
+    assert three.family_size == 3
+    assert _LOW_P in three.changed, "the contract's own assertion, which the broken rule passes"
+    assert _MID_P in three.changed
+    assert _HIGH_P in three.changed, (
+        "R17.1: 0.045 is significant uncorrected and unrejected by Holm, so the "
+        "correction took its significance away. The rule `p >= holm_threshold` misses "
+        "it because the step-down returns alpha itself as its threshold, and this is "
+        "the one assertion that separates a correct implementation from that one"
+    )
+    assert set(three.changed) == {_LOW_P, _MID_P, _HIGH_P}
+    assert len(set(three.changed)) == len(three.changed), "a model is named at most once"
+
+
+def test_the_largest_sub_alpha_p_value_is_named_as_changed_although_its_threshold_is_alpha_itself():  # noqa: E501
+    """R17.1, stated as the invariant rather than as an example. Holm steps down:
+    after the first test fails to reject, `holm_bonferroni` returns the uncorrected
+    `alpha` as the threshold for every candidate behind it, because there is no
+    decision boundary left to report. A rule that compares a p-value against that
+    number asks "is 0.045 >= 0.05", gets `False`, and under-reports -- in the one
+    direction the chunk exists to prevent, since the set is what makes the guard's
+    effect visible.
+
+    The threshold is still published, because it is diagnostic output a reader is
+    entitled to; it is simply not what decides significance."""
+    _, multiplicity = _corrected(_field_of(_three_candidates()))
+    assert multiplicity.thresholds[_HIGH_P] == _ALPHA, (
+        "the step-down has stopped, so the largest candidate's reported threshold is "
+        "the uncorrected level"
+    )
+    assert multiplicity.thresholds[_HIGH_P] == multiplicity.alpha
+    assert _HIGH_P in multiplicity.changed, (
+        "and it is changed anyway: 0.045 < 0.05 and Holm did not reject it"
+    )
+
+
+def test_a_candidate_holm_rejected_is_not_named_as_changed():
+    """`changed` is "significant uncorrected, not significant corrected", so a
+    candidate the correction still rejects has not changed. The fixture is mixed on
+    purpose -- 0.001 is rejected, 0.04 and 0.045 are not -- because a fixture where
+    every candidate lands the same way cannot tell the two halves of the rule apart.
+
+    It also separates the two rules a second time: the broken rule names 0.04 and
+    not 0.045, the correct one names both."""
+    field = _field_of(
+        [
+            _tested(_LOW_P, 0.001),  # rejected at 0.05/3
+            _tested(_MID_P, 0.04),  # 0.04 >= 0.05/2: the step-down stops here
+            _tested(_HIGH_P, 0.045),  # behind the stop, threshold reported as alpha
+        ]
+    )
+    _, multiplicity = _corrected(field)
+    assert set(multiplicity.changed) == {_MID_P, _HIGH_P}
+    assert _LOW_P not in multiplicity.changed, (
+        "still significant after the correction, so its significance did not change"
+    )
+
+
+def test_the_thresholds_are_carried_by_p_value_and_not_by_row_order():
+    """`holm_bonferroni` returns one pair per *input position* and the rows of a
+    field are ordered by `candidate_model`, so an implementation that hands over
+    p-values in row order and reads the answer back in sorted order -- or the other
+    way round -- produces a plausible mapping with the wrong number against every
+    name.
+
+    These three models are named so alphabetical order is the exact reverse of
+    p-value order, which is the arrangement where that mistake is maximally
+    visible: the tightest threshold would land on the largest p-value."""
+    _, multiplicity = _corrected(_field_of(_three_candidates()))
+    assert multiplicity.thresholds == {
+        _LOW_P: _ALPHA / 3,
+        _MID_P: _ALPHA / 2,
+        _HIGH_P: _ALPHA / 1,
+    }
+    assert [candidate.model for candidate in _field_of(_three_candidates()).candidates] == [
+        _HIGH_P,
+        _MID_P,
+        _LOW_P,
+    ], "the rows really are in the reverse of p-value order, or this test proves nothing"
+
+
+def test_the_largest_p_value_never_carries_the_smallest_threshold():
+    """The contract's monotonicity edge. Holm's thresholds rise with rank, so the
+    mapping read in p-value order is non-decreasing; a mapping that is not is one
+    where a candidate was tested more harshly than a stricter-p-value neighbour,
+    which is not the Holm procedure and is not defensible as anything else."""
+    field = _field_of(_three_candidates())
+    _, multiplicity = _corrected(field)
+    assert len(multiplicity.thresholds) == 3
+    by_p = sorted(
+        (candidate.point.p_value, multiplicity.thresholds[candidate.model])
+        for candidate in field.candidates
+    )
+    thresholds = [threshold for _, threshold in by_p]
+    assert thresholds == sorted(thresholds)
+    assert multiplicity.thresholds[_HIGH_P] > multiplicity.thresholds[_LOW_P]
+
+
+# ----------------------------------------------------------------------------------
+# Who is in the family: one, none, untested, and not-a-number
+# ----------------------------------------------------------------------------------
+
+
+def test_a_family_of_one_needs_no_correction_and_the_note_says_so():
+    """The contract's first edge. One candidate is one test and a family-wise level
+    over a family of one is the level itself, so there is nothing to correct and
+    claiming otherwise is the overclaim this chunk exists to prevent."""
+    field = _hand_built_field(_row(_tested(_LOW_P, 0.03)))
+    _, multiplicity = _corrected(field)
+    assert multiplicity.applied is False
+    assert multiplicity.family_size == 1
+    assert multiplicity.changed == ()
+    assert multiplicity.note, "a refusal still owes the report a sentence"
+    assert re.search(r"\bone\b|\b1\b", multiplicity.note), (
+        f"the note must explain that a family of one needs no correction: {multiplicity.note!r}"
+    )
+    assert "correct" in multiplicity.note.lower()
+
+
+def test_a_candidate_with_no_p_value_is_not_in_the_family_and_the_note_counts_it():
+    """The contract's third edge. A candidate that was never tested is not a test,
+    so it is not a member of the family: counting it in would loosen every other
+    candidate's threshold by dividing the level across a test that does not exist.
+
+    **The p-values make the miscount change the answer rather than only the
+    arithmetic.** Over the two tested candidates alone, 0.02 clears 0.05/2 and both
+    are rejected, so `changed` is empty. Count the three untested rows in and the
+    first threshold becomes 0.05/5, nothing is rejected at all, and `changed` names
+    both. A fixture that left the two rules agreeing on `changed` would be pinning
+    the family size with nothing but an integer.
+
+    **Two tested and three untested, and not two of each**, because the note has to
+    name the untested count: against two and two, a note saying "a family of 2"
+    would pass an assertion meant to be about the three rows that were never
+    tested."""
+    field = _field_of(
+        [
+            _tested("alpha-candidate", 0.02),
+            _tested("beta-candidate", 0.04),
+            _tested("gamma-candidate", None),
+            _tested("kilo-candidate", None),
+            _tested("sierra-candidate", None),
+        ]
+    )
+    corrected, multiplicity = _corrected(field)
+    assert multiplicity.applied is True
+    assert multiplicity.family_size == 2, "two candidates were tested; three were not"
+    assert set(multiplicity.thresholds) == {"alpha-candidate", "beta-candidate"}, (
+        "an untested candidate has no threshold, because it was never tested against one"
+    )
+    assert multiplicity.thresholds == {"alpha-candidate": _ALPHA / 2, "beta-candidate": _ALPHA}
+    assert multiplicity.changed == (), "both were rejected by the correction, so neither changed"
+    assert re.search(r"\bthree\b|\b3\b", multiplicity.note), (
+        f"the note must name how many candidates were untested: {multiplicity.note!r}"
+    )
+    assert [candidate.model for candidate in corrected.candidates] == [
+        "alpha-candidate",
+        "beta-candidate",
+        "gamma-candidate",
+        "kilo-candidate",
+        "sierra-candidate",
+    ], "an untested candidate still has a row; it is out of the family, not out of the table"
+
+
+def test_a_nan_p_value_is_read_as_one_by_holm_and_is_not_dropped_from_the_family():
+    """The contract's fourth edge, and it says outright: assert
+    `holm_bonferroni`'s own `_finite_p` guard rather than re-guarding here. A
+    non-finite p-value is read as 1.0 before anything else happens -- 1.0 rather
+    than dropped, because a test that produced no answer must not be rejected and
+    must not quietly shrink the family and loosen every other candidate's threshold
+    either.
+
+    So the NaN candidate is a member: `family_size` is three, it carries a
+    threshold, and it is not `changed`, because 1.0 is not below alpha. The two
+    0.02s are the discriminator -- inside a family of three the step-down stops at
+    0.02 >= 0.05/3 and both are `changed`; re-guarded out of the family they are
+    tested at 0.05/2 and 0.05, both rejected, and `changed` is empty."""
+    field = _field_of(
+        [
+            _tested("alpha-candidate", 0.02),
+            _tested("beta-candidate", 0.02),
+            _tested("kilo-candidate", _NAN),
+        ]
+    )
+    _, multiplicity = _corrected(field)
+    assert multiplicity.applied is True
+    assert multiplicity.family_size == 3, "read as 1.0, not dropped: the family is still three"
+    assert multiplicity.thresholds == {
+        "alpha-candidate": _ALPHA / 3,
+        "beta-candidate": _ALPHA / 2,
+        "kilo-candidate": _ALPHA,
+    }
+    assert set(multiplicity.changed) == {"alpha-candidate", "beta-candidate"}
+    assert "kilo-candidate" not in multiplicity.changed, (
+        "1.0 is not below alpha, so it was never significant to lose"
+    )
+
+
+def test_a_nan_p_value_corrects_the_same_family_wherever_it_sits_in_the_rows():
+    """`comparison.py:245-249` records the measurement this guard exists for:
+    before it, `[nan, .001, .001, .001]` rejected nothing at all while
+    `[.001, .001, .001, nan]` rejected three -- the same four p-values, one
+    reordering, and the difference between NO-GO and GO. NaN is not ordered against
+    anything, so `sorted` on a list holding one produces an arrangement that
+    depends on where the NaN sat in the input, and the step-down propagates that
+    arbitrariness through the whole family.
+
+    Rows are ordered by `candidate_model`, so the position of the untestable row is
+    decided by a model name -- which is to say by nothing. These two fields differ
+    only in whether the NaN row sorts first or last, and they must correct
+    identically. The three tested p-values are distinct rather than the equal
+    `.001`s of the recorded measurement, so that each threshold is fixed by the
+    procedure and not by how a tie happened to be broken."""
+    others = [
+        _tested("alpha-candidate", 0.001),
+        _tested("beta-candidate", 0.002),
+        _tested("gamma-candidate", 0.003),
+    ]
+    first = _field_of([_tested("aaa-nan-candidate", _NAN), *others])
+    last = _field_of([*others, _tested("zzz-nan-candidate", _NAN)])
+    _, when_first = _corrected(first)
+    _, when_last = _corrected(last)
+
+    for multiplicity, nan_model in (
+        (when_first, "aaa-nan-candidate"),
+        (when_last, "zzz-nan-candidate"),
+    ):
+        assert multiplicity.family_size == 4
+        assert multiplicity.changed == (), (
+            "three were rejected and the fourth was never significant"
+        )
+        assert multiplicity.thresholds[nan_model] == _ALPHA
+        assert multiplicity.thresholds["alpha-candidate"] == _ALPHA / 4
+        assert multiplicity.thresholds["beta-candidate"] == _ALPHA / 3
+        assert multiplicity.thresholds["gamma-candidate"] == _ALPHA / 2
+    assert sorted(when_first.thresholds.values()) == sorted(when_last.thresholds.values())
+
+
+# ----------------------------------------------------------------------------------
+# When the correction is refused
+# ----------------------------------------------------------------------------------
+
+
+def test_a_family_tested_at_two_different_levels_is_refused_and_the_note_names_both():
+    """The contract's fifth edge. A family-wise level is not defined over members
+    tested at different levels: dividing 0.05 across a family half of which was
+    tested at 0.01 produces thresholds that are not the Holm procedure for either
+    level, and picking one of the two silently would publish a correction against a
+    level half the family never saw.
+
+    The note names both numbers because "the levels differ" is a verdict and the
+    reader needed the evidence -- the same discipline every `Exclusion` sentence in
+    this module follows."""
+    field = _field_of(
+        [
+            _tested("alpha-candidate", 0.03, alpha=0.05),
+            _tested("gamma-candidate", 0.005, alpha=0.01),
+        ]
+    )
+    corrected, multiplicity = _corrected(field)
+    assert multiplicity.applied is False
+    assert multiplicity.changed == ()
+    assert "0.05" in multiplicity.note and "0.01" in multiplicity.note, (
+        f"the note must name both levels: {multiplicity.note!r}"
+    )
+    assert [candidate.model for candidate in corrected.candidates] == [
+        "alpha-candidate",
+        "gamma-candidate",
+    ], "a refused correction still returns the field it was given"
+
+
+def test_a_family_with_no_recorded_level_at_all_is_refused():
+    """The contract's sixth edge. `RunPoint.alpha` is the gate's own level and is
+    `None` when no gate recorded one; there is then no family-wise level to divide,
+    and inventing 0.05 because it is the usual number would publish a correction
+    against a level nothing in the evidence supports.
+
+    `holm_bonferroni` would refuse the call anyway -- it raises on an `alpha`
+    outside `(0, 1)` -- so an implementation that reached for a default would be
+    choosing one deliberately."""
+    field = _field_of(
+        [_tested("alpha-candidate", 0.03, alpha=None), _tested("gamma-candidate", 0.04, alpha=None)]
+    )
+    _, multiplicity = _corrected(field)
+    assert multiplicity.applied is False
+    assert multiplicity.alpha is None, "there is no family-wise level, so none is reported"
+    assert multiplicity.changed == ()
+    assert multiplicity.note
+
+
+def test_the_method_is_named_holm_bonferroni_whether_or_not_it_was_applied():
+    """The method names the procedure this type is about, not the outcome of one
+    call. A refusal that blanked it would leave a report unable to say which
+    correction it declined to apply."""
+    applied = _corrected(_field_of(_three_candidates()))[1]
+    refused = _corrected(_hand_built_field(_row(_tested(_LOW_P, 0.03))))[1]
+    assert applied.method == "holm-bonferroni"
+    assert refused.method == "holm-bonferroni"
