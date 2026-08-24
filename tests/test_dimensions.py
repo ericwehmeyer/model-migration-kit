@@ -11,6 +11,7 @@ import dataclasses
 import gc
 import inspect
 import re
+import tracemalloc
 import weakref
 from dataclasses import FrozenInstanceError
 from typing import Any
@@ -2067,8 +2068,17 @@ def test_a_comparison_with_no_run_under_it_does_not_erase_the_run_before_it():
 def test_verdicts_after_the_last_comparison_belong_to_a_run_nobody_compared():
     """A night still running, or one that died before deciding. Read and dropped.
 
-    Not merely tidiness: this is what keeps the deferred store bounded on a log
-    whose tail is a judging pass with no close and no comparison behind it.
+    Dropped from the *result*. An earlier version of this docstring said the reset
+    was "what keeps the deferred store bounded on a log whose tail is a judging
+    pass with no close and no comparison behind it", and that was measured and is
+    false: resetting at a comparison bounds nothing about what arrives after it.
+    The fresh ``_Run`` accumulates one entry per distinct input exactly as the
+    previous one did, at a measured 317 bytes each, and only stops when the stream
+    does. See :class:`~model_migration_kit.dimensions.DimensionTally`, which now
+    records where the golden set is the bound and where it is not.
+
+    What the reset does buy is correctness, which is what this test asserts: the
+    tail is not merged into the run the last comparison closed.
     """
     items = _by_id(_item("a", "alpha", ("t",)), _item("b", "bravo", ("t",)))
     records = [
@@ -2173,3 +2183,77 @@ def test_a_failed_completion_for_an_unknown_item_is_refused_by_the_deferred_join
     assert result.available is False
     assert result.reason == _counts(records, items).reason
     assert "item-nobody-has" in result.reason
+
+
+def _held_by_a_tally(records) -> int:
+    """Bytes still reachable from a ``DimensionTally`` after it has read ``records``.
+
+    ``tracemalloc`` current rather than peak: the question is what the tally is
+    *holding*, not what building one record cost transiently. The baseline is taken
+    after tracing starts so the records' own allocations are inside the window,
+    which is what makes an implementation that keeps them show up here.
+    """
+    gc.collect()
+    tracemalloc.start()
+    try:
+        base = tracemalloc.get_traced_memory()[0]
+        tally = dimensions.DimensionTally()
+        for record in records:
+            tally.add(record)
+        gc.collect()
+        held = tracemalloc.get_traced_memory()[0] - base
+    finally:
+        tracemalloc.stop()
+    del tally
+    return held
+
+
+def test_repeated_draws_of_one_item_cost_the_deferred_store_nothing_extra():
+    """The flatness claim, which is the one that makes a single pass affordable.
+
+    The digest is not interesting because it is small; it is interesting because
+    fifty draws of one item collapse onto one key. A store that grew per *verdict*
+    would be the buffering this design exists to avoid, only with a smaller
+    constant -- and a smaller constant on an 86 MB log is still a slope.
+
+    So this varies the draws by fifty and holds the items fixed, and asserts the
+    store does not notice. Asserted as a ratio and with a wide margin: the real
+    figures are 311 KiB against 311 KiB, and anything under 1.5x is a store that
+    is keyed by item rather than by record.
+    """
+    inputs = [f"input-{n}" for n in range(100)]
+
+    def stream(draws: int):
+        return [_verdict(text, True) for _ in range(draws) for text in inputs]
+
+    once = _held_by_a_tally(stream(1))
+    fifty = _held_by_a_tally(stream(50))
+
+    assert fifty < once * 1.5, (
+        f"the deferred store grew {once} -> {fifty} bytes when the draws per item "
+        f"went 1 -> 50 and the item count did not move; it is keyed by record "
+        f"rather than by distinct input, which is the amplification evidence.py "
+        f"measured with a smaller constant"
+    )
+
+
+def test_the_deferred_store_is_keyed_by_distinct_input_and_so_grows_with_items():
+    """The other side of the same property, stated so nobody reads flatness as free.
+
+    Entries are bounded by *distinct inputs*, not by nothing. A real judging pass
+    draws from the golden set, so that bound is the set's size -- but a log of
+    inputs that join to no item has no such bound, and this is the test that says
+    the growth is real and linear rather than absent. ``DimensionTally``'s
+    docstring carries the measured constant and the ceiling it implies.
+    """
+    def stream(n_items: int):
+        return [_verdict(f"input-{n}", True) for n in range(n_items)]
+
+    small = _held_by_a_tally(stream(200))
+    large = _held_by_a_tally(stream(2000))
+
+    assert large > small * 5, (
+        f"ten times the distinct inputs held {small} -> {large} bytes. If this ever "
+        f"stops growing, the store has started dropping inputs it will need at the "
+        f"join, and the refusal that should name one will name nothing"
+    )

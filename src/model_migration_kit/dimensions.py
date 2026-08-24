@@ -405,6 +405,39 @@ class DimensionTally:
     memory bound, because an excerpt is bounded for exactly the reason the digest
     is.
 
+    **Measured, because "bounded" is a claim and not an argument.** One entry costs
+    317 bytes: a 16-byte digest as a ``bytes`` object, the ``[n, passes]`` list, the
+    excerpt, and the two dict slots holding them. Against records carrying a 4 KB
+    input, an output and a raw reply -- rigor's real shape -- buffering costs 5,211
+    bytes *per verdict*. So a thousand items drawn fifty times holds 311 KiB here
+    against 248 MB buffered, and the 311 KiB does not move between one draw and
+    fifty. That flatness is the property; the ratio is a consequence of it, and
+    ``test_repeated_draws_of_one_item_cost_the_deferred_store_nothing_extra`` pins
+    it.
+
+    **Where the bound is the golden set's, and where it is not.** Entries are keyed
+    by distinct *input*, and a real judging pass draws its inputs from the golden
+    set, so distinct inputs are the set's size and the paragraph above holds. An
+    input that joins to no item is the exception, and the two phases are not
+    symmetric about it. The joined phase recognises it immediately, latches the
+    refusal, and every later verdict for that judge returns at the top of
+    :meth:`_verdict` -- so the store stops growing at the first one. The deferred
+    phase cannot recognise it at all: that is what "deferred" means, and the golden
+    set that would settle it has not arrived. So it files the digest and the
+    excerpt like any other, and a log of inputs that join to nothing grows the
+    store linearly at those 317 bytes, with no bound but the log.
+
+    This is not hypothetical -- it is exactly what ``_inflate`` in
+    ``tests/test_evidence_scale.py`` writes, one distinct synthetic input per
+    record, and therefore what the peak-allocation guard there measures. It passes
+    with room: 2.68 MB peak on a 24 MB log against that test's 8 MB ceiling, where
+    the same guard measured 2.28 MB before this module was wired in. The ceiling is
+    not reached until roughly 18,000 non-joining verdicts, about 220 MB of log; the
+    86 MB log that motivated ``stream_records`` lands near 4.5 MB. It is recorded
+    rather than fixed because no fix preserves the semantics: the entries are
+    needed if a later ``migkit.comparison`` closes the run they are accumulating
+    into, and nothing in a stream can see that coming.
+
     An input that is not a string is refused where it is read rather than filed. It
     can join to no golden set at all, so nothing is learned by keeping it, and
     ``repr`` of an arbitrary payload value has no length this module controls.
