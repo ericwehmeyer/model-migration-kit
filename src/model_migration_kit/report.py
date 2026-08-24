@@ -2559,6 +2559,46 @@ def _interval(value: tuple[float, float] | None, dash: str = EM_DASH) -> str:
     return f"[{value[0]:.4f}, {value[1]:.4f}]"
 
 
+def _pp(value: Any, dash: str = EM_DASH) -> str:
+    """A percentage-point delta, signed, at one decimal place.
+
+    Rounded here and never on the model.
+    :attr:`~model_migration_kit.series.Candidate.delta_pp` is deliberately
+    unrounded so that a renderer wanting one decimal place can take one, while a
+    model that had already rounded could not give back what it dropped. This is
+    that edge, and it is also where the binary-float residue
+    (``9.999999999999998`` where the arithmetic says ten) stops being visible.
+
+    The sign is explicit because the number's whole subject is direction: an
+    unsigned ``0.6`` beside an unsigned ``0.4`` reads as two magnitudes, and one of
+    them may be a regression.
+
+    ``None`` is the dash, on :func:`_pct`'s rule: a delta that could not be
+    computed because a side recorded no rate is not a delta of zero.
+    """
+    number = _number(value)
+    if number is None:
+        return dash
+    return f"{number:+.1f} pp"
+
+
+def _days(value: Any, dash: str = EM_DASH) -> str:
+    """A span in days at one decimal place, or the dash where none was measurable.
+
+    ``None`` is the dash and is never ``0.0``. Three findings arrive at this filter
+    and only one of them is a zero: a field whose spread could not be measured at
+    all (fewer than two dated rows), a row whose own date was never recorded, and
+    the newest row in a field, which really is zero days old. Printing the first
+    two as ``0.0 days`` would state "measured in a single sitting" on the evidence
+    for "we do not know when this was measured" -- the failure this document is
+    built to refuse, in the smallest possible space.
+    """
+    number = _number(value)
+    if number is None:
+        return dash
+    return f"{number:.1f} days"
+
+
 def _flag(value: bool | None, dash: str = EM_DASH) -> str:
     if value is None:
         return dash
@@ -3233,6 +3273,19 @@ th {
 td.num {
   font-variant-numeric: tabular-nums;
 }
+/* A cell whose sample is too small to read as a judgement. Shaded and never
+   coloured: DimensionCell.verdict_refused is the only field that decides whether
+   the numbers may be read as a verdict, and a refused cell still shows its
+   interval -- what it does not do is claim one. */
+td.refused {
+  background: #f6f7f9;
+}
+.cellnote {
+  display: block;
+  color: #46301b;
+  font-size: 0.85rem;
+  margin-top: 0.2rem;
+}
 dl.facts {
   display: grid;
   grid-template-columns: minmax(11rem, 18rem) 1fr;
@@ -3332,8 +3385,23 @@ FAKE MODELS {{ dash }} these numbers describe scripted responses, not a real pro
   </p>
 </section>
 
+{#- Bound once and read by both the nav and the sections below, so that a link
+    and the section it points at cannot come to disagree about whether the
+    section exists. `excluded` renders in two disjoint states -- a named list,
+    and the sentence for a log that cannot name its exclusions at all -- and
+    spelling that condition twice is how a nav entry starts dangling. -#}
+{% set candidate_field = model.candidates %}
+{% set excluded_shown = candidate_field is none or candidate_field.excluded %}
+{% set matrix = model.dimensions %}
 <nav>
   <ol>
+{% if candidate_field is not none %}
+    <li><a href="#candidates">Candidates measured against one baseline</a></li>
+{% endif %}
+{% if excluded_shown %}
+    <li><a href="#excluded">Runs outside the candidate table</a></li>
+{% endif %}
+    <li><a href="#dimensions">Results by dimension</a></li>
     <li><a href="#compared">What was compared</a></li>
 {% if model.series %}
     <li><a href="#timeline">Run history</a></li>
@@ -3360,6 +3428,176 @@ FAKE MODELS {{ dash }} these numbers describe scripted responses, not a real pro
         at {{ model.completeness.last_ts or 'an unrecorded time' }}</li>
   </ul>
 </div>
+{% endif %}
+
+{% if candidate_field is not none %}
+<h2 id="candidates">Candidates measured against one baseline</h2>
+<p class="secondary">
+  Every candidate model this evidence log measured under one comparability key:
+  same golden set, same judges, same draws per item, same baseline model. Rows are
+  ordered by model name and never by result {{ dash }} a table sorted by its own
+  outcome invites the reading that position <em>is</em> the outcome, and this is a
+  set of measurements taken under one key, not a ranking.
+</p>
+<dl class="facts">
+  <dt>baseline model</dt>
+      <dd><code>{{ candidate_field.key.baseline_model or dash }}</code></dd>
+  <dt>baseline pass rate</dt>
+      <dd>{{ candidate_field.baseline_pass_rate | pct }}
+      <span class="secondary">{{ dash }} one reading, taken from the newest run in
+      this field. Every delta below was computed against the baseline
+      <em>its own</em> run measured, so adding this number back to a delta does not
+      recover that row's pass rate: wherever the baseline moved between two nights
+      the sum is a rate no run recorded.</span></dd>
+  <dt>golden set hash</dt>
+      <dd><span class="hash">{{ candidate_field.key.goldenset_hash or dash }}</span></dd>
+  <dt>judges hash</dt>
+      <dd><span class="hash">{{ candidate_field.key.judges_hash or dash }}</span></dd>
+  <dt>n per item</dt><dd>{{ candidate_field.key.n_per_item or dash }}</dd>
+  <dt>measured how far apart</dt>
+      <dd>
+      {% if candidate_field.spread_days is none %}
+      not measurable {{ dash }} fewer than two rows carry a date, and one dated run
+      is a single observation, which can no more say how far apart this field was
+      taken than no observation can
+      {% else %}
+      {{ candidate_field.spread_days | days }} between the oldest and the newest
+      row, against a window of {{ candidate_field.stale_after_days | days }}
+      {% if candidate_field.spread_flagged %}
+      {{ dash }} <strong>wider than the window</strong>: these rows may not have
+      been measured close enough together to be read side by side
+      {% endif %}
+      {% endif %}
+      </dd>
+</dl>
+<table>
+  <thead><tr>
+    <th>candidate</th><th>run</th><th>pass rate</th>
+    <th>delta vs its own baseline</th><th>age in this field</th>
+  </tr></thead>
+  <tbody>
+  {% for row in candidate_field.candidates %}
+    <tr>
+      <td><code>{{ row.model or dash }}</code></td>
+      <td>{{ row.point.created or 'no recorded date' }}
+          <span class="secondary">({{ row.point.created_source }} clock)</span></td>
+      <td class="num">{{ row.point.pass_rate | pct }}</td>
+      <td class="num">{{ row.delta_pp | pp }}</td>
+      <td class="num">{{ row.stale_days | days }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% if candidate_field.caveats %}
+<p class="secondary">Rows that are in the table above under protest:</p>
+<ul class="secondary">
+  {% for caveat in candidate_field.caveats %}
+  <li>
+    {% if caveat.point is none %}
+    about this field as a whole:
+    {% else %}
+    <code>{{ caveat.point.candidate_model or 'unnamed candidate' }}</code>,
+    {{ caveat.point.created or 'undated' }}:
+    {% endif %}
+    {{ caveat.reason }}
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% endif %}
+
+{% if excluded_shown %}
+<h2 id="excluded">Runs outside the candidate table</h2>
+{% if candidate_field is none %}
+<p class="note">
+  <strong>There is no candidate table above, and this page cannot list what was
+  left out of one.</strong> No group of runs in this log both shares a
+  comparability key and names two distinct candidate models, so no field of
+  candidates could be assembled {{ dash }} and the sentence explaining each
+  omission is written by the same pass that assembles it, so those sentences do
+  not exist either. Runs in this log may have been excluded from a comparison
+  without this page being able to name them. Read this as <em>not known</em>, and
+  never as "nothing was excluded".
+</p>
+{% else %}
+<p class="secondary">
+  Every point in this log the table above does not hold, each with the sentence
+  saying why {{ dash }} runs under <em>other</em> comparability keys included, so
+  that a table which quietly dropped a third of the log cannot look complete.
+</p>
+<ul>
+  {% for one in candidate_field.excluded %}
+  <li><code>{{ one.point.candidate_model or 'unnamed candidate' }}</code>
+      {{ dash }} {{ one.point.created or 'no recorded date' }}
+      {{ dash }} {{ one.reason }}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% endif %}
+
+<h2 id="dimensions">Results by dimension</h2>
+{% if not matrix.available %}
+<p class="note">
+  <strong>There is no per-dimension table.</strong> {{ matrix.reason }}
+</p>
+{% elif not matrix.tags %}
+<p class="note">
+  <strong>There is no per-dimension table.</strong> The counting ran and came back
+  with no tags to break this run down by, so there is nothing here to show. That
+  is an empty tag universe in the golden set, not a set of dimensions that every
+  model scored zero on.
+</p>
+{% else %}
+{% set columns = [matrix.baseline] + (matrix.candidates | list) %}
+<p class="secondary">
+  How every tag in the golden set did, per model, under
+  <strong>{{ matrix.judge }}</strong> {{ dash }} the panel's first judge, and the
+  only judge these numbers come from; a panel writes one verdict per judge per
+  completion and they are never summed. Counted from the run this report is about
+  and not from the whole log: the run history below is the history, this breaks the
+  banner's own number down by tag. A cell is shaded where the sample cannot
+  support a verdict at all {{ dash }} the numbers are still printed, because
+  declining to read a measurement as a judgement is not the same as not having
+  one. The floors every cell here was judged against are {{ matrix.min_n }}
+  graded completions and {{ matrix.min_items }} items.
+</p>
+<table>
+  <thead><tr>
+    <th>dimension</th>
+    {% for column in columns %}
+    {#- loop.index0 == 1 is matrix.candidates[0], which is the comparison's own
+        candidate by construction (R27.8). Named by position rather than through a
+        matrix.candidate accessor: a second way to name one side is a second thing
+        that can disagree with the first. -#}
+    <th><code>{{ column.model_id or dash }}</code>
+        <span class="secondary">
+        {% if loop.first %}baseline
+        {% elif loop.index0 == 1 %}candidate
+        {% else %}also judged in this run
+        {% endif %}
+        </span></th>
+    {% endfor %}
+  </tr></thead>
+  <tbody>
+  {% for tag in matrix.tags %}
+    <tr>
+      <th>{{ tag }}</th>
+      {% for column in columns %}
+      {% set cell = column.cell(tag) %}
+      <td class="num{% if cell.verdict_refused %} refused{% endif %}">
+        {{ cell.rate | pct }}
+        <span class="secondary">{{ cell.interval | interval }}</span><br>
+        <span class="secondary">{{ cell.passes }} of {{ cell.n }} graded
+        completions, over {{ cell.items }} item(s)</span>
+        {% if cell.note %}
+        <span class="cellnote">{{ cell.note }}</span>
+        {% endif %}
+      </td>
+      {% endfor %}
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
 {% endif %}
 
 <h2 id="compared">What was compared</h2>
@@ -3933,6 +4171,10 @@ def _environment() -> Environment:
     env.filters["num3"] = lambda value: _num(_number(value), 3)
     env.filters["num6"] = lambda value: _num(_number(value), 6)
     env.filters["interval"] = _interval
+    # A delta and a span, formatted at the edge rather than on the model, and each
+    # rendering its ``None`` as the dash rather than as a zero -- see _pp and _days.
+    env.filters["pp"] = _pp
+    env.filters["days"] = _days
     env.filters["flag"] = _flag
     env.filters["counts"] = _item_counts
     # The two hand-rolled SVGs, reached as filters so that each one's markup
