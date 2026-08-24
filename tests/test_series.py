@@ -4747,7 +4747,9 @@ def test_the_parameter_strip_lists_every_tracked_parameter_including_the_ones_th
     All six names are asserted in order and every one of the six `changed` flags is
     asserted `False`, because a strip that returned the two rows it felt were
     interesting would pass any assertion phrased as a subset."""
-    rows = series.parameter_strip(_point(created=_FOURTEEN_NIGHTS[0]), _point(created=_FOURTEEN_NIGHTS[1]))
+    rows = series.parameter_strip(
+        _point(created=_FOURTEEN_NIGHTS[0]), _point(created=_FOURTEEN_NIGHTS[1])
+    )
     assert [row.name for row in rows] == list(_TRACKED)
     assert [row.changed for row in rows] == [False, False, False, False, False, False]
     assert [row.before for row in rows] == [
@@ -4768,7 +4770,12 @@ def test_a_parameter_change_is_a_frozen_record_of_a_name_two_values_and_a_verdic
     built is a strip that can be made to disagree with the chart above it."""
     row = _rows(_point(), _point())["model_id"]
     assert dataclasses.is_dataclass(row)
-    assert [field.name for field in dataclasses.fields(row)] == ["name", "before", "after", "changed"]
+    assert [field.name for field in dataclasses.fields(row)] == [
+        "name",
+        "before",
+        "after",
+        "changed",
+    ]
     assert isinstance(row.name, str)
     assert isinstance(row.before, str)
     assert isinstance(row.after, str)
@@ -4807,7 +4814,9 @@ def test_when_only_the_model_moved_exactly_one_row_says_so_and_the_other_five_ho
         _point(candidate_model=_LINEAGE_V1), _point(candidate_model=_LINEAGE_V2)
     )
     assert [row.name for row in rows if row.changed] == ["model_id"]
-    moved = _rows(_point(candidate_model=_LINEAGE_V1), _point(candidate_model=_LINEAGE_V2))["model_id"]
+    moved = _rows(_point(candidate_model=_LINEAGE_V1), _point(candidate_model=_LINEAGE_V2))[
+        "model_id"
+    ]
     assert moved.before == _LINEAGE_V1
     assert moved.after == _LINEAGE_V2
     assert moved.changed is True
@@ -5090,11 +5099,11 @@ def test_a_lineage_member_that_is_not_comparable_is_excluded_rather_than_drawn(c
         "2026-08-03T22:40:58+00:00",
         "2026-08-04T22:40:58+00:00",
     ]
-    assert [exclusion.point.created for exclusion in line.excluded] == [
-        "2026-08-02T22:40:58+00:00"
-    ]
+    assert [exclusion.point.created for exclusion in line.excluded] == ["2026-08-02T22:40:58+00:00"]
     assert isinstance(line.excluded[0], series.Exclusion)
-    assert line.excluded[0].reason.strip(), "an excluded point with no sentence is a run that vanished"
+    assert line.excluded[0].reason.strip(), (
+        "an excluded point with no sentence is a run that vanished"
+    )
 
 
 def test_a_night_the_partition_kept_with_a_note_is_drawn_and_carries_the_note_out():
