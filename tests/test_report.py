@@ -6572,3 +6572,295 @@ def test_the_label_opens_the_accessible_name_rather_than_trailing_it() -> None:
         f"the label must open the accessible name, not trail the numbers it names; "
         f"the title reads {bar.title!r}"
     )
+
+
+# --------------------------------------------------------------------------- #
+# 20. The per-tag counts, wired into the one streaming pass. Plan C21.
+#
+# `dimensions.py` is tested exhaustively in `tests/test_dimensions.py`, against
+# hand-built record streams. Nothing there touches `report.py`, and until this
+# section existed nothing anywhere did: the field, the `tally.add(record)` in
+# `from_evidence`'s loop, and `_dimension_counts`'s two branches were carried
+# entirely by tests that never imported `report`. These are the tests for the
+# wiring, and only for the wiring -- the arithmetic is not re-litigated here.
+#
+# The join is by *input text*, because a `judge.verdict` carries no item id. So
+# every verdict below spells `_default_items`'s input exactly, and a test that
+# breaks because that helper changed its wording is telling the truth.
+# --------------------------------------------------------------------------- #
+
+
+def _dim_verdict(item_id: str, *, passed: bool, judge: str = J) -> dict[str, Any]:
+    """A ``judge.verdict`` shaped as ``judge.py`` writes one.
+
+    Note what is absent: an ``item_id``. That absence is the whole reason the
+    counting had to be split into two phases -- the join is by ``input``, and the
+    golden set that would resolve it is named on a record written later.
+    """
+    return _record(
+        "judge.verdict",
+        {
+            "judge": judge,
+            "model_id": JUDGE_MODEL,
+            "rubric_hash": RUBRIC_HASH,
+            "passed": passed,
+            "score": 1.0 if passed else 0.0,
+            "reason": f"JUDGE-REASON {item_id}",
+            "input": f"INPUT-TEXT for {item_id}",
+            "output": f"OUT {item_id}",
+            "raw": '{"passed": true}',
+        },
+        TS_JUDGING,
+    )
+
+
+def _judging_pass(
+    model_id: str,
+    item_ids: Sequence[str],
+    *,
+    passed: bool,
+    draws: int = N_PER_ITEM,
+    judge: str = J,
+) -> list[dict[str, Any]]:
+    """One side's verdicts, and the ``migkit.judging_completed`` that closes them.
+
+    ``graded`` has to agree with the number of verdicts written or the counter
+    refuses the whole run -- that guard is ``dimensions.py``'s, and stating the
+    number here rather than deriving it silently is what makes a miscount in this
+    helper show up as a refusal instead of as a quietly wrong cell.
+    """
+    records = [
+        _dim_verdict(item_id, passed=passed, judge=judge)
+        for item_id in item_ids
+        for _ in range(draws)
+    ]
+    records.append(
+        _record(
+            EVENT_JUDGING_COMPLETED,
+            {
+                "model_id": model_id,
+                "graded": {judge: len(item_ids) * draws},
+                "imputed": {},
+                "parse_failures": {},
+            },
+            TS_JUDGING,
+        )
+    )
+    return records
+
+
+def _counted_log(
+    scenario: Scenario, name: str, *, before: Sequence[Mapping[str, Any]] = ()
+) -> Path:
+    """``scenario``'s log with a real judging pass in it, optionally after another.
+
+    The standard ``_scenario`` log records that judging *happened* but carries no
+    ``judge.verdict`` records, which is faithful to what the rest of this file
+    asserts and is why the counter refuses it. Counting needs the verdicts, so
+    this writes them: baseline passes everything, candidate fails everything, which
+    is the same asymmetry the judged artifacts already encode.
+    """
+    records: list[Mapping[str, Any]] = [
+        _record(EVENT_RUN_STARTED, {"model_id": BASELINE_MODEL}, TS_JUDGING)
+    ]
+    records.extend(before)
+    records.extend(_judging_pass(BASELINE_MODEL, scenario.items, passed=True))
+    records.extend(_judging_pass(CANDIDATE_MODEL, scenario.items, passed=False))
+    records.append(_record(EVENT_COMPARISON, scenario.comparison, TS_COMPARISON))
+    if scenario.verdict is not None:
+        records.append(_record(EVENT_VERDICT, scenario.verdict, TS_VERDICT))
+    return _write_evidence(scenario.root / name, records)
+
+
+def _counts(model: Any) -> Any:
+    return _get(model, "dimension_counts")
+
+
+def _tag_cell(model: Any, model_id: str, tag: str) -> tuple[int, int, int]:
+    counts = _counts(model)
+    assert counts.available is True, counts.reason
+    one = counts.by_model[model_id][tag]
+    return (one.passes, one.n, one.items)
+
+
+#: ``_default_items`` tags every other item ``arithmetic`` and the rest
+#: ``extraction``, so twelve items split six and six, and six items at five draws
+#: is thirty completions a tag a side.
+ARITHMETIC_ITEMS = 6
+ARITHMETIC_N = ARITHMETIC_ITEMS * N_PER_ITEM
+
+
+def test_the_report_counts_the_tags_out_of_the_log_it_already_streams(tmp_path: Path) -> None:
+    """The happy path through the wiring, which nothing exercised before.
+
+    Both halves of the join have to line up for this to pass: the verdicts have to
+    be read on the way past and filed under something, and the golden set named on
+    the comparison record -- which arrives *after* every one of them -- has to
+    resolve what they were filed under back to item ids and then to tags.
+    """
+    scenario = _scenario(tmp_path / "counted")
+    model = _model_from(_counted_log(scenario, "evidence-counted.jsonl"))
+
+    assert _counts(model).available is True, _counts(model).reason
+    assert _tag_cell(model, BASELINE_MODEL, "arithmetic") == (
+        ARITHMETIC_N,
+        ARITHMETIC_N,
+        ARITHMETIC_ITEMS,
+    )
+    assert _tag_cell(model, CANDIDATE_MODEL, "arithmetic") == (0, ARITHMETIC_N, ARITHMETIC_ITEMS)
+    assert _tag_cell(model, BASELINE_MODEL, "extraction") == (
+        ARITHMETIC_N,
+        ARITHMETIC_N,
+        ARITHMETIC_ITEMS,
+    )
+
+
+def test_the_matrix_is_the_headline_runs_and_not_the_whole_logs(tmp_path: Path) -> None:
+    """The per-run ruling, asserted where the two numbers would actually collide.
+
+    ``tests/test_dimensions.py`` settles this for the counter in isolation. It has
+    to be settled again here because this is the only place the conflict is
+    visible: the banner above the matrix reports one run, and a log of fourteen
+    nightly runs holds fourteen judging passes. A cumulative matrix would print
+    fourteen nights' completions directly beneath a banner reporting the last, and
+    nothing on the page could reconcile the two numbers.
+
+    The earlier pass below fails every item where the headline pass passes every
+    item, so summing is not merely a different number -- it would halve the
+    reported pass rate of a run that passed everything.
+    """
+    scenario = _scenario(tmp_path / "two-runs")
+    earlier = [
+        *_judging_pass(BASELINE_MODEL, scenario.items, passed=False),
+        *_judging_pass(CANDIDATE_MODEL, scenario.items, passed=False),
+        *_earlier_run(scenario, tag="one"),
+    ]
+    model = _model_from(_counted_log(scenario, "evidence-two-runs.jsonl", before=earlier))
+
+    assert _tag_cell(model, BASELINE_MODEL, "arithmetic") == (
+        ARITHMETIC_N,
+        ARITHMETIC_N,
+        ARITHMETIC_ITEMS,
+    ), (
+        "the matrix summed both runs: it reports more completions than the "
+        "headline run judged, under a banner that reports only the headline run"
+    )
+
+
+def test_the_series_still_sees_the_history_the_matrix_deliberately_drops(
+    tmp_path: Path,
+) -> None:
+    """The other half of the ruling, and the reason it is a ruling and not a bug.
+
+    The timeline is the one deliberately cumulative thing in the document. If the
+    matrix being per-run were an accident of the counter never seeing the earlier
+    records, the series would be short too. It is not: both are fed by the same
+    single pass, and they disagree about history on purpose.
+    """
+    scenario = _scenario(tmp_path / "two-runs-series")
+    earlier = [
+        *_judging_pass(BASELINE_MODEL, scenario.items, passed=False),
+        *_judging_pass(CANDIDATE_MODEL, scenario.items, passed=False),
+        *_earlier_run(scenario, tag="one"),
+    ]
+    model = _model_from(_counted_log(scenario, "evidence-two-series.jsonl", before=earlier))
+
+    assert len(_series(model)) == 2, (
+        "the earlier run never reached the series, so this log does not test what "
+        "it claims to test"
+    )
+    assert _counts(model).available is True, _counts(model).reason
+
+
+def test_a_golden_set_that_cannot_be_trusted_hands_back_its_own_sentence(
+    tmp_path: Path,
+) -> None:
+    """Reused verbatim, never re-worded -- the disclosure is written in one place.
+
+    Asserted against ``model.goldenset["reason"]`` rather than against a quoted
+    sentence, because a quoted sentence here would be a fourth copy of the same
+    disclosure and this test exists to stop there being a third.
+    """
+    scenario = _scenario(tmp_path / "mismatch", recorded_goldenset_hash="d" * 64)
+    model = _model_from(_counted_log(scenario, "evidence-mismatch.jsonl"))
+
+    counts = _counts(model)
+    assert counts.available is False
+    assert counts.reason == model.goldenset["reason"], (
+        "the golden set's refusal was re-worded on its way into the counts; three "
+        "copies of a disclosure are three chances for one to go stale"
+    )
+    assert dict(counts.by_model) == {}, (
+        "a refusal arrived carrying a partial matrix, which is what the caller must "
+        "never be able to render"
+    )
+
+
+def test_a_log_that_records_judging_without_recording_verdicts_is_refused(
+    tmp_path: Path,
+) -> None:
+    """Which is every log this file writes anywhere else, so it is worth pinning.
+
+    ``_scenario`` records that judging happened and writes judged artifacts, but
+    puts no ``judge.verdict`` in the evidence log. The counter reads the log and
+    only the log -- that is R1's whole point -- so it declines, and the sentence it
+    declines with names the judge rather than blaming the golden set.
+    """
+    scenario = _scenario(tmp_path / "no-verdicts")
+    model = _from_evidence(scenario)
+
+    counts = _counts(model)
+    assert counts.available is False
+    assert model.goldenset["available"] is True, (
+        "the golden set is fine here; if it were not, this test would be asserting "
+        "the wrong refusal"
+    )
+    assert J in counts.reason, (
+        f"the refusal should name the judge whose verdicts are missing; it reads "
+        f"{counts.reason!r}"
+    )
+
+
+def test_the_counts_survive_a_log_whose_artifacts_moved_away(tmp_path: Path) -> None:
+    """R1, at the level of the wiring: the cross-machine render still counts.
+
+    Everything the counting reads is in the evidence log and in the golden set.
+    Neither is an artifact, so moving the artifacts away has to leave the counts
+    intact -- and this is the render ``report.py``'s own docstring calls the
+    designed workflow, a reviewer opening a shared log with no artifact directory
+    beside it.
+    """
+    scenario = _scenario(tmp_path / "moved")
+    log = _counted_log(scenario, "evidence-moved.jsonl")
+    for artifact in (tmp_path / "moved").glob("*.judged.jsonl"):
+        artifact.unlink()
+
+    model = _model_from(log)
+
+    assert _counts(model).available is True, _counts(model).reason
+    assert _tag_cell(model, BASELINE_MODEL, "arithmetic") == (
+        ARITHMETIC_N,
+        ARITHMETIC_N,
+        ARITHMETIC_ITEMS,
+    )
+
+
+def test_a_model_built_by_any_other_route_says_no_counts_were_taken(tmp_path: Path) -> None:
+    """The default is a sentence, because ``{}`` is not something a renderer can print.
+
+    ``from_evidence`` is the only thing that counts, so every other constructor --
+    and there are several, in this file and in anyone else's -- produces a model
+    that has to be able to answer the question anyway.
+    """
+    scenario = _scenario(tmp_path / "default")
+    model = _from_evidence(scenario)
+    fields = {
+        one.name: getattr(model, one.name)
+        for one in dataclasses.fields(model)
+        if one.name != "dimension_counts"
+    }
+    bare = type(model)(**fields)
+
+    counts = _get(bare, "dimension_counts")
+    assert counts.available is False
+    assert counts.reason, "the default has to say something, and it says nothing"
