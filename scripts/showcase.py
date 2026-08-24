@@ -263,9 +263,17 @@ JUDGE_MODEL_ID = "synthetic-judge-v1"
 # the nightly schedule
 # --------------------------------------------------------------------------- #
 
-#: How many items the baseline gets wrong on each night, 1..14. Tuned, and said to
-#: be tuned: the report is a seeded document and pretending these came from a rule
-#: would be the one dishonest thing in a file whose subject is honesty.
+#: How many items the baseline gets wrong on each **green** night, 1..13. Tuned,
+#: and said to be tuned: the report is a seeded document and pretending these came
+#: from a rule would be the one dishonest thing in a file whose subject is honesty.
+#:
+#: Thirteen entries and not fourteen, because :func:`_rotation_night` freezes night
+#: 14 at night 13's set and so never indexes past 12. It carried a fourteenth for a
+#: while after the freeze landed, and that entry said the baseline fails **6** items
+#: on night 14 while the program failed **7** -- ``python scripts/showcase.py``
+#: prints the 7. Dead data is bad enough; dead data that contradicts the program is
+#: a number a reader can quote back. :func:`_check_scripts` now refuses a length
+#: that is not :data:`LAST_GREEN_NIGHT`, so this cannot silently regrow or shrink.
 #:
 #: Three constraints shaped it. The count has to *move* -- a baseline that fails
 #: the same number every night draws a flat line and reads as fabricated. It has
@@ -275,7 +283,7 @@ JUDGE_MODEL_ID = "synthetic-judge-v1"
 #: And night 6 has to be 7 exactly: paired with candidate C's 8 it gives a
 #: one-sided Mann-Whitney p of 0.274, where a baseline of 6 would have given 0.107
 #: -- still a REVIEW, but with a third of the margin.
-BASELINE_FAILURES: tuple[int, ...] = (5, 6, 5, 7, 6, 7, 6, 5, 6, 7, 5, 6, 7, 6)
+BASELINE_FAILURES: tuple[int, ...] = (5, 6, 5, 7, 6, 7, 6, 5, 6, 7, 5, 6, 7)
 
 #: How each candidate differs from the baseline on an ordinary night, as
 #: ``(gains, flips)``: how many of the baseline's failures it *fixes*, and how many
@@ -931,11 +939,19 @@ def judge_adapter_for(goldenset: GoldenSet) -> Callable[[JudgeSpec], FakeAdapter
 
 
 def _check_scripts(goldenset: GoldenSet) -> None:
-    """Assert the four properties the whole seed rests on, before it is used.
+    """Assert the properties the whole seed rests on, before it is used.
 
     Each of these is a way the file could be wrong that nothing downstream would
     report as an error -- it would report a different verdict, which is worse.
     """
+    if len(BASELINE_FAILURES) != LAST_GREEN_NIGHT:
+        raise SystemExit(
+            f"BASELINE_FAILURES has {len(BASELINE_FAILURES)} entries and there are "
+            f"{LAST_GREEN_NIGHT} green nights. One entry per green night, and no "
+            f"entry for night {COLLAPSE_NIGHT}, which reuses night "
+            f"{LAST_GREEN_NIGHT}'s: an unread entry is a number that can disagree "
+            f"with the program and did."
+        )
     missing_refusals = sorted(set(collapsing_ids(goldenset)) - set(CORRECT_REFUSALS))
     missing_summaries = sorted(
         item.id

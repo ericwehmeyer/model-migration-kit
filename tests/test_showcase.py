@@ -365,6 +365,19 @@ class _JudgeSpecStub:
     model: str = "synthetic-judge-v1"
 
 
+def _failing_items(adapter: FakeAdapter) -> tuple[str, ...]:
+    """The golden-set ids this model gets wrong, as the showcase's own judge sees it.
+
+    Not the schedule's ``failing_ids``: that is the intent, and this is what the
+    grader actually does with the answers the intent produced. The two agreeing is
+    a claim worth checking rather than an identity to assume.
+    """
+    passes_for = _grader()
+    return tuple(
+        item.id for item in _goldenset() if not passes_for(item, adapter.complete(item.input))
+    )
+
+
 @lru_cache(maxsize=NIGHTS[-1])
 def _projected_dimensions(night: int) -> dict[str, dict[str, TagCount]]:
     """One night's whole matrix, from the adapters and the judge and nothing else.
@@ -445,10 +458,14 @@ def _drive(night: int, root: Path) -> Night:
 
     ``concurrency=1`` throughout, which is not a default left to a caller. C16's
     determinism claim is stated at ``concurrency=1``, and the reviewer note asks
-    for it to be asserted where it matters; here it is passed explicitly to both
-    the sampler and the judge so that no default anywhere can widen it.
+    for it to be asserted where it matters -- so the width is not written here as a
+    literal but taken from ``require_showcase_concurrency``, which refuses anything
+    else. These are the only showcase runs that exist until C17's driver lands, so
+    this is where "where it matters" currently is; a checkpoint with no caller reads
+    as covered while asserting nothing, which is worse than not having one.
     """
     goldenset = _goldenset()
+    width = _showcase().require_showcase_concurrency(_showcase().SHOWCASE_CONCURRENCY)
     baseline_adapter, candidate_adapters = _adapters(night)
     directory = root / f"night-{night:02d}"
     directory.mkdir(parents=True, exist_ok=True)
@@ -465,11 +482,11 @@ def _drive(night: int, root: Path) -> Night:
             out_dir=directory,
             n=DRAWS_PER_ITEM,
             evidence=evidence,
-            concurrency=1,
+            concurrency=width,
         )
         runs[adapter.model_id] = run
         judged[adapter.model_id] = judge_artifact(
-            run, goldenset, panel, evidence=evidence, out_dir=directory, concurrency=1
+            run, goldenset, panel, evidence=evidence, out_dir=directory, concurrency=width
         )
 
     comparisons: dict[str, ComparisonReport] = {}
@@ -528,6 +545,29 @@ def test_the_showcase_lives_in_scripts_beside_the_generator_of_the_set_it_drives
         f"a row in COMPATIBILITY.md's rigor-surface table for an import nobody "
         f"outside this repo can reach. R13.1 rules it out."
     )
+
+
+def test_the_showcase_refuses_to_be_sampled_at_any_width_but_one() -> None:
+    """``require_showcase_concurrency`` is a checkpoint, so something has to reach it.
+
+    C16's reviewer note asks that ``concurrency=1`` be "asserted where it matters",
+    and the function that does the asserting had no caller anywhere in the
+    repository -- which reads as covered while covering nothing. Every run in this
+    module now takes its width from it, and this pins the refusal itself: the
+    constant is 1, passing 1 returns 1, and passing anything else stops rather than
+    quietly producing a log that differs from the published one in ``concurrency``
+    and ``concurrency_effective``, two fields nobody would think to look at.
+    """
+    module = _showcase()
+    assert module.SHOWCASE_CONCURRENCY == 1
+    assert module.require_showcase_concurrency(module.SHOWCASE_CONCURRENCY) == 1
+    for width in (2, 4, 0):
+        with pytest.raises(SystemExit) as raised:
+            module.require_showcase_concurrency(width)
+        assert "concurrency" in str(raised.value), (
+            f"refusing width {width} produced {raised.value!r}, which does not say "
+            f"what was refused"
+        )
 
 
 def test_the_showcase_reaches_for_no_http_client_so_seeding_the_document_stays_offline() -> None:
@@ -825,6 +865,40 @@ def test_consecutive_green_nights_never_script_the_same_failures_twice(night: in
         )
 
 
+def test_the_baseline_schedule_has_one_entry_per_green_night_and_the_program_agrees() -> None:
+    """A tuned constant and the program it tunes must not disagree.
+
+    ``BASELINE_FAILURES`` was documented as "each night, 1..14" and carried
+    fourteen entries. After the night-14 freeze the fourteenth is never read --
+    ``_rotation_night`` sends night 14 to night 13's set -- and it said the baseline
+    fails 6 items on night 14 while the program fails 7. Dead data is bad enough;
+    dead data that contradicts the program is a number a reader can quote back, and
+    a mutation of it changed nothing anywhere.
+
+    Checked against what the judge actually fails rather than against the schedule's
+    own ``failing_ids``, so this is the constant against the observable and not the
+    constant against itself.
+    """
+    module = _showcase()
+    schedule = module.BASELINE_FAILURES
+    assert len(schedule) == LAST_GREEN_NIGHT, (
+        f"BASELINE_FAILURES has {len(schedule)} entries for {LAST_GREEN_NIGHT} green "
+        f"nights. Night {COLLAPSE_NIGHT} reuses night {LAST_GREEN_NIGHT}'s set and "
+        f"reads no entry of its own; one that exists can only be wrong."
+    )
+    for night in NIGHTS:
+        rotated = min(night, LAST_GREEN_NIGHT)  # night 14 is frozen at night 13's
+        observed = len(_failing_items(_adapters(night)[0]))
+        assert observed == schedule[rotated - 1], (
+            f"night {night}'s baseline fails {observed} items and BASELINE_FAILURES "
+            f"entry {rotated} says {schedule[rotated - 1]}"
+        )
+    assert len(_failing_items(_adapters(COLLAPSE_NIGHT)[0])) == schedule[-1], (
+        "night 14's baseline is night 13's baseline; the two must report the same "
+        "count, which is what a fourteenth entry got wrong"
+    )
+
+
 def test_night_fourteen_freezes_the_other_three_sides_at_night_thirteen_exactly() -> None:
     """The control, asserted rather than left in a private docstring.
 
@@ -875,6 +949,7 @@ def test_candidate_b_is_the_second_of_the_three_candidates_on_every_night() -> N
 def _sample_twice(night: int, root: Path) -> list[tuple[Path, Path]]:
     """Run every side of ``night`` twice, into two directories, and pair the files."""
     goldenset = _goldenset()
+    width = _showcase().require_showcase_concurrency(_showcase().SHOWCASE_CONCURRENCY)
     pairs: list[tuple[Path, Path]] = []
     directories = []
     for attempt in ("first", "second"):
@@ -887,7 +962,7 @@ def _sample_twice(night: int, root: Path) -> list[tuple[Path, Path]]:
                 adapter,
                 out_dir=directory,
                 n=DRAWS_PER_ITEM,
-                concurrency=1,
+                concurrency=width,
             )
     for adapter in _every_adapter(night):
         pairs.append(
@@ -1175,6 +1250,36 @@ def test_night_fourteen_is_no_go_for_candidate_b_and_go_for_the_other_two(
     assert verdicts == {"a": "GO", "b": "NO-GO", "c": "GO"}, (
         f"night {COLLAPSE_NIGHT} is candidate B's refusal collapse and nobody else's; "
         f"got {verdicts}"
+    )
+
+
+@pytest.mark.slow
+def test_night_fourteens_no_go_is_the_demonstrated_regression_and_not_the_missed_bar(
+    nights: Callable[[int], Night],
+) -> None:
+    """The symmetry night 6 has and night 14 did not.
+
+    Night 6 pins ``rule == 3`` and all four flags; night 14 pinned only the string
+    "NO-GO". Rules 1 and 2 render the same colour and state different facts: rule 1
+    is "a significant regression against the baseline", rule 2 is "the bar was
+    missed on the evidence and more runs will not help". The showcase's night 14 is
+    a regression -- a point release broke a capability -- and the document narrates
+    it as one.
+
+    No live mutant reaches rule 2 here: it needs at most 431 passing completions
+    *and* p >= 0.05, and against a 445-passing baseline those are arithmetically
+    incompatible. So this is latent rather than exploitable, and it costs one line.
+    """
+    driven = nights(COLLAPSE_NIGHT)
+    report = driven.comparisons[driven.candidate("b")]
+    assert report.rule == 1, (
+        f"night {COLLAPSE_NIGHT}'s NO-GO came from rule {report.rule} "
+        f"({report.reason}). Rule 1 is the demonstrated regression the collapse is; "
+        f"rule 2 is the same colour and says more runs would not help."
+    )
+    assert report.judge(JUDGE_NAME).regressed is True, (
+        f"night {COLLAPSE_NIGHT} is NO-GO without the regression flag set, so the "
+        f"verdict is resting on something other than the collapse"
     )
 
 
