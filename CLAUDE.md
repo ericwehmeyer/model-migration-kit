@@ -68,7 +68,10 @@ when two agents share a tree, which they should not.
   pre-existing hunks and never has passed. Do not report it, do not reformat.
 - **Repo-wide format drift**: the tree is formatted at 88, `pyproject.toml`
   says 100, ~26 files. It gets its own chunk when the tree is quiet.
-- `tests/test_report.py` takes **~6 minutes**. That is normal, not a hang.
+- `tests/test_report.py` takes **~30 seconds** (371 tests); the full suite is
+  **~4 minutes** serial. If you see six minutes for `test_report.py`, that is
+  **CPU contention from other agents**, not the file. Measured 365s once with
+  five agents running and 27s with the same code minutes later.
 
 ## How work is done here
 
