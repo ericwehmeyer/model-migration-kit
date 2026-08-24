@@ -2065,6 +2065,170 @@ def test_a_comparison_with_no_run_under_it_does_not_erase_the_run_before_it():
     assert _cell(result, BASELINE, "t") == (1, 1, 1)
 
 
+# --------------------------------------------------------------------------- #
+# A run that produced nothing *but* a refusal is still a run
+#
+# The four payloads below all make ``_failure`` refuse globally, which latches
+# ``refused_all`` and returns at the top of ``add`` for every later record. A real
+# log writes completions before judging, so such a run reaches its
+# ``migkit.comparison`` with no close, no verdict and no failure filed -- and the
+# "was there a run under this comparison" guard above used to read that as an
+# empty stretch and discard the run *with its refusal inside it*.
+#
+# Measured before the fix, through the deferred path ``report.from_evidence``
+# uses: with an earlier night in the log the result was ``available=True``
+# carrying the *previous* night's cells under tonight's banner, with no refusal
+# and no note; with no earlier night it was the "the log holds no
+# migkit.judging_completed record ... A judging pass either did not run or did not
+# finish" refusal, which is false -- judging ran, finished, and closed a group --
+# and which sends the reader after a fix for a problem they do not have.
+#
+# That is the "missing data presented as data" failure this codebase has shipped
+# once. One test per trigger, because each reaches ``refuse(None, ...)`` down its
+# own branch and a fix that only covers one of them would leave three live.
+# --------------------------------------------------------------------------- #
+
+
+def _refusing_night(bad_completion: EvidenceRecord) -> list[EvidenceRecord]:
+    """One night in the order a real run writes it: completions, then judging.
+
+    The bad completion goes first because that is where a runner puts it, and it
+    is the ordering that makes the defect reachable: nothing has been filed on the
+    run yet when the global refusal latches.
+    """
+    return [
+        bad_completion,
+        _completion(BASELINE, "b", ok=False),
+        _verdict("alpha", True),
+        _verdict("bravo", True),
+        _completed(BASELINE, {JUDGE: 2}),
+        _record("migkit.comparison", {"goldenset_hash": "aaaa"}),
+    ]
+
+
+def _earlier_night() -> list[EvidenceRecord]:
+    """A night that judged cleanly, and its comparison. Whatever follows is tonight."""
+    return [
+        _verdict("alpha", False),
+        _verdict("bravo", False),
+        _completed(BASELINE, {JUDGE: 2}),
+        _record("migkit.comparison", {"goldenset_hash": "aaaa"}),
+    ]
+
+
+def _two_items() -> dict[str, GoldenItem]:
+    return _by_id(_item("a", "alpha", ("t",)), _item("b", "bravo", ("t",)))
+
+
+#: The four failed-``migkit.completion`` payloads that refuse for *every* judge.
+#: Named by what is wrong with them, so a failure here reads as a sentence.
+_GLOBAL_REFUSERS = {
+    "no model_id at all": ({"item_id": "a", "ok": False}, "names no model"),
+    "an empty model_id": (
+        {"model_id": "", "item_id": "a", "ok": False},
+        "names no model",
+    ),
+    "no item_id at all": ({"model_id": BASELINE, "ok": False}, "names item None"),
+    "a non-string item_id": (
+        {"model_id": BASELINE, "item_id": 7, "ok": False},
+        "names item 7",
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("what", "payload", "expected"),
+    [(what, payload, expected) for what, (payload, expected) in _GLOBAL_REFUSERS.items()],
+)
+def test_a_comparison_does_not_discard_a_run_whose_only_record_was_a_refusal(
+    what, payload, expected
+):
+    """Tonight refused. The comparison must not hand back last night instead."""
+    records = _earlier_night() + _refusing_night(_record(EVENT_COMPLETION, payload))
+
+    result = _tallied(records, _two_items())
+
+    assert result.available is False, (
+        f"a failed completion with {what} refused for every judge, and the "
+        f"migkit.comparison then discarded the run that refusal was on -- so the "
+        f"matrix rendered is the *previous* night's: {dict(result.by_model)}. "
+        f"Missing data presented as data, under a banner reporting tonight"
+    )
+    assert expected in result.reason
+    assert result.by_model == {}
+
+
+@pytest.mark.parametrize(
+    ("what", "payload", "expected"),
+    [(what, payload, expected) for what, (payload, expected) in _GLOBAL_REFUSERS.items()],
+)
+def test_the_refusal_survives_when_there_is_no_earlier_night_to_fall_back_to(
+    what, payload, expected
+):
+    """The other half: with nothing behind it the discarded run refused *falsely*.
+
+    A fresh ``_Run`` has ``closes == 0``, so the reason reaching the reader was
+    "the log holds no migkit.judging_completed record ... A judging pass either
+    did not run or did not finish". Judging did run and did finish -- the log
+    holds the record that says so -- and the sentence names a fix for a problem
+    the reader does not have.
+    """
+    records = _refusing_night(_record(EVENT_COMPLETION, payload))
+
+    result = _tallied(records, _two_items())
+
+    assert result.available is False
+    assert expected in result.reason, (
+        f"a failed completion with {what} produced the wrong refusal: "
+        f"{result.reason!r}"
+    )
+    assert "no migkit.judging_completed record" not in result.reason, (
+        "the run carrying the refusal was discarded, so an empty run answered "
+        "instead and reported that judging never ran -- which the "
+        "migkit.judging_completed record in this very log contradicts"
+    )
+
+
+@pytest.mark.parametrize(
+    ("what", "payload", "expected"),
+    [(what, payload, expected) for what, (payload, expected) in _GLOBAL_REFUSERS.items()],
+)
+def test_the_one_phase_form_refuses_the_same_way(what, payload, expected):
+    """One implementation, so one ruling -- the joined phase reaches it too."""
+    records = _earlier_night() + _refusing_night(_record(EVENT_COMPLETION, payload))
+
+    result = _counts(records, _two_items())
+
+    assert result.available is False, dict(result.by_model)
+    assert expected in result.reason
+
+
+def test_a_comparison_with_a_refusal_under_it_beats_an_earlier_clean_run():
+    """Stated as the property rather than as the four payloads, so it cannot rot.
+
+    The control is the same night with the bad completion removed: it counts, and
+    it counts *tonight's* numbers. That is what makes the assertion above a
+    swapped matrix and not merely a stricter one.
+    """
+    items = _two_items()
+    clean = _earlier_night() + [
+        _completion(BASELINE, "b", ok=False),
+        _verdict("alpha", True),
+        _verdict("bravo", True),
+        _completed(BASELINE, {JUDGE: 2}),
+        _record("migkit.comparison", {"goldenset_hash": "aaaa"}),
+    ]
+
+    control = _tallied(clean, items)
+    last_night = _tallied(_earlier_night(), items)
+
+    assert control.available is True, control.reason
+    assert _cell(control, BASELINE, "t") == (2, 3, 2), "tonight's own numbers"
+    assert _cell(last_night, BASELINE, "t") == (0, 2, 2), (
+        "and they are not last night's, which is what a discarded run handed back"
+    )
+
+
 def test_verdicts_after_the_last_comparison_belong_to_a_run_nobody_compared():
     """A night still running, or one that died before deciding. Read and dropped.
 

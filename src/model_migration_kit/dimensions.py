@@ -509,7 +509,27 @@ class DimensionTally:
             # that is still the right one -- which is the same field-invariance
             # `test_prepending_an_earlier_run_changes_no_field_but_the_series`
             # asserts for every other field on the model.
-            if self._run.closes or self._run.verdicts or self._run.failed:
+            #
+            # `refusals` is in that test on its own account and not for symmetry.
+            # A global refusal latches `refused_all`, which returns at the top of
+            # this method for every later record -- so a run whose first record is
+            # a failed `migkit.completion` naming no model, or naming an item id
+            # that is missing or not a string, reaches its `migkit.comparison`
+            # with no close, no verdict and no failure filed. Without this clause
+            # that run reads as an empty stretch and is discarded *with its
+            # refusal inside it*: the reader gets the previous night's cells under
+            # tonight's banner and no sentence saying so, or -- on a log with no
+            # earlier night -- the "no migkit.judging_completed record" refusal,
+            # which is false and sends them after the wrong fix. A refusal is the
+            # loudest thing a run can produce and is the last thing that may be
+            # swallowed. The empty stretch this guard was written for is a
+            # `migkit.verdict` between two comparisons, which refuses nothing.
+            if (
+                self._run.closes
+                or self._run.verdicts
+                or self._run.failed
+                or self._run.refusals
+            ):
                 self._closed_run = self._run
             self._run = _Run()
             return
