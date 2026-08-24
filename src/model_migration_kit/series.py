@@ -837,7 +837,16 @@ def spot_check(
       nothing" is true and vacuous. The temptation is to print the line anyway
       because it is the most quoted line in the document; a line that is
       unfalsifiable on this run is worth less than the silence it replaces.
-    * ``N < k``. The check would try every item and the counterfactual collapses.
+    * ``N <= k``. The check would read every item, and a draw that takes the
+      whole set is a **census, not a spot check**. The sentence's entire force is
+      that you only looked at a few; calling a census a spot check is an
+      overclaim, in the one function written to prevent overclaiming. At
+      ``N == k`` the arithmetic is not even wrong -- ``comb(N - F, k)`` is 0 and
+      the probability is a true 0.0 -- which is what makes it worth excluding
+      explicitly: it would render a confident, correct-looking sentence about a
+      procedure nobody would call a spot check. The contract said ``N < k``; this
+      is a deliberate amendment out of review, and the blind suite's assertion
+      that ``N == k`` is *not* excluded was changed with it.
     * ``N == 0``. There is no set to sample.
 
     ``k == 0`` is a caller's bug, not a run without failures, so it raises rather
@@ -855,7 +864,7 @@ def spot_check(
         )
 
     items = items_passing + items_failing + items_unstable
-    if items == 0 or items < k or items_failing == 0:
+    if items == 0 or items <= k or items_failing == 0:
         return None
 
     # math.comb, not a float product: the exact integer arithmetic costs nothing

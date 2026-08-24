@@ -2770,14 +2770,40 @@ def test_the_sentence_does_not_put_a_spot_check_inside_its_own_plural_denominato
     assert "runs" not in lowered
 
 
-def test_a_set_smaller_than_the_check_offers_no_sentence_because_the_check_reads_everything():
-    """N < k. Twelve prompts against nine items is not a sample, it is the whole
+def test_a_set_no_larger_than_the_check_offers_no_sentence_because_that_is_a_census():
+    """N <= k. Twelve prompts against nine items is not a sample, it is the whole
     set read twice over, and the probability of missing a failure in it is zero by
     construction rather than by evidence. Printing a sentence here would be
-    printing an argument that the set is too small to make."""
+    printing an argument that the set is too small to make.
+
+    **N == k is excluded too, and this line was written the other way.** The
+    blind suite asserted `series.spot_check(11, 1, 0, k=12) is not None` on the
+    reasoning that N == k is "a sample -- of everything, once". It is a census,
+    and the contract's own rationale for excluding N < k -- "the check would try
+    every item" -- applies to it word for word. The sentence's whole rhetorical
+    force is that you only looked at a *few*; a draw that takes the entire set
+    and is then described as a spot check is an overclaim, produced by the one
+    function in this module written to prevent overclaiming.
+
+    Note what makes it worth an explicit guard rather than a rounding concern:
+    at N == k the arithmetic is not wrong. `comb(N - F, k)` is 0 for any F >= 1,
+    so the probability is a true 0.0 and the sentence renders cleanly and
+    confidently. Nothing about the output announces that the "spot check" it
+    describes read every item there was.
+
+    This is a contract amendment out of review. `N < k` in the plan becomes
+    `N <= k` here."""
     assert series.spot_check(8, 1, 0, k=12) is None
-    # N == k is a sample -- of everything, once -- and is not excluded by this rule.
-    assert series.spot_check(11, 1, 0, k=12) is not None
+    # N == k: a census. Excluded, and this is the amendment.
+    assert series.spot_check(11, 1, 0, k=12) is None
+    assert series.spot_check(0, 12, 0, k=12) is None
+    assert series.spot_check(6, 3, 3, k=12) is None
+    # N == k + 1 is the smallest genuine sample and is still offered, so the
+    # guard is `<=` and has not slid to `<= k + 1`.
+    smallest = series.spot_check(11, 1, 0, k=11)
+    assert smallest is not None
+    assert smallest.items == 12
+    assert series.spot_check(12, 1, 0, k=12) is not None
 
 
 def test_an_empty_set_offers_no_sentence():
