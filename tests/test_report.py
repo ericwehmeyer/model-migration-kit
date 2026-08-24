@@ -8747,6 +8747,114 @@ def test_a_side_that_was_judged_and_produced_nothing_is_a_column_of_zeros(
     assert _get(_cell(column, "arithmetic"), "verdict_refused") is True
 
 
+def _silent_side_note(tmp_path: Path) -> str:
+    """A side that was judged and graded nothing: its first cell's note.
+
+    A ``migkit.judging_completed`` names the candidate, so the counting saw it and
+    zero-filled it. The fix a reader needs is "look at why this judging pass graded
+    nothing".
+    """
+    scenario = _scenario(tmp_path / "silent-side")
+    log = _matrix_log(
+        scenario,
+        "evidence-silent-side.jsonl",
+        judging=[
+            *_judging_pass(BASELINE_MODEL, scenario.items, passed=True),
+            _record(
+                EVENT_JUDGING_COMPLETED,
+                {
+                    "model_id": CANDIDATE_MODEL,
+                    "graded": {J: 0},
+                    "imputed": {},
+                    "parse_failures": {},
+                },
+                TS_JUDGING,
+            ),
+        ],
+    )
+    matrix = _available_matrix(_model_from(log))
+    return str(_get(_cell(_candidate_column(matrix, CANDIDATE_MODEL), "arithmetic"), "note"))
+
+
+def _never_judged_note(tmp_path: Path) -> tuple[Any, str]:
+    """A side the payload names and no judging pass ever closed: the matrix, and a note.
+
+    Nothing in this log mentions the candidate except the comparison payload. The
+    fix a reader needs is "look at whether the run completed at all", which is not
+    the fix above.
+    """
+    scenario = _scenario(tmp_path / "never-judged")
+    log = _matrix_log(
+        scenario,
+        "evidence-never-judged.jsonl",
+        judging=_judging_pass(BASELINE_MODEL, scenario.items, passed=True),
+    )
+    matrix = _available_matrix(_model_from(log))
+    column = _candidate_column(matrix, CANDIDATE_MODEL)
+    return matrix, str(_get(_cell(column, "arithmetic"), "note"))
+
+
+def test_a_side_no_judging_pass_ever_closed_is_still_a_column(tmp_path: Path) -> None:
+    """The implementer's own extension, which had no test at all until R27.5.
+
+    Dropping the never-seen side entirely -- leaving a one-column "comparison"
+    with nothing on the page saying where the other side went -- survived all 1998
+    tests. It is the same failure as a vanishing judged-but-silent column, arrived
+    at from a different direction: here the counting never heard of the model,
+    because ``by_model`` holds only what a ``migkit.judging_completed`` closed, and
+    the payload's own candidate is not in it.
+    """
+    matrix, _note = _never_judged_note(tmp_path)
+    column = _candidate_column(matrix, CANDIDATE_MODEL)
+
+    assert _candidate_ids(matrix) == [CANDIDATE_MODEL], (
+        f"the candidate named by the comparison payload is missing from the "
+        f"matrix, which holds {_candidate_ids(matrix)}"
+    )
+    assert _tags_of(column) == _tags_of(_baseline_column(matrix)), (
+        "the never-judged side lost rows the other side has, so the two columns no "
+        "longer line up beside each other"
+    )
+    assert [_cell_counts(column, tag) for tag in _tags_of(column)] == [(0, 0, 0), (0, 0, 0)]
+
+
+def test_a_never_judged_side_and_a_judged_silent_side_do_not_read_identically(
+    tmp_path: Path,
+) -> None:
+    """Two situations, two fixes, and until R27.5 one rendering.
+
+    A judged side that graded nothing and a side no judging pass ever closed both
+    arrive as ``(0, 0, 0)``, ``rate=None``, ``verdict_refused=True`` and the same
+    note. The note is right about the thing that matters -- it says nothing was
+    measured, not that a zero was measured -- but it sends both readers to the same
+    place, and one of them should be checking the judge configuration while the
+    other should be checking whether the run finished.
+
+    The distinction goes in the note rather than in a new field, because the note
+    is where this document already says such things.
+    """
+    silent = _silent_side_note(tmp_path)
+    _matrix, never = _never_judged_note(tmp_path)
+
+    assert silent, "the judged-but-silent cell says nothing at all"
+    assert never != silent, (
+        f"a side that was judged and graded nothing and a side no judging pass ever "
+        f"closed render byte-identically:\n  {silent!r}"
+    )
+    assert CANDIDATE_MODEL in never, (
+        f"the never-judged column does not name the side that was never judged, so "
+        f"a reader cannot tell which one to go looking for: {never!r}"
+    )
+    assert CANDIDATE_MODEL not in silent, (
+        "the judged-but-silent column has picked up the never-judged sentence, so "
+        "the two are distinguishable from each other and from nothing else"
+    )
+    assert never.startswith(silent), (
+        f"the never-judged note replaced what the cell already said rather than "
+        f"adding to it; 'nothing was measured' is still true here:\n  {never!r}"
+    )
+
+
 def test_the_dimension_matrix_still_renders_when_the_artifacts_are_not_beside_the_log(
     tmp_path: Path,
 ) -> None:
