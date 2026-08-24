@@ -2866,12 +2866,37 @@ def test_the_judge_table_the_flips_and_the_provenance_come_from_the_last_run(
     )
 
 
-def test_a_series_of_runs_renders_exactly_what_one_run_rendered(tmp_path: Path) -> None:
-    """C3's title is "hang the series off ``ReportModel``, render nothing".
+def _without_timeline(html: str) -> str:
+    """The document with its run-history section and nav entry cut out.
 
-    Byte-for-byte, modulo the log's own path and digest. A chunk that quietly
-    added a row, a column or a sentence would ship a document nobody reviewed,
-    and C6 is where the timeline is supposed to arrive.
+    Everything C14a added lives between ``<h2 id="timeline">`` and the next
+    heading, plus one ``<li>`` in the nav. Cutting exactly that leaves the rest of
+    the document to be compared byte for byte.
+    """
+    start = html.find('<h2 id="timeline">')
+    if start != -1:
+        end = html.find('<h2 id="judges">', start)
+        assert end != -1, "the timeline section is not followed by the judges heading"
+        html = html[:start] + html[end:]
+    kept = [line for line in html.splitlines() if 'href="#timeline"' not in line]
+    return chr(10).join(kept)
+
+
+def test_a_series_of_runs_changes_the_run_history_and_nothing_else(tmp_path: Path) -> None:
+    """C3 said "render nothing"; C14a is the chunk where the timeline arrives.
+
+    So the original byte-for-byte assertion is kept and *narrowed* rather than
+    deleted: outside the run-history section the two documents must still be
+    identical, modulo the log's own path and digest. What C3's test was really
+    protecting is the promise in ``ReportModel.series``' own docstring -- that the
+    timeline can gain, lose or re-derive a field "without the banner, the judge
+    table, the flips or the provenance block moving with it" -- and that promise
+    is not weakened by rendering the series. It is only now testable.
+
+    The second assertion is what stops this from becoming a test that passes by
+    cutting out everything that differs: the section that *was* excised must
+    genuinely differ between the two documents. Without it, a bug that rendered
+    the timeline identically for one run and two would sail through.
     """
     scenario = _scenario(tmp_path / "renders")
     alone = _model_from(scenario.evidence)
@@ -2880,8 +2905,17 @@ def test_a_series_of_runs_renders_exactly_what_one_run_rendered(tmp_path: Path) 
     )
     with_history = _model_from(log)
 
-    assert _headline_scrubbed(_html(with_history), log) == _headline_scrubbed(
-        _html(alone), scenario.evidence
+    two_runs = _headline_scrubbed(_html(with_history), log)
+    one_run = _headline_scrubbed(_html(alone), scenario.evidence)
+
+    assert _without_timeline(two_runs) == _without_timeline(one_run), (
+        "a second comparison in the log changed something outside the run-history "
+        "section; the banner, the judge table, the flips and the provenance block "
+        "are read from the records and must not move with the series"
+    )
+    assert two_runs != one_run, (
+        "the two documents are identical, so the run history is not being rendered "
+        "at all and the comparison above is vacuous"
     )
     assert len(_series(with_history)) == 2, (
         "the documents match because neither model has a series"
@@ -6571,4 +6605,81 @@ def test_the_label_opens_the_accessible_name_rather_than_trailing_it() -> None:
     assert bar.title.startswith(label), (
         f"the label must open the accessible name, not trail the numbers it names; "
         f"the title reads {bar.title!r}"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# C14a -- the two charts that exist, and the evidence made legible.
+#
+# The two SVG helpers return trusted markup and must be injected unescaped;
+# everything derived from model output must stay escaped. The set of ``| safe``
+# filters in the template is therefore a fixed, enumerable list, and this section
+# opens by pinning it. A ``| safe`` that appears anywhere else is the failure the
+# contract names as the one that ships: a path that can carry model output turns
+# an escaped ``<img src="https://tracker/x.png">`` in a completion into a real
+# fetch.
+# --------------------------------------------------------------------------- #
+
+#: The only expressions the document is allowed to mark safe, by name. Each is a
+#: hand-rolled SVG helper's injection point -- ``interval_bar_svg`` reached
+#: through the ``interval_bar`` filter, and ``timeline_svg``'s ``.svg`` member
+#: reached through the ``timeline`` filter. Written as a set of *descriptors*
+#: rather than a count, because "two safes" is satisfied by two safes in the
+#: wrong places.
+SAFE_INJECTION_POINTS = frozenset({"interval_bar", "timeline.svg"})
+
+
+def _safe_descriptor(node: Any) -> str:
+    """Name the expression a ``| safe`` was applied to.
+
+    A filter chain (``model | interval_bar | safe``) is named by the filter
+    underneath the ``safe``; an attribute access (``tl.svg | safe``) by its
+    dotted path. Anything else returns its node type, which is what makes an
+    unexpected ``safe`` fail with a legible name rather than a bare count.
+    """
+    from jinja2 import nodes
+
+    if isinstance(node, nodes.Filter):
+        return str(node.name)
+    if isinstance(node, nodes.Getattr):
+        inner = node.node
+        stem = inner.name if isinstance(inner, nodes.Name) else type(inner).__name__
+        return f"{stem}.{node.attr}"
+    if isinstance(node, nodes.Name):
+        return str(node.name)
+    return type(node).__name__
+
+
+def _safes_in_template() -> list[str]:
+    """Every ``| safe`` in the document's own source, by the expression it marks."""
+    from jinja2 import Environment, nodes
+
+    source = _report._CHANGES_MACRO + _report._TEMPLATE
+    tree = Environment().parse(source)
+    return [
+        _safe_descriptor(node.node)
+        for node in tree.find_all(nodes.Filter)
+        if node.name == "safe"
+    ]
+
+
+def test_the_document_marks_exactly_one_expression_safe_per_hand_rolled_svg_and_no_others() -> (
+    None
+):
+    """C14a's test that fails first: the ``| safe`` set, by name, not by count.
+
+    Parsed with jinja2's own parser rather than grepped, for the same reason the
+    self-containment detector is an HTML parser rather than a regex: ``| safe``
+    inside a quoted string, or inside a comment, is not a filter, and a grep
+    cannot tell the difference. The assertion is on the *set* so that a ``safe``
+    moved from the timeline onto a row's model text fails here even though the
+    count is unchanged -- which is exactly the mutation that would ship the
+    fetching hole.
+    """
+    found = _safes_in_template()
+    assert len(found) == len(set(found)), f"a safe is applied twice to one expression: {found}"
+    assert set(found) == SAFE_INJECTION_POINTS, (
+        f"the document marks {sorted(set(found))} safe; the only expressions that "
+        f"may be marked safe are {sorted(SAFE_INJECTION_POINTS)}. A safe on anything "
+        f"derived from model output turns an escaped tag in a completion into a fetch."
     )
