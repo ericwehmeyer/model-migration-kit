@@ -413,6 +413,31 @@ def _require_night(night: int) -> None:
         raise ValueError(f"night must be an integer in 1..{NIGHTS}, got {night!r}")
 
 
+def require_showcase_concurrency(concurrency: int) -> int:
+    """Refuse any sampling width but :data:`SHOWCASE_CONCURRENCY`, and say why.
+
+    A module constant is a default, and a default is a thing a caller can pass
+    something else instead of. This is the assertion, so that the driver's call to
+    ``run_goldenset`` has to go through a refusal rather than through a keyword.
+
+    The refusal is not about the models. It was measured: at ``concurrency=4`` the
+    480 completions come back in the same order with the same text, because a
+    ``Mapping`` adapter has no call order to depend on. What does change is the
+    evidence log -- ``migkit.run_started`` records ``concurrency`` and
+    ``concurrency_effective`` -- so a showcase regenerated at a different width
+    produces a log that differs from the published one in a field nobody would
+    think to look at, and the report renders from the log.
+    """
+    if concurrency != SHOWCASE_CONCURRENCY:
+        raise SystemExit(
+            f"the showcase must be sampled at concurrency={SHOWCASE_CONCURRENCY}, not "
+            f"{concurrency!r}. The scripted models are stateless mappings and cannot be "
+            f"raced, but the width is recorded in migkit.run_started, and the report is "
+            f"rendered from that log rather than from anything held in memory."
+        )
+    return concurrency
+
+
 def model_ids(*, night: int) -> tuple[str, tuple[str, ...]]:
     """``(baseline, candidates)`` for one night, with the point release applied.
 
