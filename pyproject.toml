@@ -70,7 +70,12 @@ dependencies = [
 # this is the line its error message tells you to install.
 anthropic = ["anthropic>=0.40"]
 openai = ["openai>=1.0"]
-dev = ["pytest>=7.0", "pytest-cov>=4.0", "ruff>=0.6"]
+# `pytest-xdist` is here so CI can honour a `PYTEST_ADDOPTS="-n 8"` without the
+# workflow failing on an unknown `-n`. It is not enabled by default: the suite is
+# correct either way (measured -- 12 xdist configurations returned identical
+# pass/fail), and `-n` is left to the caller because the right worker count
+# depends on what else is running on the machine, not on the project.
+dev = ["pytest>=7.0", "pytest-cov>=4.0", "pytest-xdist>=3.0", "ruff>=0.6"]
 
 [project.scripts]
 migkit = "model_migration_kit.cli:main"

@@ -3,7 +3,7 @@
 Rules that apply to every agent here, whatever the task. They exist because
 each one has already cost this project real time.
 
-## The interpreter, and the `.pth` trap
+## The interpreter
 
 **There is no venv inside the worktrees.** The only interpreter is:
 
@@ -11,24 +11,36 @@ each one has already cost this project real time.
 C:\Users\ewehm\repos\migration-kit\.venv\Scripts\python.exe
 ```
 
-A bare `python` on PATH is a bare 3.14 with no pytest — that fails loudly and is
-harmless. **The dangerous half is silent:** the editable install's `.pth` file
-hardcodes the *main checkout's* `src`, so running that venv's python from any
-worktree imports **the main checkout's code**, not yours. No warning, no error,
-wrong answers.
+**The `.pth` trap is fixed (2026-08-24); you no longer need `PYTHONPATH`.**
+`scripts/worktree_path.py` is installed into that venv as an import hook. It
+resolves the package from your **current working directory's** worktree, so a
+bare `python -c` from any checkout imports that checkout's code — verified from
+four worktrees at once. Outside any checkout it falls back to the main checkout,
+exactly as before.
 
-`conftest.py` corrects this for pytest only. For anything ad-hoc, both halves
-are required:
+Before the fix, the editable install's `.pth` hardcoded one checkout's `src`, so
+running from a worktree silently imported *someone else's code* — no warning, no
+error, wrong answers. It caught the orchestrator and six agents.
 
-```bash
-PYTHONPATH="C:/Users/ewehm/repos/<your-worktree>/src" \
-  /c/Users/ewehm/repos/migration-kit/.venv/Scripts/python.exe -c '...'
+Setting `PYTHONPATH` explicitly still works and still wins. Printing
+`model_migration_kit.__file__` is still cheap and still worth doing when a result
+surprises you.
+
+```
+python scripts/worktree_path.py --status      # what is active
+python scripts/worktree_path.py --uninstall   # restores the original
 ```
 
-**Print `model_migration_kit.__file__` before trusting any ad-hoc run.** If it
-does not name your worktree, everything you just measured is about someone
-else's code. The symptom is a result identical to the before-state, which reads
-exactly like "my change did nothing".
+## Running the suite
+
+`pytest-xdist` is installed. `-n 8` takes the suite from ~136 s to ~97 s on a
+quiet machine, and all 12 configurations tested return identical pass/fail.
+
+**Check the load before choosing a worker count.** Wall-clock here is dominated
+by *other agents*, not by the code: `tests/test_report.py` measured 365 s with
+five agents running and 27 s minutes later on identical code. If several agents
+each run `-n 8` on 16 cores, everyone gets slower. Use `-n 4` when the board is
+busy and `-n 8` only when it is quiet.
 
 ## One agent, one worktree
 
