@@ -5135,3 +5135,97 @@ reach teaches the next reader something false.** Third chunk running.
    different shapes. Say so where a template author will look.
 5. **C14 cannot today distinguish a judged-but-silent side from a never-judged
    one.** If the page is meant to, R27.5's note must carry it.
+
+### R28 — a ruling recorded is not a ruling scheduled
+
+Found by auditing my own revisions against the code rather than against my
+memory of them.
+
+#### R28.1 — R21.5 was ruled and never scheduled
+
+R21.5 ruled that when no config declares `trend`'s lineage, the lineage is
+assembled from the log in first-appearance order and **`Trend` carries a caveat
+saying the succession was assumed rather than declared**. RESTART has listed it
+as blocking C22b ever since.
+
+**It was never implemented, and it was never in any brief.** Verified against
+the merged code:
+
+```
+Trend fields: ('points', 'successions', 'excluded', 'undated',
+               'caveats', 'outside_lineage', 'absent_models')
+trend() source, occurrences of 'assumed': 0
+                              'first-appearance': 0
+                              'config': 0
+```
+
+`outside_lineage` and `absent_models` are R24.1's, from C7's fix pass. C7's fix
+brief covered R24 and nothing else. I ruled R21.5 four hours earlier, wrote it
+into the plan and into the handoff's blocking list, and then wrote a brief that
+did not mention it.
+
+**The failure is a missing step, not a missing thought.** Every ruling on this
+project goes: rule it → write it into the plan → *carry it into a brief*. The
+middle step feels like completion because the plan is where rulings live, and it
+is not: **a ruling in the plan with no brief behind it is a ruling nobody will
+execute.** The handoff even listed it as blocking, which made it look tracked.
+
+The check that catches this is cheap and is now standing: **before dispatching
+any brief, grep the merged code for the ruling it is supposed to implement.** If
+the ruling's own words appear nowhere, it has not been done, whatever the plan
+says. That is the same rule as R26.1 — *a claim that something was checked must
+carry the output that checked it* — applied to my own scheduling instead of to
+my own facts.
+
+Dispatched as a C7 follow-up, on the C11 `SpotCheckSubject` precedent: the
+caller supplies the fact, `series.py` supplies the words.
+
+#### R28.2 — C6's four open contract points, now ruled
+
+R25.4 listed five things C6's contract does not say. Item 1 was ruled there (the
+returned field gains one `Caveat` per changed candidate). **These four were left
+open and are now blocking C22b**, which must render `Multiplicity`.
+
+1. **`Multiplicity.alpha` when the correction is refused for *differing*
+   levels.** Ruling: **`None`.** `alpha` is documented as the *family-wise*
+   level, and where members were tested at different levels there is no such
+   thing — publishing either one names a level the family does not have. The
+   `note` already names both, which is where the detail belongs.
+2. **Whether candidates with `p_value is None` contribute their alpha to the
+   uniformity check.** Ruling: **no.** An untested candidate has no p-value to
+   correct, so it is not in the family; letting it veto the correction would
+   refuse a well-formed family on the strength of a row that contributed
+   nothing. `family_size` already counts only tested candidates, and this is the
+   same principle applied one field over.
+3. **`thresholds` when `applied=False`.** Ruling: **empty.** A threshold is the
+   output of a correction that did not happen, and C6's own reviewer note names
+   the mirror hazard — `applied=True` with empty `thresholds` is the overclaim
+   the chunk exists to prevent. The converse is the same defect facing the other
+   way: numbers on the page implying a correction was applied.
+4. **`family_size` when no candidate was tested at all.** Ruling: **`0`**, with
+   `applied=False`. Zero tested candidates is a family of zero, and the note
+   must say how many were untested — which the contract already requires, and
+   which is the only thing that stops `0` reading as "no candidates existed".
+
+All four follow one principle worth stating once: **a refused correction must
+not leave behind the furniture of an applied one.**
+
+#### R28.3 — the sixth refusal belongs in the contract's table
+
+R25.5 endorsed the implementer's sixth refusal — `holm_bonferroni` raises unless
+`0.0 < alpha < 1.0`, and `RunPoint` is a public frozen dataclass anyone may
+construct, so `alpha=5.0` or `alpha=nan` reaches `correct_field` without passing
+through `_number` — and said it should be added to C6's refusal table "so it is
+not read as an invention". **That edit was not made either**, which is R28.1's
+shape a second time in the same session.
+
+It is recorded here instead, and C6's contract table should be read as having a
+seventh row:
+
+| Input | Required |
+|---|---|
+| `alpha` outside `(0.0, 1.0)`, including NaN | `applied=False`, note names the level. The module's hard rule is that nothing here raises. |
+
+Also endorsed and worth keeping: levels are compared as `repr` strings rather
+than floats, because `nan != nan` would otherwise report a family of two
+identical NaN levels as "tested at different levels: nan, nan".
