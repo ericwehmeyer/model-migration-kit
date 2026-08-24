@@ -8169,7 +8169,7 @@ def _cell(column: Any, tag: str) -> Any:
     raise AssertionError(f"no cell for tag {tag!r} in a column holding {list(_tags_of(column))}")
 
 
-def _numbers(column: Any, tag: str) -> tuple[int, int, int]:
+def _cell_counts(column: Any, tag: str) -> tuple[int, int, int]:
     """``(passes, n, items)`` for one tag, the three counts a reader is shown."""
     one = _cell(column, tag)
     return (_get(one, "passes"), _get(one, "n"), _get(one, "items"))
@@ -8340,12 +8340,12 @@ def test_the_baseline_column_is_the_side_the_comparison_payload_calls_the_baseli
     scenario = _scenario(tmp_path / "sides")
     matrix = _available_matrix(_model_from(_counted_log(scenario, "evidence-sides.jsonl")))
 
-    assert _numbers(_baseline_column(matrix), "arithmetic") == (
+    assert _cell_counts(_baseline_column(matrix), "arithmetic") == (
         DEFAULT_TAG_N,
         DEFAULT_TAG_N,
         DEFAULT_TAG_ITEMS,
     ), "the baseline column holds the candidate's numbers: the two sides are swapped"
-    assert _numbers(_candidate_column(matrix, CANDIDATE_MODEL), "arithmetic") == (
+    assert _cell_counts(_candidate_column(matrix, CANDIDATE_MODEL), "arithmetic") == (
         0,
         DEFAULT_TAG_N,
         DEFAULT_TAG_ITEMS,
@@ -8397,7 +8397,7 @@ def test_a_side_that_was_judged_and_produced_nothing_is_a_column_of_zeros(
         "the judged-but-silent side lost rows the other side has, so the two "
         "columns no longer line up beside each other"
     )
-    assert [_numbers(column, tag) for tag in _tags_of(column)] == [
+    assert [_cell_counts(column, tag) for tag in _tags_of(column)] == [
         (0, 0, 0),
         (0, 0, 0),
     ]
@@ -8425,12 +8425,12 @@ def test_the_dimension_matrix_still_renders_when_the_artifacts_are_not_beside_th
 
     matrix = _available_matrix(_model_from(log))
 
-    assert _numbers(_baseline_column(matrix), "arithmetic") == (
+    assert _cell_counts(_baseline_column(matrix), "arithmetic") == (
         DEFAULT_TAG_N,
         DEFAULT_TAG_N,
         DEFAULT_TAG_ITEMS,
     )
-    assert _numbers(_candidate_column(matrix, CANDIDATE_MODEL), "extraction") == (
+    assert _cell_counts(_candidate_column(matrix, CANDIDATE_MODEL), "extraction") == (
         0,
         DEFAULT_TAG_N,
         DEFAULT_TAG_ITEMS,
@@ -8481,7 +8481,7 @@ def test_a_golden_set_in_which_every_item_is_untagged_is_available_and_not_a_ref
     matrix = _available_matrix(_model_from(log))
 
     assert _get(matrix, "tags") == (UNTAGGED,)
-    assert _numbers(_baseline_column(matrix), UNTAGGED) == (
+    assert _cell_counts(_baseline_column(matrix), UNTAGGED) == (
         len(ITEM_IDS) * N_PER_ITEM,
         len(ITEM_IDS) * N_PER_ITEM,
         len(ITEM_IDS),
@@ -8637,7 +8637,7 @@ def test_the_judge_the_matrix_names_is_the_judge_its_cells_were_counted_under(
     matrix = _available_matrix(_model_from(_panel_log(scenario, "evidence-counted-by.jsonl")))
 
     assert _get(matrix, "judge") == J
-    assert _numbers(_baseline_column(matrix), "arithmetic") == (
+    assert _cell_counts(_baseline_column(matrix), "arithmetic") == (
         DEFAULT_TAG_N,
         DEFAULT_TAG_N,
         DEFAULT_TAG_ITEMS,
@@ -8882,7 +8882,7 @@ def test_building_the_matrix_does_not_read_the_evidence_log_a_second_time(
         monkeypatch.undo()
 
     matrix = _available_matrix(model)
-    assert _numbers(_baseline_column(matrix), "arithmetic") == (
+    assert _cell_counts(_baseline_column(matrix), "arithmetic") == (
         DEFAULT_TAG_N,
         DEFAULT_TAG_N,
         DEFAULT_TAG_ITEMS,
