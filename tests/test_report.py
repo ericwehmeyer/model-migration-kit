@@ -8903,3 +8903,730 @@ def test_building_the_matrix_does_not_read_the_evidence_log_a_second_time(
         f"the evidence log was read {len(opened)} times in text mode; the matrix "
         f"has to be built out of the pass that is already happening"
     )
+
+
+# --------------------------------------------------------------------------- #
+# 22. The view model, part one. Plan C22a, under R21.3 and R23.
+#
+# R21.6 counted it rather than argued it: `report.py` imports exactly three
+# names from `series.py` -- `RunPoint`, `SeriesBuilder`, `parse_created`, all
+# C3's -- and `SpotCheck`, `CandidateField` and every function that builds them
+# are imported by nothing. C22a wires two of them onto the model:
+#
+#     spot_check: SpotCheck | None = None
+#     candidates: CandidateField | None = None
+#
+# Two fields, not three. C14's table gives the excluded-runs list its own
+# element, and R23.2 rules that element is `candidates.excluded` -- one
+# partition, one source. A second top-level `partition_comparable` call would
+# put the same facts on the model twice from two calls that can drift and can
+# even be against different keys, which is R16.3's `dimension_counts` refusal
+# one chunk later.
+#
+# What this section is aimed at, and it is one thing above all the others: **a
+# `None` from a producer has to reach the model as `None`.** Both producers
+# return it for a real reason -- `spot_check` when the counts cannot support the
+# question, `candidate_field` when no group can render a table -- and a view
+# model that substitutes an empty tuple, an empty `CandidateField` or a zero
+# publishes an absence as a measurement. That is this document's central design
+# rule (C7's first-run marker, C4's exclusions, C10's zero column, C5's
+# superseded exclusion) and it is the one place the defect survives review,
+# because nobody reads plumbing for claims about the data. So
+# `assert model.candidates is None` is asserted, and `== ()` is not: they are
+# different tests and only one of them is the contract.
+#
+# Written without reading `report.py`'s new code. The arithmetic of `spot_check`
+# and `candidate_field` belongs to `tests/test_series.py` and is not re-litigated
+# here; what is pinned here is *which numbers were handed in*, *which objects
+# came back*, and *that an absence stayed one*.
+#
+# R20.1 governs the fixtures, and it has caught something on three chunks
+# running: a fixture where the broken and the correct implementation agree is a
+# fixture that tests nothing. So the counts on the two sides of the run differ in
+# every field -- 80/8/8 against 70/2/3, N of 96 against 75, a probability of 33%
+# against 70% -- and the field fixture carries three exclusions produced by three
+# different rules, because a fixture with no exclusions cannot see
+# `candidates.excluded` being dropped.
+# --------------------------------------------------------------------------- #
+
+
+#: The candidate side of the field fixture's run. N = 96, F = 8 -- the demo's own
+#: set, and the pair `series.spot_check`'s docstring works its 0.3288 from.
+FIELD_ITEMS_CANDIDATE = {"passing": 80, "failing": 8, "unstable": 8}
+
+#: The baseline side of the same run. Different in all three counts, so that N,
+#: F, U and the probability are each a different number from the candidate
+#: side's: a spot check built from the wrong side is then a wrong *value* rather
+#: than the right one by coincidence. N = 75, F = 2.
+FIELD_ITEMS_BASELINE = {"passing": 70, "failing": 2, "unstable": 3}
+
+#: The second candidate under the headline run's key. Sorts after
+#: ``CANDIDATE_MODEL`` so the rendered rows' order -- by candidate model, never
+#: by result -- is asserted against a known answer.
+SIBLING_MODEL = "model-c-20260101"
+
+#: Ten days before the headline run, which is wider than `candidate_field`'s
+#: default window; and two days before it, which is inside it.
+SIBLING_CREATED_WIDE = "2026-08-03T08:59:58.000000+00:00"
+SIBLING_CREATED_NARROW = "2026-08-11T08:59:58.000000+00:00"
+SUPERSEDED_CREATED = "2026-07-20T08:59:58.000000+00:00"
+UNNAMED_CREATED = "2026-07-15T08:59:58.000000+00:00"
+
+
+# -- fixtures ---------------------------------------------------------------- #
+
+
+def _counted_scenario(
+    root: Path,
+    *,
+    baseline: Mapping[str, int] = FIELD_ITEMS_BASELINE,
+    candidate: Mapping[str, int] = FIELD_ITEMS_CANDIDATE,
+    items: int = 96,
+) -> Scenario:
+    """The standard run with item counts a spot check can actually be asked of.
+
+    The default scenario's twelve items are a *census* at ``k = 12`` and
+    `spot_check` refuses one on both sides, so a suite built only on it would
+    agree with an implementation that never computes a spot check at all. These
+    counts are over the census line and differ between the sides.
+    """
+    return _scenario(
+        root,
+        judges=[
+            _judge_payload(
+                item_counts_baseline=baseline,
+                item_counts_candidate=candidate,
+                items=items,
+            )
+        ],
+    )
+
+
+def _sibling_comparison(
+    scenario: Scenario, *, candidate_model: str, created: str
+) -> dict[str, Any]:
+    """Another run under the *same* comparability key, differing in its candidate.
+
+    ``_earlier_comparison`` above contradicts every field, including the four the
+    comparability key is made of, so a log of those runs is a log of groups of
+    one and `candidate_field` returns ``None`` on it. This keeps the golden-set
+    hash, the judge hash, ``n_per_item`` and the baseline model, which is what it
+    takes to be in the same field, and moves only the candidate and the date.
+
+    The item counts are contradicted, to three ones. Nothing should read them --
+    the spot check is the *headline* run's -- and an implementation that summed
+    the log or read the wrong point would produce a number that is not 96.
+    """
+    payload: dict[str, Any] = json.loads(json.dumps(scenario.comparison))
+    payload["created"] = created
+    payload["candidate"]["model_id"] = candidate_model
+    judge = payload["judges"][0]
+    judge["item_counts"] = {
+        "baseline": {"passing": 1, "failing": 1, "unstable": 1},
+        "candidate": {"passing": 1, "failing": 1, "unstable": 1},
+        "items": 3,
+    }
+    payload["item_counts"]["per_judge"] = {judge["name"]: dict(judge["item_counts"])}
+    return payload
+
+
+def _field_log(scenario: Scenario, name: str = "evidence-field.jsonl") -> Path:
+    """Five comparisons: two rows, and three runs excluded by three different rules.
+
+    In log order, and the index of each is asserted on below:
+
+    0. a run under the group's key that records **no candidate model** --
+       `series._unnamed_candidate`;
+    1. a run under a **different key** entirely -- `partition_comparable`;
+    2. an older run of ``SIBLING_MODEL``, **superseded** by index 3 --
+       C5's D2 exclusion, which exists because that run was in no tuple at all
+       until it was written;
+    3. ``SIBLING_MODEL`` itself, ten days before the headline run;
+    4. the headline run, ``CANDIDATE_MODEL``.
+
+    Three exclusions from three rules rather than one from one: R20.1 again. A
+    field whose ``excluded`` is empty cannot tell an implementation that carries
+    the list from one that drops it.
+    """
+    records = [
+        _record(
+            EVENT_COMPARISON,
+            _sibling_comparison(scenario, candidate_model="", created=UNNAMED_CREATED),
+            EARLIER_TS_COMPARISON,
+        ),
+        *_earlier_run(scenario, tag="foreign"),
+        _record(
+            EVENT_COMPARISON,
+            _sibling_comparison(
+                scenario, candidate_model=SIBLING_MODEL, created=SUPERSEDED_CREATED
+            ),
+            EARLIER_TS_COMPARISON,
+        ),
+        _record(
+            EVENT_COMPARISON,
+            _sibling_comparison(
+                scenario, candidate_model=SIBLING_MODEL, created=SIBLING_CREATED_WIDE
+            ),
+            EARLIER_TS_COMPARISON,
+        ),
+        _record(EVENT_COMPARISON, scenario.comparison, TS_COMPARISON),
+    ]
+    if scenario.verdict is not None:
+        records.append(_record(EVENT_VERDICT, scenario.verdict, TS_VERDICT))
+    return _write_evidence(scenario.root / name, records)
+
+
+def _narrow_log(scenario: Scenario, name: str = "evidence-narrow.jsonl") -> Path:
+    """Two runs, two days apart, nothing excluded.
+
+    The other half of the window pair. A fixture that only ever flags the spread
+    cannot see a window that was widened, and one that never flags it cannot see
+    a window that was narrowed.
+    """
+    records = [
+        _record(
+            EVENT_COMPARISON,
+            _sibling_comparison(
+                scenario, candidate_model=SIBLING_MODEL, created=SIBLING_CREATED_NARROW
+            ),
+            EARLIER_TS_COMPARISON,
+        ),
+        _record(EVENT_COMPARISON, scenario.comparison, TS_COMPARISON),
+    ]
+    if scenario.verdict is not None:
+        records.append(_record(EVENT_VERDICT, scenario.verdict, TS_VERDICT))
+    return _write_evidence(scenario.root / name, records)
+
+
+def _spot_check(model: Any) -> Any:
+    return _get(model, "spot_check")
+
+
+def _candidates(model: Any) -> Any:
+    return _get(model, "candidates")
+
+
+def _triple(counts: Mapping[str, int]) -> tuple[int, int, int]:
+    """``(N, F, U)`` as `SpotCheck` carries them, from one side's three counts."""
+    return (
+        counts["passing"] + counts["failing"] + counts["unstable"],
+        counts["failing"],
+        counts["unstable"],
+    )
+
+
+def _model_field(model: Any) -> Any:
+    field = _candidates(model)
+    assert field is not None, (
+        "this fixture holds two candidates under one key, so `candidate_field` "
+        "returns a field for it; a `None` here means the field was never built, "
+        "and every expectation below would be vacuous"
+    )
+    return field
+
+
+# -- the two fields, and the third that must not exist ----------------------- #
+
+
+def test_the_model_gains_a_spot_check_and_a_candidate_field(tmp_path: Path) -> None:
+    """R21.3's contract, as two dataclass fields of the declared types."""
+    from model_migration_kit.series import CandidateField, SpotCheck
+
+    scenario = _counted_scenario(tmp_path / "twofields")
+    model = _model_from(_field_log(scenario))
+
+    assert isinstance(_spot_check(model), SpotCheck), (
+        f"`spot_check` is {type(_spot_check(model)).__name__}; R21.3 declares it "
+        f"`SpotCheck | None`, and this fixture's counts support one"
+    )
+    assert isinstance(_candidates(model), CandidateField), (
+        f"`candidates` is {type(_candidates(model)).__name__}; R21.3 declares it "
+        f"`CandidateField | None`, and this fixture holds two candidates"
+    )
+
+
+def test_the_excluded_runs_get_no_field_of_their_own_on_the_model(tmp_path: Path) -> None:
+    """R23.2: one partition, one source, and the list lives on the field.
+
+    The tempting implementation is a second `partition_comparable` at the top
+    level, and it is the `dimension_counts` mistake again -- the same facts on
+    the model twice, from two calls that can drift. Worse here than there,
+    because the two partitions could be against *different keys*, so the
+    disagreement would be legitimate on both sides and impossible to adjudicate
+    from the model.
+
+    Asserted against the declared fields *and* against the instance, because a
+    property is a second source too.
+    """
+    scenario = _counted_scenario(tmp_path / "onepartition")
+    model = _model_from(_field_log(scenario))
+    names = [one.name for one in dataclasses.fields(model)]
+
+    assert "excluded" not in names, (
+        "`ReportModel` declares an `excluded` field; R23.2 rules the rendered "
+        "excluded-runs list is `candidates.excluded`, so that the list and the "
+        "table it explains are guaranteed to be about the same set of runs"
+    )
+    assert not hasattr(model, "excluded"), (
+        "`excluded` reaches the template from somewhere other than the candidate "
+        "field; a second source is a second chance to disagree with the table"
+    )
+    assert _model_field(model).excluded, (
+        "this fixture excludes three runs, so an implementation that carries the "
+        "field's own list has somewhere to carry them from"
+    )
+
+
+def test_both_new_fields_are_declared_with_a_none_default() -> None:
+    """``= None``, on the pattern C3's ``series`` and C10's ``dimensions`` set.
+
+    Every constructor of a `ReportModel` that is not `from_evidence` -- and the
+    suite has several -- must keep working, and the default has to be the absence
+    rather than an empty stand-in for the same reason `from_evidence` may not
+    substitute one.
+    """
+    declared = {
+        one.name: one for one in dataclasses.fields(_get(_module(), "ReportModel"))
+    }
+    for name in ("spot_check", "candidates"):
+        assert name in declared, (
+            f"`ReportModel` declares no `{name}`; it exposes {sorted(declared)}"
+        )
+        assert declared[name].default is None, (
+            f"`{name}` defaults to {declared[name].default!r}; R21.3 spells it "
+            f"`= None`, and a default that is falsy-but-present is the substitution "
+            f"this chunk's failure mode is named after"
+        )
+
+
+# -- the spot check: which numbers went in ----------------------------------- #
+
+
+def test_the_spot_check_is_built_from_one_side_of_the_runs_item_counts(
+    tmp_path: Path,
+) -> None:
+    """R23.1: three integers, and they are already on the model.
+
+    The two sides of this run disagree in all three counts, so the four numbers
+    the object carries identify which side was read: 96/8/8 at 33%, or 75/2/3 at
+    70%. A mixture -- N from one side and F from the other -- is a fifth answer
+    and is asserted against too, because it is what a `.get` per field produces
+    when the two lookups are written a line apart.
+
+    The whole object is then compared against `spot_check` called with that
+    side's own counts. That is not a re-derivation of the arithmetic, which
+    `tests/test_series.py` owns: it is the assertion that nothing between the
+    counts and the model recomputed, rounded or reworded the producer's answer.
+    """
+    from model_migration_kit.series import spot_check
+
+    scenario = _counted_scenario(tmp_path / "sides")
+    model = _model_from(_field_log(scenario))
+    check = _spot_check(model)
+
+    assert check is not None, (
+        "no spot check was built from a run of 96 items with 8 failing on the "
+        "candidate side and 75 with 2 failing on the baseline side. Both sides "
+        "clear `spot_check`'s three refusals, so a `None` here means the three "
+        "integers never reached it -- `ReportModel.item_counts` is "
+        "`{'unit': ..., 'per_judge': {...}}`, and a top-level `.get('passing', 0)` "
+        "on it reads 0, 0, 0 and refuses on every log ever written"
+    )
+    sides = {"candidate": FIELD_ITEMS_CANDIDATE, "baseline": FIELD_ITEMS_BASELINE}
+    found = [
+        name
+        for name, counts in sides.items()
+        if (check.items, check.failing, check.unstable) == _triple(counts)
+    ]
+    assert found, (
+        f"the spot check reports {check.items} items, {check.failing} failing and "
+        f"{check.unstable} unstable, which is neither this run's candidate side "
+        f"{_triple(FIELD_ITEMS_CANDIDATE)} nor its baseline side "
+        f"{_triple(FIELD_ITEMS_BASELINE)}. Either the counts came from somewhere "
+        f"else in the log, or the three were read from two different sides"
+    )
+    side = found[0]
+    counts = sides[side]
+    assert check == spot_check(
+        counts["passing"], counts["failing"], counts["unstable"]
+    ), (
+        f"the spot check on the model is not the one `spot_check` returns for this "
+        f"run's {side} side; something between the counts and the model changed the "
+        f"producer's answer"
+    )
+    assert check.k == inspect.signature(spot_check).parameters["k"].default, (
+        f"the spot check was asked of {check.k} prompts; nothing in C22a's contract "
+        f"chooses a `k`, so the producer's own default is the number the sentence "
+        f"has to be printing"
+    )
+
+
+def test_the_spot_check_agrees_with_the_counts_the_model_carries_beside_it(
+    tmp_path: Path,
+) -> None:
+    """The sentence and the table under it have to be about the same numbers.
+
+    R23.1's point restated as an assertion: a reader who checks this number
+    checks it against the item counts printed elsewhere in the same document, so
+    the two must not be two readings. Both carriers of those counts are checked
+    -- `ReportModel.item_counts` and the `JudgeRow` -- because they hold the same
+    three integers and either could have been the source.
+    """
+    scenario = _counted_scenario(tmp_path / "agrees")
+    model = _model_from(_field_log(scenario))
+    check = _spot_check(model)
+    assert check is not None, "no spot check, so there is nothing to agree with"
+
+    side = "candidate" if check.items == _triple(FIELD_ITEMS_CANDIDATE)[0] else "baseline"
+    carried = model.item_counts["per_judge"][J][side]
+    row = _get(_judge_row(model), f"items_{side}")
+
+    assert (check.items, check.failing, check.unstable) == (
+        carried["passing"] + carried["failing"] + carried["unstable"],
+        carried["failing"],
+        carried["unstable"],
+    ), (
+        f"the spot check says {check.items}/{check.failing}/{check.unstable} and "
+        f"`item_counts`' {side} side says {carried}; the number a sceptical reader "
+        f"checks first disagrees with the table they check it against"
+    )
+    assert dict(row) == dict(carried), (
+        "the fixture no longer carries the same counts in both places, so this test "
+        "has stopped comparing the spot check against the document's own numbers"
+    )
+
+
+def test_a_run_whose_counts_cannot_support_the_question_carries_no_spot_check(
+    tmp_path: Path,
+) -> None:
+    """``F == 0`` on both sides: `spot_check` returns ``None`` and so must the model.
+
+    **This is the assertion the chunk exists for.** There was nothing to miss, so
+    "a spot check would have found nothing" is true and vacuous, and `spot_check`
+    refuses to print the most quotable line in the document about a run that
+    cannot falsify it. A view model that substitutes ``SpotCheck(k=12, items=96,
+    failing=0, probability=1.0, ...)`` republishes that refusal as a measured
+    certainty -- and it renders, which no reviewer of the plumbing would catch.
+
+    ``is None`` and not ``== ()``, not ``not model.spot_check``: a falsy stand-in
+    passes the second and the third, and the contract is the first.
+
+    Ninety-six items, so this is not the census refusal below wearing another
+    hat -- the counts are large enough to ask, and the answer is still no.
+    """
+    scenario = _counted_scenario(
+        tmp_path / "nofailures",
+        baseline={"passing": 96, "failing": 0, "unstable": 0},
+        candidate={"passing": 90, "failing": 0, "unstable": 6},
+    )
+    model = _model_from(_field_log(scenario))
+    check = _spot_check(model)
+
+    assert check is None, (
+        f"`spot_check` refuses this run on both sides -- nothing failed, so the "
+        f"sentence would be unfalsifiable -- and the model carries "
+        f"{check!r} instead of the absence. An absence must not render as a "
+        f"measurement; it is this document's central design rule"
+    )
+    assert _model_field(model) is not None, (
+        "the candidate field went missing too, so this fixture is not showing that "
+        "one producer's `None` is carried while the other's value is"
+    )
+
+
+def test_a_set_no_larger_than_the_draw_carries_no_spot_check_either(
+    tmp_path: Path,
+) -> None:
+    """``N <= k``: a census, and calling one a spot check is the overclaim.
+
+    The standard twelve-item run, which is every log this suite has written since
+    section 1. At ``N == k`` the arithmetic is not even wrong -- the probability
+    is a true 0.0 -- which is exactly what makes it dangerous: it would render a
+    confident, correct-looking sentence about a procedure nobody would call a
+    spot check.
+    """
+    scenario = _scenario(tmp_path / "census")
+    model = _from_evidence(scenario)
+
+    assert _spot_check(model) is None, (
+        f"twelve items against a twelve-prompt draw is a census on either side, and "
+        f"the model carries {_spot_check(model)!r}. `spot_check` returns `None` "
+        f"here and the view model may not fill it in"
+    )
+
+
+# -- the candidate field: which points went in ------------------------------- #
+
+
+def test_the_candidate_fields_rows_are_the_series_own_points(tmp_path: Path) -> None:
+    """R21.3: `candidates` is built from ``model.series``, and reads nothing.
+
+    Identity, not equality. Two `RunPoint`s built from the same record compare
+    equal, so ``==`` would pass for an implementation that read the log a second
+    time through `read_series` -- which is the one thing R21.3's **Must not**
+    forbids by name. ``is`` passes only for the tuple C3 already built in the
+    single pass.
+
+    The rows are ordered by candidate model and never by result, so index 0 is
+    the headline run and index 1 is ``SIBLING_MODEL``, which is the reverse of
+    their order in the log.
+    """
+    from model_migration_kit.series import comparability_key
+
+    scenario = _counted_scenario(tmp_path / "rows")
+    model = _model_from(_field_log(scenario))
+    series = _series(model)
+    field = _model_field(model)
+
+    assert len(series) == 5, f"the fixture writes five comparisons, {len(series)} arrived"
+    assert [row.model for row in field.candidates] == [CANDIDATE_MODEL, SIBLING_MODEL], (
+        f"the rendered rows are {[row.model for row in field.candidates]}; the field "
+        f"holds this log's two candidates under one key, ordered by candidate model"
+    )
+    assert field.candidates[0].point is series[4], (
+        "the headline row is not the series' own headline point; the field was "
+        "built over points this model does not carry"
+    )
+    assert field.candidates[1].point is series[3], (
+        "the second row is not the series' own point; a field whose rows do not "
+        "correspond to the series is the defect"
+    )
+    assert field.key == comparability_key(series[-1]), (
+        f"the field is keyed on {field.key}, which is not the headline run's key; "
+        f"the table and the banner are about different groups of runs"
+    )
+
+
+def test_the_excluded_runs_are_the_fields_own_and_account_for_the_whole_series(
+    tmp_path: Path,
+) -> None:
+    """R23.2's list, and `_excluded`'s guarantee that nothing vanished.
+
+    Three runs are missing from this table for three different reasons and every
+    one of them is a `RunPoint` this model carries. Together with the rendered
+    rows they account for the entire series: a run that is in the log and in
+    neither tuple has disappeared with nothing said about it, which is the
+    quietly-shrunk table this pair of chunks exists to prevent.
+
+    Identity again, and totality rather than a count: a count of three passes for
+    an implementation that partitioned a different sequence and happened to
+    exclude three of it.
+    """
+    scenario = _counted_scenario(tmp_path / "excluded")
+    model = _model_from(_field_log(scenario))
+    series = _series(model)
+    field = _model_field(model)
+    excluded = {id(one.point): one for one in field.excluded}
+
+    assert len(field.excluded) == 3, (
+        f"three runs cannot be rows of this table -- one records no candidate "
+        f"model, one is under another key, one is superseded -- and "
+        f"{len(field.excluded)} are named"
+    )
+    for index in (0, 1, 2):
+        assert id(series[index]) in excluded, (
+            f"the run at series[{index}] is in the log, is not a row, and is not in "
+            f"`candidates.excluded`; it has vanished from the document with nothing "
+            f"said about it"
+        )
+        assert excluded[id(series[index])].reason.strip(), (
+            f"the exclusion for series[{index}] carries no sentence; a list that "
+            f"cannot say why is worse than no list"
+        )
+    accounted = {id(row.point) for row in field.candidates} | set(excluded)
+    assert accounted == {id(point) for point in series}, (
+        "the rendered rows and the exclusions together do not account for every "
+        "point in the series, so some run in this log is in neither and a reader "
+        "cannot tell it from a run that was never written"
+    )
+
+
+def test_a_log_no_group_can_table_carries_no_candidate_field(tmp_path: Path) -> None:
+    """`candidate_field` returns ``None``, and the model may not soften it.
+
+    A single-comparison log is every log this tool has ever written, and one
+    candidate "collapses the table to a single row and it is not rendered as a
+    table at all". `candidate_field` says so with a ``None`` rather than a
+    one-row field, precisely so the absence "cannot be forgotten downstream the
+    way a template ``{% if %}`` can".
+
+    ``is None``. An empty tuple, an empty `CandidateField` and a zero-row one are
+    each a different claim -- *this log's table has no rows* -- and this log's
+    claim is *no group in this log can make a table*. Rendering the first as the
+    second is publishing an absence as a measurement.
+
+    R23.2's accepted consequence rides on this too: bound to the candidate field,
+    the excluded list dies with it, and the report can never say why there is no
+    table. That is the right trade only if the ``None`` actually arrives as one.
+    """
+    scenario = _counted_scenario(tmp_path / "nofield")
+    model = _from_evidence(scenario)
+    field = _candidates(model)
+
+    assert len(_series(model)) == 1, "this fixture is meant to hold one comparison"
+    assert field is None, (
+        f"the model carries {field!r} where `candidate_field` returned `None`. "
+        f"`is None` and `== ()` are different tests and only the first is the "
+        f"contract: an empty field renders as an empty section, and an empty "
+        f"section reads as a table with nothing in it rather than as no table"
+    )
+    assert _spot_check(model) is not None, (
+        "the spot check is absent from this model too, so the `None` above cannot "
+        "be told from a model on which neither new field was ever populated -- "
+        "R20.1: a fixture the broken and the correct implementation agree on is a "
+        "fixture that tests nothing"
+    )
+
+
+# -- the window the field was built with ------------------------------------- #
+
+
+def test_the_candidate_field_carries_eight_fields_with_the_window_last() -> None:
+    """R20.3 and R22.3: eight fields as merged, ``stale_after_days`` last.
+
+    The consumer's assumption, stated where the consumer is. C6's brief carries
+    the same list; a ninth field or a reordering means the thing C22a hangs on
+    the model is not the thing C14's table was written against.
+    """
+    from model_migration_kit.series import CandidateField
+
+    assert [one.name for one in dataclasses.fields(CandidateField)] == [
+        "key",
+        "candidates",
+        "excluded",
+        "caveats",
+        "spread_days",
+        "spread_flagged",
+        "baseline_pass_rate",
+        "stale_after_days",
+    ]
+
+
+def test_the_field_records_the_window_its_spread_was_flagged_against(tmp_path: Path) -> None:
+    """The field carries the window, and it is the producer's own default.
+
+    `spread_flagged` is a bare ``bool``, so a renderer holding only the field
+    would otherwise have to name a number it cannot see -- and both halves of
+    "measured more than 7 days apart" would be true of a field built with
+    ``stale_after_days=30.0`` while the sentence was false. Nothing in C22a's
+    contract chooses a window, so the number on the field has to be the one
+    `candidate_field` uses when nobody chooses: read off the producer's signature
+    rather than written out here, so this cannot drift into agreeing with a
+    hard-coded 7.0 that has moved.
+
+    Ten days between the two rendered rows, which is outside that window.
+    """
+    from model_migration_kit.series import candidate_field
+
+    scenario = _counted_scenario(tmp_path / "wide")
+    field = _model_field(_model_from(_field_log(scenario)))
+    window = inspect.signature(candidate_field).parameters["stale_after_days"].default
+
+    assert field.spread_days == 10.0, (
+        f"the two rendered rows are ten days apart and the field says "
+        f"{field.spread_days!r}; the spread is deliberately unrounded, so this is "
+        f"an exact float and not an approximation"
+    )
+    assert field.stale_after_days == window, (
+        f"the field was built with a window of {field.stale_after_days!r} against "
+        f"`candidate_field`'s own {window!r}; a renderer naming the window would "
+        f"print a number this field was not judged against"
+    )
+    assert field.spread_flagged is True, (
+        f"a ten-day spread is outside a {window}-day window and the field is not "
+        f"flagged; the flag and the window it records disagree"
+    )
+
+
+def test_a_field_measured_inside_the_window_is_not_flagged(tmp_path: Path) -> None:
+    """The other side of the same pair, on a log whose runs are two days apart.
+
+    R20.1: a suite whose every field is flagged agrees with an implementation
+    that hard-codes the flag, and one whose every field is unflagged agrees with
+    the opposite. The window is only pinned by a fixture on each side of it.
+
+    This log also excludes nothing, which is the other half of the exclusion
+    pair: `excluded` is empty here and holds three sentences above, so an empty
+    tuple is a fact about this log rather than about the implementation.
+    """
+    from model_migration_kit.series import candidate_field
+
+    scenario = _counted_scenario(tmp_path / "narrow")
+    field = _model_field(_model_from(_narrow_log(scenario)))
+    window = inspect.signature(candidate_field).parameters["stale_after_days"].default
+
+    assert field.spread_days == 2.0, (
+        f"the two runs are two days apart and the field says {field.spread_days!r}"
+    )
+    assert field.spread_flagged is False, (
+        f"two days is inside a {window}-day window and the field is flagged"
+    )
+    assert field.stale_after_days == window, (
+        "the window moved between two logs read by the same builder"
+    )
+    assert field.excluded == (), (
+        f"nothing in this log is excluded and the field names {len(field.excluded)}; "
+        f"the exclusions are being computed against something other than this log"
+    )
+
+
+# -- the single pass, which C22a may not weaken ------------------------------ #
+
+
+def test_both_new_fields_are_populated_while_the_log_is_still_read_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R21.3: "no second read of the evidence log is permitted".
+
+    `spot_check` takes three integers off the model and `candidate_field` is pure
+    over ``model.series``, so C22a reads nothing -- which is what makes it a
+    chunk and not a redesign. The tempting implementation is
+    ``read_series(path)`` beside the loop, and it would be a second pass over the
+    largest artifact the pipeline writes.
+
+    The count is asserted *with* the fields populated, on C10's precedent: a test
+    that asserts the open count alone passes with both fields empty, and an
+    implementation that never built them is exactly the one that reads the log
+    once. Counting text-mode opens ignores the binary hashing every report has
+    always done.
+    """
+    import builtins
+    import os
+
+    scenario = _counted_scenario(tmp_path / "onepass22")
+    log = _field_log(scenario, "evidence-onepass22.jsonl")
+    target = log.resolve()
+    opened: list[str] = []
+    real_open = builtins.open
+
+    def counting(file: Any, mode: str = "r", *args: Any, **kwargs: Any) -> Any:
+        try:
+            same = Path(os.fspath(file)).resolve() == target
+        except (TypeError, ValueError, OSError):
+            same = False
+        if same and "b" not in mode:
+            opened.append(mode)
+        return real_open(file, mode, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", counting)
+    monkeypatch.setattr(io, "open", counting)
+    try:
+        model = _model_from(log)
+    finally:
+        monkeypatch.undo()
+
+    field = _model_field(model)
+    assert len(field.candidates) == 2 and len(field.excluded) == 3, (
+        f"no candidate field was built from this log -- {len(field.candidates)} "
+        f"row(s), {len(field.excluded)} exclusion(s) -- so its open count measures "
+        f"nothing"
+    )
+    assert _spot_check(model) is not None, (
+        "no spot check was built either, and an implementation that computes "
+        "neither field reads the log exactly once"
+    )
+    assert len(opened) == 1, (
+        f"the evidence log was read {len(opened)} times in text mode; R21.3 permits "
+        f"no second read, and both new fields are arithmetic over what the model "
+        f"already holds"
+    )
