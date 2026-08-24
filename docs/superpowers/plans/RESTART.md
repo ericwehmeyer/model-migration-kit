@@ -88,6 +88,30 @@ of them is finished, and nothing that types their names may be dispatched yet.
    will be hashed into the provenance footer while not matching the judge.
 6. Then C14's remaining seven elements, C18.
 
+### The merge map, measured rather than guessed
+
+Run with `git merge-tree --write-tree --name-only <a> <b>` on 2026-08-24, so this
+is what git actually says and not what the branches look like they should do:
+
+| merge | result |
+|---|---|
+| `main` <- `chunk/c16-impl` | **clean** |
+| `main` <- `chunk/c4-impl` | **clean** |
+| `main` <- `chunk/c14a-impl` | `report.py` auto-merges; **`tests/test_report.py` conflicts** |
+| `chunk/c4-impl` + `chunk/c11-impl` | **conflicts in `series.py` and `tests/test_series.py`** |
+
+Both conflicts are two branches appending sections to one file, which is
+mechanical. Two things make them cheaper:
+
+- **C14a's is C21's fault, not C14a's.** C21 added section 20 to
+  `tests/test_report.py` after C14a branched. Merge C14a's side first and
+  re-append C21's section, rather than the reverse — C14a's tests are threaded
+  through the file and C21's are one contiguous block.
+- **C4 and C11 both add to `series.py`.** Merge **C4 first** (it is clean against
+  `main`), then C11. C11's implementer already exploded `__all__` to one name per
+  line with a magic trailing comma specifically so this merge would be
+  mechanical; do not undo that.
+
 **Deferred deliberately:** the repo-wide `ruff format` drift. Three separate
 agents reported it independently — the tree is formatted at 88 while
 `pyproject.toml` sets `line-length = 100`, and roughly 26 files are affected.
