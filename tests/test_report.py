@@ -9687,3 +9687,964 @@ def test_both_new_fields_are_populated_while_the_log_is_still_read_once(
         f"no second read, and both new fields are arithmetic over what the model "
         f"already holds"
     )
+
+
+# --------------------------------------------------------------------------- #
+# C22b -- the view model, second half: `trend`, `parameter_strip`,
+# `multiplicity`. R30 decides the five joins R21.3 left open, and where R30 and
+# R21.3 differ R30 wins.
+#
+# Written against R30 and against the *producers'* docstrings in `series.py`,
+# which are merged, reviewed and not this chunk. Nothing below was derived by
+# reading the wiring under test.
+#
+# Every fixture here is built so that the correct implementation and the
+# plausible wrong one *disagree* (R20.1, R24.7). Three of them exist only for
+# that:
+#
+# * `_split_line_log` puts a run on **another baseline** between the two runs of
+#   the line, so `Trend.points[-2]` and `series[-2]` are different runs. On every
+#   log where the line is the whole log the two readings agree, and a suite built
+#   only on those cannot see the strip being fed from the wrong sequence.
+# * `_family_log` carries three candidates at `[0.03, 0.04, 0.045]` against
+#   `alpha=0.05` -- `Multiplicity.changed`'s own worked example, where Holm
+#   rejects *none* of the three. An uncorrected field and a corrected one differ
+#   there by three caveats; on a field the correction leaves alone they are the
+#   same object and nothing is tested.
+# * `_falsy_baseline_log` is the one log this suite could find on which
+#   `ReportModel.baseline.model_id` and `series[-1].baseline_model` disagree.
+#   See its docstring: they are the same JSON field read through two different
+#   coercions, so it takes an edited log to separate them at all.
+# --------------------------------------------------------------------------- #
+
+
+#: The third candidate of the multiplicity fixture. Sorts after ``SIBLING_MODEL``
+#: so the rendered row order -- by candidate model, never by result -- is a known
+#: answer and ``Multiplicity.changed``'s order can be asserted rather than sorted.
+THIRD_MODEL = "model-d-20260101"
+
+#: The level every member of the family is tested at. Not ``THRESHOLDS``' own
+#: ``0.03``: the three p-values below have to sit *under* alpha and still not be
+#: rejected, which is what makes the correction visible.
+FAMILY_ALPHA = 0.05
+
+#: ``Multiplicity.changed``'s worked example, measured on the real
+#: ``holm_bonferroni``: at ``alpha=0.05`` none of these three is rejected, so all
+#: three lose significance and all three earn a caveat. The largest is the one a
+#: ``p >= threshold`` implementation drops -- it is tested against ``alpha/1`` --
+#: so a family that did not include one would pass a wrong correction.
+FAMILY_P_VALUES = {
+    CANDIDATE_MODEL: 0.03,
+    SIBLING_MODEL: 0.04,
+    THIRD_MODEL: 0.045,
+}
+
+#: A day after ``SIBLING_CREATED_NARROW`` and a day before the headline, so the
+#: three rows of the field are three distinct dates and none of them ties.
+THIRD_CREATED = "2026-08-12T08:59:58.000000+00:00"
+
+
+# -- accessors --------------------------------------------------------------- #
+
+
+def _trend_of(model: Any) -> Any:
+    return _get(model, "trend")
+
+
+def _strip_of(model: Any) -> Any:
+    return _get(model, "parameter_strip")
+
+
+def _multiplicity_of(model: Any) -> Any:
+    return _get(model, "multiplicity")
+
+
+def _line(model: Any) -> Any:
+    """`trend`, computed the way R30.1 and R30.4 say `from_evidence` must.
+
+    The lineage is `CandidateLineage.assumed_from` unconditionally (R30.1 --
+    nothing declares one anywhere) and the baseline is
+    ``ReportModel.baseline.model_id`` and never ``series[-1].baseline_model``
+    (R30.4). Assembled here from the producers so that an expectation cannot
+    drift into agreeing with whatever the wiring happens to pass.
+    """
+    from model_migration_kit.series import CandidateLineage, trend
+
+    series = _series(model)
+    baseline_model = _get(_get(model, "baseline"), "model_id")
+    return trend(
+        series,
+        baseline_model=baseline_model,
+        lineage=CandidateLineage.assumed_from(series, baseline_model=baseline_model),
+    )
+
+
+def _declared_default(spec: Any) -> Any:
+    """One dataclass field's default, whichever of the two ways it is spelled."""
+    if spec.default is not dataclasses.MISSING:
+        return spec.default
+    assert spec.default_factory is not dataclasses.MISSING, (
+        f"`{spec.name}` is declared without a default; every existing construction "
+        f"of a `ReportModel` predates these fields and a required argument breaks "
+        f"each one (R30.4)"
+    )
+    return spec.default_factory()
+
+
+# -- fixtures ---------------------------------------------------------------- #
+
+
+def _split_line_log(scenario: Scenario, name: str = "evidence-split.jsonl") -> Path:
+    """Two runs of one line with somebody else's experiment written between them.
+
+    In log order:
+
+    0. ``SIBLING_MODEL``, two days before the headline, under the headline's key;
+    1. a run on a **different ``baseline_model``** -- ``_earlier_run``, which
+       contradicts every field including all four the comparability key is made
+       of. `trend` does not select it at all: it is not excluded, it is not
+       ``outside_lineage``, it is somebody else's comparison;
+    2. the headline run, ``CANDIDATE_MODEL``.
+
+    So ``series[-2]`` is the foreign run and ``Trend.points[-2]`` is the sibling,
+    and the strip built from each is a different six rows. **A fixture where the
+    line is the whole log cannot tell the two apart**, which is the whole of
+    R30.3 and the reason this log exists.
+    """
+    records = [
+        _record(
+            EVENT_COMPARISON,
+            _sibling_comparison(
+                scenario, candidate_model=SIBLING_MODEL, created=SIBLING_CREATED_NARROW
+            ),
+            EARLIER_TS_COMPARISON,
+        ),
+        *_earlier_run(scenario, tag="foreign"),
+        _record(EVENT_COMPARISON, scenario.comparison, TS_COMPARISON),
+    ]
+    if scenario.verdict is not None:
+        records.append(_record(EVENT_VERDICT, scenario.verdict, TS_VERDICT))
+    return _write_evidence(scenario.root / name, records)
+
+
+def _priced_sibling(
+    scenario: Scenario, *, candidate_model: str, created: str, p_value: float
+) -> dict[str, Any]:
+    """`_sibling_comparison`, with the one number the correction is about.
+
+    ``RunPoint.p_value`` is read off ``judges[0]["p_value"]`` and the level off
+    ``judges[0]["alpha"]``; the ``regression`` block is written too so the payload
+    does not carry two different p-values for one test.
+    """
+    payload = _sibling_comparison(
+        scenario, candidate_model=candidate_model, created=created
+    )
+    judge = payload["judges"][0]
+    judge["p_value"] = p_value
+    if isinstance(judge.get("regression"), dict):
+        judge["regression"]["p_value"] = p_value
+    return payload
+
+
+def _family_scenario(root: Path) -> Scenario:
+    """The headline run of a three-candidate field, tested at `FAMILY_ALPHA`.
+
+    Every member of a family must record the *same* level -- `_family_level`
+    refuses a family whose members disagree, and `_levels` compares ``repr``, so
+    ``0.05`` and ``0.05000000000000001`` are two levels. One threshold dict flows
+    into all three runs through `_sibling_comparison`'s deep copy, so they cannot
+    drift apart.
+    """
+    thresholds = dict(THRESHOLDS, alpha=FAMILY_ALPHA)
+    return _scenario(
+        root,
+        thresholds=thresholds,
+        judges=[
+            _judge_payload(
+                p_value=FAMILY_P_VALUES[CANDIDATE_MODEL],
+                thresholds=thresholds,
+                item_counts_baseline=FIELD_ITEMS_BASELINE,
+                item_counts_candidate=FIELD_ITEMS_CANDIDATE,
+                items=96,
+            )
+        ],
+    )
+
+
+def _family_log(scenario: Scenario, name: str = "evidence-family.jsonl") -> Path:
+    """Three candidates under one key, with three different p-values.
+
+    Three and not two: a family of one is refused outright and a family of two
+    can be corrected without changing anything, so neither can distinguish a
+    model carrying the corrected field from one carrying the field that went in.
+    Different p-values and not one repeated, so the thresholds the correction
+    hands out are three different numbers and a mapping keyed wrongly is visible.
+    """
+    records = [
+        _record(
+            EVENT_COMPARISON,
+            _priced_sibling(
+                scenario,
+                candidate_model=SIBLING_MODEL,
+                created=SIBLING_CREATED_NARROW,
+                p_value=FAMILY_P_VALUES[SIBLING_MODEL],
+            ),
+            EARLIER_TS_COMPARISON,
+        ),
+        _record(
+            EVENT_COMPARISON,
+            _priced_sibling(
+                scenario,
+                candidate_model=THIRD_MODEL,
+                created=THIRD_CREATED,
+                p_value=FAMILY_P_VALUES[THIRD_MODEL],
+            ),
+            EARLIER_TS_COMPARISON,
+        ),
+        _record(EVENT_COMPARISON, scenario.comparison, TS_COMPARISON),
+    ]
+    if scenario.verdict is not None:
+        records.append(_record(EVENT_VERDICT, scenario.verdict, TS_VERDICT))
+    return _write_evidence(scenario.root / name, records)
+
+
+def _nameless_candidate_log(
+    scenario: Scenario, name: str = "evidence-nameless.jsonl"
+) -> Path:
+    """One run whose ``candidate.model_id`` is unrecorded, so the line is empty.
+
+    `CandidateLineage.assumed_from` refuses ``""`` -- C4's rule that an unrecorded
+    value never matches, not even another unrecorded one -- so the assumed lineage
+    is empty, nothing is selected, and `trend` returns through its early exit.
+
+    This is the empty line R30.4's table means by "``parameter_strip`` is ``()``;
+    the reason is in ``trend``". It is not reachable by writing a log with no
+    comparison record at all: `from_evidence` raises ``ArtifactError`` on one of
+    those, so an empty ``series`` never reaches these fields from this entry
+    point and an empty *line* over a non-empty series is the case that does.
+    """
+    payload = json.loads(json.dumps(scenario.comparison))
+    payload["candidate"]["model_id"] = ""
+    records = [_record(EVENT_COMPARISON, payload, TS_COMPARISON)]
+    if scenario.verdict is not None:
+        records.append(_record(EVENT_VERDICT, scenario.verdict, TS_VERDICT))
+    return _write_evidence(scenario.root / name, records)
+
+
+def _falsy_baseline_log(scenario: Scenario, name: str = "evidence-falsy.jsonl") -> Path:
+    """The one log on which R30.4's two candidate sources disagree.
+
+    They are the *same JSON field* -- ``comparison["baseline"]["model_id"]`` of
+    the same headline payload -- read through two coercions that differ on
+    exactly one class of value. ``RunPoint`` reads it through ``series._text``,
+    which is ``"" if value is None else str(value)``; ``RunSummary`` reads it as
+    ``str(side.get("model_id", "") or "")``, whose ``or ""`` swallows every falsy
+    non-``None`` value. So ``0`` arrives as ``"0"`` on the point and as ``""`` on
+    the summary, and on every log this tool writes -- where the field is a
+    non-empty string -- the two agree and no fixture can separate them.
+
+    That is the finding, and it is why this log is hand-edited rather than
+    generated: R30.4's tie-break is unobservable on honest evidence, and the only
+    thing that can hold the wiring to it is an edited one.
+    """
+    payload = json.loads(json.dumps(scenario.comparison))
+    payload["baseline"]["model_id"] = 0
+    records = [_record(EVENT_COMPARISON, payload, TS_COMPARISON)]
+    if scenario.verdict is not None:
+        records.append(_record(EVENT_VERDICT, scenario.verdict, TS_VERDICT))
+    return _write_evidence(scenario.root / name, records)
+
+
+# -- the three fields, and their defaults ------------------------------------ #
+
+
+def test_the_model_carries_the_line_the_strip_and_the_multiplicity(
+    tmp_path: Path,
+) -> None:
+    """R30.4's table, as three dataclass fields of the declared types.
+
+    ``trend`` is never ``None`` -- `trend` has no ``None`` return, so a ``None``
+    here could only be the wiring inventing an absence the producer cannot
+    express. ``parameter_strip`` is a tuple of `ParameterChange` and not of
+    anything else, and ``multiplicity`` is the record `correct_field` returned.
+    """
+    from model_migration_kit.series import Multiplicity, ParameterChange, Trend
+
+    scenario = _family_scenario(tmp_path / "shapes")
+    model = _model_from(_family_log(scenario))
+
+    assert isinstance(_trend_of(model), Trend), (
+        f"`trend` is {type(_trend_of(model)).__name__}; R30.4 declares it `Trend`, "
+        f"never `None`, because `trend()` has no `None` return and an absence the "
+        f"producer cannot express is one the wiring invented"
+    )
+    strip = _strip_of(model)
+    assert isinstance(strip, tuple) and all(
+        isinstance(one, ParameterChange) for one in strip
+    ), (
+        f"`parameter_strip` is {type(strip).__name__} holding "
+        f"{sorted({type(one).__name__ for one in strip}) if isinstance(strip, tuple) else '?'}; "
+        f"R30.4 declares it `tuple[ParameterChange, ...]`"
+    )
+    assert isinstance(_multiplicity_of(model), Multiplicity), (
+        f"`multiplicity` is {type(_multiplicity_of(model)).__name__}; this log holds "
+        f"a candidate field, so `correct_field` returned a `Multiplicity` for it"
+    )
+
+
+def test_the_three_new_fields_default_to_an_absence_and_not_to_a_measurement() -> None:
+    """R30.4's defaults, and the one sentence in it that is not about shapes.
+
+    Every existing construction of a `ReportModel` predates these fields, so all
+    three are defaulted on the pattern ``series``, ``dimensions``, ``candidates``
+    and ``spot_check`` set. What the ruling adds is that **a default is not a
+    measurement**: the default `Trend` must carry *no* caveats, because "a
+    `ReportModel` nobody computed a trend for has not assumed anything".
+
+    That is the assertion with teeth. The obvious implementation of R30.1 -- mint
+    the assumed-lineage caveat wherever the empty `Trend` is spelled -- puts
+    R21.5's disclosure on models nobody ever ran `trend` for, which is a claim
+    about a lineage that was never assumed. Empty on the default, present on every
+    computed one: the pair is what separates them, and either alone is satisfied
+    by a constant.
+    """
+    from model_migration_kit.series import Trend
+
+    declared = {one.name: one for one in dataclasses.fields(_get(_module(), "ReportModel"))}
+    for name in ("trend", "parameter_strip", "multiplicity"):
+        assert name in declared, (
+            f"`ReportModel` declares no `{name}`; it exposes {sorted(declared)}"
+        )
+
+    assert _declared_default(declared["multiplicity"]) is None, (
+        f"`multiplicity` defaults to {_declared_default(declared['multiplicity'])!r}; "
+        f"R30.4 spells it `None`, and `None` means there was no candidate field to "
+        f"correct -- a refusal `Multiplicity` invented for that case would be this "
+        f"chunk composing a producer's prose"
+    )
+    assert _declared_default(declared["parameter_strip"]) == (), (
+        f"`parameter_strip` defaults to "
+        f"{_declared_default(declared['parameter_strip'])!r}; R30.4 spells it `()`"
+    )
+
+    empty = _declared_default(declared["trend"])
+    assert isinstance(empty, Trend), (
+        f"`trend` defaults to {empty!r}, which is not a `Trend`; the field is never "
+        f"`None` and its default is the empty line"
+    )
+    assert empty == Trend((), (), (), 0, (), (), ()), (
+        f"the default `Trend` is {empty!r}; R30.4 spells it the empty one, and every "
+        f"field of it is an absence rather than a count somebody took"
+    )
+    assert empty.caveats == (), (
+        "the default `Trend` carries a caveat. R30.4: a default is not a "
+        "measurement -- a `ReportModel` nobody computed a trend for has not assumed "
+        "a lineage, and R21.5's disclosure printed over one is a claim about a "
+        "succession nobody ever assumed"
+    )
+
+
+# -- R30.1: the lineage is assumed, on every report, and says so ------------- #
+
+
+def test_every_report_says_the_succession_was_assumed_rather_than_declared(
+    tmp_path: Path,
+) -> None:
+    """R30.1, on an ordinary multi-run log -- the report where it is tempting to drop it.
+
+    Nothing outside `series.py` mentions a lineage: no config schema carries one,
+    `from_evidence` reads no config and R21.3 forbids it starting. So the lineage
+    is `CandidateLineage.assumed_from` **unconditionally**, and every report
+    rendered today carries R21.5's note.
+
+    Pinned three ways, because the failure is a suppression and a suppression
+    leaves nothing behind to assert on. The note exists; it has **no point**,
+    which is what marks it as being about the chart rather than about a night;
+    and it says both words -- *assumed* and *declared* -- because "the succession
+    was assumed" without "and not declared" is half the sentence R21.5 ruled.
+
+    A caveat that appears on every report is not thereby noise. It becomes noise
+    when a declaration path exists and reports that use it still carry it, and
+    tuning it down before that path is built restores the silent default R21.5
+    rejected -- in the wiring, which R21.5 names as "the one shape of this defect
+    nobody would find".
+    """
+    scenario = _counted_scenario(tmp_path / "assumed")
+    model = _model_from(_split_line_log(scenario))
+    line = _trend_of(model)
+
+    assert line.caveats, (
+        "this report's lineage was assumed and the line carries no caveat at all. "
+        "R30.1 rules `CandidateLineage.assumed_from(...)` unconditionally, and the "
+        "note it raises is correct: a lineage nobody declared is the true sentence "
+        "about every log this project can currently read"
+    )
+    first = line.caveats[0]
+    assert first.point is None, (
+        f"the first caveat is pinned to {first.point!r}; R21.5's note qualifies the "
+        f"whole chart and goes first with no point, and one pinned to a night reads "
+        f"as a note about that night"
+    )
+    reason = first.reason.lower()
+    assert "assumed" in reason and "declared" in reason, (
+        f"the note does not say both that the succession was assumed and that it was "
+        f"not declared: {first.reason!r}"
+    )
+    assert SIBLING_MODEL in first.reason and CANDIDATE_MODEL in first.reason, (
+        f"the note names neither of the two candidates it assumed into one line: "
+        f"{first.reason!r}. A reason names the field and both values -- 'the "
+        f"succession was assumed' is a verdict and the reader needed the evidence"
+    )
+    assert first == _line(model).caveats[0], (
+        "the note on the model is not the one the producer mints for an assumed "
+        "lineage. R21.5 forbids the plumbing composing this sentence: if plumbing "
+        "may write a producer's prose once, nothing downstream is obliged to say it "
+        "the same way twice"
+    )
+
+
+def test_the_point_less_caveat_survives_onto_the_model(tmp_path: Path) -> None:
+    """R30.5's trap, pinned on this side of it.
+
+    `Caveat.point` is now `RunPoint | None` and R21.5's note is the one entry in
+    `Trend.caveats` with no point. The filter `candidate_field` uses at
+    ``series.py:1231`` is ``id(note.point) in shown``, and ``id(None)`` is in no
+    ``shown`` set, so a point-less caveat meeting that shape **disappears without
+    a trace** -- not raising, which is what makes it worse.
+
+    C22b does not own that filter and must not fix it. What it owes is that the
+    note reaches the model at all, so the test runs the exact filter over the
+    model's own caveats and asserts the model still holds what the filter would
+    have dropped. A renderer walking caveats into rows must ask before it indexes,
+    and this is the row it has to ask about.
+    """
+    scenario = _counted_scenario(tmp_path / "pointless")
+    model = _model_from(_split_line_log(scenario))
+    line = _trend_of(model)
+
+    pointless = [note for note in line.caveats if note.point is None]
+    assert len(pointless) == 1, (
+        f"{len(pointless)} of this line's {len(line.caveats)} caveats carry no point; "
+        f"exactly one does -- R21.5's -- and `partition_comparable` mints none, so a "
+        f"second one is a note this chunk invented or a first one it dropped"
+    )
+
+    shown = {id(point) for point in line.points}
+    kept = tuple(note for note in line.caveats if id(note.point) in shown)
+    assert pointless[0] not in kept, (
+        "this fixture no longer demonstrates the trap: R30.5's filter kept the "
+        "point-less note, so a model that lost it would still pass below"
+    )
+    assert pointless[0] in line.caveats, (
+        "the point-less caveat did not survive onto the model. It is the only trace "
+        "R21.5's disclosure leaves, and a filter shaped like R30.5's drops it "
+        "silently rather than raising"
+    )
+    with pytest.raises(AttributeError):
+        _ = pointless[0].point.created  # type: ignore[union-attr]
+
+
+def test_the_lineage_is_assumed_out_loud_even_where_there_is_no_line(
+    tmp_path: Path,
+) -> None:
+    """`trend` raises the note whether or not there is a line to qualify.
+
+    "A log with nothing in it and a log nobody declared a succession for are two
+    different pages, and the second is the commoner one." The note survives
+    `trend`'s early return, so an empty line still carries it -- and R30.4's table
+    says the empty ``parameter_strip`` here means *the line is empty* and that the
+    reason is in ``trend``.
+
+    The run is not lost: it comes back in ``outside_lineage``, which is R24.1's
+    field and says the absence is a claim about the declaration rather than about
+    the run.
+    """
+    from model_migration_kit.series import NO_PREVIOUS_RUN
+
+    scenario = _counted_scenario(tmp_path / "emptyline")
+    model = _model_from(_nameless_candidate_log(scenario))
+    line = _trend_of(model)
+
+    assert len(_series(model)) == 1, "this fixture writes one comparison"
+    assert line.points == (), (
+        f"the line holds {len(line.points)} point(s); this run's candidate model is "
+        f"unrecorded, an unrecorded value never matches, and the assumed lineage is "
+        f"therefore empty"
+    )
+    assert _strip_of(model) == (), (
+        f"the strip is {_strip_of(model)!r} over an empty line. R30.4: `()` means the "
+        f"line is empty and the reason is in `trend`; six rows of "
+        f"{NO_PREVIOUS_RUN!r} here would claim a run was drawn"
+    )
+    assert [note.point for note in line.caveats] == [None], (
+        f"the empty line carries {[note.point for note in line.caveats]!r} where it "
+        f"owes exactly R21.5's point-less note. This is the path a wholly undeclared "
+        f"log takes and the one where there is least else to read"
+    )
+    assert len(line.outside_lineage) == 1, (
+        "the run is in the log and in none of `points`, `excluded`, `undated` or "
+        "`outside_lineage`; R24.1 is a run on no part of the page"
+    )
+
+
+# -- R30.3: the strip is fed from the line, never from the log --------------- #
+
+
+def test_the_strip_compares_the_lines_last_two_runs_and_not_the_logs(
+    tmp_path: Path,
+) -> None:
+    """R30.3, on the only fixture shape that can see it.
+
+    ``series[-2]`` is a run on another baseline, which `trend` does not select at
+    all; ``Trend.points[-2]`` is the sibling run two days before the headline. The
+    two strips disagree on four of six rows, and they disagree in the direction
+    that matters: fed from the log, ``goldenset``, ``judges``, ``config`` and
+    ``n_per_item`` all read *changed* -- a page announcing that the golden set,
+    the panel, the config and the draw count all moved under a run where none of
+    them did, which is exactly the false attribution the strip exists to license
+    against.
+
+    The values are written out rather than compared to a second call, so this
+    test says what the reader should see and not merely that two expressions
+    agree.
+    """
+    scenario = _counted_scenario(tmp_path / "fromtheline")
+    model = _model_from(_split_line_log(scenario))
+    rows = {one.name: one for one in _strip_of(model)}
+
+    assert len(_series(model)) == 3, "the fixture writes three comparisons"
+    assert list(rows) == ["model_id", "n_per_item", "items", "judges", "goldenset", "config"], (
+        f"the strip is {list(rows)}; one row per tracked parameter, always, "
+        f"including the ones that did not move -- a strip listing only what changed "
+        f"cannot license an attribution"
+    )
+    assert (rows["model_id"].before, rows["model_id"].after) == (
+        SIBLING_MODEL,
+        CANDIDATE_MODEL,
+    ), (
+        f"the strip compares {rows['model_id'].before!r} to "
+        f"{rows['model_id'].after!r}. The line's previous run is {SIBLING_MODEL}; "
+        f"the *log's* previous record is a run on another baseline, which `trend` "
+        f"does not draw and the strip must not compare against"
+    )
+    assert rows["model_id"].changed is True, (
+        "the succession from the sibling to the headline candidate does not show as "
+        "a change; filtering the line by the field that moves is what hid it before"
+    )
+    for name in ("goldenset", "judges", "config", "n_per_item"):
+        assert rows[name].changed is False, (
+            f"the {name!r} row reads changed={rows[name].changed} "
+            f"({rows[name].before!r} -> {rows[name].after!r}). Neither run of this "
+            f"line moved it -- they share a comparability key. Only the foreign run "
+            f"sitting between them in the log disagrees, and it is not on this line"
+        )
+
+
+def test_the_strip_is_the_producers_over_the_lines_own_last_two_points(
+    tmp_path: Path,
+) -> None:
+    """The same ruling as a join, and the fixture's own validity, in one place.
+
+    ``current = points[-1]``, ``previous = points[-2]``. The second assertion is
+    the guard R20.1 asks for: if the log-fed strip and the line-fed strip were
+    equal on this fixture the test above would be green against both
+    implementations and would be testing nothing.
+    """
+    from model_migration_kit.series import parameter_strip
+
+    scenario = _counted_scenario(tmp_path / "join")
+    model = _model_from(_split_line_log(scenario))
+    line = _trend_of(model)
+    series = _series(model)
+
+    from_the_line = parameter_strip(line.points[-2], line.points[-1])
+    from_the_log = parameter_strip(series[-2], series[-1])
+
+    assert from_the_line != from_the_log, (
+        "the two readings agree on this fixture, so nothing here separates a strip "
+        "fed from `Trend.points` from one fed from `ReportModel.series`"
+    )
+    which = (
+        "it is the log-fed one"
+        if _strip_of(model) == from_the_log
+        else "it matches neither reading"
+    )
+    assert _strip_of(model) == from_the_line, (
+        f"the strip on the model is not `parameter_strip(points[-2], points[-1])` -- "
+        f"{which}. R30.3 rules both points come from the line, whose membership "
+        f"`trend` decided and whose order is time"
+    )
+
+
+def test_the_lines_points_are_the_series_own_points(tmp_path: Path) -> None:
+    """Identity, not equality: the line is arithmetic over what the model holds.
+
+    Two `RunPoint`s built from one record compare equal, so ``==`` would pass for
+    an implementation that read the log a second time through `read_series` --
+    the one thing R21.3's **Must not** forbids by name. ``is`` passes only for the
+    tuple C3 already built in the single pass.
+    """
+    scenario = _counted_scenario(tmp_path / "identity")
+    model = _model_from(_split_line_log(scenario))
+    series = _series(model)
+    line = _trend_of(model)
+
+    assert [id(point) for point in line.points] == [id(series[0]), id(series[2])], (
+        "the line's points are not the series' own objects; the trend was built "
+        "over points this model does not carry, which means the log was read twice"
+    )
+
+
+def test_a_line_of_one_run_prints_the_word_for_no_previous_run(tmp_path: Path) -> None:
+    """``previous`` is ``None`` when there is no ``points[-2]`` -- and the strip still renders.
+
+    R30.3's second consequence: the strip is gated on the trend, not on itself. A
+    one-run line has every row, each reading `NO_PREVIOUS_RUN` on the ``before``
+    side -- *a word and not a blank*, because a blank cell reads as "held" and six
+    blanks are also exactly what a wrongly-split series renders.
+
+    The other half of R30.4's ``()``: an empty strip must mean an empty *line*, so
+    a line of one must not produce one. An implementation that returned ``()``
+    whenever ``points[-2]`` was missing would publish "no parameters tracked" over
+    a run whose six parameters are all recorded.
+    """
+    from model_migration_kit.series import NO_PREVIOUS_RUN, parameter_strip
+
+    scenario = _counted_scenario(tmp_path / "firstrun")
+    model = _from_evidence(scenario)
+    line = _trend_of(model)
+    strip = _strip_of(model)
+
+    assert len(line.points) == 1, "this fixture's line holds exactly one run"
+    assert strip == parameter_strip(None, line.points[-1]), (
+        f"the strip over a one-run line is {strip!r}; `previous` is `None` when there "
+        f"is no `points[-2]`, and the producer spells that as every row against "
+        f"{NO_PREVIOUS_RUN!r}"
+    )
+    assert strip != (), (
+        "the strip is empty on a line that has a run in it. R30.4: `()` means the "
+        "line is empty, and a renderer gating on this tuple would publish 'no "
+        "parameters tracked' over a first run that recorded all six"
+    )
+    assert {one.before for one in strip} == {NO_PREVIOUS_RUN}, (
+        f"the `before` cells are {sorted({one.before for one in strip})}; a first run "
+        f"has no previous run and the absence is spelled out, because a blank there "
+        f"renders a first run identically to a wrongly-split one"
+    )
+    assert not any(one.changed for one in strip), (
+        "a row of a first run reads changed=True; there was nothing to change from"
+    )
+
+
+# -- R30.2: `candidates` is the corrected field ------------------------------ #
+
+
+def test_the_candidate_field_on_the_model_is_the_corrected_one(tmp_path: Path) -> None:
+    """R30.2, and the exact defect it exists to prevent.
+
+    `correct_field` returns a field that is **not** the one that went in: it
+    carries one `Caveat` per candidate in ``Multiplicity.changed``, appended to
+    ``CandidateField.caveats``. Storing the `Multiplicity` while keeping the
+    uncorrected field leaves those caveats computed and dropped -- R21's finding,
+    reproduced inside the chunk written to fix R21 -- and nothing else records
+    them: ``Multiplicity.changed`` is a tuple of model ids, not prose.
+
+    **A test that only checked ``model.multiplicity`` would pass over exactly that
+    model**, which is why the assertions here are on the field's caveats.
+    """
+    from model_migration_kit.series import candidate_field, correct_field
+
+    scenario = _family_scenario(tmp_path / "corrected")
+    model = _model_from(_family_log(scenario))
+    series = _series(model)
+    uncorrected = candidate_field(series)
+    corrected, _ = correct_field(uncorrected)
+    field = _model_field(model)
+
+    assert uncorrected is not None and uncorrected.caveats == (), (
+        "this fixture's uncorrected field already carries caveats, so a model "
+        "holding the uncorrected field would be indistinguishable from one holding "
+        "the corrected one on a count"
+    )
+    assert len(corrected.caveats) == 3, (
+        f"the correction appends {len(corrected.caveats)} caveat(s) to this field; "
+        f"at alpha={FAMILY_ALPHA} over {sorted(FAMILY_P_VALUES.values())} Holm "
+        f"rejects none of the three, so all three lose significance"
+    )
+    assert field != uncorrected, (
+        "the model carries `candidate_field`'s field, not `correct_field`'s. R30.2: "
+        "the three caveats saying a candidate's significance did not survive "
+        "correction were computed and dropped, and there is no second place they "
+        "are recorded"
+    )
+    assert field == corrected, (
+        f"the field on the model is neither the uncorrected one nor the corrected "
+        f"one; it carries {len(field.caveats)} caveat(s) where `correct_field` "
+        f"returns {len(corrected.caveats)}"
+    )
+
+
+def test_the_correction_caveats_name_the_rows_they_are_about(tmp_path: Path) -> None:
+    """One caveat per changed candidate, attached to that candidate's own point.
+
+    The caveat is where the correction becomes *sayable*: it says this run's
+    p-value was below the alpha it was tested at, that Holm across the field does
+    not reject it, and that the recorded verdict is untouched. A renderer looks in
+    ``CandidateField.caveats`` for the sentence that belongs beside a row, so a
+    caveat whose point is not a rendered row's point has no row to print against.
+
+    Identity on the points, for the reason the merged rows test gives: two points
+    built from one record compare equal, and only ``is`` shows the field was built
+    over the series this model carries.
+    """
+    scenario = _family_scenario(tmp_path / "caveats")
+    model = _model_from(_family_log(scenario))
+    field = _model_field(model)
+    rows = {row.model: row for row in field.candidates}
+
+    assert list(rows) == [CANDIDATE_MODEL, SIBLING_MODEL, THIRD_MODEL], (
+        f"the rendered rows are {list(rows)}; the field holds this log's three "
+        f"candidates under one key, ordered by candidate model"
+    )
+    about = {id(note.point): note for note in field.caveats}
+    for model_id in (CANDIDATE_MODEL, SIBLING_MODEL, THIRD_MODEL):
+        point = rows[model_id].point
+        assert id(point) in about, (
+            f"no caveat on the field is about {model_id}, whose significance the "
+            f"correction took away; the note reached nobody, which is the same as a "
+            f"note never computed"
+        )
+        assert "corrected" in about[id(point)].reason, (
+            f"the caveat about {model_id} does not mention the correction: "
+            f"{about[id(point)].reason!r}"
+        )
+
+
+def test_the_multiplicity_records_what_the_correction_actually_did(
+    tmp_path: Path,
+) -> None:
+    """The record beside the field, on the worked example its own docstring uses.
+
+    ``changed`` is ``p_value < alpha and not rejected``, never
+    ``p_value >= threshold``: Holm steps down, and the largest p-value in any
+    family is tested against alpha itself, so the threshold rule drops it. At
+    ``alpha=0.05`` over ``[0.03, 0.04, 0.045]`` the threshold rule names two of
+    the three and misses ``0.045`` -- in the one set whose whole purpose is to
+    make the correction's effect visible. **This fixture is that set**, so an
+    implementation storing a `Multiplicity` from anywhere but `correct_field`
+    shows up here as a two-element ``changed``.
+    """
+    scenario = _family_scenario(tmp_path / "record")
+    model = _model_from(_family_log(scenario))
+    record = _multiplicity_of(model)
+
+    assert record.applied is True, (
+        f"the correction was not applied over a family of three agreeing on one "
+        f"level: {record.note!r}"
+    )
+    assert record.alpha == FAMILY_ALPHA, (
+        f"the family-wise level is {record.alpha!r}; every member of this family "
+        f"records {FAMILY_ALPHA!r}"
+    )
+    assert record.family_size == 3, (
+        f"the family holds {record.family_size} candidate(s); all three rows of this "
+        f"field carry a p-value"
+    )
+    assert record.changed == (CANDIDATE_MODEL, SIBLING_MODEL, THIRD_MODEL), (
+        f"the correction reports changing {record.changed}; at {FAMILY_ALPHA!r} over "
+        f"{sorted(FAMILY_P_VALUES.values())} Holm rejects none of the three, and a "
+        f"`changed` of two has dropped the largest sub-alpha p-value -- the one a "
+        f"`p >= threshold` rule always misses"
+    )
+    assert sorted(record.thresholds) == sorted(
+        (CANDIDATE_MODEL, SIBLING_MODEL, THIRD_MODEL)
+    ), (
+        f"the thresholds are keyed {sorted(record.thresholds)}; applied=True over an "
+        f"incomplete mapping is the overclaim this record exists to prevent"
+    )
+
+
+# -- R30.4: `multiplicity is None` exactly when `candidates is None` --------- #
+
+
+@pytest.mark.parametrize("tabled", [True, False])
+def test_the_multiplicity_is_present_exactly_when_the_field_is(
+    tmp_path: Path, tabled: bool
+) -> None:
+    """Both directions, because either alone is satisfied by a constant.
+
+    "The two are one fact -- the multiplicity is *of* the field -- and
+    `correct_field` takes a `CandidateField`, not an optional one." A log that
+    cannot be tabled must not carry a `Multiplicity`: a refusal record invented
+    for that case would be this chunk composing a producer's prose, and the
+    renderer already has a sentence for ``candidates is None``. A second one
+    saying "and so nothing was corrected" can only agree with it or contradict it,
+    and the second outcome is the one that ships.
+    """
+    scenario = _family_scenario(tmp_path / f"pair-{tabled}")
+    model = (
+        _model_from(_family_log(scenario)) if tabled else _from_evidence(scenario)
+    )
+    field = _candidates(model)
+    record = _multiplicity_of(model)
+
+    assert (field is not None) == tabled, (
+        f"this fixture was built to have candidates={tabled} and the field is "
+        f"{field!r}; the pair below would then test one direction twice"
+    )
+    if tabled:
+        assert record is not None, (
+            "the log carries a candidate field and no multiplicity. `correct_field` "
+            "returns both, and a field stored without its record is a table whose "
+            "correction cannot be stated -- which is worse than an uncorrected one"
+        )
+    else:
+        assert record is None, (
+            f"the log carries no candidate field and a multiplicity of {record!r}. "
+            f"There is nothing for it to be *of*: a refusal invented here is prose "
+            f"this chunk has no standing to write"
+        )
+
+
+def test_a_log_whose_line_is_empty_carries_no_multiplicity_either(
+    tmp_path: Path,
+) -> None:
+    """The third shape of the same pair, on a log that is empty for a different reason.
+
+    ``candidates is None`` here because no key holds two distinct candidate
+    models; above it is because there is one comparison. Two ways to reach the
+    same ``None`` rather than one, so a `multiplicity` derived from the *line*
+    rather than from the *field* -- an easy slip, since both are new in this
+    chunk -- shows up as a disagreement between them.
+    """
+    scenario = _counted_scenario(tmp_path / "emptypair")
+    model = _model_from(_nameless_candidate_log(scenario))
+
+    assert _candidates(model) is None, "this fixture holds one unnamed candidate"
+    assert _multiplicity_of(model) is None, (
+        f"the model carries {_multiplicity_of(model)!r} where there is no candidate "
+        f"field to correct; R30.4 makes the two one fact"
+    )
+    assert _trend_of(model) is not None, (
+        "`trend` is `None` here, so the two absences cannot be told apart -- and "
+        "R30.4 declares `trend` never `None`"
+    )
+
+
+# -- R30.4: the baseline the line is drawn against --------------------------- #
+
+
+def test_the_line_is_drawn_against_the_baseline_the_records_name(
+    tmp_path: Path,
+) -> None:
+    """R30.4's tie-break, on the only log this suite could build that can see it.
+
+    ``baseline_model`` comes from ``ReportModel.baseline.model_id`` and not from
+    ``series[-1].baseline_model``. They are the same fact and R23.2's rule is
+    exactly one source, so the tie is broken on which one is always there.
+
+    **On honest evidence they cannot disagree** -- they are the same JSON field of
+    the same payload -- so this fixture edits it to a falsy non-``None`` value,
+    which is the one class of value the two coercions read differently. See
+    `_falsy_baseline_log`. That makes this the *only* assertion in the file that
+    can hold the wiring to R30.4's choice, and it is also the case that shows what
+    the choice costs: read from the records the line is empty, because no run in
+    the log is measured against ``""``.
+
+    Whether that cost is acceptable is R30.4's to answer and not this file's. What
+    is asserted here is only that the source is the one the ruling names.
+    """
+    scenario = _counted_scenario(tmp_path / "baselineid")
+    model = _model_from(_falsy_baseline_log(scenario))
+    series = _series(model)
+    from_the_records = _get(_get(model, "baseline"), "model_id")
+
+    assert from_the_records != series[-1].baseline_model, (
+        f"the two sources agree on this fixture ({from_the_records!r}), so nothing "
+        f"here separates them and the assertions below are vacuous"
+    )
+    assert _trend_of(model) == _line(model), (
+        f"the line was drawn against {series[-1].baseline_model!r}, which is "
+        f"`series[-1].baseline_model`. R30.4 takes the baseline from "
+        f"`ReportModel.baseline.model_id` ({from_the_records!r}): `baseline` is read "
+        f"from the records and always present, `series` can be empty, and choosing "
+        f"it needs an empty-series special case that exists only to answer a "
+        f"question `baseline` already answers"
+    )
+    assert _trend_of(model).points == (), (
+        f"the line holds {len(_trend_of(model).points)} point(s); no run in this log "
+        f"is measured against the baseline the records name, so `trend` selects none"
+    )
+    assert _strip_of(model) == (), (
+        "the strip is not empty over an empty line; R30.4 ties it to `trend`"
+    )
+
+
+# -- the single pass, which C22b may not weaken ------------------------------ #
+
+
+def test_the_three_new_fields_are_populated_while_the_log_is_still_read_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R21.3: "no second read of the evidence log is permitted", for C22b's fields.
+
+    `trend`, `parameter_strip` and `correct_field` are all pure over things the
+    model already holds -- ``series`` for the first, ``Trend.points`` for the
+    second, ``candidates`` for the third -- so C22b reads nothing. The tempting
+    implementation is ``read_series(path)`` beside the loop, and it would be a
+    second pass over the largest artifact the pipeline writes.
+
+    The count is asserted *with* the fields populated, on C10's and C22a's
+    precedent: a test that asserts the open count alone passes with all three
+    fields empty, and an implementation that never built them is exactly the one
+    that reads the log once. Text-mode opens only, so the binary hashing every
+    report has always done is ignored.
+
+    The two merged single-pass tests --
+    `test_the_log_is_read_once_for_both_the_headline_and_the_series` and
+    `test_rebuilding_the_report_does_not_hold_the_log_either` -- are untouched.
+    This one adds the C22b fields to what has to be true while the count holds.
+    """
+    import builtins
+    import os
+
+    scenario = _family_scenario(tmp_path / "onepass22b")
+    log = _family_log(scenario, "evidence-onepass22b.jsonl")
+    target = log.resolve()
+    opened: list[str] = []
+    real_open = builtins.open
+
+    def counting(file: Any, mode: str = "r", *args: Any, **kwargs: Any) -> Any:
+        try:
+            same = Path(os.fspath(file)).resolve() == target
+        except (TypeError, ValueError, OSError):
+            same = False
+        if same and "b" not in mode:
+            opened.append(mode)
+        return real_open(file, mode, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", counting)
+    monkeypatch.setattr(io, "open", counting)
+    try:
+        model = _model_from(log)
+    finally:
+        monkeypatch.undo()
+
+    line = _trend_of(model)
+    assert len(line.points) == 3 and line.caveats, (
+        f"no line was drawn from this log -- {len(line.points)} point(s), "
+        f"{len(line.caveats)} caveat(s) -- so its open count measures nothing"
+    )
+    assert len(_strip_of(model)) == 6, (
+        f"the strip holds {len(_strip_of(model))} row(s) and not one per tracked "
+        f"parameter, so it was not built either"
+    )
+    assert _multiplicity_of(model) is not None, (
+        "no multiplicity was recorded, and an implementation that computes none of "
+        "the three fields reads the log exactly once"
+    )
+    assert len(opened) == 1, (
+        f"the evidence log was read {len(opened)} times in text mode; R21.3 permits "
+        f"no second read, and all three new fields are arithmetic over what the "
+        f"model already holds"
+    )
