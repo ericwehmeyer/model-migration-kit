@@ -158,7 +158,7 @@ import math
 import os
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from html.parser import HTMLParser
 from pathlib import Path
@@ -1754,6 +1754,22 @@ def _matrix_models(
     return tuple(ordered)
 
 
+#: Appended to every cell of a side the comparison payload names and the counting
+#: never saw. Three different situations render as a column of zeros -- a judged
+#: side that produced nothing, a side no judging pass ever closed, and a tag no
+#: model produced -- and the first two have different fixes: check the judge
+#: configuration, versus check whether the run completed at all. The note is where
+#: this document says such things, so the distinction goes in the note rather than
+#: in a field nothing else on the page would carry (R27.5). The zeros themselves
+#: stay, because dropping the column would leave a one-column "comparison" with
+#: nothing saying where the other side went.
+_NEVER_CLOSED = (
+    "No judging pass closed for {model_id} in this log, so this side was never "
+    "counted at all: these zeros are a missing judging pass rather than a "
+    "measurement."
+)
+
+
 def _tag_column(
     model_id: str,
     counted: Mapping[str, TagCount],
@@ -1763,6 +1779,7 @@ def _tag_column(
     floor: float | None,
     min_n: int,
     min_items: int,
+    closed: bool,
 ) -> TagColumn:
     """One model's cells, one per tag in ``tags``, in that order.
 
@@ -1773,6 +1790,12 @@ def _tag_column(
     it is an aggregate and splitting it across tags by any rule at all would be
     the invention this whole module exists to refuse.
 
+    ``closed`` is whether the counting saw this model at all -- a model with a
+    ``migkit.judging_completed`` is present in ``by_model`` even when it graded
+    nothing, and a model the payload names and no judging pass ever closed is not.
+    Both render as zeros and they are not the same finding, so the second one says
+    so in its note. See :data:`_NEVER_CLOSED`.
+
     The floors arrive from :func:`_dimension_matrix` rather than being named again
     here, so that the numbers :class:`DimensionMatrix` publishes as what it refused
     against and the numbers the cells actually refused against are one expression
@@ -1782,18 +1805,20 @@ def _tag_column(
     for tag in tags:
         one = counted.get(tag)
         passes, n, items = (0, 0, 0) if one is None else (one.passes, one.n, one.items)
-        cells.append(
-            dimension_cell(
-                tag,
-                passes,
-                n,
-                items,
-                confidence=confidence,
-                floor=floor,
-                min_n=min_n,
-                min_items=min_items,
-            )
+        cell = dimension_cell(
+            tag,
+            passes,
+            n,
+            items,
+            confidence=confidence,
+            floor=floor,
+            min_n=min_n,
+            min_items=min_items,
         )
+        if not closed:
+            said = _NEVER_CLOSED.format(model_id=model_id)
+            cell = replace(cell, note=f"{cell.note} {said}".strip())
+        cells.append(cell)
     return TagColumn(model_id=model_id, cells=tuple(cells))
 
 
@@ -1849,6 +1874,7 @@ def _dimension_matrix(
             floor=floor,
             min_n=min_n,
             min_items=min_items,
+            closed=model_id in counts.by_model,
         )
         for model_id in _matrix_models(counts.by_model, baseline_id, candidate_id)
     }
