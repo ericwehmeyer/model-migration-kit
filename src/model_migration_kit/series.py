@@ -62,7 +62,15 @@ from opik_rigor import EvidenceRecord
 from .contracts import EVENT_COMPARISON, EVENT_VERDICT
 from .evidence import resolve_evidence, stream_records
 
-__all__ = ["RunPoint", "SeriesBuilder", "parse_created", "read_series", "run_point"]
+__all__ = [
+    "RunPoint",
+    "SeriesBuilder",
+    "SpotCheck",
+    "parse_created",
+    "read_series",
+    "run_point",
+    "spot_check",
+]
 
 #: ``floor_source``'s three values. The word "unrecorded" is
 #: ``report.THRESHOLD_SOURCE_UNRECORDED``'s, deliberately: the report already has
@@ -713,3 +721,205 @@ def _count_or_none(value: Any) -> int | None:
     """
     number = _numeric(value)
     return None if number is None else int(number)
+
+
+# --------------------------------------------------------------------------- #
+# C11: the counterfactual spot check
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class SpotCheck:
+    """What an engineer sampling ``k`` prompts by hand would probably have seen.
+
+    The report's other numbers say what this run measured. This one says what a
+    cheaper method would have *missed*, which is the argument for having run the
+    harness at all -- and it is therefore the number a sceptical reader will
+    check first, so every choice behind it is written down rather than inferred.
+
+    Frozen, and carrying its own inputs beside its answer, for the reason
+    :class:`RunPoint` is: the sentence and the counts it was computed from must
+    travel together. A reader who wants to redo the arithmetic can, from this
+    object alone, without trusting the prose.
+    """
+
+    #: How many prompts the hypothetical spot check tries.
+    k: int
+    #: ``N`` -- every item in the set, failing and unstable ones included.
+    items: int
+    #: ``F`` -- items failing under the candidate. Only these can be "found".
+    failing: int
+    #: Items that were neither reliably passing nor reliably failing. Counted
+    #: into ``items`` and *not* into ``failing``; see :func:`spot_check`.
+    unstable: int
+    #: ``P(a k-item draw contains none of the F failing items)``.
+    probability: float
+    #: The same fact in one sentence, with its assumption named in it.
+    sentence: str
+
+
+def spot_check(
+    items_passing: int, items_failing: int, items_unstable: int, *, k: int = 12
+) -> SpotCheck | None:
+    """The chance a ``k``-prompt hand check of this set would have seen nothing.
+
+    ``comb(N - F, k) / comb(N, k)``: the probability that ``k`` items drawn
+    without replacement miss every failing one. Hypergeometric, and no more than
+    that -- it is not a power calculation, needs no effect size and no target
+    power, and the ``n_required`` the record already carries does not appear in
+    it and cannot be made to.
+
+    **The unit is items, never completions.** ``k`` prompts is ``k`` *decisions*,
+    not ``k`` samples from a completion-level pass rate. At temperature 0 -- and
+    under the fake adapter, where a mapped prompt returns one fixed string -- all
+    ``n`` draws of an item are identical, so 60 completions are 12 decisions.
+    Writing this as ``rate ** k`` is the obvious implementation and it is wrong,
+    but not by the margin this docstring used to claim. Two different errors get
+    conflated here and only one of them is the error actually on offer:
+
+    * **With replacement, at the same item rate.** ``(88 / 96) ** 12 == 0.3520``
+      against the correct ``0.3288``. That *over*states by about 7%, in the
+      direction that flatters this tool -- a higher number is a blinder spot
+      check. This is the one a real implementer commits, and it is the one the
+      plan itself committed: 0.351 sat in C11's own edge table as the expected
+      value, which is ``(88 / 96) ** 12`` and not the hypergeometric the same
+      contract specifies.
+    * **A completion rate of 0.75.** ``0.75 ** 12 == 0.0317``, an order of
+      magnitude below 0.3288. This is the figure usually quoted as the danger
+      and it cannot arise here: the determinism above forbids it. If all ``n``
+      draws of an item are identical then the completion pass rate *equals* the
+      item pass rate, so a run whose item rate is 88/96 cannot have a completion
+      rate of 0.75, and the two readings cannot diverge that far.
+
+    The 7% is what makes the real error dangerous, not a factor of ten. 35% and
+    33% both look plausible printed in a sentence, so nothing in the output says
+    which arithmetic produced it -- a "must not" is not self-enforcing, and the
+    place to check whether it was obeyed is the expected value, not the prose.
+    A tool whose whole argument is that naive methods are blind must not compute
+    its own headline number by a naive method.
+
+    **Unstable items are excluded from ``F``, and that raises this number.** An
+    item that fails on some draws and not others has not been *established* as a
+    regression, and ``F`` is the count of regressions this run established. The
+    tool does not claim regressions it has not established, so an unstable item
+    does not enter ``F``. That is an honesty claim about ``F``, and it is the
+    only ground this rule stands on.
+
+    Say plainly which way it runs, because it does not run the way a reader
+    expects. A smaller ``F`` means a *larger* probability: the spot check looks
+    blinder, and a blinder spot check is a stronger argument for having run this
+    harness. So the rule raises the quoted number and strengthens the tool's own
+    case. It is not a restraint on the number and must not be described as one.
+    Counting unstable items as failures would take ``F`` from 8 to 11 on the
+    demo's set and the probability from 33% to 21% -- a *weaker* claim, not a
+    more quotable one. The reason it is not done is that it would assert eight
+    plus three regressions on evidence for eight.
+
+    **The sentence names the assumption it made.** A real spot check is not a
+    random draw: an engineer picks twelve prompts they believe are
+    representative, and nobody can model that. So the sentence says "drawn at
+    random" out loud and lets the reader discount it, rather than quietly
+    claiming to have modelled a human's judgement. What it counts is *checks*
+    and never *runs*: nothing here is distributed over runs, and a director who
+    reads "in X% of runs" and asks what a run is has found a hole.
+
+    Two further things the wording has to get right. It ends "in X% **of such
+    checks**", not "of spot checks", because "a spot check ... in X% of spot
+    checks" puts a singular subject inside its own plural denominator and eats
+    its own tail. And it names ``F`` in place -- "these 96 items, 8 of which
+    failed" -- because the first question a director asks the sentence is "out
+    of how many?", and a line whose answer lives only in a neighbouring field is
+    a line that cannot be checked where it is read.
+
+    Returns ``None`` -- no sentence at all -- rather than a weaker one, when:
+
+    * ``F == 0``. There was nothing to miss, so "a spot check would have found
+      nothing" is true and vacuous. The temptation is to print the line anyway
+      because it is the most quoted line in the document; a line that is
+      unfalsifiable on this run is worth less than the silence it replaces.
+    * ``N <= k``. The check would read every item, and a draw that takes the
+      whole set is a **census, not a spot check**. The sentence's entire force is
+      that you only looked at a few; calling a census a spot check is an
+      overclaim, in the one function written to prevent overclaiming. At
+      ``N == k`` the arithmetic is not even wrong -- ``comb(N - F, k)`` is 0 and
+      the probability is a true 0.0 -- which is what makes it worth excluding
+      explicitly: it would render a confident, correct-looking sentence about a
+      procedure nobody would call a spot check. The contract said ``N < k``; this
+      is a deliberate amendment out of review, and the blind suite's assertion
+      that ``N == k`` is *not* excluded was changed with it.
+    * ``N == 0``. There is no set to sample.
+
+    ``k == 0`` is a caller's bug, not a run without failures, so it raises rather
+    than joining the ``None`` cases: a zero-prompt spot check trivially sees
+    nothing, and silently returning ``None`` would hide a miswired caller behind
+    a result the report already knows how to render as an absence.
+    """
+    if k <= 0:
+        raise ValueError(f"k must be a positive number of prompts, got {k!r}")
+    if items_passing < 0 or items_failing < 0 or items_unstable < 0:
+        raise ValueError(
+            "item counts cannot be negative, got "
+            f"passing={items_passing!r}, failing={items_failing!r}, "
+            f"unstable={items_unstable!r}"
+        )
+
+    items = items_passing + items_failing + items_unstable
+    if items == 0 or items <= k or items_failing == 0:
+        return None
+
+    # math.comb, not a float product: the exact integer arithmetic costs nothing
+    # here and cannot drift, and a reviewer checking this line should find the
+    # textbook expression rather than something they have to re-derive.
+    probability = math.comb(items - items_failing, k) / math.comb(items, k)
+    sentence = (
+        f"A {k}-prompt spot check drawn at random from these {items} items, "
+        f"{items_failing} of which failed, would have shown no failures at all "
+        f"in {_percent(probability)} of such checks."
+    )
+    return SpotCheck(
+        k=k,
+        items=items,
+        failing=items_failing,
+        unstable=items_unstable,
+        probability=probability,
+        sentence=sentence,
+    )
+
+
+def _percent(probability: float) -> str:
+    """A probability as a whole-percent phrase, with both ends kept honest.
+
+    Whole percent because the sentence is read aloud in a review, and 32.9% is
+    a precision this estimate does not have: it assumes a random draw that no
+    engineer actually performs.
+
+    "Less than 1%", not "fewer than": a probability is a proportion, not a count
+    of things, and "fewer" wants a count noun. This phrase can land in the
+    most-quoted sentence in the document, where a grammatical slip reads as a
+    mistake in the arithmetic beside it.
+
+    The two guards exist because both ends of this scale assert a **certainty
+    the arithmetic did not compute**, and that is the whole of the reason. A
+    genuinely non-zero probability rounded down to "0%" says a spot check would
+    *always* have caught this; a probability below 1 rounded up to "100%" says it
+    could *never* have. Neither is a thing ``comb(N - F, k) / comb(N, k)``
+    returned, and a sentence that is quoted in a review must not put a certainty
+    in the reader's mouth that the calculation stopped short of.
+
+    Note that the two ends do not flatter the same party -- this docstring used
+    to claim they did. "0%" undercuts the tool, since a spot check that always
+    catches the regression is an argument against having run the harness; "100%"
+    flatters it. They are wrong in opposite directions, which is exactly why the
+    symmetric reason is the one that holds: it is not about which way the error
+    leans, it is that neither end was computed.
+
+    ``probability == 1`` is unreachable from :func:`spot_check` -- it needs
+    ``F == 0``, which returns ``None`` -- so the second guard is a plain
+    ``percent == 100`` and carries no dead test for it.
+    """
+    percent = round(probability * 100)
+    if percent == 0 and probability > 0:
+        return "less than 1%"
+    if percent == 100:
+        return "more than 99%"
+    return f"{percent}%"

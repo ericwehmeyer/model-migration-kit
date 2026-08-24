@@ -2446,3 +2446,611 @@ def test_a_number_the_reader_cannot_use_is_not_a_malformed_line(tmp_path: Path):
     points = read_series(log)
     assert [point.candidate_model for point in points] == ["before", "odd"]
     assert points[1].n_per_item == 0
+
+
+# ----------------------------------------------------------------------------------
+# `spot_check`, per chunk C11 and section 7.4
+# ----------------------------------------------------------------------------------
+#
+# Written from the plan's `#### C11 -- the spot-check line` and `### 7.4`, and from
+# nothing else: `series.spot_check` did not exist in this worktree when these were
+# written, and no expected value below was obtained by running it. Every number is a
+# `math.comb` quotient computed by hand and pasted here as a literal, deliberately --
+# a test that recomputes `comb(N - F, k) / comb(N, k)` passes for any implementation
+# that is consistently wrong in the same way, which is the failure mode this chunk is
+# most exposed to.
+#
+# **The contract's own arithmetic is wrong and these tests do not follow it.** The
+# edge table says `passing=88, failing=8, k=12` gives "approximately 0.351" and both
+# the worked sentence and section 7.4 say "34%". The hypergeometric the same contract
+# specifies gives
+#
+#     comb(88, 12) / comb(96, 12) == 0.3287693171387045
+#
+# and 0.351 is not a rounding of it -- it is `(88 / 96) ** 12 == 0.3519956...`, the
+# *with-replacement* answer, i.e. the very same "independent draws" error the "must
+# not" a dozen lines further down forbids. 34% is that wrong number rounded. So the
+# contract's prose and the contract's formula disagree, the formula is the one that
+# is right, and these tests assert 0.32877 -- 33% -- throughout. This was ruled on
+# before dispatch and the same ruling was given to the author of `series.py`.
+#
+# **Why `series.spot_check` and not a direct import.** Naming these in this module's
+# `from model_migration_kit.series import ...` line would fail the whole module at
+# collection while C11 is unwritten, taking every pre-existing test in this file with
+# it. Attribute access fails in the test that uses it and nowhere else, which is the
+# same guarantee scoped to the tests that make the claim.
+
+
+def test_no_spot_check_sentence_is_offered_when_nothing_was_failing():
+    """The vacuous case. Nothing failed, so there is nothing a spot check could
+    have missed, and "a spot check would have found nothing" is then not a
+    concession -- it is a tautology dressed as one, and the most quotable line in
+    the document would be quotable in exactly the case where it says nothing.
+
+    This is the row an implementation optimising for "always show the persuasive
+    line" gets wrong, which is why it is first."""
+    assert series.spot_check(96, 0, 0) is None
+    # Unstable items are counted as passing, so they do not rescue the sentence
+    # either: a set with instability but no outright failure is still F == 0.
+    assert series.spot_check(90, 0, 6) is None
+    # And at a k the set is large enough for, so `None` here is the F == 0 rule
+    # and not the N < k rule standing in for it.
+    assert series.spot_check(96, 1, 0, k=12) is not None
+
+
+def test_the_spot_check_counts_unstable_items_as_passing_so_f_is_only_established_regressions():
+    """Three unstable items moved out of `passing` and into `unstable` must change
+    nothing at all: same N, same F, same probability, same sentence. Only `F`
+    decides the number, and only items this run *established* as failing enter
+    `F`.
+
+    This test was named `..._so_the_number_never_flatters_the_tool` and its
+    reasoning ran that the alternative -- counting them as failures -- would
+    "raise F to 11 and drop the probability, which reads as a *better* argument
+    for the tool". That is backwards, and it is the same inversion the docstring
+    shipped with. A dropped probability is a spot check that catches things more
+    often, which is a *worse* argument for having run this harness. The rule
+    keeps the bigger number, so it flatters the tool rather than restraining it;
+    what defends it is that `F` names only established regressions.
+    `test_excluding_unstable_items_from_f_raises_the_probability_and_the_docstring_says_that`
+    holds the direction against the arithmetic."""
+    without = series.spot_check(88, 8, 0, k=12)
+    with_unstable = series.spot_check(85, 8, 3, k=12)
+
+    assert without is not None
+    assert with_unstable is not None
+    assert with_unstable.probability == without.probability
+    assert with_unstable.sentence == without.sentence
+    assert with_unstable.items == without.items == 96
+    assert with_unstable.failing == without.failing == 8
+    # Both are N = 96, F = 8; `unstable` is reported as it was passed, because the
+    # count is still a fact about the set even though it does not enter the sum.
+    assert without.unstable == 0
+    assert with_unstable.unstable == 3
+    assert with_unstable.probability == pytest.approx(0.32877, abs=5e-6)
+
+
+def test_the_probability_is_the_hypergeometric_one_and_not_the_with_replacement_one():
+    """`comb(88, 12) / comb(96, 12)`, to the digit. The near miss is the danger:
+    drawing the same twelve items *with* replacement gives 0.35200, which rounds
+    to the 34% the contract's prose quotes, and both numbers look equally
+    plausible printed in a sentence. Only one of them is the probability that a
+    twelve-item sample drawn from ninety-six contains none of the eight bad
+    ones -- you cannot inspect the same prompt twice and call it two prompts."""
+    check = series.spot_check(88, 8, 0, k=12)
+    assert check is not None
+    assert check.probability == pytest.approx(0.3287693171387045, rel=1e-12)
+    assert check.probability == pytest.approx(0.32877, abs=5e-6)
+    assert check.probability != pytest.approx(0.3519956280141369, rel=1e-6)
+    assert check.k == 12
+    assert check.items == 96
+    assert check.failing == 8
+
+
+@pytest.mark.parametrize(
+    ("passing", "failing", "expected", "with_replacement"),
+    [
+        (12, 4, 0.0005494505494505495, 0.03167635202407837),
+        (18, 6, 0.006864988558352402, 0.03167635202407837),
+    ],
+    ids=["N=16", "N=24"],
+)
+def test_the_draw_is_of_items_without_replacement_and_not_a_completion_rate_raised_to_k(
+    passing, failing, expected, with_replacement
+):
+    """Section 7.4's objection 2, made into a case where the two readings cannot
+    be confused for each other. Both rows are a three-in-four pass rate, so the
+    completion-level reading is `0.75 ** 12 == 0.0317` for each of them, while the
+    item-level answer moves from 0.69% to 0.055% as the pool shrinks -- a factor
+    of 58 at N = 16. On the contract's own N = 96 fixture the two readings are
+    0.329 and 0.352 and a wrong implementation is nearly invisible; here it is off
+    by more than an order of magnitude, which is the whole reason these rows exist
+    rather than another variation on ninety-six items.
+
+    At N = 16 the arithmetic also degenerates usefully: only twelve items pass, so
+    there is exactly one clean twelve-item sample out of `comb(16, 12)` -- 1/1820.
+    Any implementation treating the twelve draws as independent cannot produce
+    that number by accident."""
+    check = series.spot_check(passing, failing, 0, k=12)
+    assert check is not None
+    assert check.probability == pytest.approx(expected, rel=1e-12)
+    assert check.probability != pytest.approx(with_replacement, rel=1e-3)
+
+
+def test_the_docstring_describes_the_with_replacement_error_at_its_actual_size():
+    """The "order of magnitude in the flattering direction" claim conflated two
+    different errors, and only one of them is available on these numbers.
+
+    Drawing *with replacement at the same item rate* -- the error the plan itself
+    committed when it printed 0.351 as C11's expected value -- overstates by 7%,
+    not by a factor of ten. Getting to 3% needs a *completion* pass rate of 0.75,
+    which section 7.4's own determinism premise forbids: if all `n` draws of an
+    item are identical the completion rate equals the item rate, so a set with an
+    item rate of 88/96 cannot have a completion rate of 0.75.
+
+    The 7% is the finding, not a footnote to it. An error of ten times announces
+    itself; an error of 7% does not, and 35% and 33% read identically in a
+    sentence."""
+    check = series.spot_check(88, 8, 0, k=12)
+    assert check is not None
+    with_replacement = (88 / 96) ** 12
+    assert with_replacement == pytest.approx(0.3519956280141369, rel=1e-12)
+    # Overstatement, not understatement: the naive answer is the bigger one.
+    assert with_replacement > check.probability
+    assert with_replacement / check.probability == pytest.approx(1.0706, abs=5e-5)
+    # And it is nowhere near an order of magnitude.
+    assert with_replacement / check.probability < 1.1
+    # The order-of-magnitude figure belongs to a rate the premise rules out.
+    assert check.probability / 0.75**12 == pytest.approx(10.379, abs=5e-4)
+
+    doc = " ".join((series.spot_check.__doc__ or "").split())
+    assert "(88 / 96) ** 12 == 0.3520" in doc
+    assert "0.75 ** 12 == 0.0317" in doc
+    # The claim that shipped, which attached the ten-times figure to the error
+    # that is actually 7% and pointed it the wrong way.
+    assert "order of magnitude in the flattering direction" not in doc
+    assert "it says 3% where the item-level answer is 33%" not in doc
+
+
+def test_the_sentence_names_the_assumption_it_made_rather_than_leaving_it_implied():
+    """Objection 3. Nobody picks twelve prompts at random -- an engineer picks
+    twelve they believe are representative, and no arithmetic here models that. So
+    the sentence has to say "drawn at random" out loud and let the reader discount
+    it. A sentence that omits the phrase is claiming something about real spot
+    checks that this function did not compute."""
+    check = series.spot_check(88, 8, 0, k=12)
+    assert check is not None
+    assert "drawn at random" in check.sentence
+
+
+def test_the_sentence_is_about_spot_checks_and_never_about_runs():
+    """Section 7.4's objection 1, and the one a director finds. Nothing in this
+    calculation is distributed over runs; the population is items and the thing
+    being counted is samples of them. "in 34% of runs" invites the question "what
+    is a run", and the honest answer -- that a run is not the unit here at all --
+    is a hole in the most-quoted sentence in the document."""
+    check = series.spot_check(88, 8, 0, k=12)
+    assert check is not None
+    lowered = check.sentence.lower()
+    assert "spot check" in lowered
+    assert "runs" not in lowered
+
+
+@pytest.mark.parametrize(
+    ("passing", "failing", "k"),
+    [
+        (88, 8, 12),
+        (90, 6, 12),
+        (80, 16, 12),
+        (48, 4, 12),
+        (36, 3, 12),
+        (56, 8, 12),
+    ],
+    ids=["33pct", "44pct", "10pct", "34pct-at-N=52", "32pct-at-N=39", "17pct-at-N=64"],
+)
+def test_the_percentage_in_the_sentence_is_the_probability_that_was_computed(
+    passing, failing, k
+):
+    """A sentence carrying a different number from the field beside it is the
+    exact shape of this chunk's failure mode: the arithmetic is corrected and the
+    prose keeps the old constant, or the prose is written from the contract's
+    "34%" and the arithmetic is right.
+
+    This was one fixture asserting the literal `"33%"`, and **one fixture can
+    never establish agreement between two values**. An implementation that
+    ignores `probability` entirely and interpolates the constant `"33%"` passed
+    it, and passed the whole suite (mutant M27). Agreement is a claim about a
+    relation, and a relation needs at least two points that disagree with each
+    other. Six rows, five distinct percentages, and the expected string is
+    derived from the returned `probability` rather than written down -- so a
+    constant cannot satisfy them all and neither can a percentage computed from
+    something other than the number in the field.
+
+    The `34pct-at-N=52` row is deliberately the plan's old wrong answer arrived
+    at honestly: 52 items with 4 failing really is 34%, so a suite that forbids
+    the digits "34" everywhere would be forbidding a correct output."""
+    check = series.spot_check(passing, failing, 0, k=k)
+    assert check is not None
+    expected = f"{round(check.probability * 100)}%"
+    assert expected in check.sentence
+    # The sentence is about *this* set, not a remembered one.
+    assert f"{k}-prompt" in check.sentence
+    assert f"{check.items} items" in check.sentence
+    assert f"{failing} of which failed" in check.sentence
+    # And the percentage is the chance of seeing *nothing*, on every row. The
+    # clause is pinned here as well as in the literal-sentence test because the
+    # inversion (M20) makes the same number mean the opposite thing, and a
+    # meaning-inverting mutant should not hang on one assertion.
+    assert "would have shown no failures at all in" in check.sentence
+
+
+def test_no_other_percentage_appears_in_the_demo_sentence():
+    """Kept from the original single-fixture test, scoped to the one set whose
+    number the plan twice got wrong. 0.32877 is 33%; "34" or "35" in this
+    particular sentence means the prose was written from the contract's struck
+    numbers rather than from the arithmetic."""
+    check = series.spot_check(88, 8, 0, k=12)
+    assert check is not None
+    assert "33%" in check.sentence
+    assert "34" not in check.sentence
+    assert "35" not in check.sentence
+
+
+def test_the_sentence_counts_items_and_never_completions_or_prompts():
+    """The unit is the one word this chunk exists to get right, and until now no
+    test pinned it -- `"96 items"` could be mutated to `"96 completions"` or
+    `"96 prompts"` and all 120 tests stayed green (M21, M22).
+
+    The distinction is the entire content of section 7.4. The denominator is
+    ninety-six *items*, i.e. ninety-six decisions; it is not ninety-six
+    completions, and it is not ninety-six prompts either -- `k` is the count of
+    prompts in this sentence, and reusing the word for `N` would make the line
+    read as twelve prompts drawn from ninety-six prompts, which is the
+    completion-level reading wearing the right noun."""
+    check = series.spot_check(88, 8, 0, k=12)
+    assert check is not None
+    sentence = check.sentence
+    assert "96 items" in sentence
+    assert "completions" not in sentence
+    assert "96 completions" not in sentence
+    assert "96 prompts" not in sentence
+    # "prompt" survives exactly once, attached to k.
+    assert sentence.count("prompt") == 1
+    assert "12-prompt" in sentence
+
+
+def test_the_sentence_says_the_check_would_have_seen_nothing_not_caught_something():
+    """The most dangerous survivor. Rewriting the clause to `"would have caught
+    the regression in 33%"` inverts the meaning of the headline sentence -- the
+    same number now claims a spot check *succeeds* a third of the time, which is
+    an argument for skipping this harness rather than for running it -- and no
+    test went red (M20).
+
+    Nothing else in the suite constrained the verb, so the whole rendered
+    sentence is pinned here as a literal. It is the one string in this module
+    quoted directly into a document a director reads, and a change to it should
+    have to be made on purpose."""
+    check = series.spot_check(88, 8, 0, k=12)
+    assert check is not None
+    assert check.sentence == (
+        "A 12-prompt spot check drawn at random from these 96 items, 8 of "
+        "which failed, would have shown no failures at all in 33% of such "
+        "checks."
+    )
+    # And the inversion named explicitly, for the next reader of this test.
+    lowered = check.sentence.lower()
+    assert "shown no failures at all" in lowered
+    assert "caught" not in lowered
+    assert "found" not in lowered
+    assert "regression" not in lowered
+
+
+def test_the_sentence_says_how_many_items_failed_so_the_number_is_checkable_in_place():
+    """"Out of how many?" is the first question the line gets, and it used to be
+    unanswerable from the line itself: `SpotCheck.failing` held the count and the
+    sentence dropped it. A reader who cannot verify a claim where they read it
+    has to take it on trust, which is the posture this whole chunk is written
+    against."""
+    check = series.spot_check(88, 8, 0, k=12)
+    assert check is not None
+    assert "8 of which failed" in check.sentence
+    assert str(check.failing) in check.sentence
+    # A different F must move the sentence, not just the field.
+    other = series.spot_check(80, 16, 0, k=12)
+    assert other is not None
+    assert "16 of which failed" in other.sentence
+
+
+def test_the_sentence_does_not_put_a_spot_check_inside_its_own_plural_denominator():
+    """It read "A 12-prompt spot check ... in 33% of spot checks" -- a singular
+    subject inside the plural set it is a member of, which eats its own tail. "of
+    such checks" closes it while keeping the words the contract requires: the
+    subject is still a *spot check* and the sentence still never says "runs"."""
+    check = series.spot_check(88, 8, 0, k=12)
+    assert check is not None
+    lowered = check.sentence.lower()
+    assert "of such checks" in lowered
+    assert "of spot checks" not in lowered
+    assert lowered.count("spot check") == 1
+    assert "runs" not in lowered
+
+
+def test_a_set_no_larger_than_the_check_offers_no_sentence_because_that_is_a_census():
+    """N <= k. Twelve prompts against nine items is not a sample, it is the whole
+    set read twice over, and the probability of missing a failure in it is zero by
+    construction rather than by evidence. Printing a sentence here would be
+    printing an argument that the set is too small to make.
+
+    **N == k is excluded too, and this line was written the other way.** The
+    blind suite asserted `series.spot_check(11, 1, 0, k=12) is not None` on the
+    reasoning that N == k is "a sample -- of everything, once". It is a census,
+    and the contract's own rationale for excluding N < k -- "the check would try
+    every item" -- applies to it word for word. The sentence's whole rhetorical
+    force is that you only looked at a *few*; a draw that takes the entire set
+    and is then described as a spot check is an overclaim, produced by the one
+    function in this module written to prevent overclaiming.
+
+    Note what makes it worth an explicit guard rather than a rounding concern:
+    at N == k the arithmetic is not wrong. `comb(N - F, k)` is 0 for any F >= 1,
+    so the probability is a true 0.0 and the sentence renders cleanly and
+    confidently. Nothing about the output announces that the "spot check" it
+    describes read every item there was.
+
+    This is a contract amendment out of review. `N < k` in the plan becomes
+    `N <= k` here."""
+    assert series.spot_check(8, 1, 0, k=12) is None
+    # N == k: a census. Excluded, and this is the amendment.
+    assert series.spot_check(11, 1, 0, k=12) is None
+    assert series.spot_check(0, 12, 0, k=12) is None
+    assert series.spot_check(6, 3, 3, k=12) is None
+    # N == k + 1 is the smallest genuine sample and is still offered, so the
+    # guard is `<=` and has not slid to `<= k + 1`.
+    smallest = series.spot_check(11, 1, 0, k=11)
+    assert smallest is not None
+    assert smallest.items == 12
+    assert series.spot_check(12, 1, 0, k=12) is not None
+
+
+def test_an_empty_set_offers_no_sentence():
+    """N == 0. There is nothing to draw from, and `comb(0, 12)` over `comb(0, 12)`
+    is a zero-over-zero the caller should never be shown the result of."""
+    assert series.spot_check(0, 0, 0) is None
+    assert series.spot_check(0, 0, 0, k=1) is None
+
+
+def test_a_set_that_fails_everywhere_still_gets_its_sentence_and_the_probability_is_zero():
+    """The mirror of the vacuous case, and it is not vacuous. Every item fails, so
+    no spot check of any size can come back clean, and 0.0 is the strongest
+    version of the argument this line exists to make. Returning `None` here would
+    suppress the sentence precisely where it is most earned."""
+    check = series.spot_check(0, 96, 0, k=12)
+    assert check is not None
+    assert check.probability == 0.0
+    assert check.items == 96
+    assert check.failing == 96
+    assert check.sentence
+    assert "drawn at random" in check.sentence
+    assert "runs" not in check.sentence.lower()
+
+
+def test_a_spot_check_of_no_prompts_is_a_caller_error_and_not_a_certainty():
+    """k == 0. `comb(N, 0) / comb(N, 0)` is 1.0, so the quiet answer is "a
+    zero-prompt spot check finds nothing 100% of the time" -- true, useless, and
+    indistinguishable in the rendered document from a real result. The contract
+    makes it an error so it cannot reach a reader.
+
+    Negative k is the same bug wearing a different sign, and it is worse: `comb`
+    rejects it and the caller gets a ValueError from inside the arithmetic
+    naming `comb`, not a message naming `k`. The guard is `k <= 0` and both
+    sides of it are pinned here."""
+    with pytest.raises(ValueError, match="positive number of prompts"):
+        series.spot_check(88, 8, 0, k=0)
+    with pytest.raises(ValueError, match="positive number of prompts"):
+        series.spot_check(88, 8, 0, k=-1)
+    with pytest.raises(ValueError, match="positive number of prompts"):
+        series.spot_check(88, 8, 0, k=-12)
+    # k == 1 is the smallest legitimate check and must not be caught by it.
+    single = series.spot_check(88, 8, 0, k=1)
+    assert single is not None
+    assert single.k == 1
+    assert single.probability == pytest.approx(88 / 96, rel=1e-12)
+
+
+@pytest.mark.parametrize(
+    ("passing", "failing", "unstable"),
+    [(-1, 8, 0), (88, -8, 0), (88, 8, -1), (-1, -1, -1), (88, 8, -100)],
+)
+def test_negative_item_counts_are_a_caller_error_and_never_a_probability(
+    passing, failing, unstable
+):
+    """The guard nothing tested, and it is load-bearing rather than defensive.
+
+    Unguarded, `spot_check(88, -8, 0)` is not an exception and not a wrong
+    number in the fourth decimal place. N becomes 80, `comb(80 - -8, 12)` is
+    `comb(88, 12)`, and the quotient is **3.4088** -- a probability above 3 --
+    which the renderer then formats without complaint as "... would have shown
+    no failures at all in 341% of such checks." A negative count is a miswired
+    caller, and a miswired caller must not be able to put an impossible
+    percentage into the most-quoted line in the document.
+
+    Checked before N is summed, because summing is what destroys the evidence:
+    once the three counts are added, -8 failing and 96 passing is
+    indistinguishable from 88 passing."""
+    with pytest.raises(ValueError, match="cannot be negative"):
+        series.spot_check(passing, failing, unstable, k=12)
+
+
+def test_the_default_check_is_twelve_prompts_and_the_default_is_what_gets_used():
+    """`k: int = 12` was never exercised for a non-None result -- every call that
+    returned a `SpotCheck` passed `k=12` explicitly, and every call that omitted
+    it returned `None` for some other reason. So the default could be changed to
+    11 or 13 and the suite stayed green (M23, M24).
+
+    Twelve is not arbitrary and it is not a tuning knob: it is the size the
+    report's sentence is written around, and a default that silently disagreed
+    with the prose would produce a document whose sentence and whose arithmetic
+    describe different checks."""
+    default = series.spot_check(88, 8, 0)
+    explicit = series.spot_check(88, 8, 0, k=12)
+    assert default is not None
+    assert explicit is not None
+    assert default.k == 12
+    assert default == explicit
+    assert default.probability == pytest.approx(0.3287693171387045, rel=1e-12)
+    assert "12-prompt" in default.sentence
+    # And it is genuinely the default rather than a coincidence of this set:
+    # neighbouring k give different answers, so 11 or 13 would have shown.
+    for neighbour in (11, 13):
+        other = series.spot_check(88, 8, 0, k=neighbour)
+        assert other is not None
+        assert other.probability != default.probability
+
+
+def test_the_spot_check_carries_the_six_fields_the_contract_names_and_is_frozen():
+    """Transcribed from the contract's dataclass, asserted with `==` rather than
+    a subset check so any addition or rename has to be made here on purpose.
+    Frozen because a `SpotCheck` is a record of a computation that already
+    happened; a `probability` that can be reassigned after the sentence naming it
+    has been built is two numbers that can disagree."""
+    assert [field.name for field in dataclasses.fields(series.SpotCheck)] == [
+        "k",
+        "items",
+        "failing",
+        "unstable",
+        "probability",
+        "sentence",
+    ]
+    check = series.spot_check(88, 8, 0, k=12)
+    assert check is not None
+    assert isinstance(check, series.SpotCheck)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        check.probability = 0.34
+
+
+def test_excluding_unstable_items_from_f_raises_the_probability_and_the_docstring_says_that():
+    """The direction of the thumb, pinned against the arithmetic rather than
+    against a word list.
+
+    This test replaces a word-presence check that asserted only `"unstable"` and
+    `"passing"` appear in the docstring. That check passes for a docstring
+    stating the rule's rationale *and* for one stating its exact negation, which
+    is not a hypothetical: the shipped docstring claimed that counting unstable
+    items as failures "would produce a larger, more quotable number", and it is
+    measurably smaller. Both halves below have to agree or this goes red.
+
+    The measurement, first, because it is what settles it. Excluding unstable
+    items shrinks `F` from 11 to 8, and a smaller `F` means a *larger*
+    probability -- a blinder spot check, which is a *stronger* argument for
+    having run the harness. The rule therefore raises the quoted number and
+    flatters the tool. It is defensible on the honesty of `F` -- the tool does
+    not claim regressions it has not established -- and on nothing else, and a
+    docstring that sells it as restraint is selling the opposite of what it is.
+    """
+    by_the_rule = series.spot_check(85, 8, 3, k=12)
+    as_failures = series.spot_check(85, 11, 0, k=12)
+    assert by_the_rule is not None
+    assert as_failures is not None
+    # Same set of 96 items either way; only F moves.
+    assert by_the_rule.items == as_failures.items == 96
+    assert by_the_rule.failing == 8
+    assert as_failures.failing == 11
+    assert by_the_rule.probability == pytest.approx(0.3287693171387045, rel=1e-12)
+    assert as_failures.probability == pytest.approx(0.21061896729287496, rel=1e-12)
+    # The whole ruling in one line: the rule's number is the bigger one.
+    assert by_the_rule.probability > as_failures.probability
+
+    # Whitespace-normalised: these are wrapped docstring lines, so a phrase can
+    # straddle a newline and an unnormalised `in` check would miss it for a
+    # reason that has nothing to do with what the docstring says.
+    doc = " ".join((series.spot_check.__doc__ or "").split())
+    lowered = doc.lower()
+    assert "unstable" in lowered
+    # The docstring must name the direction, and name it the way the two numbers
+    # above just came out. Interpolated, not literal, so a docstring edited to
+    # quote the swap the other way round cannot pass.
+    high = f"{round(by_the_rule.probability * 100)}%"
+    low = f"{round(as_failures.probability * 100)}%"
+    assert f"from {high} to {low}" in doc, (
+        "the docstring must quote the drop that counting unstable items as "
+        "failures would cause, in the order the arithmetic produces it"
+    )
+    assert f"from {low} to {high}" not in doc
+    assert "raises the quoted number" in lowered
+    assert "strengthens the tool's own case" in lowered
+    # The specific false claim that shipped, verbatim and in its near variants:
+    # "counting unstable items as failures would produce a larger, more quotable
+    # number". It would produce a smaller one.
+    assert "larger, more quotable" not in lowered
+    assert "would produce a larger" not in lowered
+    assert "it is not a restraint on the number" in lowered
+
+
+# The rounding rule, which nothing exercised. `_percent` is private and tested
+# directly on purpose: the values that separate one rounding rule from another
+# are exact halves, and `comb(N - F, k) / comb(N, k)` cannot be steered onto one.
+# Pinning the rule only through `spot_check` pins it at 0.32877, which rounds to
+# 33 under round-half-even, round-half-up, ceiling and truncation alike -- the
+# single point where every candidate rule agrees, which is the one point that
+# distinguishes none of them. Mutant M29 replaced `round` with "always round up,
+# i.e. always toward the flattering number" and survived for exactly that reason.
+
+
+@pytest.mark.parametrize(
+    ("probability", "expected"),
+    [
+        # Exact zero is a computed certainty -- every item failed -- and must not
+        # be softened into the hedge. This is the guard's `probability > 0` half.
+        (0.0, "0%"),
+        # Non-zero but rounding to zero: the hedge, because "0%" would claim a
+        # spot check *always* catches it and nothing computed that.
+        (0.004, "less than 1%"),
+        # The half. Banker's rounding sends 0.5 to 0, so this is still the hedge.
+        # "Always round up" returns "1%" here and dies.
+        (0.005, "less than 1%"),
+        (0.0051, "1%"),
+        (0.006, "1%"),
+        # Truncation returns "31%" here and dies.
+        (0.315, "32%"),
+        # The half at the demo's own magnitude. Round-half-even gives 32;
+        # rounding up gives 33 -- the flattering number, and the demo's number,
+        # which is precisely why a rule pinned only at 0.32877 cannot see it.
+        (0.325, "32%"),
+        (0.335, "34%"),
+        # Rounding up gives 35 here and dies.
+        (0.345, "34%"),
+        # Rounding up gives 100, hence "more than 99%", and dies.
+        (0.994, "99%"),
+        # The upper guard: 99.5 rounds to 100, and "100%" would claim a spot
+        # check could *never* have caught it. Also not computed.
+        (0.995, "more than 99%"),
+        (0.9951, "more than 99%"),
+    ],
+)
+def test_the_percent_phrase_rounds_half_to_even_and_hedges_both_certainties(
+    probability, expected
+):
+    """Every boundary of the rendering rule, including the two guards.
+
+    The guards are not there because one end flatters the argument -- the
+    docstring used to say both ends did, and they do not. "0%" claims a spot
+    check *always* catches the regression, which undercuts the tool; "100%"
+    claims it never does, which flatters it. They are wrong in opposite
+    directions. The reason that actually holds is symmetric: **both ends assert
+    a certainty the arithmetic did not compute**, and neither belongs in a
+    sentence quoted in a review.
+
+    `probability == 1.0` is not a row here. It needs `F == 0`, which returns
+    `None` before any rendering happens, so the upper guard is a bare
+    `percent == 100` and a row for 1.0 would pin behaviour on an unreachable
+    input."""
+    assert series._percent(probability) == expected
+
+
+def test_the_small_probability_hedge_says_less_and_not_fewer():
+    """"Fewer" wants a count noun and a probability is a proportion. It reads as
+    a mistake, and it reads that way in the most-quoted sentence in the
+    document, right beside a number whose correctness is the thing under
+    review."""
+    for probability in (0.0001, 0.004, 0.005):
+        assert series._percent(probability) == "less than 1%"
+        assert "fewer" not in series._percent(probability)
