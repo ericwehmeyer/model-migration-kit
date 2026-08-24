@@ -93,17 +93,27 @@ REJECTED_LOCATION = REPO_ROOT / "src" / "model_migration_kit" / "showcase.py"
 DATA = REPO_ROOT / "src" / "model_migration_kit" / "data"
 GOLDENSET_PATH = DATA / "showcase_goldenset.jsonl"
 
-#: The showcase's own config is C17's, and C17 has not run. The bundled demo
-#: config carries exactly the thresholds this chunk's arithmetic is stated
+#: The showcase's own config, shipped by C17. ``demo.toml`` stood in for one chunk
+#: because it carries exactly the thresholds this chunk's arithmetic is stated
 #: against -- ``pass_rate_floor = 0.90``, ``confidence = 0.95``, ``alpha = 0.05``,
-#: ``min_detectable_effect = 0.10``, ``power_target = 0.80`` -- so it stands in,
-#: and these tests neither need nor assume ``showcase.toml``.
-CONFIG_PATH = DATA / "demo.toml"
+#: ``min_detectable_effect = 0.10``, ``power_target = 0.80``, and they are
+#: unchanged here -- but standing in also meant every night driven below was
+#: graded under the demo's judge name and the demo's rubric hash, neither of which
+#: is what the published showcase records. The nights are driven under the real
+#: one now.
+CONFIG_PATH = DATA / "showcase.toml"
 
-#: The judge ``demo.toml`` declares. Every per-dimension lookup below is keyed by
-#: it, because a panel writes one verdict per judge per completion and mixing two
-#: would multiply every denominator by the panel size.
+#: The rubric that config declares, and the demo's, which it deliberately is not.
+SHOWCASE_RUBRIC = DATA / "showcase_rubric.md"
+DEMO_RUBRIC = DATA / "demo_rubric.md"
+
+#: The judge ``showcase.toml`` declares. Every per-dimension lookup below is keyed
+#: by the *name*, because a panel writes one verdict per judge per completion and
+#: mixing two would multiply every denominator by the panel size. The *model id*
+#: is the string the provenance footer prints, and it read ``fake-judge-v1`` for
+#: as long as the demo's config stood in.
 JUDGE_NAME = "accuracy"
+JUDGE_MODEL_ID = "synthetic-judge-v1"
 
 #: C16: "a given night index 1..14".
 NIGHTS = tuple(range(1, 15))
@@ -590,26 +600,85 @@ def _a_summarisation_item() -> GoldenItem:
     return _items_primarily(SUMMARISATION_TAG)[0]
 
 
-def test_the_rubric_the_showcase_hashes_has_no_summarisation_rule_and_no_rule_about_form() -> None:
-    """The fact the two tests below rest on, read off the document rather than assumed.
+def test_the_rubric_the_showcase_hashes_covers_the_rules_the_demos_does_not() -> None:
+    """The fact the tests below rest on, read off the documents rather than assumed.
 
-    ``demo.toml`` declares ``demo_rubric.md``, and its hash is recorded on every
-    ``judge.verdict`` and rendered in the provenance footer. The showcase's set is
-    half summarisation items and the rubric covers reference answers and refusals
-    only, so half the judge's rules run with no document behind them. C17 owes a
-    ``showcase_rubric.md``; until it lands this is the state of things, and it is
-    better stated than discovered.
+    A rubric's hash is recorded on every ``judge.verdict`` and rendered in the
+    provenance footer, so the document a config declares is an attestation about
+    how the numbers beside it were produced. Half the showcase's reference-less
+    items are summarisation items, and ``demo_rubric.md`` covers reference answers
+    and refusals only -- so for as long as the showcase stood in behind
+    ``demo.toml``, half the judge's rules ran with no document behind them.
+
+    Two halves, and both matter. ``showcase_rubric.md`` has to carry the
+    summarisation and form rules, and ``demo_rubric.md`` has to still not: the
+    demo's rubric is hashed into every comparison the shipped 0.1.1 demo ever
+    took, and closing the showcase's divergence by editing that document would
+    have invalidated all of them.
     """
-    rubric = (DATA / "demo_rubric.md").read_text(encoding="utf-8").lower()
-    assert "summaris" not in rubric and "summariz" not in rubric, (
-        "demo_rubric.md now mentions summarisation. If C17's rubric has landed, the "
-        "showcase should be declaring it rather than the demo's, and the judge's "
-        "reason strings can start citing it again."
+    showcase_rubric = SHOWCASE_RUBRIC.read_text(encoding="utf-8").lower()
+    for rule, needles in (
+        ("summarisation", ("summaris", "summariz")),
+        ("refusals", ("refus",)),
+        ("the form an item asks for", ("one sentence", "one-sentence")),
+    ):
+        assert any(needle in showcase_rubric for needle in needles), (
+            f"showcase_rubric.md states no rule about {rule}, and the judge grades "
+            f"by one. Its hash is what every verdict attests to."
+        )
+
+    demo_rubric = DEMO_RUBRIC.read_text(encoding="utf-8").lower()
+    assert "summaris" not in demo_rubric and "summariz" not in demo_rubric, (
+        "demo_rubric.md now mentions summarisation. The showcase's rule belongs in "
+        "showcase_rubric.md; editing the demo's rubric changes its hash and "
+        "invalidates every comparison the shipped demo has ever taken against it."
     )
-    assert "refus" in rubric, (
-        "demo_rubric.md no longer covers refusals, so even the one rule the judge is "
-        "entitled to attribute to it has lost its basis"
+    assert "refus" in demo_rubric, (
+        "demo_rubric.md no longer covers refusals, so even the one rule both judges "
+        "are entitled to attribute to it has lost its basis"
     )
+
+
+def test_the_showcase_is_graded_under_its_own_config_and_not_the_demos() -> None:
+    """The judge id in the provenance footer, and the rubric hash beside it.
+
+    ``judge_adapter_for`` takes the model id from ``spec.model`` -- deliberately,
+    so the judge rigor pins is the judge the config declares -- which means the
+    config decides what a reader of the published document sees. Under
+    ``demo.toml`` that was ``fake-judge-v1``: the demo's name, on a document about
+    the showcase, beside the demo's rubric hash.
+    """
+    config = JudgeConfig.load(CONFIG_PATH)
+    assert len(config.specs) == 1, (
+        f"{CONFIG_PATH.name} declares {len(config.specs)} judges; every denominator "
+        f"in this module is stated for one judge over 480 completions per side"
+    )
+    spec = config.specs[0]
+    assert (spec.name, spec.model) == (JUDGE_NAME, JUDGE_MODEL_ID), (
+        f"{CONFIG_PATH.name} declares judge {spec.name!r}/{spec.model!r}, not "
+        f"{JUDGE_NAME!r}/{JUDGE_MODEL_ID!r}"
+    )
+    assert spec.rubric == SHOWCASE_RUBRIC, (
+        f"{CONFIG_PATH.name} declares rubric {spec.rubric}, not {SHOWCASE_RUBRIC}. "
+        f"That hash is recorded on every verdict the showcase publishes."
+    )
+    assert config.thresholds.to_dict() == {
+        "pass_rate_floor": PASS_RATE_FLOOR,
+        "alpha": 0.05,
+        "confidence": CONFIDENCE,
+        "judge_failure_tolerance": 0.05,
+        "min_detectable_effect": 0.10,
+        "power_target": 0.80,
+    }, (
+        f"{CONFIG_PATH.name}'s thresholds are not the ones every band in this "
+        f"module is computed at: {config.thresholds.to_dict()}"
+    )
+
+    # And the showcase's own checkpoint over the same three facts, given a caller in
+    # the suite rather than only in ``main()``. ``require_showcase_concurrency`` had
+    # no caller anywhere for a whole chunk and read as covered while covering
+    # nothing; a second checkpoint repeating that would be the same defect twice.
+    _showcase()._check_config()
 
 
 def test_the_judge_never_tells_the_evidence_log_that_the_rubric_says_something_it_does_not(
@@ -617,15 +686,20 @@ def test_the_judge_never_tells_the_evidence_log_that_the_rubric_says_something_i
     """A justification citing a document that contradicts it is worse than one citing none.
 
     These strings are not decoration. They travel into ``judge.verdict.reason``,
-    they are rendered as the judge's justification, and they sit beside a
-    ``rubric_hash`` of a document that has no summarisation rule and no rule about
-    sentence count. One of them used to read "which the rubric treats as a refusal
-    to do the task rather than as caution"; the rubric treats it as nothing,
-    because the rule is not there.
+    they are rendered as the judge's justification, and they sit beside the
+    ``rubric_hash`` of whatever document the config declares. One of them used to
+    read "which the rubric treats as a refusal to do the task rather than as
+    caution" while the declared rubric was ``demo_rubric.md``, which treats it as
+    nothing, because the rule is not there.
 
-    The refusal rule is the one the rubric does carry -- "a correct refusal is a
-    5", in the Notes -- so that reason may say so, and this asserts the asymmetry
-    rather than banning the word.
+    ``showcase_rubric.md`` now carries both rules, so the citation would be true
+    today -- and these two reasons still do not make it. A reason that names a
+    rubric is a reason that goes quietly wrong the next time a config is
+    repointed, which is exactly what happened here; a reason that says what the
+    judge did is true under every rubric. The refusal rule is the one that reads
+    the same in both documents -- "a correct refusal is a 5", in the Notes -- and
+    it may say so, which is what makes this an asymmetry rather than a ban on the
+    word.
     """
     module = _showcase()
     item = _a_summarisation_item()
@@ -636,41 +710,57 @@ def test_the_judge_never_tells_the_evidence_log_that_the_rubric_says_something_i
     for rule, reason in unsupported.items():
         assert "rubric" not in reason.lower(), (
             f"the {rule} rule justifies itself with {reason!r}, which names the rubric. "
-            f"demo_rubric.md carries no such rule, and this string is logged beside "
-            f"that rubric's hash."
+            f"This string is logged beside the hash of whichever document the config "
+            f"declares, and it should say what the judge did instead."
         )
 
     refusal = _items_primarily(REFUSAL_TAG)[0]
     supported = module._grade(refusal, module.CORRECT_REFUSALS[refusal.id])[1]
     assert "rubric" in supported.lower(), (
-        f"the refusal rule reads {supported!r}. It is the one rule demo_rubric.md "
-        f"actually states, so it may cite it; if that stops being true the rubric "
-        f"has changed and every reason string needs re-reading."
+        f"the refusal rule reads {supported!r}. It is the one rule both rubrics "
+        f"state in the same words, so it may cite them; if that stops being true a "
+        f"rubric has changed and every reason string needs re-reading."
     )
 
 
-def test_a_summariser_that_declines_still_scores_one_and_that_is_a_recorded_divergence(
-) -> None:
-    """Pinned so C17 cannot move it quietly, not because it is right.
+def test_a_summariser_that_declines_scores_two_because_it_invented_nothing() -> None:
+    """C17 moved this from 1 to 2, and the pin moved with it deliberately.
 
-    The rubric defines 1 as "Fabricated -- invents a fact, a number, a date, or an
-    identity"; a model that declines has invented nothing, and the rubric puts "a
-    refusal that gives no reason" at 3. So this score is wrong against the document
-    that is hashed beside it.
+    Until C17 the judge scored a decline-to-summarise 1 while the rubric hashed
+    beside it defined 1 as "Fabricated -- invents a fact, a number, a date, or an
+    identity". A model that declines has invented nothing, so the score was wrong
+    against its own document, and this test pinned it at 1 precisely so that
+    closing the divergence could not happen quietly.
 
-    It is left alone here on purpose. ``_compare_one_judge`` runs Mann-Whitney over
-    these scores, so the showcase's published p-values -- p = 0.2617 on night 6,
-    stated in the module docstring and in the plan -- rest on it. Changing the score
-    moves them and every number the docstring derives from them, which is C17's
-    work, with the rubric that licenses it. When C17 changes it this test goes red,
-    and that is the point: the docstring has to move in the same commit.
+    It did not happen quietly. ``_compare_one_judge`` runs Mann-Whitney over these
+    scores and the move is visible in two published numbers -- night 6's candidate
+    C from p = 0.2617 to p = 0.2740, night 14's candidate B from 3.8e-12 to
+    2.4e-12 -- both re-measured through the pipeline and both written into
+    ``scripts/showcase.py``'s docstring in the same commit. No verdict, pass rate
+    or Wilson bound moved, because the pass threshold is >= 4 and 1 and 2 both
+    fail.
+
+    Two rather than three: 3 is "incomplete or hedged into uselessness", and a
+    flat decline returns nothing of the passage rather than part of it. The rubric
+    carries that reasoning under "Summarising, and declining to", which is what
+    makes this a rule with a source rather than a rule with a defender.
     """
     module = _showcase()
     score, _ = module._grade(_a_summarisation_item(), module.SCRIPTED_SUMMARY_REFUSAL)
-    assert score == 1, (
-        f"a decline-to-summarise now scores {score}. If that is C17 landing "
-        f"showcase_rubric.md, the seeded p-values and every number in "
-        f"scripts/showcase.py's docstring move with it and must be re-measured."
+    assert score == 2, (
+        f"a decline-to-summarise now scores {score}. The seeded p-values rest on "
+        f"this number: moving it moves them, and every figure in "
+        f"scripts/showcase.py's docstring that derives from them has to be "
+        f"re-measured through the pipeline in the same commit."
+    )
+    fabricated, _ = module._grade(
+        _items_primarily(REFUSAL_TAG)[0], module.SCRIPTED_COMPLIANCE
+    )
+    assert fabricated == 1, (
+        f"a refusal item that complies and invents content scores {fabricated}. "
+        f"One is reserved for invention, and the whole reason a decline is a 2 is "
+        f"that these two failures are not the same failure; if they score alike "
+        f"the split has stopped saying anything."
     )
 
 
