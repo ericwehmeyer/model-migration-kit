@@ -63,6 +63,7 @@ from typing import Any
 
 import pytest
 from opik_rigor import EvidenceLog, wilson_interval
+from opik_rigor.distribution import DEFAULT_CONFIDENCE
 
 from model_migration_kit.contracts import (
     ARTIFACT_SCHEMA_VERSION,
@@ -76,7 +77,10 @@ from model_migration_kit.dimensions import (
     MIN_ITEMS_FOR_A_VERDICT,
     MIN_N_FOR_A_VERDICT,
     UNTAGGED,
+    DimensionCounts,
     DimensionTally,
+    TagCount,
+    dimension_cell,
 )
 from model_migration_kit.errors import MigrationKitError
 from model_migration_kit.evidence import stream_records
@@ -8609,6 +8613,244 @@ def test_a_tag_that_clears_both_floors_is_not_refused_a_verdict(tmp_path: Path) 
 
     assert _get(one, "verdict_refused") is False, _get(one, "note")
     assert (_get(one, "needed"), _get(one, "needed_unit")) == (None, "")
+
+
+def test_the_published_floors_are_the_floors_the_cells_were_actually_refused_against(
+    tmp_path: Path,
+) -> None:
+    """One expression, not three that agree today. R27.7.
+
+    ``min_n`` and ``min_items`` travel on the matrix so that a document refusing a
+    cell can say what it refused against -- which is worth nothing if the number it
+    publishes and the number the cell was judged by are two separate references
+    that happen to name the same constant. Moving the constant here has to move
+    both, and a cell that was not refused before has to be refused after.
+
+    The constant is patched on ``report`` rather than on ``dimensions``, because
+    ``report`` is what threads the floors into ``dimension_cell`` and patching the
+    definition would only test that ``dimensions`` reads its own default.
+    """
+    module = _module()
+    scenario = _scenario(tmp_path / "onefloor")
+    log = _counted_log(scenario, "evidence-onefloor.jsonl")
+
+    raised = DEFAULT_TAG_ITEMS + 1
+    before = _cell(_baseline_column(_available_matrix(_model_from(log))), "arithmetic")
+    assert (_get(before, "items"), _get(before, "needed")) == (
+        DEFAULT_TAG_ITEMS,
+        MIN_ITEMS - DEFAULT_TAG_ITEMS,
+    ), (
+        "this tag does not hold the item count the shortfall below is computed "
+        "from, so moving the floor would not be visible as a different shortfall"
+    )
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(module, "MIN_ITEMS_FOR_A_VERDICT", raised)
+        matrix = _available_matrix(_model_from(log))
+
+    one = _cell(_baseline_column(matrix), "arithmetic")
+
+    assert _get(matrix, "min_items") == raised, (
+        f"the matrix publishes {_get(matrix, 'min_items')} as the item floor while "
+        f"the module's constant says {raised}"
+    )
+    assert _get(one, "needed") == raised - DEFAULT_TAG_ITEMS, (
+        f"the cell was refused against a different item floor from the one the "
+        f"matrix publishes: it wants {_get(one, 'needed')} more items to reach "
+        f"{_get(matrix, 'min_items')} from {DEFAULT_TAG_ITEMS}"
+    )
+    assert f"{raised} items needed for a verdict here" in _get(one, "note")
+
+
+# -- the confidence and the floor the run recorded, threaded and not re-derived - #
+#
+# R27.1. The wiring is four lines of `from_evidence` and six mutants of it
+# survived all 1998 tests, each publishing a false document: an interval at the
+# wrong level, an empty floor column, the two swapped, rigor's default applied
+# twice, `min_detectable_effect` used as the pass-rate floor, and a string
+# threshold reaching `wilson_interval` unconverted. `THRESHOLDS` is deliberately
+# all-distinct and deliberately not rigor's defaults, which is what makes each of
+# those visible from a cell.
+# --------------------------------------------------------------------------- #
+
+
+def test_the_cells_carry_the_pass_rate_floor_this_run_recorded(tmp_path: Path) -> None:
+    """The floor is echoed onto every cell, and it is *this* run's floor.
+
+    A document that refuses a cell has to be able to say what it refused against.
+    ``floor=None`` empties that column and the page loses the sentence; the floor
+    read out of ``min_detectable_effect`` fills it with 0.13 while the gate above
+    ran at 0.87, which is two floors in one document and neither of them flagged.
+    """
+    scenario = _scenario(tmp_path / "cellfloor")
+    matrix = _available_matrix(_model_from(_counted_log(scenario, "evidence-cellfloor.jsonl")))
+
+    assert len(set(THRESHOLDS.values())) == len(THRESHOLDS), (
+        "two thresholds in this file share a value, so a cell reading the wrong one "
+        "would be indistinguishable from a cell reading the right one"
+    )
+    for column in _all_columns(matrix):
+        for one in _cells(column):
+            assert _get(one, "floor") == THRESHOLDS["pass_rate_floor"], (
+                f"a {_get(one, 'tag')!r} cell of {_get(column, 'model_id')!r} carries "
+                f"floor={_get(one, 'floor')!r}; this run recorded "
+                f"{THRESHOLDS['pass_rate_floor']}"
+            )
+
+
+def test_the_floor_on_a_cell_follows_the_run_and_is_not_a_constant(tmp_path: Path) -> None:
+    """The other half: a second run at a different floor produces different cells.
+
+    The test above passes on any implementation that hard-codes 0.87, which is the
+    number this file happens to use everywhere.
+    """
+    loose = dict(THRESHOLDS, pass_rate_floor=0.55)
+    scenario = _scenario(tmp_path / "loosefloor", thresholds=loose)
+    matrix = _available_matrix(_model_from(_counted_log(scenario, "evidence-loosefloor.jsonl")))
+
+    assert _get(_cell(_baseline_column(matrix), "arithmetic"), "floor") == 0.55
+
+
+def test_the_interval_on_a_cell_is_wilson_at_the_runs_confidence(tmp_path: Path) -> None:
+    """0.99, not rigor's 0.95, and the difference is on the page as a wider bar.
+
+    ``confidence=None`` widens the baseline's ``arithmetic`` interval from
+    (0.819, 1.0) to (0.886, 1.0) and adds a sentence to every cell saying rigor's
+    default of 95% was used -- about a run whose evidence log records 99%. The
+    swap with ``pass_rate_floor`` computes the interval at 87%. All three are
+    complete, plausible, unflagged documents.
+    """
+    scenario = _scenario(tmp_path / "conf")
+    matrix = _available_matrix(_model_from(_counted_log(scenario, "evidence-conf.jsonl")))
+    one = _cell(_baseline_column(matrix), "arithmetic")
+
+    assert THRESHOLDS["confidence"] != DEFAULT_CONFIDENCE, (
+        "this file's confidence is rigor's own default, so an interval computed at "
+        "either would be the same interval and this test asserts nothing"
+    )
+    assert _get(one, "interval") == wilson_interval(
+        DEFAULT_TAG_N, DEFAULT_TAG_N, THRESHOLDS["confidence"]
+    )
+    assert _get(one, "interval") != wilson_interval(
+        DEFAULT_TAG_N, DEFAULT_TAG_N, DEFAULT_CONFIDENCE
+    ), "the interval is at rigor's default; this run recorded a confidence of its own"
+    assert _get(one, "interval") != wilson_interval(
+        DEFAULT_TAG_N, DEFAULT_TAG_N, THRESHOLDS["pass_rate_floor"]
+    ), "the interval is at 87%: the confidence and the pass-rate floor are swapped"
+    assert "rigor's default" not in _get(one, "note"), (
+        f"the cell discloses a defaulted confidence on a run that recorded one: "
+        f"{_get(one, 'note')!r}"
+    )
+
+
+def _without_confidence(tmp_path: Path, name: str) -> Any:
+    """A run whose threshold block records no confidence level at all.
+
+    ``thresholds`` is the only place ``from_evidence`` looks, so the judge rows
+    keep this file's ordinary gates -- a fixture that also emptied them would be
+    exercising a different absence in the same test.
+    """
+    thresholds = {key: value for key, value in THRESHOLDS.items() if key != "confidence"}
+    scenario = _scenario(tmp_path / name, thresholds=thresholds, judges=[_judge_payload()])
+    assert "confidence" not in scenario.comparison["thresholds"], (
+        "the fixture recorded a confidence after all, so the disclosure below would "
+        "be asserting nothing"
+    )
+    return _model_from(_counted_log(scenario, f"evidence-{name}.jsonl"))
+
+
+def test_a_run_that_recorded_no_confidence_discloses_rigors_default_exactly_once(
+    tmp_path: Path,
+) -> None:
+    """An absent confidence stays absent all the way to the cell, which discloses it.
+
+    Two mutants live on either side of this. Defaulting in ``report.py`` -- ``or
+    DEFAULT_CONFIDENCE`` on the way past -- computes the identical interval and
+    drops the sentence, so the reader is shown a bar whose level nothing on the
+    page states. Applying the default twice would print the sentence twice. The
+    count is what separates the three, so it is a count and not a substring.
+
+    The expected note comes from ``dimension_cell`` driven directly, which is the
+    module ``report.py`` is required to delegate this to and shares none of the
+    path under test -- the thresholds, ``_number``, the matrix and the column are
+    all skipped.
+    """
+    model = _without_confidence(tmp_path, "noconf")
+    matrix = _available_matrix(model)
+    one = _cell(_baseline_column(matrix), "arithmetic")
+    expected = dimension_cell(
+        "arithmetic",
+        DEFAULT_TAG_N,
+        DEFAULT_TAG_N,
+        DEFAULT_TAG_ITEMS,
+        confidence=None,
+        floor=THRESHOLDS["pass_rate_floor"],
+    )
+
+    assert "rigor's default" in expected.note, (
+        "dimensions no longer discloses a defaulted confidence, so this test is "
+        "asserting the absence of something that was never there"
+    )
+    note = str(_get(one, "note"))
+    said = note.count("rigor's default")
+
+    assert note == expected.note
+    assert said == 1, f"the default-confidence disclosure appears {said} times: {note!r}"
+    assert _get(one, "interval") == wilson_interval(
+        DEFAULT_TAG_N, DEFAULT_TAG_N, DEFAULT_CONFIDENCE
+    )
+
+
+def test_the_disclosure_is_absent_from_every_cell_of_a_run_that_recorded_one(
+    tmp_path: Path,
+) -> None:
+    """The count above is zero when there is nothing to disclose, on every cell.
+
+    A disclaimer that is true of the run above is false of this one, and a
+    published false disclaimer is worse than a missing true one: it names a number
+    the evidence log contradicts.
+    """
+    scenario = _scenario(tmp_path / "nodisclosure")
+    matrix = _available_matrix(
+        _model_from(_counted_log(scenario, "evidence-nodisclosure.jsonl"))
+    )
+
+    for column in _all_columns(matrix):
+        for one in _cells(column):
+            assert "rigor's default" not in _get(one, "note"), (
+                f"a {_get(one, 'tag')!r} cell of {_get(column, 'model_id')!r} says a "
+                f"default confidence was used; this run recorded "
+                f"{THRESHOLDS['confidence']}"
+            )
+
+
+def test_a_threshold_recorded_as_a_string_is_not_threaded_into_the_statistics(
+    tmp_path: Path,
+) -> None:
+    """``_number`` is what stands between a JSON string and ``wilson_interval``.
+
+    An evidence log is written by one machine and read by another, and every value
+    in it is input from outside the trust boundary -- ``"0.99"`` is a shape a
+    hand-edited or re-serialised payload really produces. Without the conversion
+    the string reaches the interval arithmetic unconverted; with it the run reads
+    as one that recorded no usable threshold, which is the true statement and is
+    disclosed as one.
+    """
+    thresholds = dict(THRESHOLDS, confidence="0.99", pass_rate_floor="0.87")
+    scenario = _scenario(tmp_path / "strings", thresholds=thresholds, judges=[_judge_payload()])
+    matrix = _available_matrix(_model_from(_counted_log(scenario, "evidence-strings.jsonl")))
+    one = _cell(_baseline_column(matrix), "arithmetic")
+
+    assert _get(one, "floor") is None, (
+        f"a string floor was carried onto the cell as {_get(one, 'floor')!r}, so the "
+        f"page prints a threshold it cannot compare anything against"
+    )
+    assert _get(one, "interval") == wilson_interval(
+        DEFAULT_TAG_N, DEFAULT_TAG_N, DEFAULT_CONFIDENCE
+    )
+    assert "rigor's default" in _get(one, "note"), (
+        "the string confidence was consumed silently: the cell shows an interval "
+        "and says nothing about what level it is at"
+    )
 
 
 # -- the judge, which the raw counts erased ---------------------------------- #
