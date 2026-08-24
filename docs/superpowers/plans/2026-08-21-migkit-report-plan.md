@@ -4953,3 +4953,168 @@ while the bundled golden set is 12 items, so the headline demo can never show
 the number the chunk exists to produce. Flagged, not ruled — but whoever
 schedules C14's spot-check element should know the section will be empty on the
 demo unless `k` or the demo set moves.
+
+### R27 — rulings on C10's review: eighteen survivors, and a test satisfied by prose
+
+C10's reviewer ran ~50 mutants: 25 killed, **18 surviving mutants that change
+behaviour**, 5 equivalent. Every survivor was re-confirmed against the **full
+1998-test suite**, not just C10's 22. The chunk's *code* is right almost
+everywhere; what is missing is anything that would notice if it stopped being.
+
+#### R27.1 — the confidence and floor provenance: right in the code, pinned by nothing
+
+My ruling 1 was met. `report.py:1250-1254` threads
+`confidence=_number(thresholds.get("confidence"))` and
+`floor=_number(thresholds.get("pass_rate_floor"))` through to `dimension_cell`;
+probed cells carry `floor=0.87` and a Wilson interval at **0.99**, and an absent
+confidence stays `None` so the cell discloses rigor's default itself. The double
+application really is avoided.
+
+**Six mutants survive all 1998 tests**, and each publishes a false document:
+
+| Mutant | What the page would say |
+|---|---|
+| `confidence=None` | interval widens to (0.886, 1.0), **and** every cell gains *"No confidence level was given, so rigor's default of 95% was used"* — a printed disclaimer that is false about a run recording 99% |
+| `floor=None` | the floor column empties; a document that refuses a cell can no longer say what it refused against |
+| confidence/floor swapped | `floor=0.99`, interval at 87% → (0.929, 1.0). Both wrong, both plausible, neither flagged |
+| confidence defaulted in `report.py` | the exact double application the ruling forbids |
+| floor from `min_detectable_effect` | cells refuse against **0.13** while the gate used 0.87 — two floors in one document |
+| `_number()` dropped | a string threshold reaches `wilson_interval` unconverted |
+
+**Ruling: tests are owed.** Assert `cell.floor == 0.87`, that `cell.interval` is
+Wilson-at-0.99 and **not** 0.95, and add a no-confidence fixture asserting the
+disclosure sentence appears **exactly once**. The tester was right that it could
+not assert this without inventing a requirement; the requirement now exists.
+
+#### R27.2 — a test satisfied by its own file's prose
+
+`test_the_report_module_names_the_untagged_sentinel_rather_than_typing_it` is
+`"UNTAGGED" in inspect.getsource(report)`. The reviewer replaced **every
+executable use with `""` and deleted the import** — the test still passed, and
+so did all 1998.
+
+It is not "satisfiable by a comment", as I guessed when I ruled. **It is
+currently satisfied by docstrings that would survive the regression untouched.**
+Adopt the reviewer's verified replacement:
+
+```python
+tree = ast.parse(inspect.getsource(_module()))
+reached = any(
+    (isinstance(n, ast.Name) and n.id == "UNTAGGED")
+    or (isinstance(n, ast.Attribute) and n.attr == "UNTAGGED")
+    for n in ast.walk(tree)
+)
+```
+
+Matching only `Name`/`Attribute` excludes the `ImportFrom` alias, which is what
+makes it reject *"import it and type `""` anyway"* while accepting both forms
+the contract allows.
+
+**The general lesson is worth more than the fix.** A test that greps a module's
+source cannot distinguish code from commentary, and this project writes long
+docstrings — so source-text assertions are *systematically* weakest here, in
+proportion to how well the code is documented. Parse, do not grep.
+
+#### R27.3 — sorted order confirmed, and the contract's phrase corrected
+
+Golden-set **file** order is not reachable from any input `report.py` has:
+`GoldenSet.stats()` returns `dict(sorted(...))` (`goldenset.py:165`) and the
+counter's inner mapping is `sorted(index.tags)`. The counter also **zero-fills
+the whole tag universe** — a `ghost` tag carried only by never-judged items
+still gets a `(0,0,0)` cell — so `matrix.tags` is exactly *golden-set tags +
+`UNTAGGED`*.
+
+**The contract's phrase "golden-set tag order" becomes "alphabetical, `UNTAGGED`
+last."** No discriminating fixture is needed for file order, because a
+regression to it is unimplementable.
+
+But **M24 survives**: deleting `_matrix_tags`' own `sorted()` and taking the
+counter's key order is invisible *only because `dimensions.py` happens to sort*.
+Nothing pins that `report.py` orders for itself. A `zeta`/`alpha` fixture closes
+it.
+
+#### R27.4 — three fixture and coverage gaps, all one shape
+
+- **`TagColumn.cell()` is never verified for identity.** Returning the first
+  cell whose tag does *not* match survives all 1998 tests, because every fixture
+  gives both tags identical counts. **This is C5's M01 exactly** — a fixture set
+  that hard-codes one value everywhere cannot tell the correct computation from
+  the broken one. Per-tag-distinct counts close it and two near-equivalent
+  survivors with it.
+- **No 3-model fixture exists anywhere.** `candidates` is a 1-tuple in every
+  test, so its plurality is untested and both "reverse candidate order" and
+  "make the extra models non-deterministic" survive.
+- **`candidates` as a tuple is pinned only incidentally.** Regressing it to
+  `Mapping[str, TagColumn]` survives all 22 of C10's tests — section 21's own
+  helpers branch on `isinstance(..., Mapping)` and reach through it. It dies only
+  in **section 20**, and only because `column()` unpacks a dict to its keys and
+  crashes on `str.model_id`. A crash is not an assertion; refactor `column()` and
+  the hazard reopens silently. Assert the shape directly.
+
+#### R27.5 — the zero column: right note, missing distinction
+
+Three genuinely different situations render **byte-identically** — a judged side
+that produced nothing, a side the payload names that the counter never saw, and
+a golden-set tag no model produced. All give `(0,0,0)`, `rate=None`,
+`verdict_refused=True`, note *"Nothing was measured for X."*
+
+**The note is right** — it says nothing was measured, not a measured zero. That
+trap is cleanly avoided, and it is the one that matters most.
+
+The gap is that cases 1 and 2 have **different fixes** (check the judge
+configuration vs. check whether the run completed at all), the matrix carries
+nothing to separate them, and `available=True` in both, so the table looks
+confident. Case 2 is the implementer's own extension and has **no test at all**:
+M6 — drop the never-seen side entirely, leaving a one-column "comparison" with
+nothing on the page saying where the other side went — survives all 1998 tests.
+
+**Ruling: test case 2, and give the two a distinguishable note.** Not a new
+field: the note is already the place this document says such things.
+
+#### R27.6 — the decline assertion is tautological
+
+`_counter_reason` derives the expected sentence by running **the same production
+code path**, so a re-wording at the source moves both sides together. M40
+re-words `_unjoinable` in `dimensions.py` and survives all 1998 tests;
+`test_dimensions.py` only checks a keyword substring.
+
+The report side *is* pinned against re-wording **in `report.py`**, which is the
+part C10 owns, and that is genuinely worth having. But "byte-identical to their
+source" is only ever "identical to whatever the source now says". Worse, the
+distinctness assertion checks six distinct **strings**, not six distinct
+**diagnoses**: collapsing `_unknown_item` onto `_unjoinable`'s sentence keeps the
+strings unequal, because the interpolated ids differ.
+
+**Ruling: assert the diagnoses, not the strings** — that no two declines share a
+*template* — and leave the wording pinned where the wording lives, in
+`test_dimensions.py`. A cross-module byte-assertion would just move the tautology.
+
+#### R27.7 — two docstrings describing code that is not there
+
+- `_matrix_tags` argues the alternative "would disagree with the columns the
+  moment the two came from different golden sets." In `from_evidence`, the only
+  caller, both come from the same `view.update(...)` of the same `loaded` object
+  (`report.py:1581-1593`). **They cannot.** The first reason the same docstring
+  gives is real and sufficient; delete the second.
+- `_tag_column` claims the published floors and the refused-against floors "are
+  one expression rather than two that agree today." They are **three**, each
+  independently naming the module constants (`1728-1729`, `1767-1768`,
+  `1791-1792`). The docstring describes the design it was meant to produce.
+  Thread them through one local and the sentence becomes true.
+
+Both are the C5-D6 shape: **a docstring reasoning from a state the code cannot
+reach teaches the next reader something false.** Third chunk running.
+
+#### R27.8 — for C14
+
+1. **`matrix.candidates[0]` is the comparison's candidate by construction** and
+   pinned by nothing. **Pin the order** with the 3-model fixture rather than
+   adding a `matrix.candidate` accessor — a second way to name one side is a
+   second thing to disagree.
+2. `cell(tag)` never returns `None` for a tag in `matrix.tags` (the counter
+   zero-fills), so C14 needs no null guard — after R27.4's identity test.
+3. `available=True` guarantees `judge != ""`.
+4. `matrix.tags` is a tuple while `goldenset["tags"]` is a dict — similar names,
+   different shapes. Say so where a template author will look.
+5. **C14 cannot today distinguish a judged-but-silent side from a never-judged
+   one.** If the page is meant to, R27.5's note must carry it.
