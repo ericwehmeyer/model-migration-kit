@@ -191,6 +191,7 @@ from model_migration_kit.demo import (  # noqa: E402
     _wrong_answer_for,
 )
 from model_migration_kit.goldenset import GoldenSet  # noqa: E402
+from model_migration_kit.judging import JudgeSpec  # noqa: E402
 
 GOLDENSET = REPO_ROOT / "src" / "model_migration_kit" / "data" / "showcase_goldenset.jsonl"
 
@@ -813,7 +814,7 @@ def judge_script(goldenset: GoldenSet) -> Callable[[str], str]:
     return respond
 
 
-def judge_adapter_for(goldenset: GoldenSet) -> Callable[[object], FakeAdapter]:
+def judge_adapter_for(goldenset: GoldenSet) -> Callable[[JudgeSpec], FakeAdapter]:
     """The ``adapter_for`` factory ``JudgeConfig.build`` asks its caller for.
 
     The model id comes from the spec rather than from this module, so the judge
