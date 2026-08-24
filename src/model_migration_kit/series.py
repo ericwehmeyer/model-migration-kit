@@ -595,6 +595,12 @@ def _incomparable(key: ComparabilityKey, against: ComparabilityKey) -> str | Non
             f"{_hash(against.judges_hash)}. Two panels are two instruments, and the "
             f"difference between them would measure the judges rather than the models."
         )
+    # KNOWN HOLE, left open deliberately: ``n_per_item`` is ``0`` when the payload
+    # never recorded one, so two runs that both failed to record a depth compare
+    # equal here -- the same hole ``_unrecorded_hash`` closes one field up. It is
+    # not closed because the contract's edge table names only the hashes, and an
+    # exclusion nothing predicts is worse than a documented gap. Close it in a
+    # chunk that can change the edge table, not in passing.
     if key.n_per_item != against.n_per_item:
         return (
             f"excluded: {key.n_per_item} draws per item against the group's "
