@@ -211,6 +211,10 @@ NIGHTS = 14
 REVIEW_NIGHT = 6
 COLLAPSE_NIGHT = NIGHTS
 
+#: The last night before the collapse, and the night whose ordinary failures night
+#: 14 *reuses* unchanged. See :func:`_rotation_night`.
+LAST_GREEN_NIGHT = COLLAPSE_NIGHT - 1
+
 #: Concurrency for every showcase run. One, and stated here as a constant rather
 #: than left to ``run_goldenset``'s default, because the default is a keyword a
 #: caller can change and this is a property the seed depends on. The adapters
@@ -339,6 +343,41 @@ def _pick(
     return tuple(chosen)
 
 
+def _rotation_night(night: int) -> int:
+    """Which night's ordinary failing set to use. Every night's own, except 14's.
+
+    Night 14 reuses night 13's, for every side, and this is the one place in the
+    file where the seed stops being a simulation and becomes a **controlled
+    experiment**.
+
+    The rotation exists so the timeline moves: a baseline that fails the same five
+    items every night draws a flat line and reads as fabricated. But run it on
+    night 14 as well and it fires *alongside* the collapse, and the eight ordinary
+    substitutions it makes are indistinguishable, in the rendered document, from
+    consequences of the point release. The first blind test of this file caught it
+    in the matrix rather than in the adapters: candidate B's ``#classification``
+    went from 75/85 to **80/85** between night 13 and night 14 -- the model got
+    *better* at classification on the night whose entire story is that it got
+    worse, with no recorded cause anywhere in the report.
+
+    That is not untidiness, it is a false attribution. C16 requires night 14 to
+    show exactly one ``changed=True`` parameter row, and the spec's argument for
+    the strip is that "when one row moved and everything else held, the drop is
+    attributable rather than merely observed". A strip claiming a single moved row
+    over a matrix showing five completions of unexplained improvement is a document
+    contradicting itself in the one place a sceptical reader checks -- and C7's
+    contract already names a strip that licenses a false attribution "the
+    highest-consequence, lowest-visibility bug in the whole plan".
+
+    So on night 14 the *only* difference anywhere in the run is candidate B's
+    sixteen refusal items. Nights 1-13 rotate exactly as before. The cost is that
+    night 14's baseline, candidate A and candidate C repeat night 13's numbers
+    exactly, which looks unrealistically clean; that is the correct trade, because
+    the alternative is a report whose own data undercuts its headline claim.
+    """
+    return LAST_GREEN_NIGHT if night == COLLAPSE_NIGHT else night
+
+
 def failing_ids(goldenset: GoldenSet, *, night: int, slot: int | None) -> tuple[str, ...]:
     """The item ids one model gets wrong on one night, in pool order.
 
@@ -355,23 +394,27 @@ def failing_ids(goldenset: GoldenSet, *, night: int, slot: int | None) -> tuple[
     ``refusal`` -- to whatever B was already failing. Appended rather than
     substituted, because a point release that fixed the model's other faults while
     destroying its refusals would be a different and much less common story.
+
+    And on night 14 "whatever B was already failing" is **night 13's set exactly**,
+    for every side. See :func:`_rotation_night` for why the rotation stops there.
     """
     _require_night(night)
     pool = failing_pool(goldenset)
-    baseline_count = BASELINE_FAILURES[night - 1]
-    baseline_window = _pick(pool, (night - 1) * _BASELINE_STRIDE, baseline_count)
+    rotation = _rotation_night(night)
+    baseline_count = BASELINE_FAILURES[rotation - 1]
+    baseline_window = _pick(pool, (rotation - 1) * _BASELINE_STRIDE, baseline_count)
     if slot is None:
         return baseline_window
     if not 0 <= slot < len(CANDIDATE_MODEL_IDS):
         raise ValueError(f"slot must be None or 0..{len(CANDIDATE_MODEL_IDS) - 1}, got {slot!r}")
 
     gains, flips = _PLAN[slot]
-    if slot == 2 and night == REVIEW_NIGHT:
+    if slot == 2 and rotation == REVIEW_NIGHT:
         gains, flips = _REVIEW_NIGHT_PLAN
     kept = baseline_window[gains:]
     own = _pick(
         pool,
-        (night - 1) * _BASELINE_STRIDE + _FLIP_OFFSET + slot * _FLIP_SPACING,
+        (rotation - 1) * _BASELINE_STRIDE + _FLIP_OFFSET + slot * _FLIP_SPACING,
         flips,
         taken=baseline_window,
     )
