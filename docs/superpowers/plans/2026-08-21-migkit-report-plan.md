@@ -4474,3 +4474,92 @@ on, and R21 is what that assumption cost at the level of the architecture.
 - `delta_pp` and `spread_days` are **deliberately unrounded**, now stated on the
   public attributes rather than only in private docstrings (D5). Assert exact
   floats, not `pytest.approx`.
+
+### R23 — C22 splits, and `excluded` gets exactly one source
+
+Scoping C22 against what is actually merged. Two findings, one of them a
+design ruling that would otherwise be made badly by whoever implements it.
+
+#### R23.1 — verified: `spot_check`'s inputs are already on the model
+
+R21.3 claimed `spot_check` needs no records and no golden set, only three
+integers. Checked rather than assumed:
+
+```python
+def spot_check(items_passing: int, items_failing: int,
+               items_unstable: int, *, k: int = 12) -> SpotCheck | None
+```
+
+and `ReportModel.item_counts` is a mapping whose keys are read by
+`_item_counts` (`report.py:2643`) as exactly **`passing`**, **`failing`** and
+**`unstable`**. The three inputs are already carried, under the names the
+function wants. C22 does arithmetic on fields the model holds and reads nothing,
+as R21.3 says.
+
+One decision left for the implementer and worth naming so the reviewer checks
+it: `ReportModel.item_counts` is the run's own counts, while `JudgeRow` carries
+`items_baseline` and `items_candidate` separately. **Which side the spot check
+speaks about must be stated in the sentence it prints**, not left to the
+reader — the whole point of this number is that a sceptical reader checks it
+first.
+
+#### R23.2 — ruling: `excluded` is `candidate_field`'s, not a second partition
+
+C14's table gives the excluded-runs list its own row, gated on *"any
+exclusion"*. The tempting implementation is a fresh
+`partition_comparable(model.series, against=...)` call at the top level.
+
+**That is wrong, and it is the `dimension_counts` mistake again.** `CandidateField`
+**already carries `excluded`**, produced by the partition that built the
+candidate table. A second top-level partition would put the same facts on the
+model twice, computed by two calls that can drift apart — and R16.3 already
+ruled on exactly this shape when it refused to let `dimension_counts` sit beside
+`dimensions`: *"Keeping both would put the same facts on the model at two
+fidelities, which is two chances for them to disagree."*
+
+Worse here than there, because the two partitions would be against possibly
+*different* keys, so the disagreement would be legitimate on both sides and
+impossible to adjudicate from the model.
+
+**Ruling: the rendered excluded-runs list is the candidate field's own
+`excluded`.** One partition, one source. The list and the table it explains are
+then guaranteed to be about the same set of runs, which is the only way the
+section means anything — an exclusion list that does not match the table above
+it is worse than no list.
+
+**Known consequence, already flagged and accepted.** C5's reviewer found that a
+log of two anonymous runs plus one named candidate returns `None` from
+`candidate_field`, and every exclusion sentence computed along the way dies with
+it: *the report can never say why there is no table.* Binding `excluded` to the
+candidate field inherits that. It is the right trade — a wrong-but-present list
+is worse than an absent one — but it means **C14's empty state for this section
+must say that runs may have been excluded without being able to name them**,
+rather than rendering an empty list that reads as "nothing was excluded".
+
+That is the same distinction C7's first-run marker exists to draw, and C4's
+exclusions, and C10's zero column: *an absence must not render as a
+measurement.* It is now four chunks in a row, and it is fair to call it this
+document's central design rule rather than a recurring coincidence.
+
+#### R23.3 — the split
+
+**C22a — dispatchable now.** `spot_check` and the candidate field
+(`candidates` + `excluded`). Both producers, C11 and C5, are through all four
+roles with no open rulings. This renders **three** of C14's nine elements: the
+spot-check sentence, the candidate table, and the excluded-runs list. It is also
+what finally moves *"spot check"* off zero in the measured render.
+
+**C22b — blocked, and on two different things.**
+
+- `trend` and `parameter_strip` wait on C7's review **and** on a C7 follow-up:
+  R21.5 requires `Trend` to raise a caveat when the lineage was assumed rather
+  than declared, and nothing raises one today. R21.5 forbids C22 from inventing
+  that caveat in the plumbing, so it belongs in C7's fix pass, which is coming
+  anyway.
+- `multiplicity` waits on C6, in flight.
+
+Splitting costs a second pass over `ReportModel` and `from_evidence`, and that
+cost is worth paying: the alternative is that nothing renders until C6 and C7's
+follow-up both land, which is the scheduling mistake this plan has already made
+once and written at the top of its handoff — **order the chunks so the artifact
+moves.**
