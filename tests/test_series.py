@@ -7119,3 +7119,322 @@ def test_the_method_is_named_holm_bonferroni_whether_or_not_it_was_applied():
     refused = _corrected(_hand_built_field(_row(_tested(_LOW_P, 0.03))))[1]
     assert applied.method == "holm-bonferroni"
     assert refused.method == "holm-bonferroni"
+
+
+# ----------------------------------------------------------------------------------
+# The two overclaims the reviewer was told to look for
+# ----------------------------------------------------------------------------------
+
+
+def _every_shape():
+    """One field of each shape this section exercises, for the invariants that hold
+    across all of them. A parametrisation over a single shape is an invariant
+    asserted about one case."""
+    return {
+        "one candidate": _hand_built_field(_row(_tested(_LOW_P, 0.03))),
+        "three uniform": _field_of(_three_candidates()),
+        "three untested": _field_of(
+            [
+                _tested("alpha-candidate", 0.02),
+                _tested("beta-candidate", 0.04),
+                _tested("gamma-candidate", None),
+                _tested("kilo-candidate", None),
+                _tested("sierra-candidate", None),
+            ]
+        ),
+        "a not-a-number": _field_of(
+            [
+                _tested("alpha-candidate", 0.02),
+                _tested("beta-candidate", 0.02),
+                _tested("kilo-candidate", _NAN),
+            ]
+        ),
+        "two levels": _field_of(
+            [
+                _tested("alpha-candidate", 0.03, alpha=0.05),
+                _tested("gamma-candidate", 0.005, alpha=0.01),
+            ]
+        ),
+        "no level": _field_of(
+            [
+                _tested("alpha-candidate", 0.03, alpha=None),
+                _tested("gamma-candidate", 0.04, alpha=None),
+            ]
+        ),
+        "no p-values": _field_of(
+            [_tested("alpha-candidate", None), _tested("gamma-candidate", None)]
+        ),
+        "drifted baselines": _field_of(_drifted_log()),
+    }
+
+
+@pytest.mark.parametrize("shape", sorted(_every_shape()))
+def test_applied_is_never_true_beside_an_empty_thresholds_mapping(shape):
+    """The reviewer's second named trap, asserted over every shape in this section.
+    A report that says "Holm-Bonferroni was applied across three candidates" while
+    showing no thresholds is precisely the overclaim the chunk exists to prevent:
+    the claim is the part a reader carries away and the thresholds are the part
+    that makes it checkable.
+
+    The converse is asserted too -- one threshold per family member, and every key
+    a model the field actually holds -- because a mapping of the wrong size is a
+    claim about a family other than the one on the page."""
+    field = _every_shape()[shape]
+    _, multiplicity = _corrected(field)
+    models = {candidate.model for candidate in field.candidates}
+    assert set(multiplicity.thresholds) <= models, (
+        "thresholds are keyed on candidate models this field holds"
+    )
+    if multiplicity.applied:
+        assert multiplicity.thresholds, "applied, with nothing to show for it"
+        assert len(multiplicity.thresholds) == multiplicity.family_size
+        assert multiplicity.alpha is not None, "a correction was applied against some level"
+        assert all(
+            0.0 < threshold <= multiplicity.alpha for threshold in multiplicity.thresholds.values()
+        )
+    assert set(multiplicity.changed) <= models
+
+
+def test_the_note_says_the_p_values_were_already_corrected_across_their_judges():
+    """The reviewer's first named trap. Each point's `p_value` reaches this module
+    having already been Holm-corrected across its own judge panel by `compare`
+    (`comparison.py:852-860`), so correcting again across candidates is a *second*
+    correction on an already-corrected number. That is defensible and it is not
+    what a reader assumes, and a note that does not say so is misleading in the
+    direction of understating how much has been taken off the table.
+
+    A string assertion is the only thing that holds a sentence. This one is
+    deliberately loose about wording and strict about the fact: the note has to
+    mention the judges, and it has to mark the correction as the second one."""
+    _, multiplicity = _corrected(_field_of(_three_candidates()))
+    note = multiplicity.note.lower()
+    assert "judge" in note, (
+        f"the note does not mention the per-judge correction these p-values already "
+        f"carry: {multiplicity.note!r}"
+    )
+    assert any(word in note for word in ("already", "second", "again", "twice")), (
+        f"the note does not say this is a correction on top of one: {multiplicity.note!r}"
+    )
+
+
+def test_no_recorded_verdict_is_changed_by_the_correction():
+    """The contract's "must not", asserted where it bites: on a candidate whose
+    corrected significance disagrees with the verdict a gate recorded. The
+    correction changes what the *table* says about significance across the field;
+    it does not retroactively overturn a gate's decision, and the document has to
+    be able to print both -- "NO-GO as recorded; not significant once corrected
+    across three candidates" is the honest cell and it is more interesting than
+    either half.
+
+    The two rows carry *different* verdicts on purpose. A fixture where every point
+    recorded NO-GO cannot see an implementation that writes NO-GO over all of
+    them."""
+    recorded = [
+        _tested(_LOW_P, 0.03, verdict="NO-GO", reason="Judge 'accuracy' shows a regression."),
+        _tested(_HIGH_P, 0.045, verdict="GO", reason="No judge shows a regression."),
+    ]
+    field = _field_of(recorded)
+    corrected, multiplicity = _corrected(field)
+    assert set(multiplicity.changed) == {_LOW_P, _HIGH_P}, (
+        "both lost their significance to the correction, so the disagreement is live"
+    )
+    verdicts = {candidate.model: candidate.point.verdict for candidate in corrected.candidates}
+    assert verdicts == {_LOW_P: "NO-GO", _HIGH_P: "GO"}
+    reasons = {candidate.model: candidate.point.reason for candidate in corrected.candidates}
+    assert reasons[_LOW_P] == "Judge 'accuracy' shows a regression."
+    assert reasons[_HIGH_P] == "No judge shows a regression."
+    assert [candidate.point for candidate in corrected.candidates] == [
+        candidate.point for candidate in field.candidates
+    ], "the points come back as they went in, p-value and verdict alike"
+
+
+# ----------------------------------------------------------------------------------
+# What the field carries through -- R22.3, and the fixture monoculture rule
+# ----------------------------------------------------------------------------------
+
+
+def test_the_drift_caveat_and_the_superseded_exclusion_survive_the_correction():
+    """R22.3. Both already exist on the field C6 is handed, and both exist because
+    a warning that reaches nobody is the same as one never computed: the drift
+    caveat says the header baseline is not the baseline of the rows beneath it, and
+    the superseded exclusion is the only sentence a run beaten to its row leaves
+    behind. Filtering or re-wording either at this layer would undo C5's fix pass
+    one chunk downstream, and neither is C6's to edit -- multiplicity is about
+    p-values."""
+    field = _field_of(_drifted_log())
+    assert field.caveats, "this fixture was built to raise the drift caveat and did not"
+    assert any("superseded" in one.reason for one in field.excluded), (
+        "this fixture was built to supersede a run and did not"
+    )
+    corrected, _ = _corrected(field)
+    for caveat in field.caveats:
+        assert caveat in corrected.caveats, f"caveat dropped or re-worded: {caveat.reason!r}"
+    for exclusion in field.excluded:
+        assert exclusion in corrected.excluded, (
+            f"exclusion dropped or re-worded: {exclusion.reason!r}"
+        )
+    assert any("superseded" in one.reason for one in corrected.excluded)
+    assert any("do not add it back to a delta" in one.reason.lower() for one in corrected.caveats)
+
+
+def test_the_correction_reads_the_p_values_and_never_the_baseline_header():
+    """R20.1's rule, applied to this chunk: vary the field the code is *not*
+    supposed to be reading and assert the answer does not move. `baseline_pass_rate`
+    is a header and not an operand -- one reading from one run, printed above rows
+    whose deltas are each against their own baseline -- and multiplicity is a
+    statement about p-values alone.
+
+    These two fields carry identical p-values and levels and completely different
+    baseline-side counts: one where every row shares 40/50 and one where the rows
+    disagree, 30/50 against 40/50, which is the drift C5's caveat exists to expose.
+    Every field of the multiplicity must be identical across the two."""
+    uniform = _field_of(
+        [
+            _tested("alpha-candidate", 0.03, created=_AUG_20),
+            _tested("gamma-candidate", 0.045, created=_AUG_13),
+        ]
+    )
+    drifted = _field_of(
+        [
+            _tested("alpha-candidate", 0.03, created=_AUG_20, judge_failures_baseline=20),
+            _tested("gamma-candidate", 0.045, created=_AUG_13),
+        ]
+    )
+    assert uniform.baseline_pass_rate == 0.8
+    assert drifted.baseline_pass_rate == 0.6, "the two fixtures really do differ where it counts"
+
+    _, without_drift = _corrected(uniform)
+    _, with_drift = _corrected(drifted)
+    assert without_drift.applied is with_drift.applied is True
+    assert without_drift.alpha == with_drift.alpha == _ALPHA
+    assert without_drift.family_size == with_drift.family_size == 2
+    assert without_drift.thresholds == with_drift.thresholds
+    assert without_drift.changed == with_drift.changed
+    assert set(with_drift.changed) == {"alpha-candidate", "gamma-candidate"}, (
+        "R17.1 again: 0.045 is behind the step-down's stop and is changed all the same"
+    )
+
+
+def test_a_field_whose_baseline_pass_rate_is_none_is_corrected_like_any_other():
+    """R22.1 withdrew D7: `baseline_pass_rate` **can** be `None`, and the branch is
+    live rather than dead. Ruling 4 of C5's review gave `_baseline_pass_rate` a
+    second refusal ground -- counts that cannot both be true -- and `_ungraded`
+    screens neither bound, so a run recording 60 judge failures out of 50 graded
+    completions is a kept candidate whose baseline rate is refused.
+
+    C6 is likelier to have written this branch as unreachable than to have got it
+    wrong, which is exactly why it is worth a fixture: the header is absent, the
+    newest row's delta is absent with it, and the correction is unaffected because
+    it never wanted either number."""
+    field = _field_of(
+        [
+            _tested("alpha-candidate", 0.03, created=_AUG_20, judge_failures_baseline=60),
+            _tested("gamma-candidate", 0.045, created=_AUG_13),
+        ]
+    )
+    assert field.baseline_pass_rate is None, (
+        "60 failures out of 50 graded is not a rate, and this fixture depends on it"
+    )
+    corrected, multiplicity = _corrected(field)
+    assert corrected.baseline_pass_rate is None
+    deltas = {candidate.model: candidate.delta_pp for candidate in corrected.candidates}
+    assert deltas["alpha-candidate"] is None, "no baseline rate, no delta, and no invented zero"
+    assert multiplicity.applied is True
+    assert multiplicity.family_size == 2
+    assert set(multiplicity.changed) == {"alpha-candidate", "gamma-candidate"}
+
+
+def test_the_rows_come_back_unrounded_and_in_the_order_they_arrived():
+    """R22.3/D5. `delta_pp` and `spread_days` are deliberately unrounded, and
+    `pytest.approx` swallows exactly the mutant that rounds them -- so these are
+    exact floats, binary residue and all. The residue is the assertion: -15.0 would
+    pass against an implementation that rounded to one decimal place and
+    -15.000000000000002 would not.
+
+    The rows' order is `candidate_model` and the correction has no business
+    changing it: a table re-sorted by a statistic invites the reading that position
+    is the result."""
+    field = _field_of(_drifted_log())
+    corrected, _ = _corrected(field)
+    deltas = {candidate.model: candidate.delta_pp for candidate in corrected.candidates}
+    assert deltas["alpha-candidate"] == 5.000000000000004, "(0.65 - 0.60) * 100, unrounded"
+    assert deltas["gamma-candidate"] == -15.000000000000002, "(0.65 - 0.80) * 100, unrounded"
+    assert deltas["alpha-candidate"] != round(deltas["alpha-candidate"], 1)
+    assert deltas["gamma-candidate"] != round(deltas["gamma-candidate"], 1)
+    assert corrected.spread_days == field.spread_days == 7.0
+    assert [candidate.model for candidate in corrected.candidates] == [
+        "alpha-candidate",
+        "gamma-candidate",
+    ]
+    assert [candidate.stale_days for candidate in corrected.candidates] == [
+        candidate.stale_days for candidate in field.candidates
+    ]
+
+
+def test_the_corrected_field_is_the_same_eight_field_type_it_was_given():
+    """R20.3 made `CandidateField` eight fields and put `stale_after_days` last, so
+    that a renderer holding only the field can name the window `spread_flagged` was
+    measured against. A correction that rebuilt the field from seven of them would
+    hand the renderer back the same broken sentence -- both halves of "measured
+    more than 7 days apart" true of a field built with thirty, and the sentence
+    false."""
+    field = _field_of(_drifted_log(), stale_after_days=30.0)
+    corrected, _ = _corrected(field)
+    assert [member.name for member in dataclasses.fields(corrected)] == [
+        member.name for member in dataclasses.fields(field)
+    ]
+    assert corrected.stale_after_days == 30.0
+    assert corrected.spread_flagged is field.spread_flagged is False
+    assert corrected.key == field.key
+    assert corrected.baseline_pass_rate == field.baseline_pass_rate == 0.6
+
+
+# ----------------------------------------------------------------------------------
+# The type itself
+# ----------------------------------------------------------------------------------
+
+
+def test_the_multiplicity_carries_the_seven_fields_the_contract_names():
+    """A field the report expects and does not find is a template that renders
+    nothing where the honesty guard was supposed to be printed."""
+    _, multiplicity = _corrected(_field_of(_three_candidates()))
+    assert dataclasses.is_dataclass(multiplicity)
+    named = ("applied", "method", "alpha", "family_size", "thresholds", "changed", "note")
+    present = tuple(member.name for member in dataclasses.fields(multiplicity))
+    assert present == named, (
+        f"missing: {sorted(set(named) - set(present))}; "
+        f"not in the contract: {sorted(set(present) - set(named))}"
+    )
+    assert isinstance(multiplicity.applied, bool)
+    assert isinstance(multiplicity.family_size, int)
+    assert isinstance(multiplicity.changed, tuple)
+    assert all(isinstance(model, str) for model in multiplicity.changed)
+    assert isinstance(multiplicity.note, str)
+
+
+def test_a_multiplicity_cannot_be_edited_after_it_is_built():
+    """Frozen for `RunPoint`'s and `CandidateField`'s reason: a claim about a
+    correction that can be rewritten after the table beside it was rendered is a
+    claim that can be made to disagree with it."""
+    _, multiplicity = _corrected(_field_of(_three_candidates()))
+    with pytest.raises(AttributeError):
+        multiplicity.applied = False  # type: ignore[misc]
+    with pytest.raises(AttributeError):
+        multiplicity.changed = ()  # type: ignore[misc]
+
+
+def test_correct_field_leaves_the_field_it_was_given_alone():
+    """The field is frozen and the correction returns a new one, so the caller can
+    render both -- "significant as recorded, not significant once corrected" needs
+    the before as much as the after."""
+    field = _field_of(_three_candidates())
+    before = dataclasses.asdict(field)
+    _corrected(field)
+    assert dataclasses.asdict(field) == before
+
+
+def test_series_exports_the_two_names_c6_adds():
+    """`report.py` imports from `series` by name, and a name that is not exported is
+    a chunk that cannot be wired in."""
+    for name in ("Multiplicity", "correct_field"):
+        assert hasattr(series, name), f"series does not export {name}"
