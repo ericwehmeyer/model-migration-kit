@@ -1111,7 +1111,7 @@ Returns `None` — no sentence at all — when any of:
 *"drawn at random"* and must say **spot checks**, not **runs**:
 
 > A 12-prompt spot check drawn at random from these 96 items would have shown no
-> failures at all in 34% of cases.
+> failures at all in 33% of spot checks.   <!-- corrected by R14.1: was "34% of cases" -->
 
 **Edges.**
 
@@ -1119,7 +1119,7 @@ Returns `None` — no sentence at all — when any of:
 |---|---|
 | `passing=96, failing=0, unstable=0` | `None` |
 | `passing=8, failing=1, unstable=0, k=12` | `None` (N=9 < 12) |
-| `passing=88, failing=8, unstable=0, k=12` | probability ≈ 0.351 |
+| `passing=88, failing=8, unstable=0, k=12` | probability = 0.32877 (**corrected by R14.1**; the plan long read `≈ 0.351`, which is `(88/96) ** 12`, the with-replacement answer this contract's own "Must not" forbids) |
 | `passing=85, failing=8, unstable=3, k=12` | unstable counted as passing; identical to the row above at N=96, F=8 |
 | `failing == N` | `probability == 0.0`, sentence still returned |
 | `k == 0` | `ValueError` |
@@ -1683,6 +1683,11 @@ required)").
 But the sentence the spec wants is a different quantity:
 
 > A 12-prompt spot check would have shown no failures at all in 34% of runs.
+>
+> *(Corrected by R14.1: the true value is 33%, not 34%. The number is left as the
+> spec wrote it here because this paragraph is quoting the spec in order to argue
+> with its noun; the arithmetic is wrong too, and both are wrong for the same
+> reason — see R14.1's addendum.)*
 
 That is *"what is the probability that a k-item sample from this set contains
 none of the F failing items"*. It is hypergeometric, it is `comb(N-F, k)/comb(N,
@@ -3082,6 +3087,25 @@ implementer would have coded the formula and got 0.32877; a tester reading the
 edge table would have asserted 0.351 and filed a bug against correct code. The
 formula was always right; only the arithmetic done on it was wrong.
 
+**Addendum, from C11's tester, which is the better half of this finding.** 0.351
+is not a typo and not a rounding:
+
+```
+(88 / 96) ** 12 == 0.3519956280141369
+```
+
+It is the **with-replacement** answer — the independent-draws error that C11's
+own "Must not" forbids twelve lines further down the same contract, and that
+§7.4 spends three paragraphs explaining is the specific mistake a reviewer would
+find. The contract committed the error it was written to prevent, and then
+printed the result as the expected value a tester would assert against.
+
+Two things follow. First, §7.4's worked example needs correcting too, not just
+C11's edge table — the wrong number propagated. Second, and worth more: a
+"must not" is not self-enforcing. This plan's own edge tables are the place to
+check whether its prohibitions were obeyed, because an expected value computed
+the forbidden way looks exactly like an expected value computed the right way.
+
 #### R14.2 — C4's flag has nowhere to go
 
 C4's edge table requires that a point whose key matches but whose per-side
@@ -3176,3 +3200,133 @@ after the comparison record. C10 also states the public surface is "exactly" an
 expects `ReportModel.dimensions: DimensionMatrix` where C21 delivers
 `dimension_counts: DimensionCounts`, raw counts only. **C21 did not deliver
 C10** — building the matrix from those counts is still C10's work.
+
+---
+
+### R15 — the series is one line and the change stays visible; R14.6 ruled
+
+Ruled by the person paying for this, 2026-08-24: **make the series one line, keep
+the change visible.** Both, not a trade. This section says how, and records why
+the two were only ever in tension by accident.
+
+#### The tension was manufactured by the filter
+
+R14.6 framed this as a choice: either candidate B's fourteen nights are one line
+(and the v1→v2 change is hidden inside it) or the change is visible (and the line
+splits 13+1). That framing is wrong, and the error is worth naming because it
+will recur.
+
+`trend(points, *, baseline_model, candidate_model)` filters the series **by the
+very field that moved**. The change is invisible *because* the filter hides it:
+night 14 is not in the same series as night 13, so `parameter_strip`'s
+`previous` is `None`, so the `model_id` row reports `changed=False` with an empty
+`before` — the first run changed nothing because there was nothing to change
+from. The strip is already built to show exactly this and is prevented from
+doing so by its own caller.
+
+Stop filtering on the thing that moves, and both properties hold at once. The
+strip needs no change whatever.
+
+#### R15.1 — the lineage is declared, never inferred
+
+`trend` takes a caller-declared sequence of candidate ids:
+
+```python
+def trend(
+    points: Sequence[RunPoint],
+    *,
+    baseline_model: str,
+    candidate_models: Sequence[str],
+) -> Trend: ...
+```
+
+**The tool must not infer that `-b-v2` succeeds `-b-v1`.** Stripping a trailing
+version suffix is the obvious implementation and it is forbidden. Whether two
+model ids name the same lineage is a fact about the world that no log records,
+and a wrong guess silently joins two unrelated models into one line — which is
+precisely the "two unrelated numbers side by side" failure
+`_require_comparable` exists to prevent, arrived at from a new direction. The
+operator knows the lineage. The operator says so.
+
+Order within `candidate_models` is not significant; time ordering comes from
+`created`. A single-element sequence reproduces today's behaviour exactly, so
+this is a strict generalisation and not a behaviour change for any existing
+caller.
+
+#### R15.2 — joining two ids asserts comparability, so it must be checked
+
+Putting two model ids on one line is a claim that the runs are comparable. That
+claim is C4's to adjudicate, so `trend` partitions its candidates through
+`partition_comparable` against the group key and carries the exclusions out with
+it. A lineage whose members disagree on golden set, judges or `n_per_item` is
+not one line and must not be drawn as one.
+
+This makes C7 depend on C4, which §6's graph does not show. Amend the graph.
+
+#### R15.3 — `trend` returns a `Trend`, because a bare tuple has nowhere to put the answer
+
+```python
+class Succession(NamedTuple):
+    index: int        # into points, of the FIRST run under the new id
+    before: str
+    after: str
+    created: str
+
+class Trend(NamedTuple):
+    points: tuple[RunPoint, ...]           # one line, ascending by created
+    successions: tuple[Succession, ...]
+    excluded: tuple[Exclusion, ...]        # C4's type, from R15.2
+    undated: int                           # dropped for unparseable created
+```
+
+`undated` fixes a defect C7's contract already had: it says undated points "are
+excluded from the return and the caller learns of them separately", and then
+returns a bare `tuple[RunPoint, ...]` through which the caller can learn nothing.
+**This is the third instance of the same defect class in one plan** — C4's flag
+with no field to live in (R14.2), C13's counts that had to become a `Timeline`
+NamedTuple (R6), and now this. The pattern: a contract states that the caller is
+told about an absence, and gives a return type with room for presences only. It
+is worth checking every remaining contract for it before dispatch.
+
+#### R15.4 — the change is visible in three places, which fail differently
+
+Redundancy here is deliberate. Each of these is silent in a different failure.
+
+1. **The parameter strip** — the `model_id` row, `changed=True`, both ids. Needs
+   no code change; R15.1 is what lets it fire. This is the attributable-drop
+   claim and it is the load-bearing one.
+2. **The timeline** — a rule drawn at each succession, so nobody reads a
+   continuous line as one continuous model. See R15.5 for when.
+3. **A caption beneath the chart** naming each succession in words, because a
+   mark with no legend is a mark a reader invents a meaning for.
+
+If the strip were the only one, a reader looking at the picture would see an
+unbroken line and never scroll. If the mark were the only one, the change would
+be visible and unattributable.
+
+#### R15.5 — the SVG mark waits for C14a, and arrives backward-compatibly
+
+`timeline_svg` is merged **and reviewed**, and C14a — the chunk that first calls
+it — is in review as this is written. Changing its signature now is precisely the
+rename hazard §"When it is safe to go wide" is built around: C1's review renamed
+fields after C2 had started typing them, and nothing collided, the work simply
+had to be redone.
+
+So: the mark is a follow-on chunk, dispatched after C14a merges, and it adds a
+keyword argument that defaults to drawing nothing. `timeline_svg(points)` keeps
+its current meaning and its current output byte for byte.
+
+#### What this settles, and what it does not
+
+C16's night 14 now works as its contract intends: the showcase driver declares
+`("synthetic-candidate-b-v1", "synthetic-candidate-b-v2")` as one lineage,
+candidate B is fourteen points on one line with one succession at index 13, and
+the strip's `model_id` row reads `changed=True` with both ids — **exactly one
+`changed=True` row**, and now actually observable rather than merely required.
+
+**R8 remains open.** It was grouped with R14.6 as "two identity-field conflicts",
+and that grouping was loose: R8 is about verdict pairing — whether the headline
+and `series[-1]` may disagree on a log shape this pipeline cannot currently
+write — and nothing in this ruling reaches it. It still wants its own decision,
+and per its own text, if the answer is "documented limitation" then the document
+is `report.py`'s docstring and not this plan.
