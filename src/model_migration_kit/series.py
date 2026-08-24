@@ -2294,7 +2294,15 @@ class ParameterChange:
     name: str
     #: Rendered for a reader, never compared: hashes are truncated here, and both
     #: of the ways a value can be missing are spelled out in words rather than
-    #: left blank. Never ``""``.
+    #: left blank.
+    #:
+    #: **Never *blank*, which is a stronger promise than "never ``""``".** The
+    #: failure mode this field exists to prevent is a cell a reader takes for
+    #: "held", and ``"   "`` reads as held quite as well as ``""`` does while
+    #: satisfying an emptiness guarantee to the letter. So the guarantee is
+    #: ``value.strip()`` -- :func:`_recorded`'s test, the same one
+    #: :func:`_text_cell` and :func:`_hash` use to choose between a value and
+    #: :data:`UNRECORDED` (R24.5).
     before: str
     after: str
     changed: bool
@@ -2332,9 +2340,18 @@ class _Cell(NamedTuple):
     what it printed would say they held. ``shown`` is what a reader sees, and it
     is where the truncation and the word for "unrecorded" live.
 
-    ``value`` is ``""`` exactly when the run recorded nothing, whatever the
-    field's own type, so one emptiness test decides for hashes, ids and counts
-    alike.
+    **``value`` is empty *or blank* when the run recorded nothing, and the test
+    is :func:`_recorded` -- never ``== ""``.** An earlier draft of this sentence
+    claimed the two were interchangeable, "so one emptiness test decides for
+    hashes, ids and counts alike", and it was false in the one place it mattered:
+    a field a writer padded holds ``"   "``, recorded nothing, and is not ``""``.
+    :func:`_parameter_change` has always guarded with :func:`_recorded`, so the
+    code was right while the docstring invited the tidy that breaks it -- probed,
+    the swap turns a padded hash against a real one into ``changed=True,
+    "judges changed"`` from a padding artifact. What *is* uniform is the
+    predicate, not the literal: one call to :func:`_recorded` decides for hashes,
+    ids and counts alike, because :func:`_count_cell` spells a count's absence
+    ``""`` on the way in.
     """
 
     value: str
@@ -2351,7 +2368,11 @@ class _Cell(NamedTuple):
 #: previous run" and "the value was not recorded" must not print the same word:
 #: the first says the comparison could not be made, the second says one side of
 #: it was never written down, and a reader who conflates them draws a conclusion
-#: about the run from a fact about the log.
+#: about the run from a fact about the log. **"Different from
+#: :data:`UNRECORDED`" is not enough and the suite once asked only that**: a
+#: marker reading "no previous run recorded" differs from "unrecorded" and still
+#: prints both absences as one idea. The word to stay out of is *recorded*, and
+#: there is now a test that says so (R24.3).
 #:
 #: The contract said ``""`` here, twice, and it was wrong -- ruled after the
 #: blind suite pinned it. The defence was that on a genuine first run the blank

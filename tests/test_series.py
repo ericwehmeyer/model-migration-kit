@@ -4837,7 +4837,16 @@ def test_the_first_run_of_a_series_has_nothing_to_change_from_and_says_so_on_eve
     renders as -- "there was no previous run" and "this run recorded no value" are
     facts about different things, the comparison and the log, and a reader who is
     handed one word for both draws a conclusion about the run from a gap in the
-    log."""
+    log.
+
+    **R24.3 adds the fourth assertion, and inequality was never enough.**
+    `_NO_PREVIOUS_RUN = "no previous run recorded"` survived all 1998 tests: it
+    differs from `unrecorded`, it is non-empty, it satisfies every assertion above
+    -- and it prints the two absences as the same idea, which is exactly what the
+    ruling forbade. The ruling's words are "must not print the same word", so the
+    word is what is asserted: *recorded* is the vocabulary of "the value was not
+    written down", and the marker for "the comparison could not be made" must stay
+    out of it."""
     rows = series.parameter_strip(None, _point())
     marker = rows[0].before
     unrecorded = _rows(_point(judges_hash=""), _point(judges_hash=""))["judges"].before
@@ -4847,6 +4856,10 @@ def test_the_first_run_of_a_series_has_nothing_to_change_from_and_says_so_on_eve
     assert marker != ""
     assert marker.strip() != ""
     assert marker != unrecorded
+    assert "recorded" not in marker.lower(), (
+        f"the first-run marker is speaking the unrecorded vocabulary, so both "
+        f"absences print as one idea: {marker!r} beside {unrecorded!r}"
+    )
     assert [row.after for row in rows] == [
         "claude-candidate-v2",
         "5",
@@ -4975,6 +4988,70 @@ def test_a_depth_or_an_item_count_nobody_recorded_never_renders_as_unchanged_eit
     assert covered.changed is False
     assert covered.before == "12"
     assert "recorded" in covered.after.lower()
+
+
+@pytest.mark.parametrize(
+    ("field", "name", "recorded"),
+    [
+        ("candidate_model", "model_id", "claude-candidate-v2"),
+        ("judges_hash", "judges", "bb624f0ed1781d85"),
+        ("goldenset_hash", "goldenset", "5fef50364057cad8"),
+        ("config_hash", "config", "1ad89c46dcbd426d"),
+    ],
+    ids=["model_id", "judges", "goldenset", "config"],
+)
+def test_a_value_that_is_only_whitespace_is_an_absence_and_never_a_blank_cell(
+    field, name, recorded
+):
+    """**Mutant C6: `_text_cell` testing truthiness instead of `_recorded`.** It
+    survived the whole suite for the plainest of R24.7's reasons -- *there is no
+    whitespace-only value anywhere in this file*. Every fixture spells an absence
+    `""`, on which `bool(value)` and `value.strip()` agree exactly.
+
+    A writer that padded the field recorded nothing, and `_recorded` says so with a
+    `.strip()` whose comment calls the case "essentially unreachable and one call
+    wide". Unreachable is not the same as harmless: the cell renders **blank** under
+    the mutant, and a blank cell beside a filled one reads as "held", which is the
+    single failure this chunk was written to prevent. The reviewer's note is that
+    the strip's whole job is to license an attribution, and a blank that reads as
+    "held" licenses a false one.
+
+    Both directions, as with `""`: a pipeline that started padding the field and one
+    that stopped are different nights."""
+    forgotten = _rows(_point(), _point(**{field: "   "}))[name]
+    assert forgotten.changed is False
+    assert forgotten.before == recorded
+    assert forgotten.after.strip() != "", (
+        "a padded field rendered as a blank cell, which a reader takes for 'held'"
+    )
+    assert "recorded" in forgotten.after.lower()
+
+    remembered = _rows(_point(**{field: "   "}), _point())[name]
+    assert remembered.changed is False
+    assert remembered.after == recorded
+    assert remembered.before.strip() != ""
+    assert "recorded" in remembered.before.lower()
+
+
+def test_a_padded_hash_against_a_real_one_is_not_reported_as_a_change():
+    """R24.5's probe, and the reason the `_Cell` docstring had to be rewritten rather
+    than merely annotated. The sentence said `value` is `""` exactly when the run
+    recorded nothing, "so one emptiness test decides for hashes, ids and counts
+    alike" -- false for a padded field, and an invitation to swap `_recorded(...)`
+    for `== ""` in `_parameter_change`.
+
+    Take the invitation and this row reads `changed=True`, "judges changed", **from
+    a padding artifact**: the strip names the judge panel as the thing that moved on
+    a night when nothing moved at all, and the attribution beneath it is drawn from
+    whitespace. `changed` is the one field a renderer acts on, so it is asserted
+    directly rather than through the rendering."""
+    padded = _rows(_point(judges_hash=_TWIN_A), _point(judges_hash="   "))["judges"]
+    assert padded.changed is False, (
+        "a padded field was compared as a value, so a run that changed nothing is "
+        "reported as having changed its judges"
+    )
+    both_padded = _rows(_point(judges_hash="  "), _point(judges_hash="\t"))["judges"]
+    assert both_padded.changed is False
 
 
 def test_a_run_that_sampled_to_a_different_depth_moves_the_n_per_item_row_and_only_that_row():
