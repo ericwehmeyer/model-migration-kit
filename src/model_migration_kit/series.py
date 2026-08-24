@@ -773,11 +773,30 @@ def spot_check(
     not ``k`` samples from a completion-level pass rate. At temperature 0 -- and
     under the fake adapter, where a mapped prompt returns one fixed string -- all
     ``n`` draws of an item are identical, so 60 completions are 12 decisions.
-    Writing this as ``rate ** k`` over completions is the obvious implementation
-    and it is wrong by roughly an order of magnitude in the flattering direction:
-    on the demo's numbers it says 3% where the item-level answer is 33%. A tool
-    whose whole argument is that naive methods are blind must not compute its own
-    headline number by a naive method.
+    Writing this as ``rate ** k`` is the obvious implementation and it is wrong,
+    but not by the margin this docstring used to claim. Two different errors get
+    conflated here and only one of them is the error actually on offer:
+
+    * **With replacement, at the same item rate.** ``(88 / 96) ** 12 == 0.3520``
+      against the correct ``0.3288``. That *over*states by about 7%, in the
+      direction that flatters this tool -- a higher number is a blinder spot
+      check. This is the one a real implementer commits, and it is the one the
+      plan itself committed: 0.351 sat in C11's own edge table as the expected
+      value, which is ``(88 / 96) ** 12`` and not the hypergeometric the same
+      contract specifies.
+    * **A completion rate of 0.75.** ``0.75 ** 12 == 0.0317``, an order of
+      magnitude below 0.3288. This is the figure usually quoted as the danger
+      and it cannot arise here: the determinism above forbids it. If all ``n``
+      draws of an item are identical then the completion pass rate *equals* the
+      item pass rate, so a run whose item rate is 88/96 cannot have a completion
+      rate of 0.75, and the two readings cannot diverge that far.
+
+    The 7% is what makes the real error dangerous, not a factor of ten. 35% and
+    33% both look plausible printed in a sentence, so nothing in the output says
+    which arithmetic produced it -- a "must not" is not self-enforcing, and the
+    place to check whether it was obeyed is the expected value, not the prose.
+    A tool whose whole argument is that naive methods are blind must not compute
+    its own headline number by a naive method.
 
     **Unstable items are excluded from ``F``, and that raises this number.** An
     item that fails on some draws and not others has not been *established* as a

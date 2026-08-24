@@ -2577,6 +2577,41 @@ def test_the_draw_is_of_items_without_replacement_and_not_a_completion_rate_rais
     assert check.probability != pytest.approx(with_replacement, rel=1e-3)
 
 
+def test_the_docstring_describes_the_with_replacement_error_at_its_actual_size():
+    """The "order of magnitude in the flattering direction" claim conflated two
+    different errors, and only one of them is available on these numbers.
+
+    Drawing *with replacement at the same item rate* -- the error the plan itself
+    committed when it printed 0.351 as C11's expected value -- overstates by 7%,
+    not by a factor of ten. Getting to 3% needs a *completion* pass rate of 0.75,
+    which section 7.4's own determinism premise forbids: if all `n` draws of an
+    item are identical the completion rate equals the item rate, so a set with an
+    item rate of 88/96 cannot have a completion rate of 0.75.
+
+    The 7% is the finding, not a footnote to it. An error of ten times announces
+    itself; an error of 7% does not, and 35% and 33% read identically in a
+    sentence."""
+    check = series.spot_check(88, 8, 0, k=12)
+    assert check is not None
+    with_replacement = (88 / 96) ** 12
+    assert with_replacement == pytest.approx(0.3519956280141369, rel=1e-12)
+    # Overstatement, not understatement: the naive answer is the bigger one.
+    assert with_replacement > check.probability
+    assert with_replacement / check.probability == pytest.approx(1.0706, abs=5e-5)
+    # And it is nowhere near an order of magnitude.
+    assert with_replacement / check.probability < 1.1
+    # The order-of-magnitude figure belongs to a rate the premise rules out.
+    assert check.probability / 0.75**12 == pytest.approx(10.379, abs=5e-4)
+
+    doc = " ".join((series.spot_check.__doc__ or "").split())
+    assert "(88 / 96) ** 12 == 0.3520" in doc
+    assert "0.75 ** 12 == 0.0317" in doc
+    # The claim that shipped, which attached the ten-times figure to the error
+    # that is actually 7% and pointed it the wrong way.
+    assert "order of magnitude in the flattering direction" not in doc
+    assert "it says 3% where the item-level answer is 33%" not in doc
+
+
 def test_the_sentence_names_the_assumption_it_made_rather_than_leaving_it_implied():
     """Objection 3. Nobody picks twelve prompts at random -- an engineer picks
     twelve they believe are representative, and no arithmetic here models that. So
