@@ -6707,13 +6707,25 @@ def _counted_log(
 
 
 def _counts(model: Any) -> Any:
-    return _get(model, "dimension_counts")
+    """The matrix, which is where these counts live now. Plan C10.
+
+    C21 wired the raw ``DimensionCounts`` onto ``ReportModel.dimension_counts``
+    and C10 replaced that field with ``dimensions: DimensionMatrix``, whose cells
+    carry ``tag``, ``passes``, ``n`` and ``items`` -- every fact the raw counts
+    held. So these tests are re-pointed rather than deleted: they exist because
+    deleting ``tally.add(record)`` from ``from_evidence``'s loop once left the
+    entire suite green, and that hole is no smaller under the new field.
+    """
+    return _get(model, "dimensions")
 
 
 def _tag_cell(model: Any, model_id: str, tag: str) -> tuple[int, int, int]:
     counts = _counts(model)
     assert counts.available is True, counts.reason
-    one = counts.by_model[model_id][tag]
+    column = counts.column(model_id)
+    assert column is not None, f"the matrix has no column for {model_id!r}"
+    one = column.cell(tag)
+    assert one is not None, f"the matrix has no {tag!r} cell for {model_id!r}"
     return (one.passes, one.n, one.items)
 
 
@@ -6824,7 +6836,7 @@ def test_a_golden_set_that_cannot_be_trusted_hands_back_its_own_sentence(
         "the golden set's refusal was re-worded on its way into the counts; three "
         "copies of a disclosure are three chances for one to go stale"
     )
-    assert dict(counts.by_model) == {}, (
+    assert (counts.tags, counts.baseline.cells, counts.candidates) == ((), (), ()), (
         "a refusal arrived carrying a partial matrix, which is what the caller must "
         "never be able to render"
     )
@@ -7046,11 +7058,11 @@ def test_a_model_built_by_any_other_route_says_no_counts_were_taken(tmp_path: Pa
     fields = {
         one.name: getattr(model, one.name)
         for one in dataclasses.fields(model)
-        if one.name != "dimension_counts"
+        if one.name != "dimensions"
     }
     bare = type(model)(**fields)
 
-    counts = _get(bare, "dimension_counts")
+    counts = _get(bare, "dimensions")
     assert counts.available is False
     assert counts.reason, "the default has to say something, and it says nothing"
 
