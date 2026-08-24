@@ -1393,6 +1393,12 @@ different floors; a floor that ramps is a floor that never existed.
 
 #### C14 — the template: zones 1, 1b, 2, and REVIEW as a shape
 
+> **BLOCKED — read R21 before this section, and do not dispatch the remaining
+> seven elements against it.** Six of the nine elements are gated on values
+> `ReportModel` does not carry and no chunk was ever assigned to put there. The
+> template cannot reach them, and C14's own Must-not forbids inventing the
+> reference. **C22 closes this and must land first.**
+
 **Files.** `report.py` `_TEMPLATE` (`report.py:2135-2584`), `_CHANGES_MACRO`,
 `render_html_string`, `_environment` (new filters). `tests/test_report.py`.
 
@@ -4159,3 +4165,187 @@ runs plus one named candidate returns `None`, and every exclusion sentence
 computed along the way dies with it. The report can never say *why* there is no
 table. That is inherent to the contract's `None` return, and it is worth
 revisiting when C14's remaining elements decide what an empty section renders as.
+
+### R21 — six elements have no data path, and `trend`'s lineage has no source
+
+Found while scheduling C14's remaining seven elements, before dispatch. Both
+findings are structural rather than local, and the first blocks every remaining
+visible element in the document.
+
+#### R21.1 — nobody wires the series chunks onto `ReportModel`
+
+`ReportModel` on `main` at `60a3fed` carries **31 fields**. Two are the ones this
+plan added: `series` (C3) and `dimensions` (C10). It carries no `spot_check`, no
+`candidates`, no `excluded`, no `multiplicity`, and no `parameter_strip`.
+
+C14's contract gates its sections like this:
+
+| Element | Present when |
+|---|---|
+| spot-check sentence | `spot_check(...)` is not `None` |
+| candidate table | `candidate_field(...)` is not `None` |
+
+Those are **function calls**, and a Jinja template cannot make them. C14's own
+**Must not** closes the other door in the same breath: *"Introduce a new `{{ }}`
+reference to a field `ReportModel` does not define: `StrictUndefined` will
+raise, which is the designed behaviour and must not be worked around."*
+
+So the template may not call the function and may not name a field that does not
+exist. As written, six of C14's nine elements cannot be built by anyone.
+
+**This is an omission, not a contradiction, and it is easy to see how it
+happened.** Every one of C4, C5, C6, C7 and C11 declares its **Files** as
+`series.py` and `tests/test_series.py` — pure functions, no wiring, which is
+exactly what made them safe to run wide. C14a declares its files as *"**Not**
+`from_evidence`, **not** `ReportModel`"*. C14 declares `_TEMPLATE`,
+`_CHANGES_MACRO`, `render_html_string`, `_environment` and the tests. C10 is the
+**only** chunk in the plan that was told to extend `ReportModel`, and R16.3 had
+to say so explicitly.
+
+Between "compute it" and "render it" there is a step nobody owns. Every chunk
+respected its own boundary correctly and the boundary between them was never
+drawn.
+
+That the pipeline produced this is worth recording: the discipline that keeps
+chunks independent — *touch only your files* — is the same discipline that lets
+an unassigned seam sit undetected across eleven chunks. The rule that would have
+caught it is the one this plan already learned and wrote at the top of RESTART:
+**order the chunks so the artifact moves.** Had C14 been scheduled to render
+C11's sentence when C11 merged, the gap would have surfaced that day instead of
+eight chunks later.
+
+#### R21.2 — `trend`'s lineage is caller-declared and there is no caller
+
+R15 made `trend` take a **caller-declared** `candidate_models` lineage and
+forbade inferring it, because stripping a version suffix is exactly the silent
+wrong answer. Verified on `main`:
+
+```python
+trend(points, *, baseline_model: str, candidate_models: Sequence[str]) -> Trend
+```
+
+That ruling was right, and it is the reason C7's lineage test kills a `rstrip`
+implementation. But **no chunk says where the caller gets the lineage.** Nothing
+on `ReportModel` carries a declared succession, and `RunPoint` deliberately does
+not imply one.
+
+So R15 closed the inference door without opening another. Whoever renders the
+timeline must declare a lineage, and the plan does not say from what. Candidate
+sources, none of them yet chosen: the config, a CLI flag, or an explicit field
+in the `migkit.comparison` payload.
+
+**This must be ruled before C22 is dispatched, not during it.** A wiring chunk
+that quietly infers the lineage would reintroduce precisely the defect R15 was
+written to remove, and it would do it in the one place least likely to be
+reviewed — the plumbing.
+
+#### R21.3 — C22, the view model
+
+**New chunk. It blocks C14's remaining seven elements and must land first.**
+
+**Files.** `report.py` (`ReportModel`, `from_evidence`), `tests/test_report.py`.
+
+**Contract.** `ReportModel` gains the fields C14's table is gated on, each
+computed from what the model already holds, and each populated in
+`from_evidence` on the pattern C10 established for `dimensions`.
+
+The inputs are already present and **no second read of the evidence log is
+permitted** — `test_the_log_is_read_once_for_both_the_headline_and_the_series`
+and `test_rebuilding_the_report_does_not_hold_the_log_either` are merged and may
+not be weakened. Checked, and this is the part that makes C22 small:
+
+- `spot_check(items_passing, items_failing, items_unstable, *, k=12)` takes
+  **three integers**. It needs no records and no golden set.
+- `trend(points, ...)`, `parameter_strip(previous, current)`,
+  `partition_comparable(points, *, against)` and `candidate_field(...)` are all
+  pure over `Sequence[RunPoint]`, and `ReportModel.series` is already
+  `tuple[RunPoint, ...]`, built by C3 in the existing single pass.
+
+So C22 reads nothing. It is arithmetic over fields the model already carries,
+which is why it is a chunk and not a redesign.
+
+**Must not.** Read the evidence log, or any file. Infer the `candidate_models`
+lineage (R21.2 — take it from wherever R15's follow-up ruling says, and if that
+ruling is not yet in this plan, **stop and report**). Recompute anything
+`from_evidence` already computed. Change the meaning of any existing field.
+
+**Failure mode when wrong.** A view model that silently substitutes a default
+when a producer returns `None` publishes an empty table as a measured one. Every
+one of these producers returns `None` or an empty result for a real reason, and
+the reason is the thing the reader needs: C7's first-run marker, C4's
+exclusions and C5's caveats all exist because *an absence rendering as a
+measurement* is this project's recurring defect.
+
+**Reviewer.** Whether `None` from a producer survives to the template as `None`
+rather than as an empty tuple that renders as an empty section. And whether the
+single-pass guarantee actually still holds under a test, rather than by
+inspection.
+
+#### R21.4 — what this changes about scheduling
+
+C14's remaining seven elements were the next visible work and are now behind
+C22. The order is:
+
+1. **Rule R21.2** — where the lineage comes from. Blocking, and mine to answer.
+2. **C22**, the view model.
+3. **C14's remaining elements**, which then have something to render.
+
+C5 and C6 are unaffected and stay on their own track; C22 should take
+`candidate_field` last, or accept that it lands one merge behind the others.
+
+#### R21.5 — ruling: the lineage is declared in config, and assumed out loud otherwise
+
+R21.2 is the blocking question and this closes it.
+
+**Rejected: default the lineage to the headline candidate alone.** It is the
+obvious safe answer and it is wrong — it rebuilds the exact defect R15 was
+written to remove. R15's finding was that `trend` filtering on a single
+`candidate_model` *"is what made the change invisible"*: the moment the model
+changes, which is the event the chart exists to show, the points fall out of the
+filter. A one-model default reproduces that on every log the config does not
+cover, which is every log today.
+
+**Rejected: infer the lineage from the model ids.** Forbidden by R15 and it
+stays forbidden. Stripping a version suffix is the silent wrong answer, and C7's
+lineage test — ids differing *only* in their suffix — exists to kill exactly
+that implementation.
+
+**Ruling, two parts.**
+
+1. **Declared, when the config declares it.** The lineage is a list of candidate
+   models in the config, in succession order. `ReportModel` already carries
+   `config_path`, `thresholds` and `threshold_sources`, so a declaration has a
+   home, a provenance trail and a review path, and it is versioned with the
+   thing it describes. This is the caller-declaration R15 asked for, and where
+   it is present `Trend` raises no caveat about it.
+
+2. **Assumed, and said out loud, when it does not.** Absent a declaration, the
+   lineage is **every distinct candidate model in the series, in
+   first-appearance order**, and `Trend` carries a caveat recording that the
+   succession was *assumed from the log and not declared*.
+
+Part 2 is not inference in R15's sense and the distinction is the whole ruling:
+nothing reads the *shape* of an id. It is a policy — *treat the candidates in
+one log as one succession* — which is a claim that can be wrong (two unrelated
+candidates measured into one log) and is therefore exactly the kind of claim
+this document makes visible rather than silent.
+
+`Trend.caveats` already exists and is the natural home, which is a mild sign the
+shape is right. It also means the assumption reaches the page through machinery
+that is already reviewed, rather than through a new disclosure path.
+
+**Why not simply require the declaration.** Because the failure mode of a hard
+requirement is a report that refuses to draw its timeline until someone edits a
+config, and the reader loses the chart to protect them from a caveat. This
+project has ruled the same way twice already — C7's first-run marker and C4's
+exclusions both chose *render it and name the doubt* over *withhold it* — and
+consistency here is worth more than a marginal safety gain.
+
+**Consequence for C22.** It takes the lineage from config when present and
+otherwise assembles it in first-appearance order, and it must **not** be the
+place the caveat is invented: the caveat belongs to `trend`, beside the other
+things `Trend` already says about its own points. If `trend` as merged cannot
+raise it, that is a C7 follow-up and C22 stops and reports rather than
+compensating in the wiring. **Plumbing that quietly patches a producer's honesty
+is the one shape of this defect nobody would find**, because no reviewer reads
+the wiring for claims about the data.
