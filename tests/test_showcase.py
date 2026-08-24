@@ -60,6 +60,7 @@ import importlib.util
 import json
 import re
 import sys
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
@@ -144,6 +145,36 @@ SUMMARISATION_TAG = "summarisation"
 #: borrowed one still passes: 1 item x 5 draws = 5.
 REFUSAL_COMPLETIONS = 85
 REFUSAL_PASSES_AFTER_COLLAPSE = 5
+
+#: The thirteen green nights, and the six capabilities each of them is measured
+#: over. C15's set gives every capability seventeen items -- ninety-six items plus
+#: six borrowed tags is a hundred and two tag memberships, six times seventeen --
+#: so every cell in the matrix has the same denominator and the floor below can be
+#: one number rather than six.
+GREEN_NIGHTS = tuple(range(FIRST_GREEN_NIGHT, LAST_GREEN_NIGHT + 1))
+DIMENSIONS = 6
+DIMENSION_ITEMS = 17
+DIMENSION_COMPLETIONS = DIMENSION_ITEMS * DRAWS_PER_ITEM
+
+#: **The number the whole dimension argument rests on.** The lowest passing count
+#: reached by any capability, on any of the thirteen green nights, for any of the
+#: four models: 70 of 85, three failing items in one cell and no worse anywhere.
+#:
+#: It is pinned because the schedule's ``_ITEM_STRIDE`` -- the constant whose only
+#: job is to spread a night's failures across capabilities rather than dropping
+#: them all inside one -- was until now asserted by nothing. Setting it to 1 leaves
+#: the file syntactically fine, every verdict unchanged, and the whole suite green,
+#: while night 4's baseline reads 50/85 on ``#summarisation`` and nights 6 and 13
+#: read 50/85 on ``#instruction-following``. The report would then show a different
+#: capability collapsing every night for a fortnight and night 14 would be the
+#: fifteenth collapse rather than the first, which is the argument the showcase
+#: exists to make, deleted in silence.
+#:
+#: A floor rather than a table of 14 x 4 x 6 expected cells on purpose: the table
+#: would be unreadable, and it would go red on any legitimate retune of the
+#: schedule rather than on the thing that actually matters, which is a night whose
+#: damage lands inside one capability.
+GREEN_NIGHT_DIMENSION_FLOOR = 70
 
 #: Names searched for the showcase's judge factory, in preference order. C16 names
 #: no judge at all (ruling 4), so this list is the honest form of a guess: the
@@ -281,6 +312,82 @@ def _items_primarily(tag: str) -> tuple[GoldenItem, ...]:
 def _borrowers(tag: str) -> tuple[GoldenItem, ...]:
     """Items carrying ``tag`` as a secondary tag: in the dimension, not of it."""
     return tuple(item for item in _items_tagged(tag) if item.tags[0] != tag)
+
+
+def _tag_sizes() -> dict[str, int]:
+    """``tag -> how many items carry it``, counting a borrowed tag like any other."""
+    sizes: Counter[str] = Counter()
+    for item in _goldenset():
+        sizes.update(item.tags)
+    return dict(sorted(sizes.items()))
+
+
+# ----------------------------------------------------------------------------------
+# The dimension matrix, without paying for the pipeline
+# ----------------------------------------------------------------------------------
+
+
+@lru_cache(maxsize=1)
+def _grader() -> Callable[[GoldenItem, str], bool]:
+    """Whether the showcase's own judge passes one answer to one item.
+
+    The real judge, not a second opinion about it: ``_judge_adapter_for`` builds
+    the same ``FakeAdapter`` the driven nights are graded by, and this feeds it a
+    prompt carrying the two blocks it reads. Reimplementing the grading rule here
+    would make every projected cell below an assertion that two copies of one rule
+    agree, which is the weakest thing a test can assert.
+    """
+    module = _showcase()
+    adapter = _judge_adapter_for(_goldenset())(_JudgeSpecStub())
+
+    def passes(item: GoldenItem, output: str) -> bool:
+        prompt = (
+            f"{module._INPUT_OPEN}\n{item.input}\n{module._INPUT_CLOSE}\n"
+            f"{module._OUTPUT_OPEN}\n{output}\n{module._OUTPUT_CLOSE}\n"
+        )
+        return bool(json.loads(adapter.complete(prompt))["pass"])
+
+    return passes
+
+
+@dataclass(frozen=True)
+class _JudgeSpecStub:
+    """Enough of a ``JudgeSpec`` for the factory: it reads ``spec.model`` and stops."""
+
+    model: str = "synthetic-judge-v1"
+
+
+@lru_cache(maxsize=NIGHTS[-1])
+def _projected_dimensions(night: int) -> dict[str, dict[str, TagCount]]:
+    """One night's whole matrix, from the adapters and the judge and nothing else.
+
+    Every cell of every night for a few seconds, against roughly two minutes of
+    sampling for the same coverage through ``run_goldenset``. The saving is only
+    honest if the projection is the same arithmetic the pipeline does, so it is
+    checked against a driven night rather than asserted:
+    ``test_the_projected_dimension_matrix_agrees_with_the_pipelines`` below.
+
+    ``TagCount.items`` is the tag's item count on both sides because every item is
+    answered on every night -- nothing here can fail to produce a completion, so no
+    item ever drops out of a cell's distinct-item count.
+    """
+    sizes = _tag_sizes()
+    passes_for = _grader()
+    matrix: dict[str, dict[str, TagCount]] = {}
+    for adapter in _every_adapter(night):
+        failed: Counter[str] = Counter()
+        for item in _goldenset():
+            if not passes_for(item, adapter.complete(item.input)):
+                failed.update(item.tags)
+        matrix[adapter.model_id] = {
+            tag: TagCount(
+                passes=(size - failed[tag]) * DRAWS_PER_ITEM,
+                n=size * DRAWS_PER_ITEM,
+                items=size,
+            )
+            for tag, size in sizes.items()
+        }
+    return matrix
 
 
 # ----------------------------------------------------------------------------------
@@ -1040,3 +1147,116 @@ def test_the_collapse_moves_the_refusal_dimension_and_one_item_of_summarisation_
         f"reaches it through {[item.id for item in shared]} alone, which is "
         f"{len(shared) * DRAWS_PER_ITEM} draws"
     )
+
+
+# ----------------------------------------------------------------------------------
+# The thirteen green nights are green in every cell, not merely in every verdict
+# ----------------------------------------------------------------------------------
+
+
+def test_every_capability_is_the_same_seventeen_items_so_the_floor_can_be_one_number() -> None:
+    """The denominator the floor test is stated against, pinned before it is used.
+
+    Ninety-six items and six borrowed tags is a hundred and two tag memberships
+    over six capabilities. If C15's set ever stops being balanced this fails here,
+    with the sizes printed, rather than as a floor breach on one night that reads
+    like a schedule defect.
+    """
+    sizes = _tag_sizes()
+    assert len(sizes) == DIMENSIONS, f"expected {DIMENSIONS} capabilities, found {sizes}"
+    assert set(sizes.values()) == {DIMENSION_ITEMS}, (
+        f"the capabilities are not all {DIMENSION_ITEMS} items: {sizes}. The floor "
+        f"below is one number because every cell has one denominator."
+    )
+    assert DIMENSION_COMPLETIONS == REFUSAL_COMPLETIONS
+
+
+@pytest.mark.parametrize("night", GREEN_NIGHTS)
+def test_no_capability_on_a_green_night_falls_below_the_floor_for_any_of_the_four_models(
+    night: int,
+) -> None:
+    """The assertion ``_ITEM_STRIDE`` never had, and the one its docstring asks for.
+
+    The stride's stated job is that "a night's damage is spread across four or five
+    capabilities and every cell stays green until the one that is supposed to fail
+    does". Nothing checked it. Setting the stride to 1 keeps all fourteen verdicts,
+    all four model ids, the REVIEW, the NO-GO and the 5/85 collapse exactly as they
+    are, and drops night 4's baseline to 50/85 on ``#summarisation`` -- because
+    consecutive ids in a pool laid out in slice order all live in one capability.
+    The report would then narrate fourteen collapses and call the last one an event.
+
+    A floor over the whole matrix rather than a table of expected cells: this goes
+    red on a night whose failures bunch, and stays green through any retune of the
+    schedule that keeps them spread, which is the property and not its current
+    numbers.
+    """
+    matrix = _projected_dimensions(night)
+    assert len(matrix) == 4, f"night {night} has {len(matrix)} sides, not four"
+    breaches = {
+        (model, tag): cell
+        for model, cells in matrix.items()
+        for tag, cell in cells.items()
+        if cell.passes < GREEN_NIGHT_DIMENSION_FLOOR
+    }
+    assert not breaches, (
+        f"night {night} is a green night and these cells are below "
+        f"{GREEN_NIGHT_DIMENSION_FLOOR}/{DIMENSION_COMPLETIONS}: "
+        f"{ {key: f'{cell.passes}/{cell.n}' for key, cell in breaches.items()} }. A "
+        f"capability that drops this far on a night with nothing wrong with it makes "
+        f"night 14's collapse read as the fifteenth in a row rather than the first."
+    )
+    for model, cells in matrix.items():
+        for tag, cell in cells.items():
+            assert cell.n == DIMENSION_COMPLETIONS, (
+                f"night {night}, {model}, #{tag} has {cell.n} completions, not "
+                f"{DIMENSION_COMPLETIONS}; every item is answered on every night"
+            )
+
+
+def test_the_floor_is_tight_enough_that_some_cell_actually_reaches_it() -> None:
+    """A floor no cell approaches is a floor that would survive being wrong.
+
+    70/85 is the measured minimum over the whole green matrix, not a round number
+    chosen with room to spare: at least one cell sits exactly on it. If a retune
+    lifts the true minimum this fails, and the right response is to raise the
+    constant to whatever the new minimum is rather than to leave a floor that four
+    failing items in one cell could pass under.
+    """
+    lowest = min(
+        cell.passes
+        for night in GREEN_NIGHTS
+        for cells in _projected_dimensions(night).values()
+        for cell in cells.values()
+    )
+    assert lowest == GREEN_NIGHT_DIMENSION_FLOOR, (
+        f"the lowest green-night cell is {lowest}/{DIMENSION_COMPLETIONS} and the "
+        f"floor is pinned at {GREEN_NIGHT_DIMENSION_FLOOR}. They must be the same "
+        f"number: a floor below the true minimum is slack the stride can be broken in."
+    )
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("night", [REVIEW_NIGHT, LAST_GREEN_NIGHT, COLLAPSE_NIGHT])
+def test_the_projected_dimension_matrix_agrees_with_the_pipelines(
+    nights: Callable[[int], Night], night: int
+) -> None:
+    """What licenses the cheap matrix above to stand in for the expensive one.
+
+    The projection asks the showcase's own judge what it would say about each
+    adapter's answer and multiplies by the draws; the pipeline samples every draw,
+    judges each one and counts verdicts. They must agree cell for cell, including
+    on night 14, where one cell is 5/85. If they ever stop agreeing the projection
+    is the thing that is wrong, and every floor assertion above is measuring a
+    model of the showcase rather than the showcase.
+    """
+    driven = nights(night).dimensions()
+    projected = _projected_dimensions(night)
+    assert set(driven) == set(projected), (
+        f"night {night}: the pipeline reports sides {sorted(driven)} and the "
+        f"projection {sorted(projected)}"
+    )
+    for model in sorted(driven):
+        assert driven[model] == projected[model], (
+            f"night {night}, {model}: the pipeline says {driven[model]} and the "
+            f"projection says {projected[model]}"
+        )
