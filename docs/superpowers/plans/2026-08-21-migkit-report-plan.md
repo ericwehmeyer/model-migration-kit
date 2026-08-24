@@ -3238,6 +3238,11 @@ def partition_comparable(
 ) -> tuple[tuple[RunPoint, ...], tuple[Exclusion, ...], tuple[Flag, ...]]: ...
 ```
 
+> **SUPERSEDED by R18.4.** `Flag` is now **`Caveat`** — it collided with
+> `enum.Flag` in two rendering chunks — and the bare three-tuple is now a
+> **`Partition` NamedTuple** (`kept`, `excluded`, `caveats`). The reasoning below
+> is unchanged and still correct; only the two names are.
+
 A flagged point is **also** in `kept` — a flag annotates, it does not remove. The
 empty case is `((), (), ())`. C5's `CandidateField` will need a `flags` field to
 match; it is not yet dispatched, so this is still cheap.
@@ -3610,14 +3615,35 @@ the chart for a run that measured nothing, which reads as a total collapse rathe
 than as an absence". A `delta_pp` of `-100.0` against a baseline that measured
 nothing is the same lie in the same direction.
 
-#### R17.3 — C5's `excluded` needs its `flags` companion
+**The `None` branch is unreachable through `candidate_field`, and that is fine.**
+Both C5 agents found this independently and both said so rather than quietly
+working around it: R18.4 made C4's `_ungraded` exclude any point with
+`judged_baseline <= 0`, so no such point can ever be a kept candidate. The branch
+is still right *at the helper* — a helper that divides by zero because its only
+caller happens not to reach it is a trap for the second caller — but a test
+asserting `baseline_pass_rate is None` for a kept candidate cannot be written.
+The reachable form is the one to test: a log whose every run graded nothing
+yields **no field at all**, rather than a column of `-100.0` deltas. Making the
+branch reachable would mean computing the rate *before* partitioning, which
+contradicts this ruling's own reasoning.
 
-R14.2 gave `partition_comparable` a three-tuple return and R15 noted C5 would
-need to follow. Making it explicit: `CandidateField` gains
-`flags: tuple[Flag, ...]` beside `excluded`. A flagged point is a kept candidate
-that carries a caveat; dropping the flags on the floor at this layer means the
-caveat never reaches the table, and a caveat that reaches nobody is the same as
+#### R17.3 — C5's `excluded` needs its companion
+
+R14.2 gave `partition_comparable` a third return element and R15 noted C5 would
+need to follow. Making it explicit: **`CandidateField` gains
+`caveats: tuple[Caveat, ...]` beside `excluded`.** A caveat is a kept candidate
+that carries a warning; dropping the caveats on the floor at this layer means the
+warning never reaches the table, and a warning that reaches nobody is the same as
 not having computed it.
+
+**Corrected in place, 2026-08-24.** This paragraph said `flags: tuple[Flag, ...]`
+for an hour after R18.4 renamed `Flag` to `Caveat`, and C5's implementer caught
+it — it had followed C5's banner and C4's merged code instead, and reported the
+discrepancy rather than silently picking one. Recorded because it is the exact
+failure this plan keeps producing: a correction lands in one place a reader might
+look and not in another. The banner convention exists for that reason, and a
+banner does not excuse leaving the revision body wrong, because §R17 is itself a
+section an agent may be pointed at directly.
 
 #### R17.4 — "grouping by `comparability_key` ignoring `candidate_model`" is stale
 
