@@ -173,6 +173,29 @@ Implementer and tester run **in parallel**. The reviewer is where most of the
 value has come from — three of three reviews found defects both other roles
 missed, and mutation testing found holes a green suite hid.
 
+### Every worktree carries a stale copy of the plan, and agents read theirs
+
+Found independently by C4's reviewer and C11's reviewer, 2026-08-24. A chunk
+worktree is branched from `main` at dispatch time, so it holds the plan **as of
+that moment**. Revisions written afterwards land on `main` and never reach it.
+
+The concrete case: `chunk/c11-impl`'s plan ends at R13. Its C11 edge table still
+reads `probability ≈ 0.351` and its worked sentence still reads `"34% of cases"`
+— the two numbers R14.1 exists to strike. Both agents on that chunk got it right
+anyway, but only because the corrected value was in their briefs. **That was a
+courier working, not the document working**, and the next agent to open the
+contract from inside a worktree gets the struck numbers with nothing to warn it.
+
+Two things follow, and the second is the one that generalises:
+
+1. **Put the plan path in every brief, pointing at the main checkout**, not at
+   the worktree's copy. One line.
+2. **A revision is not landed when it is committed to `main`.** It is landed when
+   every reader of the thing it revises can see it. On this project the readers
+   are agents in worktrees that will never pull, so the brief is the only channel
+   that actually reaches them. Writing the revision and dispatching against the
+   stale copy is the same failure as not writing it.
+
 ### The blindness leaks through the scratchpad, and what that cost
 
 Found on C4, 2026-08-24. Worktrees isolate the repo. They do **not** isolate the

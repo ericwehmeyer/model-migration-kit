@@ -3436,3 +3436,263 @@ project have demanded renames three times out of three, so **every name above is
 provisional until that review lands**, and C10 must not be dispatched before it
 does. That is not caution for its own sake: it is the exact sequence that cost
 C2 a rewrite, when C1's review renamed fields after C2 had started typing them.
+
+---
+
+### R17 — C5 and C6 audited before dispatch; C6's correction under-reports
+
+Done while four reviews were in flight, so that these two can go out the moment
+C4's review lands rather than being audited then. Everything below was checked
+against the code, and two of the five were confirmed by running it.
+
+#### R17.1 — C6's `changed` rule is wrong, and C6's own first test does not catch it
+
+C6 defines the set that "makes the honesty guard demonstrable" as candidates
+where `p_value < alpha` **and** `p_value >= holm_threshold`.
+
+That is not the Holm procedure. Holm **steps down**: once one test fails to
+reject, nothing larger is rejected either, *regardless of its own threshold*.
+`comparison.holm_bonferroni` implements this correctly and returns
+`(rejected, threshold)` per position. For every candidate after the stop, the
+returned threshold is the uncorrected `alpha` itself — so `p >= threshold` is
+vacuously false and the candidate silently drops out of `changed`.
+
+Run against the real implementation at `alpha=0.05`:
+
+```
+p = [0.03, 0.04, 0.045]
+  p=0.03   rejected=False thr=0.01667   contract: changed   truth: changed
+  p=0.04   rejected=False thr=0.02500   contract: changed   truth: changed
+  p=0.045  rejected=False thr=0.05000   contract: NOT       truth: CHANGED  <-- missed
+```
+
+The rule misses the largest sub-alpha p-value in the family, every time. It fails
+in the direction that **under-reports**: a candidate whose significance the
+correction removed is not named as having changed, in the one set whose entire
+purpose is to make the correction's effect visible. C6's own "Failure mode when
+wrong" is "claiming a guard you did not apply is worse than applying none"; this
+is the quieter cousin — applying the guard and under-stating what it did.
+
+**Worse: C6's named first test passes against the broken rule.** That test uses
+p = 0.03, 0.04, 0.045 and asserts only that *the first* appears in `changed`.
+0.03 appears under both rules. A tester writing exactly the test the contract
+names would see green.
+
+**Ruling.** `changed` is `p_value < alpha and not rejected`, taking `rejected`
+from `holm_bonferroni`'s own return. **Never compare a p-value against the
+returned threshold to decide significance** — the threshold is diagnostic output
+for display, and after the step-down stops it is not a decision boundary at all.
+Both briefs get this verbatim, and the named test gets a second assertion that
+0.045 is in `changed` too, so it can no longer pass while the rule is broken.
+
+#### R17.2 — C5 needs a baseline pass rate, and no such field exists
+
+`Candidate.delta_pp` is "candidate `pass_rate` minus baseline `pass_rate`" and
+`CandidateField.baseline_pass_rate` is a field of its own. **`RunPoint` has no
+baseline rate.** Its `pass_rate` is documented as "Candidate side of the widest
+judge", and the only baseline-side numbers it carries are `judged_baseline` and
+`judge_failures_baseline`.
+
+This is C4's missing-`records` defect again, one chunk over: a contract naming a
+field the producer does not have. Adding one means editing C1/C2 while their
+consumers are in flight, which is forbidden.
+
+**Ruling: derive it, exactly.** `judge_failures_baseline` is documented as the
+gate's own `failures`, which *is* `n - successes`, so
+
+```python
+baseline_pass_rate = (judged_baseline - judge_failures_baseline) / judged_baseline
+```
+
+is not an approximation of the recorded rate — it is the recorded rate,
+reconstructed from the two numbers rigor recorded it from. It is also the same
+denominator convention `pass_rate` uses on the candidate side, so `delta_pp`
+subtracts two quantities measured the same way.
+
+`None` when `judged_baseline == 0`, mirroring `_candidate_rate`, which refuses to
+divide by zero and says why: passing `0.0` up "would plot a point on the floor of
+the chart for a run that measured nothing, which reads as a total collapse rather
+than as an absence". A `delta_pp` of `-100.0` against a baseline that measured
+nothing is the same lie in the same direction.
+
+#### R17.3 — C5's `excluded` needs its `flags` companion
+
+R14.2 gave `partition_comparable` a three-tuple return and R15 noted C5 would
+need to follow. Making it explicit: `CandidateField` gains
+`flags: tuple[Flag, ...]` beside `excluded`. A flagged point is a kept candidate
+that carries a caveat; dropping the flags on the floor at this layer means the
+caveat never reaches the table, and a caveat that reaches nobody is the same as
+not having computed it.
+
+#### R17.4 — "grouping by `comparability_key` ignoring `candidate_model`" is stale
+
+C5 says to group by `comparability_key` "ignoring `candidate_model`". The key has
+never contained `candidate_model` — C4 ships `goldenset_hash`, `judges_hash`,
+`n_per_item`, `baseline_model`. The phrase predates the key and now reads as an
+instruction to strip a field that is not there, which invites an implementer to
+go looking for it.
+
+Harmless in itself, but worth striking, because the same sentence contains the
+reason it matters: a key that *did* include `candidate_model` makes every group
+a group of one, `candidate_field` returns `None` every time, and the table never
+renders. C4's tester wrote that mutant deliberately; C5's should inherit it.
+
+#### R17.5 — the tie-break must be total, not merely stated
+
+C5 picks the largest group, "ties break on the group containing the newest
+point". Two groups can tie on size *and* contain no dated point at all — every
+`created` is `""` is an edge C5's own table already contemplates elsewhere. Then
+"the newest point" does not exist and the winner falls out of whatever order the
+groups were built in, which is dict insertion order over hashes: stable on one
+machine, not guaranteed across a rebuild.
+
+C5's reviewer note already suspects this ("renders differently on two machines if
+it falls back to dict ordering of hashes"). Do not leave it for the reviewer.
+**Ruling: the tie-break is total** — largest group, then newest point, then the
+group's `ComparabilityKey` in sorted order as the final deterministic tiebreaker.
+A stable arbitrary answer is worth more here than a principled unstable one,
+because the failure is a document that differs between two renders of one log.
+
+---
+
+### R18 — what C4's and C11's reviews changed, including one claim this plan had backwards
+
+Both reviews ran with mutation testing. Between them they killed 43 mutants and
+left 20 alive, and the survivors are the useful part. Two findings change this
+document rather than the code.
+
+#### R18.1 — C11's honesty claim is inverted, in this plan and in the shipped docstring
+
+C11's contract says unstable items are counted as passing because it "makes the
+spot check look *better* than it is, so the tool never inflates its own case."
+
+**The second clause is false**, and the arithmetic that refutes it is the
+chunk's own:
+
+```
+N=96, unstable=3, k=12
+  unstable folded into PASSING (the rule)   F=8    P = 0.3288
+  unstable counted as FAILING               F=11   P = 0.2106
+```
+
+`P` is the chance a spot check sees nothing. **Higher means blinder manual QA,
+which is a stronger argument for this harness.** The rule produces the higher
+number. It is therefore the choice that *strengthens the tool's own case*, not
+the one that restrains it.
+
+The rule stays — it is right on a different ground, which is that the tool does
+not claim regressions it has not established. But that is an honesty claim about
+`F`, and its effect on the quoted probability runs the other way. **Both halves
+must be said.** The shipped docstring currently says neither correctly: it
+asserts within one paragraph both that the rule "raises this probability" and
+that counting-as-failures "would produce a larger, more quotable number", which
+cannot both be true and whose second half is measurably false.
+
+This is the worst kind of defect this project can produce. C11's contract says
+that stating which way the thumb is on the scale "is the whole reason this
+sentence survives scrutiny" — and the statement was pointing the wrong way, in
+the most-quoted sentence of a document whose entire claim is that it does not
+overclaim. A director who checks the direction, which is exactly the reader this
+line is written for, finds it defended by a rationale its own arithmetic refutes.
+
+**Struck from C11's contract: "so the tool never inflates its own case."**
+
+#### R18.2 — §7.4's "order of magnitude in the flattering direction" conflates two errors
+
+C11's **Must not** and §7.4 both say the with-replacement form "understates the
+spot check's blindness by roughly an order of magnitude."
+
+```
+correct (hypergeometric, item rate 88/96):  0.3288
+with replacement, SAME rate (88/96)**12:    0.3520   -> OVERstates, by 7%
+a DIFFERENT rate, 0.75**12:                 0.0317   -> understates, by 10x
+```
+
+The error R14.1 caught this plan actually committing is the first, and it runs
+the **opposite** direction and by **7%**. The order-of-magnitude figure requires
+a completion pass rate of 0.75, which §7.4's own premise forbids: if all n draws
+of an item are identical, the completion rate *equals* the item rate and 0.75
+cannot arise. So the plan's central worked example uses a rate its own
+determinism argument rules out, to state a direction its own corrected number
+reverses.
+
+Both claims are corrected. The reason to keep `math.comb` is unchanged and was
+never in doubt: exact integer arithmetic is free.
+
+#### R18.3 — C11's sentence, amended
+
+Ruled after review, replacing the wording R14.1 corrected:
+
+> A 12-prompt spot check drawn at random from these 96 items, **8 of which
+> failed**, would have shown no failures at all in 33% of **such checks**.
+
+Two fixes. The old wording ate its own tail — a singular subject inside its own
+plural denominator. And it never said how many items failed, so a director's
+first question after "33%" was unanswerable from the line; `SpotCheck.failing`
+carried the number and the sentence dropped it.
+
+**`N == k` now returns `None`.** The contract excluded `N < k` because "the check
+would try every item"; that rationale applies identically at `N == k`. A draw
+taking every item is a **census, not a spot check**, and the sentence's whole
+force is that only a few were looked at. Naming a census a spot check is an
+overclaim in the chunk built to prevent overclaiming.
+
+#### R18.4 — C4's edge table gains three exclusions, and two names change
+
+The review found that the empty-hash hole — the one C4's contract names and
+closes — **is open in three more fields**, and that one of them is worse than the
+failure the chunk exists to prevent.
+
+- **Both sides graded zero.** `_judged_flags` fires on inequality and `0 != 0` is
+  false, so a point with `judged_baseline == judged_candidate == 0` is neither
+  excluded nor flagged: no pass rate, floor unrecorded, and it renders as an
+  ordinary complete row. `_require_comparable` refuses this outright — "neither
+  artifact contains a judged completion, so there is nothing to compare" — on a
+  field grouping *can* see, so C4's bridge claim admits a pair it says it never
+  admits. **Now excluded**, and so is a single zero side, because the flag's own
+  sentence ("the gap may be lost judge replies") is untrue of a side that graded
+  nothing.
+- **`n_per_item == 0`** and **`baseline_model == ""`.** Both are the contract's
+  own **Must not** — "coerce an empty hash to a match" — one and two fields over;
+  `_count` returning 0 for a missing value makes "not recorded" and "recorded as
+  zero" indistinguishable exactly as `""` did. Both **now excluded**. C5 could
+  not have closed them: C5 consumes `Exclusion`, it does not mint the rule, and
+  R15.2 has since added C7 as a second consumer, so deferring would have handed
+  one hole to two chunks.
+- **Self-comparison** (`baseline_model == candidate_model`) is a fourth refusal
+  `_require_comparable` makes and grouping did not. An A/A calibration run is
+  legitimately logged, so it is **a caveat, not an exclusion** — C5 decides
+  whether to render it; C4's job is that it is never silently admitted.
+
+**`Flag` is renamed `Caveat`**, before three chunks type it. It collided with
+`enum.Flag` — and C6 and C7 are rendering chunks where `from enum import Flag`
+would shadow it silently — and it would have shared a namespace with C5's
+`spread_flagged` and `RunPoint.warnings`, three "flag" concepts under one word.
+`Exclusion` names an outcome; `Caveat` names one too, and the pair reads as
+removed versus kept-with-a-note.
+
+**The three-tuple becomes `Partition`, a NamedTuple.** R15.3 named this defect
+class, listed R14.2, R6's `Timeline` and R15.3's `Trend` as its instances, and
+said to check every remaining contract for it. This was the remaining instance.
+The change is free — a NamedTuple compares equal to a plain tuple, satisfies
+`isinstance(x, tuple)`, has `len() == 3` and unpacks positionally — so every
+existing assertion passes unchanged, and a fourth field stops being a breaking
+change for what are now three consumers.
+
+#### R18.5 — one review claim that was wrong, recorded because it was nearly persuasive
+
+C4's reviewer noted that R14 and R15 are not on `chunk/c4-impl` and concluded
+that the implementer and tester "could not have read R14.2 or R14.3", making
+their agreement on the three-tuple, on `judged_*` and on the word *graded*
+"genuinely independent corroboration — the best evidence in this chunk."
+
+It is not. Those three rulings were in both briefs verbatim; the agents read them
+from the brief, not from the plan. The reviewer inferred access from the file and
+missed the channel.
+
+The part that **is** independent is smaller and still worth having: nothing in
+either brief disambiguated per-side from cross-run, so the tester's reading of
+that was genuinely its own. Recorded because a tidy story about independent
+convergence was one inference away from being believed, and the difference
+between "two agents agreed" and "two agents were told the same thing" is the
+whole value of running them blind.
