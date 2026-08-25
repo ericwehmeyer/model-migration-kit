@@ -161,9 +161,79 @@ their coverage named.
 
 **Also landed at the limit:** `AUDIT-verdict.md` (JOB-7 and JOB-8, JOB-7-upstream, JOB-9).
 
+## 7b. Resumed 2026-08-25 05:22Z — what the wake-up produced
+
+The hibernation's 01:22 wake-up fired and ran. `main` had moved five commits
+(`e50a842..f887b31`, 1,089 insertions: R38.3's evidence-schema guard and the jinja
+fix), which is what made **#4 (JOB-5)** a real job rather than a re-listing. Claimed,
+done, closed in `645cbe3`.
+
+**The scratchpad survived** — 38 `FINDINGS.md` files. It confirms §7a's inventory
+rather than overturning it: none of the ten lost jobs had written anything. Two that
+*had* finished were never written down, and are now landed verbatim in
+**`AUDIT-docs.md`** (`869a39b`) — JOB-10's README journey, JOB-13's plan-as-contract.
+JOB-13's coverage caveat is now measured: `main` carries **984 more lines of plan**
+than this checkout, all additions.
+
+**New on the branch:** `AUDIT-delta.md` (JOB-5), `AUDIT-stats.md` (JOB-16),
+`AUDIT-docs.md` (JOB-10 + JOB-13). `scripts/audit/mutation_harness.py` and its README
+changed — see D4 below.
+
+**New issues, both Windows-actionable:**
+
+- **[#11] `main` is RED on Python 3.12.** The largest finding of the night. Seven
+  failures, all through one helper using `Path.read_text(newline=...)`, which is
+  **3.13-only**, against a `pyproject.toml` declaring `>=3.10`. `e50a842` is green on
+  the same interpreter, so it is a regression from the schema merge. The newest gate
+  in the project is untested on three of the four supported Pythons, and fails rather
+  than skips there. `FROZEN.md`'s *"clean, seven gates green"* is a green on one
+  interpreter and no gate in the set can say so.
+- **[#12] R38.3: a log declaring no schema renders identically to one declaring
+  schema 1.** An absence rendering as a measurement, in the newest code. The model
+  never computes the distinction (`versions=()` for both), and the test *named* for
+  it proves `absent != 99` while every assertion it makes about the absent case
+  passes identically for a log declaring `1`. The docstring's refusal to invent "1"
+  is right and should stand; what is missing is words for the absence.
+
+**JOB-16 is done and clean** (`AUDIT-stats.md`, `ac86d78`): the Mann-Whitney operands
+are **not transposed**, verified statically across four links and by sign from outside
+the code under audit — worse candidate `p=2.6e-06`, better `p=0.99999`, transposed
+gives the mirror image. Holm-Bonferroni is correct including the step-down latch and
+return-in-input-order. §S3 names the coverage; the `n` question remains the open one.
+
+**Two findings against our own tooling, both fixed or recorded:**
+
+- **D4.** The mutation harness had **no green-baseline control** — it called a mutant
+  killed whenever pytest exited non-zero, so on #11's red tree it reported **29
+  killed, 0 survived**, a perfect score from a tree that was never green, hiding
+  twelve real gaps. Fixed: `green_baseline()` refuses a red tree. Note the direction —
+  this failure mode does not make the harness look broken, it makes the **suite** look
+  flawless. And the refutation *"the operator would notice"* fails: I did not.
+- **D2.** Two sweep invocations get different fixture roots and absolute paths are
+  deliberately unmasked, so diffing `--json` across runs reports **513 of 513 leaves
+  changed**, all noise. Compare the classification output, not the JSON.
+
+**The lesson worth carrying:** two of the three numbers this job started from were
+stale or void — the README's mutation baseline (taken in `a4b3c7f` against an earlier
+tree) and the harness's own output. The sweep's bucket table was the only one that
+reproduced, **because V19 recorded the commit it was taken at**. Re-pin from a run,
+with its commit, or do not pin. Both baselines are now re-pinned at `e50a842` and
+`f887b31`: **17 killed, 12 survived, 1 did not apply**, identical on all thirty.
+
+**Still lost, still re-runnable from §7a's briefs:** JOB-11, JOB-12, JOB-15, JOB-17,
+JOB-18, JOB-19, JOB-20, JOB-21. Board also carries **#6** (JOB-7, partially reported),
+**#7**, **#8**, **#9**, **#10**.
+
 ## 8. If you do only one thing next
 
-**Take JOB-5 (#4)** — re-run `scripts/audit/differential_render.py` and the mutation harness
-against current `main` and report **only the delta**. The tooling already caught one regression
-that way. JOB-6 pinned the baseline bucket table for exactly this purpose; it is in
-`AUDIT-gates.md`'s JOB-6 commit and in `scripts/audit/README.md`.
+**Read [#11] and confirm whether `main` is red on your interpreter too.** Everything
+downstream of it is conditional: any measurement taken on `main` from a non-3.13
+Python since the schema merge is void, including the ones on this branch. It is one
+keyword argument in one test helper.
+
+**Then [#12]**, which is a live breach of this project's central rule in its newest
+code, with the remedy already scoped: give the absence its own words, do not print
+"1" for it.
+
+*(Superseded: this section previously pointed at JOB-5, which is now done and closed
+in `645cbe3`.)*
