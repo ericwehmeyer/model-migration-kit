@@ -664,3 +664,60 @@ moment the upload carrying it finished. Sixteen checks passed on that artifact.
 The gate reads the README for commands that exist and paths that resolve; nothing
 reads it for claims that publishing itself falsifies. 0.1.1 exists only to replace
 that page, because a long description is frozen at upload.
+
+## R34.3's rendering — the series-scope provenance claim, on both surfaces (2026-08-24)
+
+Branch `chunk/provenance-timeline`, cut at `981514e`. Closes the first row of
+R40.1: *"R34.3's rendering — the series-scope provenance claim in the timeline
+section"*, which C18's fix pass computed and deliberately did not render because
+C14c was editing the template at the time.
+
+**What shipped.** `Provenance.timeline_sentence`, one property, printed by both
+renderers: the HTML puts it under the run-history chart between the chart's prose
+and R33.2's lineage block, and `render_terminal` prints it as its own line before
+the closing paragraph. Two files touched: `src/model_migration_kit/report.py` and
+`tests/test_report.py` (13 new tests, section 41). **2265 passed, 1 xfailed**;
+`scripts/check_merge.py` green on all seven.
+
+**The counts, and the trap.** `scripted_comparisons` and
+`unrecorded_comparisons` **overlap and are not a partition** — a `Fake*` baseline
+beside a candidate that recorded nothing is counted in both — so the sound
+denominator for a claim about what was checked is
+`comparisons - unrecorded_comparisons`, never `comparisons - scripted_comparisons`.
+The cleanliness clause ("and none of them names a Fake adapter") is additionally
+guarded on `scripted_comparisons == 0`, because otherwise the `Fake*` may be
+sitting on one of the comparisons that *did* record both sides and this class
+carries no scripted-among-named count to say so. That counter is R37.6's, still
+open in R40.1, and this chunk does not build it.
+
+**Why it is worth a page at all.** The document that needed it is the one with
+**no band**: a real headline over a history whose payloads record no adapter
+leaves `state` at `PROVENANCE_RECORDED` (R34.3 keeps it there), so
+`Provenance._counted` never runs and `unrecorded_comparisons` was computed and
+shown to nobody. Rendered, that document now says, identically in HTML and in the
+terminal:
+
+> 2 of the 4 comparisons in this run history record an adapter on both sides, and
+> none of them names a Fake adapter; the other 2 record no adapter on at least
+> one side, and this run history cannot say whether they were scripted.
+
+**Two things the next agent should know.**
+
+1. **`render_terminal` has no timeline section**, and did not grow one. C14c's
+   lineage block (R33.2) is HTML-only, and nothing in the plan rules on that gap.
+   This sentence is printed on the terminal as a bare line because R29.2 item 3
+   requires both surfaces to say the same words; if a terminal run-history section
+   is ever built, the sentence should move into it rather than be duplicated.
+2. **The scope word is "in this run history", not "drawn on this chart".** The
+   band says "in this document" and R34.3 requires every provenance sentence to
+   name its own scope, but "this chart" is false on the surface that draws no
+   chart — a disclosure pointing at a picture that is not there is R29.1's shape.
+   The whole sentence therefore names the run history and nothing else; the
+   speaker of the disowning clause is "this run history cannot say", not "this
+   document", so the two sentences never borrow each other's scope word.
+
+**Still open, and untouched here:** R37.6's `scripted_among_named` and the
+`_counted_paragraph` sentence in the methodology appendix that still says *"the
+other 2 do not"* about comparisons that recorded no adapter. The appendix and this
+sentence now disagree in reach on the same document; closing that is R37.6's
+chunk, not this one.

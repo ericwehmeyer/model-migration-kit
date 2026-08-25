@@ -1543,6 +1543,117 @@ class Provenance:
             return f"the {self.unrecorded[0]} run"
         return "either run"
 
+    @property
+    def timeline_sentence(self) -> str:
+        """What the *run history* can and cannot vouch for. R34.3.
+
+        The band above speaks for the headline comparison and says so ("in this
+        document"); this speaks for the comparisons the run history holds and says
+        so ("in this run history"). R34.3 refused to equalise the two reaches --
+        widening the band would put a claim about last month's runs on top of this
+        comparison's verdict, which is R29.1's defect chosen deliberately -- so
+        **every provenance sentence names its own scope instead**, and no reader
+        has to work out which one is speaking.
+
+        Written here rather than in either renderer because both print it and two
+        copies of a disclosure are two chances for one of them to go stale: the
+        same discipline as :attr:`sentence` and :attr:`DetailBudget.sentence`.
+
+        **This is the only place the series-scope gap reaches a reader on an
+        unbanded document.** A real headline over a history whose payloads record
+        no adapter leaves :attr:`state` at ``PROVENANCE_RECORDED`` -- R34.3 keeps
+        it there -- so there is no band, :attr:`_counted` never runs, and until
+        this sentence existed :attr:`unrecorded_comparisons` was computed and
+        rendered nowhere.
+
+        **The denominator is ``comparisons - unrecorded_comparisons`` and never
+        ``comparisons - scripted_comparisons``.** The two counts overlap and are
+        not a partition: a ``Fake*`` baseline beside a candidate that recorded
+        nothing is counted in both. Subtracting the scripted count would call
+        those comparisons clean; subtracting the unrecorded count is exact,
+        because "records an adapter on both sides" is precisely the complement of
+        "records no adapter on at least one side".
+
+        **The cleanliness clause is guarded on** :attr:`scripted_comparisons`
+        **being zero**, which is the one branch where it is sound. Elsewhere the
+        ``Fake*`` may be sitting on one of the comparisons that *did* record both
+        sides, and this class carries no count of scripted-among-named to say so;
+        R37.6 rules on that counter, and until it exists the honest thing is to
+        make no cleanliness claim rather than a subtracted one.
+
+        **Never a ``0 of 0``.** Nothing is said for a model with no series -- that
+        is a model built by hand, not a history measured to be empty -- and no
+        comparison is called clean when every one of them recorded nothing, the
+        refusal :attr:`_counted` already makes for the empty series.
+
+        The one-comparison spellings are written out longhand for the reason
+        :attr:`_counted` gives: English will not let the number and the verb be
+        chosen independently, and "all 1 comparison record an adapter" is what a
+        pluralising helper produces.
+        """
+        total = self.comparisons
+        if not total:
+            return ""
+        unnamed = self.unrecorded_comparisons
+        named = total - unnamed
+        if not unnamed:
+            if total == 1:
+                if self.scripted_comparisons:
+                    return (
+                        "The one comparison in this run history records an adapter "
+                        "on both sides."
+                    )
+                return (
+                    "The one comparison in this run history records an adapter on "
+                    "both sides, and it names no Fake adapter."
+                )
+            if self.scripted_comparisons:
+                return (
+                    f"All {total} comparisons in this run history record an adapter "
+                    f"on both sides."
+                )
+            return (
+                f"All {total} comparisons in this run history record an adapter on "
+                f"both sides, and none of them names a Fake adapter."
+            )
+        if not named:
+            if total == 1:
+                return (
+                    "The one comparison in this run history records no adapter on at "
+                    "least one side, so this run history cannot say whether it was "
+                    "scripted."
+                )
+            return (
+                f"None of the {total} comparisons in this run history records an "
+                f"adapter on both sides, so this run history cannot say whether any "
+                f"of them was scripted."
+            )
+        if named == 1:
+            recorded = (
+                f"1 of the {total} comparisons in this run history records an adapter "
+                f"on both sides"
+            )
+            if not self.scripted_comparisons:
+                recorded = f"{recorded}, and it names no Fake adapter"
+        else:
+            recorded = (
+                f"{named} of the {total} comparisons in this run history record an "
+                f"adapter on both sides"
+            )
+            if not self.scripted_comparisons:
+                recorded = f"{recorded}, and none of them names a Fake adapter"
+        if unnamed == 1:
+            gap = (
+                "the other one records no adapter on at least one side, and this "
+                "run history cannot say whether it was scripted"
+            )
+        else:
+            gap = (
+                f"the other {unnamed} record no adapter on at least one side, and "
+                f"this run history cannot say whether they were scripted"
+            )
+        return f"{recorded}; {gap}."
+
 
 @dataclass(frozen=True)
 class MethodologySection:
@@ -4175,6 +4286,20 @@ def render_terminal(model: ReportModel, *, console: Console | None = None) -> No
             continue
         out.print(_cell(f"warning: {warning}"))
 
+    # R34.3's series-scope claim, in the producer's own words. R29.2 item 3: the
+    # terminal and the HTML must say the same words, and the HTML prints this
+    # under the run-history heading. There is no chart on this surface, which is
+    # why the sentence names its scope as "in this run history" rather than as
+    # the chart it happens to sit under in the other renderer -- a sentence
+    # pointing at a picture this surface does not draw would be a disclosure
+    # naming the wrong thing, which is R29.1's shape.
+    #
+    # Gated on the sentence rather than on `model.series`, because that gate is
+    # the producer's: it says nothing for a model with no series, where a count
+    # would be a `0 of 0` published about a document that never drew a history.
+    if provenance.timeline_sentence:
+        out.print(Text(provenance.timeline_sentence))
+
     out.print(
         Text(
             f"Full outputs, the flip list and the methodology appendix are in the "
@@ -5111,6 +5236,20 @@ rather than hidden:</p>
   {% endif %}
 </ul>
 {% endif %}
+{#- R34.3's series-scope provenance claim, under the chart whose comparisons it
+    counts. The band over the verdict speaks for the *headline* comparison and
+    says "in this document"; this speaks for the run history and says "in this run
+    history", so the reader is never asked to work out which scope is talking. The
+    band is deliberately not widened to cover the series: a claim about last
+    month's runs sitting on top of this comparison's verdict is R29.1's defect
+    chosen on purpose.
+
+    Ungated, and it cannot be a heading over nothing: this whole section is inside
+    the section's own `model.series` guard, so `provenance.comparisons` is at least
+    one here and the sentence is never empty. The sentence is the producer's,
+    unrewritten -- prose belongs where its numbers are computed, which is also what
+    lets `render_terminal` print the same words. -#}
+<p class="secondary">{{ model.provenance.timeline_sentence }}</p>
 {#- The lineage block (R33.2). Below the chart and inside this section, because
     its whole job is the *difference* between the log the chart draws and the line
     the lineage names -- which is a paragraph about two sets, not a second chart.
