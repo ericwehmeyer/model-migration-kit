@@ -6196,3 +6196,158 @@ demo has no candidate field: it heads `candidate_field.caveats` with *"Rows that
 are in the table above under protest"*, and since C22b that tuple also carries
 `correct_field`'s multiplicity notes — which are not protests about a row's
 inclusion but withdrawals of its significance.
+
+### R37 — C14b's review: 52 mutants, 31 survivors, and one sentence explaining half of them
+
+The largest review this project has run, and the most useful. Every survivor was
+proved non-equivalent by rendering the difference, and twelve — including all
+eight top-ranked — were re-confirmed against the full 2,206-test suite rather
+than the one file.
+
+**Both audits the brief asked for first came back clean**, which is worth saying
+before the failures: exactly two `| safe` filters in the whole template, zero
+interpolations inside `<style>`, three in-tag interpolations all pre-existing and
+all enumerated, `autoescape` on, and no `is defined` or `| default` anywhere.
+C14b added no escape hatch. R27.5's three zero-column cases are the
+best-tested part of the chunk — a shorter note, a composed note and a dropped
+never-closed column all die.
+
+#### R37.1 — `x in region` is not `x in the cell that names it`
+
+**Every assertion about the matrix and the candidate table is a substring search
+over the section.** That single fact explains findings 1, 2, 3 and 5:
+
+| Mutant | What renders | Suite |
+|---|---|---|
+| cells rotated one **row** up | `extraction 100.0% [0.8828, 1.0000]` where extraction scored **0.0%** | 2206 green |
+| cells rotated one **column** left | the baseline's numbers under the candidate's heading | 2206 green |
+| `baseline`/`candidate` labels swapped | the two sides transposed | 2206 green |
+| every row shows the field's baseline rate | `53.5%` becomes `85.0%` in every row | 2206 green |
+
+The test named
+`test_each_matrix_column_shows_its_own_reading_and_not_its_neighbours` **does not
+catch a rotation.** It catches only the mutant that makes a rate vanish from the
+region entirely; a rotation keeps every number on the page and passes. The
+implementer's commit message says positional indexing "would print a real
+measurement under the wrong dimension, silently, which is the worst failure this
+document has", and chose a tag join to make it impossible. **The code is right and
+nothing would notice if it stopped being right.**
+
+**This is R27.2 and R31.2 reached from a third direction.** Those were assertions
+over module *source text* that a docstring could satisfy. This is an assertion
+over rendered *region text* that a wrong cell can satisfy. The shape is the same
+and worth stating once, generally:
+
+> **An assertion that searches a container for a value proves the value is in the
+> container. If the test's name claims the value is in a particular *place*, the
+> assertion must address that place.** A test whose docstring claims more than
+> its assertion checks is the most expensive kind, because it is read as coverage
+> by everyone including its author.
+
+**Ruling: the matrix and candidate-table assertions become cell-addressed** —
+parse the table, locate the cell by its row and column headings, and assert the
+value there. The document is already parsed with `html.parser` elsewhere in this
+file, so the machinery exists.
+
+#### R37.2 — the fixtures never take the branch the producer documents
+
+The second pattern, behind findings 4, 9 and most of 10: **no fixture makes a
+value `None`, or a collection non-empty, in the places the producers explicitly
+document as possible.**
+
+The sharpest instance: removing the `{% if caveat.point is none %}` guard makes
+the render **raise** — `UndefinedError: 'None' has no attribute
+'candidate_model'`, the spec's own named "crash" — **and all 2,206 tests stay
+green, because nothing in the suite renders a `CandidateField` with any caveat at
+all.** R33 warned about this exact shape ("a renderer walking caveats into rows
+must ask before it indexes"). The implementer asked. Nothing holds it there.
+
+And `_days` and `_pp`, the chunk's two newest functions, **have no test between
+them.** Each carries a long docstring insisting `None` renders as the dash and
+never as a zero — *"Printing the first two as `0.0 days` would state 'measured in
+a single sitting' on the evidence for 'we do not know when this was measured'"*.
+Forced probe: the shipped template renders `no recorded date … — … —`; with the
+mutant the same row renders `+0.0 pp` and `0.0 days` — *no change, measured
+alongside the newest*. **That is this document's central rule, in the two
+functions written to serve it, unguarded.** A sign flip in `_pp` turns a
+31.5-point regression into a 31.5-point gain and survives on a document the suite
+already renders.
+
+**Ruling: the fix pass adds fixtures for the documented-but-unreached branches** —
+an undated candidate row, a `None` delta, a field carrying caveats, an
+`available=True` matrix with an empty tag universe, and an unmeasurable spread.
+Each is named in a producer docstring as a real state. **A branch the producer
+documents and no fixture reaches is a branch that exists only in prose.**
+
+#### R37.3 — the hedge is pinned where it is required and not where it would be false
+
+R23.2's hedge — *"runs may have been excluded from a comparison without this page
+being able to name them"* — is correctly required when there is no candidate
+field, and correctly killed when deleted. But rendering it **alongside a
+populated list** also survives: the page then says it cannot name the excluded
+runs immediately above three named runs with three reasons.
+
+**Only the empty-list form of the error is tested.** Ruling: pin both directions,
+which is the same shape as R28.2's *"a refused correction must not leave behind
+the furniture of an applied one"* — a hedge is furniture, and it must not stand
+where the thing it hedges is present.
+
+#### R37.4 — a real dangling link, and it is the fixture that is missing
+
+`test_no_anchor_this_document_links_to_is_missing_from_it` renders exactly two
+documents, and **both carry `id="excluded"`**. The one document where the gate
+matters — a field that excluded nothing — is never rendered by that test.
+Ungating the nav link puts `<a href="#excluded">` on a page with nothing to point
+at, and the suite passes.
+
+This is the failure `excluded_shown` was introduced to prevent, and **the
+assertion is fine; the fixture is missing.** Worth separating, because the two
+have different fixes and the wrong diagnosis produces a stronger assertion over
+the same blind spot.
+
+#### R37.5 — the tag join is an equivalent mutant, and that is the finding
+
+Tested both ways, which is what the brief asked. The join **is** total —
+`column.cell(tag)` resolved for every tag in every column across all five
+documents, no `None`, exactly as R27.8 #2 says. And the implementer's claim holds:
+on a column whose cells were reversed, the tag join renders byte-identically to
+the in-order render while positional indexing does not.
+
+So positional indexing is **equivalent on every producible model and is not a
+defect** — and the finding is that a future edit back to it would pass all 2,206
+tests. R27.8 #5 called positional "the right shape for a table renderer"; the
+implementer diverged deliberately and was right to. **Ruling: R27.8 #5 is
+withdrawn**, and the tag join is the contract.
+
+#### R37.6 — C18's fix pass found the same defect on a second surface, and one worse
+
+Reported by C18's fix agent, outside its scope, correctly not fixed.
+
+`_counted_paragraph` renders the same claim in the **methodology appendix**, and
+R34.2 only ruled the band. So the document now **disagrees with itself**: the band
+says *"none of the 2 … that record an adapter on both sides … the other 2 …
+this document cannot speak for them"*, and four screens later the appendix still
+says *"None of the 4 comparisons drawn in this document name a Fake adapter"*.
+
+**And the appendix carries a worse instance than the one R34.2 fixed.** With one
+scripted comparison out of three and two recording no adapter:
+
+> 1 of the 3 comparisons drawn in this document names a Fake adapter on at least
+> one side; **the other 2 do not.**
+
+That is not an implicature a careless reader might draw. **It is an explicit clean
+claim about two comparisons that recorded no adapter at all**, and it is live
+today. R34.2's ruling deliberately left the `K of N` branch alone because the two
+counts overlap and are not a partition — which was right for the band's sentence
+and leaves this one standing.
+
+**Ruling: add the third counter.** `scripted_among_named` — comparisons recording
+an adapter on both sides **and** naming a `Fake*`. With it, the honest sentence
+partitions cleanly: *K of the N comparisons that recorded an adapter on both
+sides name a Fake adapter; the other N−K do not; M further comparisons recorded
+no adapter, and this document cannot speak for them.* No overlap, no subtraction
+across counts that are not complements, and every comparison accounted for.
+
+The appendix and the band then say the same thing in the same units, which is the
+`DetailBudget.sentence` discipline applied across two surfaces instead of two
+renderers.
