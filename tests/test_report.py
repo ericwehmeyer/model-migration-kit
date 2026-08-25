@@ -12315,3 +12315,480 @@ def test_a_document_carrying_every_new_section_is_still_self_contained(
             f"one of this chunk's sections"
         )
     assert "@font-face" not in html, "a web font reached the document"
+
+
+# --------------------------------------------------------------------------- #
+# 40. The series scope of the unrecorded finding, and the denominator that was
+# counting comparisons nobody could check. R34.1 and R34.2.
+#
+# `Provenance` carried the scripted finding at both scopes -- `headline_scripted`
+# and `scripted_comparisons` -- and the unrecorded finding at one, so the gap
+# `is_demo` was widened to close was still open for the state invented to close
+# it. Everything below is invisible on any log this tool writes: `unrecorded` is
+# documented as "empty on every log this tool writes", and the broken and the
+# correct implementation agree on every ordinary fixture in this file. That
+# agreement is why it shipped, and it is why these fixtures blank the adapter
+# strings in the payload by hand.
+# --------------------------------------------------------------------------- #
+
+
+def _headline_payload_naming(
+    scenario: Scenario, *, baseline: str, candidate: str
+) -> dict[str, Any]:
+    """``scenario``'s comparison payload with each side's adapter rewritten.
+
+    The run artifacts on disk still say whatever they said. That separation is
+    the whole fixture: ``_run_summary`` prefers ``run.header.adapter`` off the
+    artifact while a ``RunPoint`` reads the payload and never opens a file, so a
+    payload rewritten here has a headline that knows what produced it and a
+    series point that does not.
+    """
+    rewritten: dict[str, Any] = json.loads(json.dumps(dict(scenario.comparison)))
+    for side, adapter in (("baseline", baseline), ("candidate", candidate)):
+        rewritten[side]["adapter"] = adapter
+        rewritten[side]["adapters"] = [adapter] if adapter else []
+    return rewritten
+
+
+def _log_headlined_by(
+    scenario: Scenario,
+    name: str,
+    payload: Mapping[str, Any],
+    *earlier: Sequence[Mapping[str, Any]],
+) -> Path:
+    """``_log_with_history``, with the headline comparison's payload supplied.
+
+    Built here rather than by parametrising ``_scenario`` because ``_scenario``
+    writes one adapter argument into the run artifact *and* into the payload, and
+    every shape in this section is one where the two disagree.
+    """
+    records: list[Mapping[str, Any]] = [
+        _record(EVENT_RUN_STARTED, {"model_id": BASELINE_MODEL}, TS_JUDGING),
+        _record(EVENT_JUDGING_COMPLETED, {"model_id": CANDIDATE_MODEL}, TS_JUDGING),
+    ]
+    for group in earlier:
+        records.extend(group)
+    records.append(_record(EVENT_COMPARISON, dict(payload), TS_COMPARISON))
+    if scenario.verdict is not None:
+        records.append(_record(EVENT_VERDICT, scenario.verdict, TS_VERDICT))
+    return _write_evidence(scenario.root / name, records)
+
+
+def _log_whose_headline_records_no_adapters(
+    scenario: Scenario, name: str, *earlier: Sequence[Mapping[str, Any]]
+) -> Path:
+    """The R29.2 shape: a headline whose payload records neither side's adapter."""
+    return _log_headlined_by(
+        scenario,
+        name,
+        _headline_payload_naming(scenario, baseline="", candidate=""),
+        *earlier,
+    )
+
+
+def _scripted_scenario(root: Path) -> Scenario:
+    """A run whose artifacts on disk record a scripted adapter."""
+    return _scenario(
+        root, baseline_adapter="FakeScriptedAdapter", candidate_adapter="FakeAdapter"
+    )
+
+
+def _flat(text: str) -> str:
+    """``text`` with every run of whitespace collapsed to one space.
+
+    Both renderings wrap: the HTML band is a block element and the terminal band
+    is a ``rich`` panel. A disclosure has to be asserted on its words rather than
+    on the column it happened to break at.
+    """
+    return " ".join(text.split())
+
+
+def _terminal_prose(text: str) -> str:
+    """``rich``'s output as words, with the box it drew around them removed.
+
+    A panel wide enough not to wrap does not exist: ``rich`` breaks the band's
+    sentence at the panel's width and puts a ``|`` and the padding of the next
+    line between the two halves of a clause. Dropping the box-drawing block and
+    then collapsing whitespace leaves the words the reader reads, which is what
+    R29.2's "the terminal and the HTML must say the same words" is a claim about.
+    """
+    return _flat("".join(" " if "─" <= one <= "╿" else one for one in text))
+
+
+def _band_text(model: Any) -> tuple[str, str]:
+    """The band's words as the HTML and the terminal each print them.
+
+    Returned as a pair rather than checked one at a time because R29.2's third
+    decision is that the two surfaces say *the same words*, and a test that reads
+    one of them cannot notice when they stop doing so.
+    """
+    from rich.console import Console
+
+    buffer = io.StringIO()
+    _get(_module(), "render_terminal")(
+        model, console=Console(file=buffer, width=200, no_color=True, force_terminal=False)
+    )
+    return _flat(_parse(_html(model)).text), _terminal_prose(buffer.getvalue())
+
+
+def _provenance(model: Any) -> Any:
+    return _get(model, "provenance")
+
+
+def test_the_series_carries_the_unrecorded_finding_as_well_as_the_scripted_one(
+    tmp_path: Path,
+) -> None:
+    """R34.1: ``unrecorded_comparisons`` is ``scripted_comparisons``' mirror.
+
+    The asymmetry in one row: scripted was carried at the headline
+    (``headline_scripted``) *and* across the series (``scripted_comparisons``),
+    and unrecorded was carried at the headline only. ``is_demo`` reaches into the
+    series deliberately -- "a band that appears only when the last run was fake is
+    a band you can remove by scripting the runs before it" -- so the state
+    invented to close that gap was left with the gap still open.
+
+    Four comparisons, three of them unable to say what produced them: one that
+    records nothing on either side, one that records nothing on the candidate
+    only, and the headline, whose artifacts know and whose payload does not. The
+    fourth records both. A count that read *sides* would say four; a count that
+    read runs could not be taken at all (R29.4).
+    """
+    scenario = _scripted_scenario(tmp_path / "mirror")
+    log = _log_whose_headline_records_no_adapters(
+        scenario,
+        "evidence-mirror.jsonl",
+        _earlier_run(scenario, tag="named"),
+        _earlier_run(scenario, tag="silent", baseline_adapter="", candidate_adapter=""),
+        _earlier_run(scenario, tag="halfsilent", candidate_adapter=""),
+    )
+    provenance = _provenance(_model_from(log))
+
+    assert _get(provenance, "comparisons") == 4, "the fixture did not build four points"
+    assert _get(provenance, "unrecorded_comparisons") == 3, (
+        "three comparisons record no adapter on at least one side; a count of 4 is "
+        "counting sides rather than comparisons, and a count of 2 is missing the "
+        "headline whose payload was blanked under artifacts that still name Fake*"
+    )
+    assert _get(provenance, "scripted_comparisons") == 0, (
+        "no comparison payload names a Fake adapter, which is the shape the "
+        "denominator defect lives in"
+    )
+
+
+def test_a_scripted_side_beside_an_unnamed_one_is_counted_by_both_series_counts(
+    tmp_path: Path,
+) -> None:
+    """The two series counts overlap, and nothing may treat them as a partition.
+
+    A ``Fake*`` baseline beside a candidate that recorded nothing is a finding
+    *and* a gap, exactly as :attr:`Provenance.unrecorded` may be non-empty while
+    :attr:`Provenance.state` is scripted. An implementation that spelled
+    ``unrecorded_comparisons`` as ``comparisons - scripted_comparisons``, or that
+    counted only comparisons with no adapter on *both* sides, reads correctly on
+    every other fixture in this section and wrongly here.
+    """
+    scenario = _scenario(tmp_path / "overlap")
+    log = _log_with_history(
+        scenario,
+        "evidence-overlap.jsonl",
+        _earlier_run(
+            scenario, tag="halffake", baseline_adapter="FakeAdapter", candidate_adapter=""
+        ),
+    )
+    provenance = _provenance(_model_from(log))
+
+    assert _get(provenance, "comparisons") == 2
+    assert _get(provenance, "scripted_comparisons") == 1, (
+        "the earlier run names a Fake adapter on its baseline"
+    )
+    assert _get(provenance, "unrecorded_comparisons") == 1, (
+        "the same earlier run records no adapter on its candidate; a finding on one "
+        "side does not close the gap on the other"
+    )
+
+
+def test_an_adapter_of_spaces_is_no_adapter_at_the_series_scope_too(
+    tmp_path: Path,
+) -> None:
+    """The headline strips before deciding; the series must strip on the same rule.
+
+    ``Provenance.unrecorded`` asks ``not side.adapter.strip()``, so a headline
+    whose adapter is three spaces is unrecorded. If the series asked only for
+    falsiness, one whitespace character anywhere in a payload would put a
+    comparison back into the denominator as though it had been examined -- which
+    is the defect this section exists for, reachable by a space bar.
+    """
+    scenario = _scenario(tmp_path / "spaces")
+    log = _log_with_history(
+        scenario,
+        "evidence-spaces.jsonl",
+        _earlier_run(scenario, tag="spaced", candidate_adapter="   "),
+    )
+    provenance = _provenance(_model_from(log))
+
+    assert _get(provenance, "unrecorded_comparisons") == 1, (
+        "an adapter of three spaces names nothing, and the headline's own rule "
+        "already says so"
+    )
+
+
+def test_counting_the_series_does_not_widen_which_documents_are_banded(
+    tmp_path: Path,
+) -> None:
+    """R34.3: the count is series-scoped and the band's reach is not.
+
+    The tempting fix for the asymmetry is to make the band series-scoped so the
+    two disclosures match. Refused: the band sits over the headline's numbers and
+    a reader takes it as being about them, so widening it would put a claim about
+    last month's runs on top of this comparison's verdict -- R29.1's defect chosen
+    deliberately. ``test_a_series_of_real_runs_does_not_band_the_report`` covers
+    the same input from the ``is_demo`` side; this covers it from the state's,
+    where a count that had been wired to the state would show.
+    """
+    scenario = _scenario(tmp_path / "no-widening")
+    log = _log_with_history(
+        scenario,
+        "evidence-no-widening.jsonl",
+        _earlier_run(scenario, tag="silent", baseline_adapter="", candidate_adapter=""),
+    )
+    model = _model_from(log)
+    provenance = _provenance(model)
+
+    assert _get(provenance, "unrecorded_comparisons") == 1, "the fixture blanked one run"
+    assert _get(provenance, "state") == _get(_module(), "PROVENANCE_RECORDED"), (
+        "an earlier run that recorded no adapter must not band a document whose own "
+        "two sides both name a real one"
+    )
+    assert _get(provenance, "banded") is False
+    assert _get(provenance, "sentence") == "", "an unbanded document has no band to word"
+
+
+def test_the_band_does_not_count_comparisons_it_could_not_check(
+    tmp_path: Path,
+) -> None:
+    """R34.2: the denominator excludes what it could not check, and says how many.
+
+    What shipped printed "none of the N comparisons in this document name a Fake
+    adapter in their own payloads", counting a comparison whose adapter strings
+    are empty into N exactly as if it had been examined and cleared. Every word of
+    that is true, and it reads as *these N were checked and came back clean*: a
+    true sentence licensing a false inference, which is R29.1's shape one scope up
+    and the harder of the two to find.
+
+    Four comparisons; two record an adapter on both sides, two do not. The
+    denominator is two, and the other two are named and disowned.
+    """
+    scenario = _scripted_scenario(tmp_path / "denominator")
+    log = _log_whose_headline_records_no_adapters(
+        scenario,
+        "evidence-denominator.jsonl",
+        _earlier_run(scenario, tag="named"),
+        _earlier_run(scenario, tag="alsonamed", candidate_adapter="AnthropicAdapter"),
+        _earlier_run(scenario, tag="silent", baseline_adapter="", candidate_adapter=""),
+    )
+    model = _model_from(log)
+    provenance = _provenance(model)
+
+    assert _get(provenance, "state") == _get(_module(), "PROVENANCE_SCRIPTED"), (
+        "the headline's run artifacts record FakeScriptedAdapter, so this document "
+        "is banded and the band has a count to publish"
+    )
+    assert (_get(provenance, "comparisons"), _get(provenance, "unrecorded_comparisons")) == (
+        4,
+        2,
+    )
+
+    sentence = _flat(_get(provenance, "sentence"))
+    assert "none of the 4 comparisons" not in sentence, (
+        f"two of these four comparisons record no adapter at all and were never "
+        f"examined; counting them into the denominator is the defect: {sentence!r}"
+    )
+    assert (
+        "none of the 2 comparisons in this document that record an adapter on both "
+        "sides name a Fake adapter in their own payloads" in sentence
+    ), sentence
+    assert (
+        "the other 2 record no adapter on at least one side, and this document "
+        "cannot speak for them" in sentence
+    ), sentence
+
+    html_text, terminal_text = _band_text(model)
+    for surface, text in (("the HTML band", html_text), ("the terminal band", terminal_text)):
+        assert sentence in text, f"{surface} does not carry the band's own words: {text!r}"
+
+
+def test_a_document_whose_payloads_record_no_adapter_at_all_claims_nothing(
+    tmp_path: Path,
+) -> None:
+    """The R29.2 repro, one scope up: never a ``0 of 0``.
+
+    Blanking every payload's adapters leaves no comparison the document could
+    have checked. ``_counted`` already refuses to publish a ``0 of 0`` for the
+    empty series -- "a model built by hand rather than a document with no scripted
+    runs in it" -- and a denominator emptied by the exclusion is the same refusal
+    reached from the other direction. So the clause claims nothing about
+    cleanliness, says what it could not check, and still says where the band came
+    from, because a reader looking at a band over payloads that name nothing is
+    owed the reason it is there.
+    """
+    scenario = _scripted_scenario(tmp_path / "nothing-checked")
+    log = _log_whose_headline_records_no_adapters(
+        scenario,
+        "evidence-nothing-checked.jsonl",
+        _earlier_run(scenario, tag="silent", baseline_adapter="", candidate_adapter=""),
+        _earlier_run(scenario, tag="alsosilent", baseline_adapter="", candidate_adapter=""),
+    )
+    model = _model_from(log)
+    provenance = _provenance(model)
+
+    assert (_get(provenance, "comparisons"), _get(provenance, "unrecorded_comparisons")) == (
+        3,
+        3,
+    )
+    sentence = _flat(_get(provenance, "sentence"))
+    assert (
+        "none of the 3 comparisons in this document record an adapter on both sides, "
+        "so this document cannot say whether any of them was scripted" in sentence
+    ), sentence
+    assert "this band comes from the run artifacts the headline read" in sentence, sentence
+    for refused in ("0 of", "none of the 0", "the 0 comparisons"):
+        assert refused not in sentence, (
+            f"{refused!r} is a measurement made of nothing: {sentence!r}"
+        )
+
+    html_text, terminal_text = _band_text(model)
+    for surface, text in (("the HTML band", html_text), ("the terminal band", terminal_text)):
+        assert sentence in text, f"{surface} does not carry the band's own words: {text!r}"
+
+
+def test_the_band_sentence_is_untouched_when_every_comparison_recorded_an_adapter(
+    tmp_path: Path,
+) -> None:
+    """R34.2 changes nothing on a log this tool writes, and this pins that.
+
+    The ruling is explicit that when ``unrecorded_comparisons`` is zero the
+    sentence stands unchanged, so the exclusion must be reachable only by the
+    input it was written for. Both spellings are pinned: the plural, and the
+    longhand singular the module refuses to reach through a pluralising helper.
+    """
+    for slug, history, expected in (
+        (
+            "plural",
+            1,
+            "none of the 2 comparisons in this document name a Fake adapter in "
+            "their own payloads, and this band comes from the run artifacts the "
+            "headline read",
+        ),
+        (
+            "single",
+            0,
+            "the one comparison in this document names no Fake adapter in its own "
+            "payload, and this band comes from the run artifacts the headline read",
+        ),
+    ):
+        scenario = _scripted_scenario(tmp_path / f"untouched-{slug}")
+        model = _model_from(
+            _log_headlined_by(
+                scenario,
+                f"evidence-untouched-{slug}.jsonl",
+                _headline_payload_naming(
+                    scenario, baseline="AnthropicAdapter", candidate="OpenAICompatAdapter"
+                ),
+                *[_earlier_run(scenario, tag=f"named-{index}") for index in range(history)],
+            )
+        )
+        provenance = _provenance(model)
+        assert _get(provenance, "state") == _get(_module(), "PROVENANCE_SCRIPTED"), (
+            "the artifacts on disk record Fake adapters, so the band is up and has a "
+            "count to publish"
+        )
+        assert (
+            _get(provenance, "unrecorded_comparisons"),
+            _get(provenance, "scripted_comparisons"),
+        ) == (0, 0), "every payload here records a real adapter on both sides"
+        assert _flat(_get(provenance, "sentence")) == (
+            f"these numbers describe scripted responses, not a real provider; {expected}"
+        )
+
+
+@pytest.mark.parametrize(
+    ("silent", "named", "expected"),
+    [
+        (
+            1,
+            0,
+            "the one comparison in this document records no adapter on at least one "
+            "side, so this document cannot say whether it was scripted",
+        ),
+        (
+            1,
+            1,
+            "the one comparison in this document that records an adapter on both "
+            "sides names no Fake adapter in its own payload",
+        ),
+        (
+            2,
+            1,
+            "the other 2 record no adapter on at least one side",
+        ),
+        (
+            1,
+            2,
+            "none of the 2 comparisons in this document that record an adapter on "
+            "both sides name a Fake adapter in their own payloads",
+        ),
+    ],
+)
+def test_the_band_agrees_with_itself_about_number_at_every_boundary(
+    tmp_path: Path, silent: int, named: int, expected: str
+) -> None:
+    """The singular spellings, driven through both renderers rather than trusted.
+
+    The module writes the one-comparison spellings out longhand and says why:
+    "all 1 comparison name a Fake adapter is what a helper produces, and a
+    document whose loudest sentence is ungrammatical is a document a reader trusts
+    less than one that says nothing." Three verb-agreement slips in this chunk were
+    found only by driving real shapes through both renderers, so these are real
+    logs and both surfaces are read.
+
+    ``silent`` counts the comparisons whose payloads record nothing, the headline
+    included; ``named`` counts the ones that record both sides.
+    """
+    root = tmp_path / f"boundary-{silent}-{named}"
+    scenario = _scripted_scenario(root)
+    earlier = [
+        _earlier_run(scenario, tag=f"named-{index}") for index in range(named)
+    ] + [
+        _earlier_run(
+            scenario,
+            tag=f"silent-{index}",
+            baseline_adapter="",
+            candidate_adapter="",
+        )
+        for index in range(silent - 1)
+    ]
+    model = _model_from(
+        _log_whose_headline_records_no_adapters(scenario, "evidence-boundary.jsonl", *earlier)
+    )
+    provenance = _provenance(model)
+
+    assert (_get(provenance, "comparisons"), _get(provenance, "unrecorded_comparisons")) == (
+        silent + named,
+        silent,
+    )
+    sentence = _flat(_get(provenance, "sentence"))
+    assert expected in sentence, sentence
+    for ungrammatical in (
+        "the other 1 ",
+        "1 comparisons",
+        "the 1 comparisons",
+        "comparisons in this document records",
+        "comparison in this document record ",
+    ):
+        assert ungrammatical not in sentence, (
+            f"{ungrammatical!r} is a number and a verb chosen independently: {sentence!r}"
+        )
+
+    html_text, terminal_text = _band_text(model)
+    for surface, text in (("the HTML band", html_text), ("the terminal band", terminal_text)):
+        assert sentence in text, f"{surface} does not carry the band's own words: {text!r}"
