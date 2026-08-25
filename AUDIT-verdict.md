@@ -218,3 +218,192 @@ grep -c "were not tested" -> 0
   `candidates`/`excluded`, **zero holes**.
 - **`report.py` closes the `candidate_field is None` hole well**, verbatim: *"Read this as not
   known, and never as 'nothing was excluded'."* **REFUTED on the headline.**
+
+---
+
+# JOB-7, upstream: `judging.py`, `runner.py`, `goldenset.py`
+
+Same evidence standard — real `run_goldenset` → real `PinnedJudge` → real `compare` → real
+report. Only rigor's `Adapter` seam is scripted. Tree `8f39878`.
+
+## U1. A judge writing a score outside the rubric range turns NO-GO into GO
+
+40 items × 5. Candidate answers `"garbage"` on two items — 10 of 200 completions. Two runs,
+identical **except the number the judge writes beside a verdict it has already reached**:
+
+```
+judge says {"pass": false, "score": 1}  -> NO-GO  rule 1  190/200  p=0.00069  flips 2
+judge says {"pass": false, "score": 0}  -> GO     rule 5  190/190  p=1.0     flips 0
+                                                    parse_failures cand: 10   warnings: []
+```
+
+`score: 0` is a judge on a 1–5 rubric expressing total failure. rigor refuses it **before**
+returning any part of the verdict, so `_grade` files the whole record — `pass: false` included —
+as `parse_failure=True`, and `_counted` drops it from numerator **and** denominator. Rendered:
+
+```
+GO — No judge regressed, every judge cleared the pass-rate floor…
+candidate accuracy: pass rate 100.0%, interval 98.0% to 100.0%, floor 90.0%
+Exit code a CI system would have received: 0
+```
+
+**`_impute_unscored`'s own docstring names this number** as the catastrophe it exists to prevent:
+*"the candidate's ten unscored failures would leave the numerator **and** the denominator,
+posting 190/190 = 1.00 and turning the very NO-GO this rule exists to protect into a GO."*
+Reached through `_counted`'s parse-failure door instead.
+
+**And nothing warns.** 10/200 = 0.0500 against a tolerance of 0.0500 — measured boundary: 2 bad
+items pass silently, 3 abort. The sibling threshold spends 26 lines explaining why the
+*unscored-record* disclosure fires at `>=` rather than `>`, *"a disclosure that is silent at its
+own documented number tells the reader something false."* The parse-failure path — which removes
+a record from **both** populations — has no disclosure below the abort.
+
+> **SURVIVES, correctly scoped.** The uncorrelated case was tested: parse failures on items the
+> candidate answered *correctly* do **not** flip the verdict. So it requires the judge's
+> malfunction to correlate with the model's failures — which is the most natural failure of an
+> LLM judge shown a catastrophically bad answer, and the direction the tool says it must never
+> err in.
+
+## U2. An item whose every draw was unparseable has no state anywhere
+
+```
+items passing / failing / unstable |  40 / 0 / 0  |  38 / 0 / 0  |     beside  items: 40
+```
+
+38 + 0 + 0 = 38. **Two items left the histogram without entering any bucket**, on a page whose
+`Flips (0)` section reads `None.` Three lines produce it: `_item_states` `continue`s on
+`parse_failure`; `_classify_items` skips an item absent from the candidate, so there is **no
+fourth list**; and `items` is the *baseline's* count printed for both sides.
+
+**Imputed accounting is coherent in all eleven places on the page. Parse-failure accounting is
+coherent in one** — the `judge parse failures` cell. *(The earlier audit's imputed/dimension
+divergence did **not** reproduce at `8f39878`; recorded as not-reproducing rather than
+re-reported.)*
+
+## U3. `parts per run` reports the *judging* pass's parts, in both directions
+
+When the run artifact is unreadable — the documented cross-machine case — `parts` falls through
+to the **judged** artifact's header count and is rendered under `parts per run`:
+
+```
+runs completed in 1 part each, judging resumed  ->  "completed in 2 parts"   (false seam)
+runs really resumed, judging ran once           ->  "completed in 1 part"    (hidden seam)
+```
+
+`runner.py`'s docstring: *"A resumed run is a perfectly good run; hiding the seam would be the
+only dishonest option."* Direction B hides it.
+
+## U4. `--timeout` makes latency the strictest gate in the tool
+
+Candidate returns the **exact reference answer on every draw**; two items take ~40 ms against a
+20 ms budget:
+
+```
+NO-GO, rule 1 — "Judge 'accuracy' shows a statistically significant regression"
+flips: item-005 5->0, item-011 5->0    imputed cand: 10
+```
+
+rigor *keeps* the answer (`Run(value=value, error=SampleTimeout)`); `_completion_from_run`
+branches on `error` first and **discards `run.value`**, so `_grade` imputes `SCORE_MIN`. The same
+page says twice: *"Latency is never a gate — a migration that is slower per call is a product
+decision, not a quality regression."*
+
+> **SURVIVES.** The operator did ask for a timeout — but the report states the opposite in terms,
+> on the same page, twice, and **the correct answer is destroyed**: `Completion` has both an
+> `output` and an `error` field and could have carried both.
+
+## U5–U7. The input contract
+
+- **Unicode normalisation is checked nowhere** (`grep -rn "unicodedata\|normalize\|NFC"` → no
+  matches). Two items whose ids are NFC and NFD of the same string **load clean and both appear
+  in the flip list**, past a duplicate check whose own message says *"two items sharing one id
+  make that list wrong rather than incomplete."* And the same golden set authored NFC vs NFD is
+  **not comparable** — macOS is the platform that produces NFD, so a baseline that cost real
+  money is invalidated by a difference no reader can see. *Mitigated where the golden set travels
+  with the log.*
+- **Ids are not stripped while tags are.** `_parse_tags` strips before its duplicate check, with a
+  comment giving the argument; `_required_text` twelve lines earlier returns the unstripped value.
+  **The module contains its own refutation.**
+- **The comparability hash covers `reference` and `metadata`, which nothing in a real run reads
+  and nothing in the report prints.** Adding `"metadata": {"reviewed_by": "alice"}` to **one item
+  of forty** invalidates the paid baseline — and `ALLOWED_KEYS`' comment *invites* you to use
+  metadata. Taken with the NFC/NFD case the hash is both **under-** and **over-inclusive**.
+- **`file_hash` is written once and read by nobody** — one line in the repo, the write. Its
+  docstring says *"Both go into the report."* Searching the rendered report for it: **0 hits.**
+
+## U8–U10, and the sound list
+
+- **Resuming an *older*-schema artifact is performed, not refused** — 100 new completions written
+  and fsynced, *then* the read-back raises, leaving the file unreadable by its own loader with
+  the paid work of both passes inside it. **Latent today** (needs a hand-edited file); it arms on
+  the day the constant is bumped.
+- **`fresh=True` cannot rescue a newer-schema artifact** — `load` runs before `fresh` is
+  consulted, so the remedy the error messages recommend cannot be applied.
+- **The FAKE band and the latency suppression ride the same `"Fake"` class-name prefix.** An
+  honest sub-millisecond adapter (local model, cache, replay harness) prints `0.000 | 0.000`
+  **without** the sentence the suppression branch carries. *The class-name limit itself is
+  already documented — the prefix coupling is not.*
+
+**Sound, with what was tried.** The **imputation promise is true**: a crasher and a bad answerer
+posting the same 190/200 differ in exactly one field (`imputed`), and are distinguishable in
+three places on the page; structurally it cannot invert, since `SCORE_MIN` is 1.0 and rigor
+refuses anything below it. **Resume accounting is honest** — no double-count, no loss, and
+`parts` correctly does not increment on a re-run. **`--goldenset` verifies the content hash and
+refuses loudly**, leaving the verdict untouched. **No content-hash collision or spurious
+difference could be constructed** across nine variants — trailing newline, CRLF, BOM, key order,
+item order, blank lines, whitespace all correctly ignored. **Golden-set validation refuses every
+malformed id and input the brief listed**, and **the judge-reply taxonomy is right** across
+fourteen shapes.
+
+---
+
+# JOB-9 — determinism: the renderer holds, the *claim* does not
+
+**The negative result first, because it is the finding.** ~600 renders across 5 fixtures, 2
+interpreters, 300+ `PYTHONHASHSEED` values, 8 timezones and 6 locales produced **one byte-string
+per fixture**. Not one row moved, not one digit changed, not one verdict flipped.
+
+```
+A  65 renders -> 1 hash    wide 65 -> 1    hostile 65 -> 1    floats 65 -> 1    unsorted 65 -> 1
+3.12 vs 3.10: byte-identical.   21 demo runs at seeds 0-20: 21 of 21 NO-GO, one payload hash.
+```
+
+**`series.py`'s stated hashing hazard is absent in practice** — the decisive test being a log
+whose `thresholds` object is *in the bytes* reverse-alphabetical: it renders following the file,
+exactly, on all 108 renders. **The document is a total function of the log bytes**, which is the
+property the claim actually needs.
+
+## D1. But a second operator cannot re-render the file they were sent
+
+`report.py:4837` promises: *"a reviewer can re-render a stored evidence log and get the file they
+were sent."*
+
+```
+$ grep -rn -- '"--now"' src/ scripts/
+(no output)
+```
+
+**Verified independently.** `render_html_string` and `from_evidence` both accept `now`; `cli.py`
+passes `goldenset`, `artifact_dir`, `max_output_chars`, `max_report_chars` — **and not `now`**.
+20 CLI renders of one unchanged log: **20 byte-distinct**; blank the timestamp and there is
+exactly **one** hash, differing on two lines.
+
+> **The first clause of that sentence is true and achievable — "a test can render twice and
+> diff". The second names a *reviewer*, and no shipped code path gives that reviewer the same
+> `now`. The hedge and the promise are in one sentence and only the hedge is implementable.**
+
+Three more, all disclosed on the page and none of them hashing: a **moved** log renders *partial*
+— gains a "This report is partial" banner, loses the tag distribution, turns `60 / 60` into
+`0 / ?` — which **a Windows→Mac transfer trips every time**, because a `C:\` path is never inside
+a `/Users/` tree; the overrides that restore the substance print their own provenance lines, so
+the nearest achievable re-render **says on its face that it was reconstructed differently**; and
+the two version strings and the log path are machine-dependent.
+
+> **What this means for "verified on Windows" in `AUDIT-VERDICTS.md`: those claims hold.** The
+> differences are enumerable, disclosed, and confined to four fields. **No statistic, verdict,
+> table row, ordering or printed number moved in ~600 renders.** The procedure note is narrow:
+> when re-rendering a transferred log, pass the overrides and check the provenance block says so.
+
+**One documentation inconsistency:** the thresholds table has no `| num` filter, so it prints raw
+`str(float)` — `0.43448246478317465` beside four-place columns — against `COMPATIBILITY.md`'s
+blanket *"the report renders to 4 decimal places"*.
