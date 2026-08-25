@@ -188,7 +188,7 @@ table — so the completeness claim is checkable rather than asserted.
 | `tests/test_evidence_scale.py` | `EvidenceError`, `EvidenceLog`, `FakeAdapter` |
 | `tests/test_judging.py` | `EvidenceLog`, `FakeAdapter`, `JudgeOutputError`, `ModelPinError`, `PinnedJudge`, `SCORE_MIN`, `hash_rubric_file`, `is_pinned` |
 | `tests/test_property_based.py` | `FakeAdapter`, `SCORE_MAX`, `SCORE_MIN` |
-| `tests/test_report.py` | `DEFAULT_CONFIDENCE`, `EvidenceLog`, `wilson_interval` -- **plus** the module itself (`import opik_rigor`), read for `__version__` |
+| `tests/test_report.py` | `DEFAULT_CONFIDENCE`, `EvidenceLog`, `EvidenceRecord`, `SCHEMA_VERSION`, `wilson_interval` -- **plus** the module itself (`import opik_rigor`), read for `__version__` |
 | `tests/test_report_scale.py` | `EvidenceLog`, `FakeAdapter` |
 | `tests/test_runner.py` | `EvidenceLog`, `FakeAdapter`, `PassRateError`, `assert_pass_rate`, `sample_of` |
 | `tests/test_series.py` | `EvidenceError`, `EvidenceLog`, `EvidenceRecord` |
@@ -560,6 +560,18 @@ A rigor release breaks model-migration-kit if it changes any of:
    if the constants survive. Both held at 1.0 / 5.0 in 0.2.0.
 8. **`EvidenceLog.append` / `.read`** and `EvidenceRecord`'s four fields, on which
    invariant 2 (the report renders from the evidence log) depends entirely.
+   `schema_version` is now load-bearing in a second way (R38.3): the report
+   discloses a log whose envelope schema this build was not written to read.
+   The ceiling lives in `evidence.EVIDENCE_SCHEMA_VERSION` as a **literal**, not
+   as an import of `opik_rigor.evidence.SCHEMA_VERSION` — an imported ceiling
+   would rise with a rigor upgrade and silence the disclosure on exactly the log
+   it exists for. `tests/test_report.py` pins the two together, so a rigor
+   release that moves `SCHEMA_VERSION` turns the suite red and a person decides
+   whether the reader understands the new envelope. Held at 1 in 0.2.0.
+   Note also that `EvidenceRecord.from_json` fills an **absent** `schema_version`
+   with rigor's own `SCHEMA_VERSION`, so this package cannot distinguish
+   "declared 1" from "declared nothing" and deliberately says nothing about
+   either.
 
 9. **`FakeAdapter`'s constructor keywords** — `model_id`, `responses`, `cycle`,
    `latency`, `fail_with`, `fail_after`. Not production code, but the test suite

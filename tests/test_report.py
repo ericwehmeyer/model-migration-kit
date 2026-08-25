@@ -52,6 +52,7 @@ from __future__ import annotations
 import ast
 import dataclasses
 import hashlib
+import importlib
 import inspect
 import io
 import json
@@ -15838,3 +15839,390 @@ def test_the_terminal_render_says_the_same_words_about_an_unreadable_warnings(
     assert gap in _terminal_prose(buffer.getvalue()), (
         f"the terminal render does not carry the words the page does: {buffer.getvalue()!r}"
     )
+
+
+# --------------------------------------------------------------------------- #
+# R38.3. The evidence log was the only reader of a written artifact with no
+# schema guard: `runner.py:174`, `runner.py:564` and `judging.py:487` all refuse
+# a schema they do not understand, and a log carrying `schema_version: 99` on
+# every record rendered in full, exited 1, printed `VERDICT: NO-GO` and said
+# nothing.
+#
+# The ruling under test is *read and disclose*, not refuse -- argued on
+# `EvidenceSchema`, and these are the assertions that hold it to the argument.
+# Both halves are asserted, because either one alone is satisfied by the wrong
+# implementation: a refusal satisfies "says something about the schema", and
+# today's build satisfies "renders the log".
+# --------------------------------------------------------------------------- #
+
+
+#: A version no rigor has ever written, so a fixture carrying it is unambiguously
+#: a log from a writer this build has never met. Spelled once: three tests below
+#: assert on the *rendered* number, and a literal repeated in each of them is a
+#: literal one of them can be edited out of.
+FOREIGN_SCHEMA = 99
+
+
+def _schema_log(scenario: Any, name: str, version: Any, *, drop: bool = False) -> Path:
+    """``scenario``'s own records, rewritten to declare ``version``.
+
+    Rewritten from the file rather than rebuilt from the payloads, so the only
+    difference between this log and ``scenario.evidence`` is the envelope field
+    under test -- which is the whole claim these tests make. ``drop`` removes the
+    key outright, which is the fixture that separates *absent* from *unknown*.
+    """
+    lines = scenario.evidence.read_text(encoding="utf-8", newline="\n").splitlines()
+    out = []
+    for line in lines:
+        record = json.loads(line)
+        if drop:
+            record.pop("schema_version", None)
+        else:
+            record["schema_version"] = version
+        out.append(record)
+    return _write_evidence(scenario.root / name, out)
+
+
+def _schema_reading(model: Any) -> Any:
+    return _get(model, "evidence_schema")
+
+
+def _schema_words(model: Any) -> str:
+    """The reading's own sentence, flattened. ``""`` when there is nothing to say."""
+    return _flat(_get(_schema_reading(model), "sentence"))
+
+
+def test_this_builds_evidence_ceiling_is_pinned_to_the_schema_rigor_writes() -> None:
+    """The ceiling is a literal, so something has to notice when rigor moves.
+
+    `EVIDENCE_SCHEMA_VERSION` deliberately does not import
+    `opik_rigor.evidence.SCHEMA_VERSION`: an imported ceiling would rise the
+    moment rigor shipped a schema 2, before anybody had taught this reader to
+    read one, and the guard would go quiet on exactly the log it exists for --
+    silently, by upgrading a dependency.
+
+    The cost of a literal is that it can go stale, and this is the thing that
+    refuses to let it. A rigor release that moves the number turns this red, and
+    a person decides whether this reader actually understands the new envelope
+    before raising the number to match.
+    """
+    from opik_rigor.evidence import SCHEMA_VERSION
+
+    evidence = importlib.import_module("model_migration_kit.evidence")
+    ceiling = _get(evidence, "EVIDENCE_SCHEMA_VERSION")
+    assert ceiling == SCHEMA_VERSION, (
+        f"this build reads evidence schema {ceiling} and rigor now writes "
+        f"{SCHEMA_VERSION}. Raising the constant is a decision about whether the "
+        f"reader in evidence.py understands the new envelope, not a rename."
+    )
+
+
+@pytest.mark.parametrize(
+    ("declared", "expected"),
+    [
+        (1, None),
+        (0, None),
+        (-3, None),
+        (1.0, None),
+        ("1", None),
+        (" 1 ", None),
+        (2, "2"),
+        (FOREIGN_SCHEMA, "99"),
+        ("99", "99"),
+        ("2.5", "2.5"),
+        (None, "null"),
+        ("two", "two"),
+        ("", ""),
+        (True, "True"),
+        (False, "False"),
+        (float("nan"), "nan"),
+        (float("inf"), "inf"),
+        (float("-inf"), "-inf"),
+        ({"v": 1}, "{'v': 1}"),
+        ([1], "[1]"),
+    ],
+)
+def test_which_declared_schema_versions_this_build_says_it_cannot_read(
+    declared: Any, expected: str | None
+) -> None:
+    """The whole coercion table, in one place, varied one value at a time.
+
+    Four separate decisions live in this table and each has a fixture that would
+    pass without it:
+
+    * **One-directional**, like the three guards that came before it: ``0`` and
+      ``-3`` read, ``2`` does not. "Understands up to N" is what `runner.py` and
+      `judging.py` both say.
+    * **A quoted integer is a declaration, not a stranger.** ``"1"`` is
+      `series._count`'s own case -- a writer that stringified its numbers -- and
+      banding a log for a re-serialisation trains readers to skip the band.
+    * **Uninterpretable is foreign, not one.** ``null``, ``"two"``, ``NaN``,
+      a mapping and a list all disclose. This is exactly where `_count` does not
+      generalise: it coerces to ``0`` because a count has no way to say
+      "unavailable", and here the admission is always available.
+    * **``True`` is not schema one.** Python would read ``True <= 1`` as
+      understood; a JSON ``true`` in this field is a writer nobody has met.
+
+    ``NaN`` earns its row twice over: ``nan <= 1`` and ``nan > 1`` are *both*
+    ``False``, so which answer shipped would otherwise be an accident of how the
+    comparison happened to be spelled. ``-inf`` is the row that makes the
+    finiteness check load-bearing rather than decorative: it is the one
+    uninterpretable value that *does* satisfy ``<= 1``, so a build that dropped
+    the check would call it schema one and say nothing about it.
+    """
+    from opik_rigor import EvidenceRecord
+
+    evidence = importlib.import_module("model_migration_kit.evidence")
+    record = EvidenceRecord(
+        ts=TS_COMPARISON,
+        event_type=EVENT_COMPARISON,
+        payload={},
+        schema_version=declared,
+    )
+    assert _get(evidence, "foreign_schema")(record) == expected
+
+
+def test_a_log_declaring_a_schema_this_build_cannot_read_still_renders(
+    tmp_path: Path,
+) -> None:
+    """Half one of the ruling: the document is produced, not withheld.
+
+    A refusal would satisfy every "says something about the schema" assertion
+    below and leave the reviewer holding an append-only audit trail nobody will
+    open -- no verdict, no models, not even the fact that a run happened. This is
+    the assertion that makes the other half a disclosure rather than a refusal
+    with extra steps.
+    """
+    scenario = _scenario(tmp_path / "schema-renders")
+    log = _schema_log(scenario, "evidence-99.jsonl", FOREIGN_SCHEMA)
+    model = _model_from(log)
+
+    assert _get(model, "verdict") == Verdict.NO_GO
+    assert _get(_get(model, "baseline"), "model_id") == BASELINE_MODEL
+    assert _ids(_get(model, "flips")) == ["item-03", "item-07"]
+    text = _visible(_html(model))
+    assert BASELINE_MODEL in text and CANDIDATE_MODEL in text
+
+
+def test_a_log_declaring_a_schema_this_build_cannot_read_says_so(tmp_path: Path) -> None:
+    """Half two: the number the log declared, and the number this build reads.
+
+    Both are asserted because a sentence carrying only one of them cannot be
+    acted on -- ``99`` alone does not say what would have been understood, and
+    ``1`` alone does not say what was found.
+    """
+    scenario = _scenario(tmp_path / "schema-says")
+    log = _schema_log(scenario, "evidence-99.jsonl", FOREIGN_SCHEMA)
+    model = _model_from(log)
+    reading = _schema_reading(model)
+
+    assert _get(reading, "foreign") is True
+    assert _get(reading, "versions") == ("99",)
+    assert _get(reading, "understood") == 1
+    words = _schema_words(model)
+    assert "99" in words and "1" in words, words
+
+
+def test_a_log_this_build_understands_carries_no_schema_band(tmp_path: Path) -> None:
+    """The other half of every fixture above: silence when there is nothing to say.
+
+    A band that is always on is not a disclosure, it is decoration, and every
+    assertion in this section is satisfied by an implementation that bands
+    unconditionally.
+    """
+    scenario = _scenario(tmp_path / "schema-native")
+    model = _from_evidence(scenario)
+    reading = _schema_reading(model)
+
+    assert _get(reading, "foreign") is False
+    assert _get(reading, "banded") is False
+    assert _schema_words(model) == ""
+    assert "EVIDENCE SCHEMA" not in _visible(_html(model)).upper()
+
+
+def test_a_log_that_declares_no_schema_at_all_is_not_a_log_that_declares_an_unknown_one(
+    tmp_path: Path,
+) -> None:
+    """The rule this package turns on, pointed at its own input.
+
+    A record with no ``schema_version`` and a record with ``schema_version: 99``
+    are different facts and must not converge. Rigor's own reader fills a missing
+    field with its ``SCHEMA_VERSION``, so the absent case renders exactly as a log
+    that declared ``1`` does -- and, crucially, **no version is printed for it**.
+    Inventing ``1`` in a sentence about a writer that named nothing would be this
+    module writing the log's evidence for it.
+
+    Both directions are asserted from one fixture differing in one key, so an
+    implementation that resolved absent and unknown to the same answer fails
+    whichever answer it picked.
+    """
+    scenario = _scenario(tmp_path / "schema-absent")
+    silent = _model_from(_schema_log(scenario, "evidence-silent.jsonl", None, drop=True))
+    stranger = _model_from(_schema_log(scenario, "evidence-99.jsonl", FOREIGN_SCHEMA))
+
+    assert _get(_schema_reading(silent), "foreign") is False
+    assert _get(_schema_reading(silent), "versions") == ()
+    assert _schema_words(silent) == ""
+    assert _get(_schema_reading(stranger), "foreign") is True
+    assert "99" in _schema_words(stranger)
+
+
+def test_the_schema_band_sits_above_the_verdict_banner_and_above_the_fake_band(
+    tmp_path: Path,
+) -> None:
+    """Contract §5.3's rule for a band, and R38.3's rule for the order of two.
+
+    Above the banner, because a reader who screenshots the verdict must catch the
+    caveat in the same frame. Above the *fake* band as well, because the adapter
+    names that band reads were themselves read out of this payload: a sentence
+    saying the payload may not mean what it appears to mean qualifies the band
+    below it exactly as much as it qualifies the verdict.
+    """
+    scenario = _scenario(
+        tmp_path / "schema-order",
+        baseline_adapter="FakeAdapter",
+        candidate_adapter="FakeAdapter",
+    )
+    log = _schema_log(scenario, "evidence-99.jsonl", FOREIGN_SCHEMA)
+    html = _html(_model_from(log))
+
+    upper = html.upper()
+    body = upper.find("<BODY")
+    assert body >= 0, "the document has no <body> element"
+    schema_band = upper.index("EVIDENCE SCHEMA NOT UNDERSTOOD", body)
+    fake_band = upper.index("FAKE MODELS", body)
+    banner = upper.index(Verdict.NO_GO, fake_band)
+    assert schema_band < fake_band < banner
+
+
+def test_the_terminal_and_the_html_say_the_same_words_about_the_schema(
+    tmp_path: Path,
+) -> None:
+    """R29.2 item 3, applied to the band R38.3 adds.
+
+    Two copies of a disclosure are two chances for one of them to go stale, and
+    the band is the disclosure this whole section is about. Both surfaces are
+    read from one render each and compared against the *model's own* sentence, so
+    a renderer that grew a private wording fails here rather than drifting.
+    """
+    scenario = _scenario(tmp_path / "schema-surfaces")
+    log = _schema_log(scenario, "evidence-99.jsonl", FOREIGN_SCHEMA)
+    model = _model_from(log)
+
+    sentence = _schema_words(model)
+    assert sentence, "the model has no sentence for the two surfaces to agree on"
+    html_text, terminal_text = _band_text(model)
+    for surface, text in (("the HTML band", html_text), ("the terminal band", terminal_text)):
+        assert sentence in text, f"{surface} does not carry the band's own words: {text!r}"
+        assert "EVIDENCE SCHEMA NOT UNDERSTOOD" in text.upper(), surface
+
+
+def test_a_stranger_appended_to_a_native_log_is_counted_rather_than_generalised(
+    tmp_path: Path,
+) -> None:
+    """One foreign record among many is not the same finding as a foreign file.
+
+    ``3 of 300`` and ``300 of 300`` are different situations -- an interleaved
+    writer against a log written entirely by a build nobody has -- and a sentence
+    that said only "some records" would collapse them. Rigor's log is append-only
+    and documents separate processes appending to one path, so a mixed file is a
+    real shape rather than a hypothetical one.
+    """
+    scenario = _scenario(tmp_path / "schema-mixed")
+    lines = scenario.evidence.read_text(encoding="utf-8").splitlines()
+    records = [json.loads(one) for one in lines]
+    records[0] = {**records[0], "schema_version": FOREIGN_SCHEMA}
+    log = _write_evidence(scenario.root / "evidence-mixed.jsonl", records)
+    reading = _schema_reading(_model_from(log))
+
+    assert _get(reading, "foreign_records") == 1
+    assert _get(reading, "total_records") == len(records)
+    assert _get(reading, "versions") == ("99",)
+    words = _flat(_get(reading, "sentence"))
+    assert f"1 of the {len(records)} records" in words, words
+
+
+def test_two_writers_in_one_log_are_both_named_and_a_crowd_of_them_is_not(
+    tmp_path: Path,
+) -> None:
+    """Every version, up to the point where listing them would become the band.
+
+    A hostile log can carry a different declared version on every line; the
+    sentence prints above the verdict banner and must not become the file. Both
+    behaviours are asserted from one fixture family so that a build which listed
+    everything and a build which listed one both fail.
+    """
+    scenario = _scenario(tmp_path / "schema-crowd")
+    base = [json.loads(one) for one in scenario.evidence.read_text(encoding="utf-8").splitlines()]
+
+    pair = [{**one, "schema_version": 7 if index else 5} for index, one in enumerate(base)]
+    reading = _schema_reading(_model_from(_write_evidence(scenario.root / "two.jsonl", pair)))
+    assert set(_get(reading, "versions")) == {"5", "7"}
+    assert _get(reading, "versions_elided") is False
+
+    # Two nights of history in front of the same run, so the log holds more
+    # distinct declarations than the sentence is allowed to list.
+    long_log = _log_with_history(
+        scenario,
+        "history.jsonl",
+        _earlier_run(scenario, tag="one"),
+        _earlier_run(scenario, tag="two"),
+    )
+    records = [json.loads(one) for one in long_log.read_text(encoding="utf-8").splitlines()]
+    crowd = [{**one, "schema_version": 10 + index} for index, one in enumerate(records)]
+    assert len(crowd) > 4, "the fixture must hold more distinct versions than are named"
+    reading = _schema_reading(_model_from(_write_evidence(scenario.root / "many.jsonl", crowd)))
+    assert len(_get(reading, "versions")) == 4
+    assert _get(reading, "versions_elided") is True
+    assert "and others" in _flat(_get(reading, "sentence"))
+
+
+def test_a_hostile_declared_version_cannot_become_the_band(tmp_path: Path) -> None:
+    """A ``schema_version`` is read out of a log and is as untrusted as a model id.
+
+    Two separate hazards, both demonstrated against this build's own renderers: a
+    long value would push the verdict off a terminal, and an escape sequence
+    passes through ``rich.text.Text`` unchanged -- which is why `_cell` exists and
+    why the terminal band is routed through it rather than through ``Text``. The
+    version is still *named*, because refusing to quote it would leave the reader
+    unable to say what the log declared.
+    """
+    scenario = _scenario(tmp_path / "schema-hostile")
+    hostile = "\x1b[2J\x1b[H" + "9" * 4000
+    log = _schema_log(scenario, "evidence-hostile.jsonl", hostile)
+    model = _model_from(log)
+
+    versions = _get(_schema_reading(model), "versions")
+    assert len(versions) == 1
+    # The rendered surfaces are checked *before* the bound on the label, so that a
+    # build which lost only the control-character strip fails on the escape rather
+    # than short-circuiting on the length. Two independent defences cover this
+    # field -- `_schema_label` at the source and `_cell` at the terminal -- and an
+    # assertion order that lets one hide the other is how a defence stops being
+    # tested without anybody noticing.
+    html_text, terminal_text = _band_text(model)
+    for surface, text in (("the HTML band", html_text), ("the terminal band", terminal_text)):
+        assert "\x1b" not in text, f"{surface} passed an escape sequence through"
+        assert "999" in text, f"{surface} does not say what the log declared"
+    assert "\x1b" not in versions[0]
+    assert len(versions[0]) <= 40, f"the band quoted {len(versions[0])} characters"
+
+
+def test_a_foreign_schema_does_not_move_the_verdict_or_the_exit_code(
+    tmp_path: Path,
+) -> None:
+    """A deliberate limit, asserted so that it stays a decision rather than a gap.
+
+    ``migkit report`` re-renders a decision that was already made. Minting a
+    different exit code because the envelope was unfamiliar would be this module
+    inventing a verdict, and it would be the refusal again wearing a number. The
+    band is the first thing on stdout precisely because the exit code is not
+    moving; a reviewer sees the caveat before the finding either way.
+    """
+    scenario = _scenario(tmp_path / "schema-exit", verdict=Verdict.GO)
+    alone = _model_from(scenario.evidence)
+    stranger = _model_from(_schema_log(scenario, "evidence-99.jsonl", FOREIGN_SCHEMA))
+
+    assert _get(stranger, "verdict") == _get(alone, "verdict") == Verdict.GO
+    assert _get(stranger, "exit_code") == _get(alone, "exit_code") == 0
+    assert _get(stranger, "reason") == _get(alone, "reason")
