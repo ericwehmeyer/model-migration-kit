@@ -701,3 +701,59 @@ from mk-watch: C:\Users\ewehm\repos\mk-watch\src\model_migration_kit\__init__.py
 
 No source file was mutated; the FAKE-band result was obtained by construction
 instead. `git status` clean in both worktrees. No fix was made to the project.
+
+---
+
+## Addendum — correcting my own claim, `main` at `59c5e9b`
+
+`main` moved two commits while Cycle 2 was being written, and one of them
+falsifies a sentence I wrote. Correcting it here rather than editing it away.
+
+**I wrote:** *"the second machine has not seen it … nobody has seen it but this
+file."*
+
+**That was true at `25bc7ea` and is false at `59c5e9b`.** `0d5df07` *"Merge the
+absence sweep: the audit's technique as a permanent test"* landed a parallel
+agent's implementation of the same technique, and `tests/test_absence_sweep.py`
+records the identical leaf:
+
+```
+$ git show HEAD:tests/test_absence_sweep.py | grep -n "item_counts.items"
+128:    "judges[0].item_counts.items": ("key-removed", "key-null"),
+```
+
+with exactly the two absence variants my `quote` run named — `key-removed` and
+`key-null` — in a table whose own docstring describes it as conflations left
+*"for somebody else to rule on"*.
+
+**Three things follow, and two of them strengthen the finding:**
+
+1. **It is confirmed independently.** Two implementations of the differential
+   technique, written on different machines without contact, converged on the
+   same leaf and the same two variants. That is as good as this kind of evidence
+   gets.
+2. **It is recorded but not fixed.** `SWEEP_RECORDED_CONFLATIONS` pins the
+   current set so it cannot grow silently. That is a real improvement and it is
+   the right shape — but a pinned defect is still a defect, and a reader of the
+   page still sees a golden set of zero items described as `unrecorded`.
+3. **The part that is still only here is the provenance.** The sweep table
+   records the conflation as a flat fact with no history. My controlled
+   comparison — same tool, same fixtures, `mk-watch` against `mk-main` — shows
+   this leaf was **not** conflated at the audit baseline and became conflated
+   through C14c (`bfd06fb`). It is a **regression**, not a longstanding
+   conflation, and it entered on the commit whose stated purpose was to make
+   unread fields reach the reader.
+
+That distinction is what decides whether it belongs in a pinned list or in a fix
+pass. **It should be re-ranked as a regression and scheduled**, and the recorded
+entry should carry the commit that introduced it.
+
+**Also superseded, and worth saying plainly:** my Cycle 2 recommendation to
+"promote a pinned-counts regression form of `differential_render.py sweep` to a
+nightly" was already done, better, by `a9b73a9` — which memoised the jinja2
+environment for a 25x speedup rather than trading away coverage, and swept every
+numeric leaf. The recommendation stands as made and was overtaken while it was
+being written; the credit is not mine.
+
+Final state checked: `main` at `59c5e9b`, `mk-main` working tree clean, no
+tracked file in it modified at any point.
