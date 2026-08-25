@@ -6639,3 +6639,113 @@ A measurement tool that counts a tooltip as text will report a
 screen-reader-only disclosure as a rendered one, and that is the exact class of
 defect the audit exists to find. **Whoever reruns this must fix the harness
 first**, or the harness will hide the findings it was built to surface.
+
+### R40 — the ledger of what is ruled and not scheduled
+
+R28.1 named this project's most repeated failure: **a ruling in the plan with no
+brief behind it is a ruling nobody will execute.** It has now happened five
+times — R21.5, R25.5's table edit, R30.5's filter, R31.4's asymmetry, and
+finding 23 scheduled *after* it was already fixed. Every one was caught by
+looking rather than remembering.
+
+The standing check ("before dispatching a brief, grep the merged code for the
+ruling it implements") catches the ones that reach a brief. It does nothing for
+findings that never reach one. **This section is the other half: everything
+ruled, found or endorsed that has no chunk, in one place, with what it is
+waiting on.**
+
+**Rule for this list: an entry leaves it only by being dispatched or by being
+explicitly withdrawn with a reason.** It does not leave by being fixed
+incidentally — if a chunk closes one, the merge says so and strikes it here.
+
+#### R40.1 — waiting on a chunk already in flight
+
+| Item | Waiting on | Source |
+|---|---|---|
+| R34.3's rendering — the series-scope provenance claim in the timeline section | C14c is merged, so this is now free | R34.3 |
+| R37.6's third counter — `scripted_among_named`, and `_counted_paragraph` still says *"the other 2 do not"* about comparisons that recorded no adapter | chunk 0 is in `_scripted_paragraph` | R37.6 |
+| The four remaining coercion splits — `goldenset_hash`, `judges_hash`, `config_hash`, `config_path` | needs a ruling, not a sweep: `config_path` has a second `or` downstream (`source = config_path or THRESHOLD_SOURCE_UNRECORDED`), so a recorded `"0"` would flip the threshold source | C22b's fix |
+
+#### R40.2 — found, proved, and never scheduled
+
+**`report._environment()` recompiles the jinja2 template on every render.**
+Measured: **100 ms of each 109 ms render**, against an actual render cost of
+~3 ms — 1.304 s of a 1.320 s five-render sample was compilation. A production
+performance defect, found while building the absence sweep and correctly not
+fixed there. One `functools.lru_cache` away.
+
+**A raw Python `None` reaches the page.**
+`judges[0].item_counts.baseline.passing = null` renders `None / 1 / 2`. Not a
+conflation — a leaked repr.
+
+**45 numeric leaves are never rendered at all**, including the entire
+`completion_rates` block, every `flips[*]/gains[*].changes[*].{baseline,candidate}_{passes,n}`
+(the page prints a precomputed `label` string instead, so those numbers are dead
+payload), `latency.{baseline,candidate}.n`, `judges[0].regression.*` and
+`judges[0].power.*`. **This is R21's finding in a place nobody has looked.**
+Either they are superseded — in which case the payload should stop carrying them
+— or the page is hiding numbers it holds. Both answers are chunks; neither is
+free.
+
+**`judges[0].item_counts.items` is a C14c regression, not a longstanding
+conflation.** A golden set recorded as **zero items** renders as the word
+`unrecorded`, byte-identical to key-removed and key-null — the mirror violation,
+stated in this document's own vocabulary. Provenance came from the second
+machine's tooling: 46 collisions on `main` against 45 on its baseline, same tool,
+same fixtures, only the tree differing. **The provenance decides the ranking** —
+a regression belongs in a fix pass, a longstanding conflation in a pinned list.
+
+**T0 corrupts the exit code, differently on each platform.** `OSError` EINVAL and
+**exit 120** on Windows — outside the tool's documented exit-code vocabulary
+entirely — against `SystemExit(1)` on macOS. One defect, two wrong codes.
+
+**Finding 4's `<title>`.** `_warned_title` keys on series-scoped `is_demo` and
+prefixes a headline-scoped string, so a document with a real headline over a
+scripted history shouts `FAKE MODELS` over two real production model ids — on the
+one surface that, per its own docstring, *"survives being pasted into a chat
+window as a link preview"*. **R34.3 ruled beside this and not on it**: it refuses
+to equalise the scopes, which is right for the band and leaves the title
+untouched.
+
+**`check_contract.py` can pass against a file in another checkout** (R39.3). Its
+citation regex excludes `:`, so a rooted Windows citation loses its drive and is
+joined to the drive of `root`. A gate satisfiable by a file outside the tree is
+not a gate.
+
+**R37.2's empty-tag-universe branch has no producer behind it.** C14b's fix pass
+established that `dimensions._index` gives every item at least `UNTAGGED` and
+`GoldenSet.parse` refuses an empty golden set outright, so `available=True` with
+`tags=()` is **live template code no producer can reach**. It is pinned with a
+hand-narrowed matrix so deleting it is a visible edit. **Deleting it is the
+honest alternative** and was not that pass's call to make.
+
+**One more assertion of R37.1's shape, outside C14b.**
+`test_a_judge_tested_on_outcomes_says_so_in_its_own_row` (`test_report.py:1952`)
+— its name says *"in its own row"*, its docstring says the note lives *"inside
+the table, not in a legend"*, and its body asserts two strings appear anywhere in
+the document. A template printing both in a legend at the foot of the page — the
+exact implementation the docstring refuses — passes it. `_Grid` now exists and
+makes the fix cheap.
+
+#### R40.3 — visibly unscheduled, and deliberately
+
+**The demo's statistical unit is `comparison.py`'s, and this plan does not own
+it.** R39.5 split finding 1: the report's unreconciled sentence is scheduled; the
+gate computing over 60 correlated draws is not. R9 already established the
+principle — *"Twenty completions from four items are not twenty observations…
+correlated by construction"* — and applied it only to the dimension matrix.
+**Whoever opens `comparison.py` next finds the argument already made.** Saying
+so here is the point: R28.1's lesson is that an unscheduled ruling must be
+*visibly* unscheduled rather than quietly assumed.
+
+**The repo-wide `ruff format` drift.** Tree at 88, `pyproject.toml` says 100,
+~26 files. Still last, not next: it touches every file and would conflict with
+every branch in flight simultaneously.
+
+**Sixteen Tier 2 findings are not scheduled as written** (R38.2). They harden
+reads against a writer that does not exist. **Chunk 1's ruling decides them** —
+if a foreign log is refused, they are correctly unreachable; if it is accepted
+and disclosed, they become real work with a known trigger. Two exceptions worth
+keeping either way: **20j**, which needs no payload edit at all (delete two
+artifact files), and **20c**, a *derived* key (`failures = n - successes`) whose
+absence fabricates a 100% baseline and moves every delta fifteen points.
