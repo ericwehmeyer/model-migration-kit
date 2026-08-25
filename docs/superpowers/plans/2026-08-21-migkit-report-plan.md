@@ -6351,3 +6351,147 @@ across counts that are not complements, and every comparison accounted for.
 The appendix and the band then say the same thing in the same units, which is the
 `DetailBudget.sentence` discipline applied across two surfaces instead of two
 renderers.
+
+### R38 — a second operator read the document, and found what four roles could not
+
+An independent audit ran on a second machine against `review/2026-08-24`, with
+one instruction: read the **rendered document** as a reader trying to catch it
+lying. It produced 41 findings, then ran an adversarial pass whose only job was
+to refute them.
+
+**Read that ordering twice.** The audit's own summary is right about which half
+mattered: *"An agent was tasked solely with refuting everything below, defaulting
+to REFUTED when uncertain. It is the most useful thing in this audit, and it cost
+me a lot."*
+
+```
+REFUTED / already scheduled   9
+WEAKENED                     25
+SURVIVES                     20
+```
+
+**Twenty surviving findings is a far better result than forty-one confirmed
+would have been**, and this project should take the shape as standing practice:
+a finding that has not been attacked is a hypothesis. Five findings got
+*stronger* under attack, which is the other half of why the pass is worth its
+cost — it does not only subtract.
+
+#### R38.1 — why the pipeline could not have found these
+
+Four roles per chunk, seven reviews that each found defects the other roles
+missed, 52 mutants on C14b alone. None of it found finding 2, and the reason is
+structural rather than a lapse:
+
+> **Every role in this pipeline reads the contract. Nobody read the document.**
+
+An implementer satisfies a contract. A blind tester tests a contract. A reviewer
+mutates code and asks whether the *suite* notices. All three are anchored to what
+was specified, and every one of them can be fully satisfied while the rendered
+page says something false — because "is this sentence true of this evidence" is
+not a question any of them is asked.
+
+The correction is not a fifth role on every chunk; that would cost more than it
+returns. **It is that a document with a reader is audited by a reader,
+periodically, against the artifact rather than against the plan** — and that the
+auditor is told to refute itself before reporting.
+
+#### R38.2 — the structural criticism, which was about to cost a chunk
+
+The refuting agent's most valuable output is not a verdict on any finding. It is
+this:
+
+> Most of Tier 2 is an argument about robustness to a *foreign or future* writer.
+> There is exactly one writer of the comparison payload (`comparison.py:907`) and
+> it writes every key unconditionally. **Without that caveat a fix pass would
+> spend a chunk hardening reads against a writer that does not exist.**
+
+Sixteen findings owe that concession. **Ruling: they are not scheduled as
+written.** A defect reachable only through a writer nobody has is a robustness
+argument, and robustness arguments are worth making explicitly and costing
+honestly — not smuggled in as sixteen separate bug fixes.
+
+#### R38.3 — finding 35 is the prerequisite, and it was promoted by the refuter
+
+```
+runner.py:174, runner.py:564, judging.py:487   guard on schema_version
+grep -n schema_version src/.../{report,series,evidence}.py   -> no match
+```
+
+Every other reader of a written artifact refuses a schema it does not understand,
+*"rather than misinterpret it"*. The evidence log has no such guard: a log with
+`schema_version: 99` on every record renders in full, exits 1, prints
+`VERDICT: NO-GO`, and says nothing.
+
+And `series._count`'s own docstring declares surviving a foreign writer to be in
+scope — *"A writer that quoted its integers is a real thing to survive"* — with
+silent coercion to `0` as its failure mode.
+
+> **The one reader built to tolerate a foreign payload is the only one that will
+> not say it has one.**
+
+**Ruling: this is scheduled first, ahead of every other audit finding**, because
+it decides whether the rest of Tier 2 is reachable at all. It converts sixteen
+hypothetical hardening tasks into either real work or provably dead work, and
+that is worth more than any of them individually.
+
+#### R38.4 — the two findings that survived and got stronger
+
+**Finding 6 — the completeness certificate counts characters the models did not
+produce.** Wrong on the bundled demo, in the default path: the page certifies
+*"5,821 characters of quoted model text"* as *"what the models produced"*, and
+the models produced **5,100**. The difference is 426 characters of golden-set
+prompts, written by the golden-set author, and 295 of judge reasons, written by
+the judge. Under truncation it is **12x short** — outputs are cut at
+`max_output_chars` *before* the budget sees them, so the sentence certifying
+completeness is blind to the truncation printed three lines below it. Its own
+`quoted_chars` docstring says the figure is *"the post-truncation size and not
+the size of what the models actually said"* — the opposite of what the page
+prints.
+
+**Finding 2 — this document's central rule, failing in the mirror direction.**
+*"Latency — Not measured"* over a payload holding 120 recorded timings, 60 per
+side, with median and p90. The suppression keys on the adapter's **name**
+(`{% if model.baseline.is_fake and model.candidate.is_fake %}`), never on whether
+a measurement exists. And it is printed in the paragraph that quotes the rule
+back at the reader: *"a row that reads 0.000 / 0.000 is not a fast model, it is
+the absence of a measurement"*.
+
+**Every chunk of this rebuild has guarded one direction: an absence must not
+render as a measurement. Nothing guarded the other: a measurement must not render
+as an absence.** Stated now as the rule's second half, because it has been
+implicit for thirty-seven revisions and was never once written down.
+
+#### R38.5 — the scheduling
+
+| Order | Chunk | Findings |
+|---|---|---|
+| 1 | schema guard on the evidence log — **the prerequisite** | 35 |
+| 2 | the completeness certificate counts the wrong characters | 6, 6a, 6b |
+| 3 | latency suppressed by adapter name, not by absence | 2 |
+| 4 | the banner's bar is drawn for a different judge than its verdict | 8, 9a |
+| 5 | disclosures that never reach the terminal | 22, 16, 26 |
+| 6 | wording, units, scope | 23, 24, 29, 31, 32, 36, 37, 40, and the demoted 1, 3, 4, 5 |
+
+**Findings 1, 3, 4 and 5 were demoted out of Tier 1 by the refuting agent and
+that is accepted.** Finding 1 — the demo's `n=60` being 12 answers counted five
+times — is real and is a *framing* gap: the report faithfully echoes what
+`comparison.py` computed, and what is missing is a sentence reconciling `n=60`
+with the page's own eight statements that all five draws are identical. It
+belongs with the other disclosure gaps, not at the front.
+
+#### R38.6 — the method is worth more than the findings, and is being made permanent
+
+Tier 2 was found by **differential rendering**: for each leaf path in the payload,
+five whole documents differing only in that field — a plausible value, a measured
+zero, the key removed, the key set to null, the parent removed — compared byte
+for byte. 176 paths, 2,391 renders. Where measured-zero and absent render
+identically, the rule is broken.
+
+**And the trap is worth as much as the technique.** The page prints an evidence
+hash over the whole file, so a naive diff finds every pair different and reports
+**zero findings**. The first sweep came back empty for exactly that reason. A
+sweep that reports nothing is indistinguishable from a sweep that found nothing,
+which makes this the one class of test that must be proved to fail before it is
+believed when it passes.
+
+Dispatched as a permanent test rather than left as an audit script.
