@@ -11,6 +11,7 @@ import dataclasses
 import gc
 import inspect
 import re
+import tracemalloc
 import weakref
 from dataclasses import FrozenInstanceError
 from typing import Any
@@ -845,6 +846,85 @@ def test_an_empty_stream_is_a_refusal_and_not_an_empty_matrix():
     assert result.reason != ""
 
 
+#: The two refusals that name a golden-set miss, written out. R27.6: the report
+#: side asserts that no two declines share a *template*, and pins the wording of
+#: what ``report.py`` does with a reason -- but it cannot pin the wording of the
+#: reason itself without deriving the expected sentence from the production code
+#: that produces it, which moves both sides of the assertion together. So the
+#: wording is pinned here, where the wording lives. A re-wording of either
+#: function used to survive all 1998 tests: both were carried by a substring
+#: check for an interpolated id, and an interpolated id is the one part of the
+#: sentence a re-wording keeps.
+UNJOINABLE_REASON = (
+    "a judge.verdict for judge 'accuracy' carries an input that is in no "
+    "golden-set item: 'orphan input'. The golden set's hash was already checked "
+    "against the one the run used, so an unjoinable input means the log and the "
+    "set disagree in a way that hash did not catch."
+)
+UNKNOWN_ITEM_REASON = (
+    "a failed migkit.completion for 'anthropic/claude-3-5-haiku' names item "
+    "'ghost-99', which is in no golden-set item. Guessing which item failed "
+    "would move a failure to the wrong tag."
+)
+
+
+def test_the_unjoinable_input_refusal_says_what_it_is_written_to_say():
+    """Byte-for-byte, because "names the input" is satisfied by any wrapper at all.
+
+    The sentence has three jobs and the id does one of them: it names the input,
+    it says the hash check already passed so this is not the mismatch the reader
+    would first suspect, and it says which two things disagree. A re-wording that
+    kept the quoted input would keep the substring assertion above green and drop
+    the other two.
+    """
+    items = _by_id(_item("a", "alpha", ("t",)))
+    records = [
+        _verdict("alpha", True),
+        _verdict("orphan input", False),
+        _completed(BASELINE, {JUDGE: 2}),
+    ]
+
+    result = _counts(records, items)
+
+    assert result.available is False
+    assert result.reason == UNJOINABLE_REASON
+
+
+def test_the_unknown_item_refusal_says_what_it_is_written_to_say():
+    """The other half, and the reason both are here rather than one.
+
+    These two are the pair R27.6 names as collapsible: they are the only refusals
+    that both end in "is in no golden-set item", and each interpolates ids the
+    other does not, so collapsing one onto the other leaves two *unequal* strings
+    carrying one diagnosis. Only the wording tells them apart, and only here.
+    """
+    items = _by_id(_item("a", "alpha", ("t",)))
+    records = [
+        _verdict("alpha", True),
+        _completed(BASELINE, {JUDGE: 1}),
+        _completion(CANDIDATE, "ghost-99", ok=False),
+        _completed(CANDIDATE, {JUDGE: 1}, imputed={JUDGE: 1}),
+    ]
+
+    result = _counts(records, items)
+
+    assert result.available is False
+    assert result.reason == UNKNOWN_ITEM_REASON
+
+
+def test_the_two_golden_set_miss_refusals_are_two_diagnoses_and_not_one():
+    """Distinct after the interpolated values are removed, not merely distinct.
+
+    Two sentences that differ only in the ids they quote are one diagnosis wearing
+    two coats: a reader shown either one learns the same thing, and the fix the
+    document sends them to is the same fix. The comparison is therefore made on
+    the templates.
+    """
+    assert re.sub(r"'[^']*'", "'...'", UNJOINABLE_REASON) != re.sub(
+        r"'[^']*'", "'...'", UNKNOWN_ITEM_REASON
+    )
+
+
 def test_a_refusal_reason_is_a_sentence_and_not_a_code():
     """ "A sentence a reader can act on" -- not a two-word error code."""
     items = _by_id(
@@ -1240,6 +1320,263 @@ def test_an_unjoinable_input_is_truncated_and_quoted_in_the_reason():
         "quoted text starts and stops"
     )
     assert len(result.reason) < len(long_input)
+
+
+# --------------------------------------------------------------------------- #
+# The boundary the excerpt was deliberately built one character wider for
+#
+# ``_excerpt`` holds ``_INPUT_SHOWN + 1`` characters and says why: "so
+# ``_shown_excerpt`` can still tell a text that was truncated from one that
+# happened to end exactly on the limit". That extra character buys exactly one
+# distinction, at exactly one length, and nothing tested it -- ``>`` mutated to
+# ``>=`` survived, which spends the character and then lies with it, quoting an
+# input that is complete and marking it elided.
+#
+# A trailing ``...`` is the reader's only signal that what they are looking at is
+# not the whole value. Both directions are asserted, at the boundary and either
+# side of it, because a bound that is only checked from one side is half a bound.
+# --------------------------------------------------------------------------- #
+
+
+def _quoted_input(text: str) -> str:
+    """The refusal a completely unjoinable input of exactly this text produces."""
+    items = _by_id(_item("a", "alpha", ("t",)))
+    records = [_verdict(text, True), _completed(BASELINE, {JUDGE: 1})]
+    result = _counts(records, items)
+    assert result.available is False, "the input was meant to join to nothing"
+    return result.reason
+
+
+@pytest.mark.parametrize("length", [78, 79, 80])
+def test_an_input_that_fits_is_quoted_whole_and_not_marked_elided(length):
+    """At eighty characters the input ends *on* the limit and nothing was cut."""
+    text = "x" * length
+
+    reason = _quoted_input(text)
+
+    assert repr(text) in reason, "the whole input fits and must be quoted whole"
+    assert repr(text + "...") not in reason, (
+        f"an input of exactly {length} characters was quoted with a trailing "
+        f"'...', which tells the reader something was cut when nothing was. The "
+        f"excerpt is held one character past the limit for the sole purpose of "
+        f"telling these two cases apart"
+    )
+
+
+@pytest.mark.parametrize("length", [81, 82, 200])
+def test_an_input_one_character_past_the_limit_is_marked_elided(length):
+    """The other side: eighty-one characters is the first that loses something."""
+    text = "x" * length
+
+    reason = _quoted_input(text)
+
+    assert repr("x" * 80 + "...") in reason, (
+        f"an input of {length} characters was cut without saying so"
+    )
+    assert repr(text) not in reason
+
+
+def test_eighty_and_eighty_one_characters_do_not_quote_to_the_same_sentence():
+    """The distinction the extra held character exists for, stated as itself.
+
+    Both tests above could drift the same way and still agree with each other.
+    This one says the thing that must never stop being true whatever the limit
+    becomes: an input that ended on the limit and one that ran past it are not
+    shown to the reader as the same input.
+    """
+    limit = dimensions._INPUT_SHOWN
+    ends_on_the_limit = _quoted_input("y" * limit)
+    runs_past_it = _quoted_input("y" * (limit + 1))
+
+    assert ends_on_the_limit != runs_past_it, (
+        "an input that was cut and one that was not produced the same sentence, "
+        "so the '...' no longer means anything to whoever reads it"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# ... and so is every *other* value a refusal names
+#
+# The test above pins the one path that was always bounded: an input that is a
+# string. Every other value a refusal quotes comes out of the same log and was
+# not bounded at all. ``tests/test_report_untrusted_input.py`` opens with the
+# premise -- an evidence log is designed to be shared, so a reviewer renders one
+# they did not write -- and that premise is about a value's length as much as
+# about its content.
+#
+# Measured on the build before the fix, through the deferred path:
+#
+#   a 2 MB JSON list as one verdict's `input`   ->  1,500,253-char reason
+#   a 500,000-char `model_id` on a failure      ->    500,145-char reason
+#   10,000 models known only from failures      ->    139,248-char reason
+#   a 2,000,000-char *string* input             ->        335-char reason
+#
+# The last line is the control: the string path truncated correctly the whole
+# time, which is what made the others easy to miss. A `reason` is carried on the
+# run, handed out on `ReportModel.dimension_counts`, and printed by whatever
+# renders it.
+#
+# The ceiling below is generous on purpose. It is not a formatting assertion --
+# the sentences here run to a few hundred characters and are allowed to grow --
+# it is the assertion that the length is a property of *this module* and not of
+# the log.
+# --------------------------------------------------------------------------- #
+
+#: What no refusal sentence may exceed, however large the log's strings are.
+#: Roughly four times the longest sentence this module writes.
+_REASON_CEILING = 2000
+
+#: Big enough that an untruncated value is unmistakable in the failure message.
+_HUGE = "H" * 500_000
+
+
+def _reason_for(records, items=None, *, judge=JUDGE) -> str:
+    """Drive the deferred phase and hand back the refusal it declined with."""
+    if items is None:
+        items = _by_id(_item("a", "alpha", ("t",)))
+    result = _tallied(records, items, judge=judge)
+    assert result.available is False, "expected a refusal, got a matrix"
+    return result.reason
+
+
+def _bounded(reason: str, needle: str, what: str) -> None:
+    assert needle not in reason, (
+        f"the whole {what} was pasted into the reason ({len(reason):,} characters)"
+    )
+    assert len(reason) < _REASON_CEILING, (
+        f"the reason naming a huge {what} is {len(reason):,} characters; its length "
+        f"is a property of the log rather than of this module"
+    )
+
+
+def test_a_verdict_input_that_is_not_a_string_is_quoted_at_the_same_width():
+    """The headline: `repr` of an arbitrary payload value, previously kept whole.
+
+    A JSON log can put anything in the ``input`` slot. A list of 500,000 integers
+    is a two-megabyte payload whose ``repr`` is longer still, and it reached the
+    reason untouched because the truncation only ran on the ``str`` branch.
+    """
+    payload_list = list(range(500_000))
+    records = [
+        _record(_JUDGE_VERDICT, {"judge": JUDGE, "passed": True, "input": payload_list}),
+        _completed(BASELINE, {JUDGE: 1}),
+    ]
+
+    reason = _reason_for(records)
+
+    _bounded(reason, repr(payload_list), "payload value")
+    assert "in no golden-set item" in reason, "and it is still the right sentence"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param({"prompt": "H" * 500_000}, id="a dict"),
+        pytest.param(["H" * 500_000], id="a list"),
+        pytest.param(500_000 * 10**9, id="a very large int"),
+        pytest.param(None, id="null"),
+        pytest.param(True, id="a bool"),
+    ],
+)
+def test_no_shape_of_non_string_input_escapes_the_bound(value):
+    """One branch, so one bound -- but JSON has more than one non-string shape."""
+    records = [
+        _record(_JUDGE_VERDICT, {"judge": JUDGE, "passed": True, "input": value}),
+        _completed(BASELINE, {JUDGE: 1}),
+    ]
+
+    assert len(_reason_for(records)) < _REASON_CEILING
+
+
+def test_a_huge_model_id_on_a_failed_completion_does_not_reach_the_reason_whole():
+    """``_unknown_item`` interpolated both of its arguments with a bare ``!r``."""
+    records = [_record(EVENT_COMPLETION, {"model_id": _HUGE, "item_id": 7, "ok": False})]
+
+    _bounded(_reason_for(records), _HUGE, "model_id")
+
+
+@pytest.mark.parametrize(
+    ("what", "item_id"),
+    [
+        pytest.param("string item_id", _HUGE, id="a string"),
+        pytest.param("non-string item_id", [_HUGE], id="wrapped in a list"),
+        pytest.param("non-string item_id", {_HUGE: 1}, id="wrapped in a dict"),
+    ],
+)
+def test_a_huge_item_id_on_a_failed_completion_is_bounded_too(what, item_id):
+    """The other half of ``_unknown_item``, in both of the shapes that reach it.
+
+    A string item id that is simply unknown takes the deferred branch and is
+    refused at the join; a non-string one is refused where it is read. Both write
+    the same sentence, so both have to bound the same value.
+    """
+    records = [
+        _record(EVENT_COMPLETION, {"model_id": BASELINE, "item_id": item_id, "ok": False}),
+        _verdict("alpha", True),
+        _completed(BASELINE, {JUDGE: 1}),
+    ]
+
+    _bounded(_reason_for(records), _HUGE, what)
+
+
+def test_a_huge_judge_name_does_not_reach_the_reason_whole():
+    """``judge`` comes off the log too, and four refusals name it."""
+    records = [_verdict("alpha", True), _completed(BASELINE, {JUDGE: 1})]
+
+    _bounded(_reason_for(records, judge=_HUGE), _HUGE, "judge name")
+
+
+def test_a_huge_model_id_on_judging_completed_does_not_reach_the_reason_whole():
+    """The group-shortfall refusal names the model the close was for."""
+    records = [_verdict("alpha", True), _completed(_HUGE, {JUDGE: 99})]
+
+    _bounded(_reason_for(records), _HUGE, "model_id")
+
+
+def test_a_huge_model_id_known_only_from_failures_does_not_reach_the_reason_whole():
+    records = [
+        _completion(_HUGE, "a", ok=False),
+        _verdict("alpha", True),
+        _completed(BASELINE, {JUDGE: 1}),
+    ]
+
+    _bounded(_reason_for(records), _HUGE, "model_id")
+
+
+def test_the_refusal_that_lists_models_bounds_how_many_it_lists():
+    """The one path whose length is unbounded in *count* rather than in width.
+
+    Bounding each name leaves the sentence proportional to how many models the log
+    names, and nothing bounds that: the models here reach the tally from failed
+    ``migkit.completion`` records, which a log may hold any number of. Ten
+    thousand of them measured 139,248 characters with every individual name short.
+    """
+    records = [_completion(f"model-{n}", "a", ok=False) for n in range(10_000)]
+    records += [_verdict("alpha", True), _completed(BASELINE, {JUDGE: 1})]
+
+    reason = _reason_for(records)
+
+    assert len(reason) < _REASON_CEILING, (
+        f"the reason is {len(reason):,} characters: each name is bounded but the "
+        f"list is not, so its length is still a property of the log"
+    )
+    assert "more" in reason, "and it says how many it did not name"
+
+
+def test_a_huge_golden_set_item_id_in_the_duplicate_input_refusal_is_bounded():
+    """The golden set arrives by a path the log names, so it is bounded here too."""
+    items = _by_id(_item(_HUGE, "alpha"), _item("b", "alpha"))
+
+    _bounded(_reason_for([_verdict("alpha", True)], items), _HUGE, "item id")
+
+
+def test_a_short_value_is_quoted_exactly_as_it_always_was():
+    """The bound is a ceiling and not a reformatting: nothing short changes shape."""
+    records = [_record(EVENT_COMPLETION, {"model_id": BASELINE, "item_id": 7, "ok": False})]
+
+    reason = _reason_for(records)
+
+    assert f"for {BASELINE!r} names item 7," in reason
 
 
 def test_a_golden_set_item_with_duplicate_tags_trips_the_invariant():
@@ -1874,3 +2211,739 @@ def test_nothing_measured_discloses_no_confidence_it_never_consumed() -> None:
     """
     cell = _make_cell(passes=0, n=0, items=0, confidence=None)
     assert cell.note == "Nothing was measured for refusal."
+
+
+# =========================================================================== #
+# C21 -- the two-phase form. ``dimension_counts`` needs the golden set to join a
+# verdict to an item by input text, and ``report.from_evidence`` does not have
+# the golden set until the ``migkit.comparison`` record at the *end* of its one
+# streaming pass. ``DimensionTally`` splits the work: read the log, then join.
+#
+# The two roads that were closed before it are both guarded by merged tests and
+# neither is weakened here: ``test_report.py`` still counts exactly one text-mode
+# open of the log, and ``test_evidence_scale.py`` still asserts peak allocation
+# is flat in the log's size. What follows pins the third road.
+# =========================================================================== #
+
+
+def _tallied(records, items, *, judge: str = JUDGE):
+    """The same counting, driven as two phases instead of one.
+
+    The tally is built with no golden set at all, so every verdict goes past it
+    while the join is still impossible -- which is exactly the position
+    ``report.from_evidence`` is in.
+    """
+    tally = dimensions.DimensionTally()
+    for record in records:
+        tally.add(record)
+    return tally.counts(items, judge=judge)
+
+
+def _two_run_log():
+    """Two nights in one log: an earlier run, its comparison, then a later run."""
+    return [
+        _verdict("alpha", True),
+        _verdict("alpha", True),
+        _completed(BASELINE, {JUDGE: 2}),
+        _record("migkit.comparison", {"goldenset_hash": "aaaa"}),
+        _verdict("alpha", False),
+        _completed(BASELINE, {JUDGE: 1}),
+        _record("migkit.comparison", {"goldenset_hash": "aaaa"}),
+    ]
+
+
+def test_the_deferred_join_agrees_with_the_join_that_had_the_golden_set_all_along():
+    """The two phases are one function split, not a second implementation.
+
+    Everything else here pins a property of the deferred phase. This pins the
+    only thing that makes those properties worth having: that a caller who could
+    not have the golden set in time gets the same matrix as one who could.
+    """
+    items = _by_id(
+        _item("a", "alpha", ("t",)),
+        _item("b", "bravo", ("t", "u")),
+        _item("c", "charlie", ()),
+    )
+    records = [
+        _verdict("alpha", True),
+        _verdict("alpha", False),
+        _verdict("bravo", True),
+        _completion(BASELINE, "c", ok=False),
+        _completed(BASELINE, {JUDGE: 3}),
+        _verdict("bravo", False),
+        _verdict("charlie", True),
+        _completed(CANDIDATE, {JUDGE: 2}),
+    ]
+
+    one_phase = _counts(records, items)
+    two_phase = _tallied(records, items)
+
+    assert one_phase.available is True, one_phase.reason
+    assert two_phase.available is True, two_phase.reason
+    assert two_phase.by_model == one_phase.by_model
+    assert _cell(two_phase, BASELINE, "t") == (2, 3, 2)
+    assert _cell(two_phase, BASELINE, dimensions.UNTAGGED) == (0, 1, 1)
+    assert _cell(two_phase, CANDIDATE, "u") == (0, 1, 1)
+
+
+def test_the_deferred_join_refuses_an_unjoinable_input_in_the_same_words():
+    """The excerpt survives the deferral, so the disclosure was not traded away.
+
+    A digest cannot be turned back into the text a reader has to recognise, so
+    the obvious deferred implementation refuses with something weaker -- an
+    ordinal, or nothing. Eighty characters of the input is bounded for exactly
+    the reason the digest is, so it is kept and the sentence does not change.
+    """
+    long_input = "tell me at length about " + ("the sorrows of young werther " * 20)
+    items = _by_id(_item("a", "alpha", ("t",)))
+    records = [
+        _verdict("alpha", True),
+        _verdict(long_input, False),
+        _completed(BASELINE, {JUDGE: 2}),
+    ]
+
+    two_phase = _tallied(records, items)
+
+    assert two_phase.available is False
+    assert two_phase.reason == _counts(records, items).reason, (
+        "the deferred join refused in different words than the immediate one"
+    )
+    assert long_input not in two_phase.reason
+    assert repr(long_input[:80] + "...") in two_phase.reason
+
+
+def test_the_deferred_phase_holds_a_digest_of_the_input_and_never_the_input():
+    """The amplification ``evidence.py`` measured, from the one angle left open.
+
+    The immediate join files a verdict under its item id and is already pinned
+    not to hold the input. The deferred join has no item id to file under, so
+    this is the test that says what it files under instead: not the input, and
+    not a projection of the record that quietly contains it.
+    """
+    held: list[weakref.ref] = []
+    tally = dimensions.DimensionTally()
+
+    tracked = _TrackedInput("alpha" + "x" * 4000)
+    held.append(weakref.ref(tracked))
+    tally.add(_verdict(tracked, True))
+    del tracked
+    gc.collect()
+
+    assert held[0]() is None, (
+        "the input text of a verdict is still alive after the deferred tally read "
+        "it: the tally is holding inputs rather than digests of them"
+    )
+
+
+def test_a_second_run_in_the_log_replaces_the_first_rather_than_adding_to_it():
+    """The multi-run ruling: the matrix is one run's, and it is the last one's.
+
+    A log of fourteen nightly runs holds fourteen judging passes. Summing them
+    would print a matrix of fourteen nights under a banner reporting the last,
+    with nothing on the page able to reconcile the two numbers -- and it would
+    add verdicts taken against golden sets nobody checked against each other,
+    since the hash gate above this only ever checks the last comparison's.
+    """
+    items = _by_id(_item("a", "alpha", ("t",)))
+
+    result = _tallied(_two_run_log(), items)
+
+    assert result.available is True, result.reason
+    assert _cell(result, BASELINE, "t") == (0, 1, 1), (
+        "the matrix summed both nights; it is the last run's alone"
+    )
+
+
+def test_the_per_run_ruling_holds_for_the_one_phase_form_too():
+    """One implementation, so one ruling. ``dimension_counts`` resets the same way."""
+    items = _by_id(_item("a", "alpha", ("t",)))
+
+    assert _cell(_counts(_two_run_log(), items), BASELINE, "t") == (0, 1, 1)
+
+
+def test_a_log_with_no_comparison_in_it_is_one_run_and_is_counted_whole():
+    """Which is what a hand-built stream of judging records is, and always was."""
+    items = _by_id(_item("a", "alpha", ("t",)))
+    records = [
+        _verdict("alpha", True),
+        _completed(BASELINE, {JUDGE: 1}),
+        _verdict("alpha", True),
+        _completed(CANDIDATE, {JUDGE: 1}),
+    ]
+
+    result = _tallied(records, items)
+
+    assert result.available is True, result.reason
+    assert _cell(result, BASELINE, "t") == (1, 1, 1)
+    assert _cell(result, CANDIDATE, "t") == (1, 1, 1)
+
+
+def test_a_comparison_with_no_run_under_it_does_not_erase_the_run_before_it():
+    """An empty stretch between two comparisons is the tail of the night before.
+
+    Read the other way, a ``migkit.comparison`` appended to a log would erase a
+    matrix that is still the right one -- and ``test_report.py`` asserts, for
+    every other field on the model, that history in front of a run changes
+    nothing but the series. The matrix is the last run that actually judged.
+    """
+    items = _by_id(_item("a", "alpha", ("t",)))
+    records = [
+        _verdict("alpha", True),
+        _completed(BASELINE, {JUDGE: 1}),
+        _record("migkit.comparison", {"goldenset_hash": "aaaa"}),
+        _record("migkit.verdict", {"verdict": "GO"}),
+        _record("migkit.comparison", {"goldenset_hash": "aaaa"}),
+    ]
+
+    result = _tallied(records, items)
+
+    assert result.available is True, result.reason
+    assert _cell(result, BASELINE, "t") == (1, 1, 1)
+
+
+# --------------------------------------------------------------------------- #
+# A run that produced nothing *but* a refusal is still a run
+#
+# The four payloads below all make ``_failure`` refuse globally, which latches
+# ``refused_all`` and returns at the top of ``add`` for every later record. A real
+# log writes completions before judging, so such a run reaches its
+# ``migkit.comparison`` with no close, no verdict and no failure filed -- and the
+# "was there a run under this comparison" guard above used to read that as an
+# empty stretch and discard the run *with its refusal inside it*.
+#
+# Measured before the fix, through the deferred path ``report.from_evidence``
+# uses: with an earlier night in the log the result was ``available=True``
+# carrying the *previous* night's cells under tonight's banner, with no refusal
+# and no note; with no earlier night it was the "the log holds no
+# migkit.judging_completed record ... A judging pass either did not run or did not
+# finish" refusal, which is false -- judging ran, finished, and closed a group --
+# and which sends the reader after a fix for a problem they do not have.
+#
+# That is the "missing data presented as data" failure this codebase has shipped
+# once. One test per trigger, because each reaches ``refuse(None, ...)`` down its
+# own branch and a fix that only covers one of them would leave three live.
+# --------------------------------------------------------------------------- #
+
+
+def _refusing_night(bad_completion: EvidenceRecord) -> list[EvidenceRecord]:
+    """One night in the order a real run writes it: completions, then judging.
+
+    The bad completion goes first because that is where a runner puts it, and it
+    is the ordering that makes the defect reachable: nothing has been filed on the
+    run yet when the global refusal latches.
+    """
+    return [
+        bad_completion,
+        _completion(BASELINE, "b", ok=False),
+        _verdict("alpha", True),
+        _verdict("bravo", True),
+        _completed(BASELINE, {JUDGE: 2}),
+        _record("migkit.comparison", {"goldenset_hash": "aaaa"}),
+    ]
+
+
+def _earlier_night() -> list[EvidenceRecord]:
+    """A night that judged cleanly, and its comparison. Whatever follows is tonight."""
+    return [
+        _verdict("alpha", False),
+        _verdict("bravo", False),
+        _completed(BASELINE, {JUDGE: 2}),
+        _record("migkit.comparison", {"goldenset_hash": "aaaa"}),
+    ]
+
+
+def _two_items() -> dict[str, GoldenItem]:
+    return _by_id(_item("a", "alpha", ("t",)), _item("b", "bravo", ("t",)))
+
+
+#: The four failed-``migkit.completion`` payloads that refuse for *every* judge.
+#: Named by what is wrong with them, so a failure here reads as a sentence.
+_GLOBAL_REFUSERS = {
+    "no model_id at all": ({"item_id": "a", "ok": False}, "names no model"),
+    "an empty model_id": (
+        {"model_id": "", "item_id": "a", "ok": False},
+        "names no model",
+    ),
+    "no item_id at all": ({"model_id": BASELINE, "ok": False}, "names item None"),
+    "a non-string item_id": (
+        {"model_id": BASELINE, "item_id": 7, "ok": False},
+        "names item 7",
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("what", "payload", "expected"),
+    [(what, payload, expected) for what, (payload, expected) in _GLOBAL_REFUSERS.items()],
+)
+def test_a_comparison_does_not_discard_a_run_whose_only_record_was_a_refusal(
+    what, payload, expected
+):
+    """Tonight refused. The comparison must not hand back last night instead."""
+    records = _earlier_night() + _refusing_night(_record(EVENT_COMPLETION, payload))
+
+    result = _tallied(records, _two_items())
+
+    assert result.available is False, (
+        f"a failed completion with {what} refused for every judge, and the "
+        f"migkit.comparison then discarded the run that refusal was on -- so the "
+        f"matrix rendered is the *previous* night's: {dict(result.by_model)}. "
+        f"Missing data presented as data, under a banner reporting tonight"
+    )
+    assert expected in result.reason
+    assert result.by_model == {}
+
+
+@pytest.mark.parametrize(
+    ("what", "payload", "expected"),
+    [(what, payload, expected) for what, (payload, expected) in _GLOBAL_REFUSERS.items()],
+)
+def test_the_refusal_survives_when_there_is_no_earlier_night_to_fall_back_to(
+    what, payload, expected
+):
+    """The other half: with nothing behind it the discarded run refused *falsely*.
+
+    A fresh ``_Run`` has ``closes == 0``, so the reason reaching the reader was
+    "the log holds no migkit.judging_completed record ... A judging pass either
+    did not run or did not finish". Judging did run and did finish -- the log
+    holds the record that says so -- and the sentence names a fix for a problem
+    the reader does not have.
+    """
+    records = _refusing_night(_record(EVENT_COMPLETION, payload))
+
+    result = _tallied(records, _two_items())
+
+    assert result.available is False
+    assert expected in result.reason, (
+        f"a failed completion with {what} produced the wrong refusal: "
+        f"{result.reason!r}"
+    )
+    assert "no migkit.judging_completed record" not in result.reason, (
+        "the run carrying the refusal was discarded, so an empty run answered "
+        "instead and reported that judging never ran -- which the "
+        "migkit.judging_completed record in this very log contradicts"
+    )
+
+
+@pytest.mark.parametrize(
+    ("what", "payload", "expected"),
+    [(what, payload, expected) for what, (payload, expected) in _GLOBAL_REFUSERS.items()],
+)
+def test_the_one_phase_form_refuses_the_same_way(what, payload, expected):
+    """One implementation, so one ruling -- the joined phase reaches it too."""
+    records = _earlier_night() + _refusing_night(_record(EVENT_COMPLETION, payload))
+
+    result = _counts(records, _two_items())
+
+    assert result.available is False, dict(result.by_model)
+    assert expected in result.reason
+
+
+def test_a_comparison_with_a_refusal_under_it_beats_an_earlier_clean_run():
+    """Stated as the property rather than as the four payloads, so it cannot rot.
+
+    The control is the same night with the bad completion removed: it counts, and
+    it counts *tonight's* numbers. That is what makes the assertion above a
+    swapped matrix and not merely a stricter one.
+    """
+    items = _two_items()
+    clean = _earlier_night() + [
+        _completion(BASELINE, "b", ok=False),
+        _verdict("alpha", True),
+        _verdict("bravo", True),
+        _completed(BASELINE, {JUDGE: 2}),
+        _record("migkit.comparison", {"goldenset_hash": "aaaa"}),
+    ]
+
+    control = _tallied(clean, items)
+    last_night = _tallied(_earlier_night(), items)
+
+    assert control.available is True, control.reason
+    assert _cell(control, BASELINE, "t") == (2, 3, 2), "tonight's own numbers"
+    assert _cell(last_night, BASELINE, "t") == (0, 2, 2), (
+        "and they are not last night's, which is what a discarded run handed back"
+    )
+
+
+def test_verdicts_after_the_last_comparison_belong_to_a_run_nobody_compared():
+    """A night still running, or one that died before deciding. Read and dropped.
+
+    Dropped from the *result*. An earlier version of this docstring said the reset
+    was "what keeps the deferred store bounded on a log whose tail is a judging
+    pass with no close and no comparison behind it", and that was measured and is
+    false: resetting at a comparison bounds nothing about what arrives after it.
+    The fresh ``_Run`` accumulates one entry per distinct input exactly as the
+    previous one did, at a measured 317 bytes each, and only stops when the stream
+    does. See :class:`~model_migration_kit.dimensions.DimensionTally`, which now
+    records where the golden set is the bound and where it is not.
+
+    What the reset does buy is correctness, which is what this test asserts: the
+    tail is not merged into the run the last comparison closed.
+    """
+    items = _by_id(_item("a", "alpha", ("t",)), _item("b", "bravo", ("t",)))
+    records = [
+        _verdict("alpha", True),
+        _completed(BASELINE, {JUDGE: 1}),
+        _record("migkit.comparison", {"goldenset_hash": "aaaa"}),
+        _verdict("bravo", True),
+        _verdict("bravo", True),
+    ]
+
+    result = _tallied(records, items)
+
+    assert result.available is True, result.reason
+    assert _cell(result, BASELINE, "t") == (1, 1, 1), (
+        "verdicts written after the last comparison were counted into the run "
+        "that comparison had already closed"
+    )
+
+
+def test_the_tally_counts_every_judge_and_is_told_which_one_at_the_end():
+    """``report`` reads the judge's name off the same record that names the set.
+
+    So the panel filter cannot be applied on the way past either, and one pass
+    has to serve whichever judge the document turns out to want.
+    """
+    items = _by_id(_item("a", "alpha", ("t",)), _item("b", "bravo", ("t",)))
+    records = [
+        _verdict("alpha", True),
+        _verdict("bravo", False, judge=OTHER_JUDGE),
+        _completed(BASELINE, {JUDGE: 1, OTHER_JUDGE: 1}),
+    ]
+    tally = dimensions.DimensionTally()
+    for record in records:
+        tally.add(record)
+
+    assert _cell(tally.counts(items, judge=JUDGE), BASELINE, "t") == (1, 1, 1)
+    assert _cell(tally.counts(items, judge=OTHER_JUDGE), BASELINE, "t") == (0, 1, 1)
+
+
+def test_asking_for_counts_with_no_golden_set_anywhere_raises():
+    """The alternative is a matrix built against an empty set: a table of zeros.
+
+    Which is the "missing data stated as zero" failure this codebase has shipped
+    once, arrived at by a caller who simply forgot an argument.
+    """
+    tally = dimensions.DimensionTally()
+    tally.add(_verdict("alpha", True))
+
+    with pytest.raises(ValueError, match="needs the golden set"):
+        tally.counts(judge=JUDGE)
+
+
+def test_a_tally_built_with_the_golden_set_does_not_need_it_again():
+    """Which is what ``dimension_counts`` does, and it re-indexes nothing."""
+    items = _by_id(_item("a", "alpha", ("t",)))
+    tally = dimensions.DimensionTally(items)
+    for record in (_verdict("alpha", True), _completed(BASELINE, {JUDGE: 1})):
+        tally.add(record)
+
+    assert _cell(tally.counts(judge=JUDGE), BASELINE, "t") == (1, 1, 1)
+
+
+def test_the_deferred_join_refuses_a_duplicated_input_as_a_precondition_too():
+    """Ruling 2 survives the split. The guard is on the set, not on the sampling.
+
+    It moves from "before a record is read" to "before a count is produced",
+    which is the earliest the deferred phase can ask the question -- and the
+    answer does not depend on which items were sampled either way.
+    """
+    items = _by_id(
+        _item("dup-a", "the very same question", ("t",)),
+        _item("dup-b", "the very same question", ("u",)),
+        _item("real", "a question with one owner", ("t",)),
+    )
+    records = [
+        _verdict("a question with one owner", True),
+        _completed(BASELINE, {JUDGE: 1}),
+    ]
+
+    result = _tallied(records, items)
+
+    assert result.available is False
+    assert "dup-a" in result.reason
+    assert "dup-b" in result.reason
+
+
+def test_a_failed_completion_for_an_unknown_item_is_refused_by_the_deferred_join():
+    """The membership check the immediate join makes on the way past.
+
+    Deferred, the item id is all that was held -- which is small, so the sentence
+    is the same one and names the same two things.
+    """
+    items = _by_id(_item("a", "alpha", ("t",)))
+    records = [
+        _verdict("alpha", True),
+        _completion(BASELINE, "item-nobody-has", ok=False),
+        _completed(BASELINE, {JUDGE: 1}),
+    ]
+
+    result = _tallied(records, items)
+
+    assert result.available is False
+    assert result.reason == _counts(records, items).reason
+    assert "item-nobody-has" in result.reason
+
+
+def _held_by_a_tally(records) -> int:
+    """Bytes still reachable from a ``DimensionTally`` after it has read ``records``.
+
+    ``tracemalloc`` current rather than peak: the question is what the tally is
+    *holding*, not what building one record cost transiently. The baseline is taken
+    after tracing starts so the records' own allocations are inside the window,
+    which is what makes an implementation that keeps them show up here.
+    """
+    gc.collect()
+    tracemalloc.start()
+    try:
+        base = tracemalloc.get_traced_memory()[0]
+        tally = dimensions.DimensionTally()
+        for record in records:
+            tally.add(record)
+        gc.collect()
+        held = tracemalloc.get_traced_memory()[0] - base
+    finally:
+        tracemalloc.stop()
+    del tally
+    return held
+
+
+def test_repeated_draws_of_one_item_cost_the_deferred_store_nothing_extra():
+    """The flatness claim, which is the one that makes a single pass affordable.
+
+    The digest is not interesting because it is small; it is interesting because
+    fifty draws of one item collapse onto one key. A store that grew per *verdict*
+    would be the buffering this design exists to avoid, only with a smaller
+    constant -- and a smaller constant on an 86 MB log is still a slope.
+
+    So this varies the draws by fifty and holds the items fixed, and asserts the
+    store does not notice. Asserted as a ratio and with a wide margin: the real
+    figures are 311 KiB against 311 KiB, and anything under 1.5x is a store that
+    is keyed by item rather than by record.
+    """
+    inputs = [f"input-{n}" for n in range(100)]
+
+    def stream(draws: int):
+        return [_verdict(text, True) for _ in range(draws) for text in inputs]
+
+    once = _held_by_a_tally(stream(1))
+    fifty = _held_by_a_tally(stream(50))
+
+    assert fifty < once * 1.5, (
+        f"the deferred store grew {once} -> {fifty} bytes when the draws per item "
+        f"went 1 -> 50 and the item count did not move; it is keyed by record "
+        f"rather than by distinct input, which is the amplification evidence.py "
+        f"measured with a smaller constant"
+    )
+
+
+def test_the_deferred_store_is_keyed_by_distinct_input_and_so_grows_with_items():
+    """The other side of the same property, stated so nobody reads flatness as free.
+
+    Entries are bounded by *distinct inputs*, not by nothing. A real judging pass
+    draws from the golden set, so that bound is the set's size -- but a log of
+    inputs that join to no item has no such bound, and this is the test that says
+    the growth is real and linear rather than absent. ``DimensionTally``'s
+    docstring carries the measured constant and the ceiling it implies.
+    """
+    def stream(n_items: int):
+        return [_verdict(f"input-{n}", True) for n in range(n_items)]
+
+    small = _held_by_a_tally(stream(200))
+    large = _held_by_a_tally(stream(2000))
+
+    assert large > small * 5, (
+        f"ten times the distinct inputs held {small} -> {large} bytes. If this ever "
+        f"stops growing, the store has started dropping inputs it will need at the "
+        f"join, and the refusal that should name one will name nothing"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# The joined phase latches, and that is the half of the docstring nothing pinned
+#
+# ``DimensionTally``'s docstring draws the asymmetry between the two phases: the
+# deferred one cannot recognise an input that joins to nothing and files it like
+# any other, "and a log of inputs that join to nothing grows the store linearly
+# ... with no bound but the log", while the joined phase "recognises it
+# immediately, latches the refusal, and every later verdict for that judge returns
+# at the top of ``_verdict`` -- so the store stops growing at the first one".
+#
+# The second half had no test. Two mutations survived because of it: dropping
+# ``(self._joined and not self._knows(item_id))`` from ``_failure``, and setting
+# ``self._joined = False`` unconditionally in ``__init__``. Both send every caller
+# down the deferred path -- the one that does *not* stop growing -- and both left
+# the returned matrix identical, because the join at the end reaches the same
+# refusal by a longer road.
+# --------------------------------------------------------------------------- #
+
+
+def _held_by_a_joined_tally(records, items) -> int:
+    """``_held_by_a_tally``, but for a tally that had the golden set all along."""
+    gc.collect()
+    tracemalloc.start()
+    try:
+        base = tracemalloc.get_traced_memory()[0]
+        tally = dimensions.DimensionTally(items)
+        for record in records:
+            tally.add(record)
+        gc.collect()
+        held = tracemalloc.get_traced_memory()[0] - base
+    finally:
+        tracemalloc.stop()
+    del tally
+    return held
+
+
+def test_the_joined_phase_stops_growing_at_the_first_unjoinable_verdict():
+    """The claim in words, measured. The deferred phase's own test is above.
+
+    A tally holding the golden set knows at once that an input joins to nothing.
+    It refuses for that judge, and every later verdict under that judge returns at
+    the top of ``_verdict`` without allocating -- so ten times the unjoinable
+    records cost the same. A tally that had quietly stopped being joined would
+    file all of them at the measured 317 bytes each.
+    """
+    items = _by_id(_item("a", "alpha", ("t",)))
+
+    def stream(n_records: int):
+        return [_verdict(f"joins-to-nothing-{n}", True) for n in range(n_records)]
+
+    small = _held_by_a_joined_tally(stream(200), items)
+    large = _held_by_a_joined_tally(stream(2000), items)
+
+    assert large < small + 20_000, (
+        f"ten times the unjoinable verdicts held {small} -> {large} bytes. The "
+        f"joined phase is meant to latch on the first one and allocate nothing "
+        f"after it; this is the deferred phase's unbounded growth, reached by a "
+        f"tally that was handed the golden set and did not use it"
+    )
+
+
+def test_the_joined_phase_stops_growing_at_the_first_unknown_failed_item():
+    """The same latching, down ``_failure``'s branch rather than ``_verdict``'s.
+
+    A failed ``migkit.completion`` naming an item the set does not hold refuses
+    for *every* judge, so nothing after it may be accumulated at all.
+    """
+    items = _by_id(_item("a", "alpha", ("t",)))
+
+    def stream(n_records: int):
+        # Distinct unknown ids on purpose. One id repeated would collapse onto one
+        # entry even without the latch, and the growth this measures would vanish
+        # into the store's own keying rather than into the refusal.
+        return [
+            _completion(BASELINE, f"item-nobody-has-{n}", ok=False)
+            for n in range(n_records)
+        ]
+
+    small = _held_by_a_joined_tally(stream(200), items)
+    large = _held_by_a_joined_tally(stream(2000), items)
+
+    assert large < small + 20_000, (
+        f"ten times the failed completions naming unknown items held {small} -> "
+        f"{large} bytes. The first one refuses for every judge, `add` returns at "
+        f"the top for everything after it, and the store must not have noticed "
+        f"the difference -- this is a tally filing item ids the golden set in its "
+        f"own hand says do not exist"
+    )
+
+
+def test_an_unknown_failed_item_latches_before_a_later_refusal_can_answer_for_it():
+    """Latching is not only a memory property: it decides *which* sentence wins.
+
+    ``reason_for`` hands back the first refusal the stream produced. When the
+    unknown item id latches where it is read, that is the sentence. When it is
+    filed instead -- which is what both surviving mutants do -- the run keeps
+    accumulating, a later group-shortfall refusal lands in front of it, and the
+    reader is told judging was resumed when the real defect is a log naming an
+    item the golden set does not hold.
+    """
+    items = _by_id(_item("a", "alpha", ("t",)))
+    records = [
+        _completion(BASELINE, "item-nobody-has", ok=False),
+        _verdict("alpha", True),
+        _completed(BASELINE, {JUDGE: 99}),
+    ]
+
+    result = _counts(records, items)
+
+    assert result.available is False
+    assert "item-nobody-has" in result.reason, (
+        f"the unknown item id did not latch where it was read, so a refusal "
+        f"raised three records later answered in its place: {result.reason!r}"
+    )
+    assert "closed a group of" not in result.reason
+
+
+# --------------------------------------------------------------------------- #
+# What the sixteen bytes buy
+#
+# ``_DIGEST_BYTES = 16`` -> ``15`` and ``-> 1`` both survived every correctness
+# test; ``1`` died only on a memory test, which is the wrong reason. A narrow
+# digest does not make the store bigger, it makes the *counts wrong*: the digest
+# is the key of the tally store and of ``_Index.by_digest``, so two inputs that
+# collide are one item as far as the join is concerned, and one of them silently
+# takes the other's tags. No refusal is raised, because nothing has noticed.
+# --------------------------------------------------------------------------- #
+
+#: Two inputs whose blake2b digests are equal at one byte and differ at two. Found
+#: by search, and pinned by the first assertion of the test below so that a change
+#: of hash function fails loudly here rather than quietly weakening the
+#: demonstration into a test of nothing.
+_COLLIDES_AT_ONE_BYTE = ("question-20", "question-32")
+
+
+def test_a_digest_collision_attributes_verdicts_to_the_wrong_item(monkeypatch):
+    """The failure mode the width exists to prevent, shown by narrowing the width.
+
+    Two colliding inputs are one key. ``_index`` builds ``by_digest`` by
+    assignment, so the second item silently overwrites the first's entry rather
+    than refusing -- and every verdict for *either* input then joins to whichever
+    item was seen last. The matrix that comes back is available, complete and
+    wrong, which is the one shape this module exists not to produce.
+    """
+    first, second = _COLLIDES_AT_ONE_BYTE
+    items = _by_id(_item("a", first, ("alpha-tag",)), _item("b", second, ("bravo-tag",)))
+    records = [
+        _verdict(first, True),
+        _verdict(first, True),
+        _completed(BASELINE, {JUDGE: 2}),
+    ]
+
+    sound = _tallied(records, items)
+
+    assert sound.available is True, sound.reason
+    assert _cell(sound, BASELINE, "alpha-tag") == (2, 2, 1), "two draws of item 'a'"
+    assert _cell(sound, BASELINE, "bravo-tag") == (0, 0, 0), "and none of item 'b'"
+
+    monkeypatch.setattr(dimensions, "_DIGEST_BYTES", 1)
+    assert dimensions._digest(first) == dimensions._digest(second), (
+        f"{_COLLIDES_AT_ONE_BYTE} no longer collide at one byte, so this test is "
+        f"demonstrating nothing. Find a new pair rather than deleting the test"
+    )
+
+    collided = _tallied(records, items)
+
+    assert collided.available is True, (
+        "a collision is not detected and cannot be: this is the point"
+    )
+    assert _cell(collided, BASELINE, "alpha-tag") == (0, 0, 0)
+    assert _cell(collided, BASELINE, "bravo-tag") == (2, 2, 1), (
+        "both draws of item 'a' were counted against item 'b', under a tag item "
+        "'a' does not carry, and the matrix says nothing about it"
+    )
+
+
+def test_the_digest_is_sixteen_bytes_wide():
+    """Not a restatement of the constant: the width is the only guard there is.
+
+    A collision produces the wrong counts silently -- the test above is what that
+    looks like -- so there is no runtime check to fall back on and no test at any
+    realistic scale can tell fifteen bytes from sixteen. The width *is* the
+    control, so it is asserted directly. See the constant's own comment for what
+    the two populations are and why the margin holds by roughly thirty orders of
+    magnitude at both of them.
+    """
+    assert dimensions._DIGEST_BYTES == 16
+    assert len(dimensions._digest("alpha")) == 16

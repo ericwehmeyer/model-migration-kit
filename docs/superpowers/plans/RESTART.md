@@ -32,70 +32,286 @@ agent that checked rather than assumed, so treat that one as suspect.
 
 ## Where things stand
 
-**`main` is `1cfbf54`, 1585 tests, all seven gates green.** Merged and reviewed:
-**C1, C2, C3, C8, C9, C12, C13, C15, C19, C20**. Every one had a blind tester and
-a reviewer that mutation-tested it, and every review found something the other
-two roles missed.
+**The ordering mistake is fixed and the document renders.** That was this page's
+headline problem for three sessions: C14, the template that renders everything,
+was scheduled after all nine of its inputs, so ten chunks landed out of sight and
+`migkit demo` produced the same document it produced before any of the work
+started. C14a is merged. The two SVG helpers draw, and every chunk from here
+lands visibly instead of accumulating where nobody can steer on it.
 
-**Nothing any of that built is visible in the rendered document.** That is the
-single most important fact on this page. `interval_bar_svg` and `timeline_svg`
-are merged, reviewed and mutation-tested — 115 and 23 mutants, zero survivors —
-and **nothing calls them**. Render `migkit demo` and you get the same document
-you got before any of this started.
+**What has NOT changed is the reason that mistake mattered**, so keep the rule
+that came out of it: **order the chunks so the artifact moves.** A chunk whose
+output nobody can see is a chunk nobody can correct, and this project spent ten
+of them finding that out.
 
-The cause is an ordering mistake, not a defect: C14, the template that renders
-everything, was scheduled after all nine of its inputs. Ten chunks landed out of
-sight. **C14a exists to fix that** — see below.
+Merged, each through all four roles -- blind pair, mutation-testing review, fix
+pass: **C1, C2, C3, C4, C8, C9, C11, C12, C13, C14a, C15, C19, C20, C21**.
+
+**Seven of seven reviews found defects both other roles missed**, and three found
+defects in code that had already been merged. Budget for a fix pass on every
+chunk; the review is not the end of the chunk, it is the middle.
+
+The measured before-and-after, and what still does not render, are two sections
+down. Read those numbers rather than this prose if the two ever disagree -- and
+if they do, that is a defect in this file and worth fixing on sight. This
+paragraph replaced a preamble that had gone stale enough to contradict a table
+forty lines below it.
 
 | Branch | Contains | State |
 |---|---|---|
-| `main` | C1-C3, C8, C9, C12, C13, C15, C19, C20, R1-R13, tooling, `conftest.py` | 1585 passed |
-| `chunk/c21-unblock` | the C10 blocker | in flight, see below |
-| `chunk/c10-impl` / `c10-test` | matrix wired into `ReportModel` | written, **blocked**, 1 test red |
-| `chunk/c14a-impl` / `c14a-test` | the two charts | **contract written, not built** |
-| `chunk/c16-impl` / `c16-test` | narrative adapters | **contract written, not built** |
+| `main` | C1-C17, C19-C21, C22a, C7's lineage follow-up, R1-R30 | all seven gates green, **2154 passed** |
+| `chunk/c10-fix` | R27's eighteen survivors | in flight (stage 5/5) |
+| `chunk/c18-impl` | the synthetic band, R29's four rulings | in flight (stage 1/5, round two) |
+| `chunk/c22b-impl` | `trend`, `parameter_strip`, `multiplicity` on the model | in flight (stage 1/5) |
+| `chunk/c22b-test` | blind tests for the same | in flight (stage 2/5) |
+
+Updated 2026-08-24, main at `0b26845`. **18 of 22 chunks merged.** Remaining:
+C10's fix, C14's remaining elements (C14b's briefs are written), C18, C22b.
+`chunk/c10-impl` and `chunk/c10-test` (no `2`) are **dead**; ignore them.
+
+**The C22a process debt is paid.** Part one was merged without its blind tests
+because several targeted a `spot_check` that did not exist yet; all 15 landed
+with part two. One of them needed a one-line adaptation -- the tester's branch
+predated C11's follow-up making `subject` required -- and the adaptation is
+commented in place with the argument for why it preserves the test's intent.
+The lesson is not "do not take the debt": it is that a blind test written against
+a signature in flight will need adapting, and the adaptation is the merger's job
+to argue rather than to perform quietly.
+
+**Three consecutive blind pairs produced zero disagreement** -- C7 (33 tests),
+C10 (22), C6 (31) -- and it still meant nothing about defect-freedom: C10's
+review then found **18** surviving mutants and C7's found **11**. Agreement
+between two roles given one contract is not independent evidence.
+
+### The watchdog was right and I was wrong -- a correction
+
+An earlier version of this section said the stall monitor "raises false alarms"
+and told the next session to distrust it. **That was wrong, and it is worth
+leaving the correction visible.**
+
+The monitor fired seven times naming agents that had already completed. Every
+one of those alerts traced to **my own bookkeeping**, not to the tool. The
+watchdog is `scratchpad/agent_watchdog.sh`; it reads liveness from transcript
+mtime and completion from `scratchpad/completed_agents.txt`, **a file the
+orchestrator writes**. The rule was written down here in as many words -- *one
+line per completion, including after a resume and for dead agents* -- and then:
+
+- four agents (C6's pair, C22a's pair) were **never recorded at all**;
+- two more were recorded as `DIED`, then **resumed and completed
+  successfully**, and never re-recorded.
+
+So the file said those agents were dead or unfinished. The monitor read it and
+reported exactly that. It was correct on every alert.
+
+**The lesson is not about watchdogs.** A tool fed by a side-channel the operator
+must maintain by hand will silently degrade the moment the operator gets busy --
+and the busiest moments are precisely when its output matters. It then produces
+confident wrong signals, one of which here escalated to *"stop it and salvage
+its commits"* against work that had been merged for ninety minutes. Acting on
+that would have been destructive on the tool's advice and my data.
+
+It is also the third instance this session of one shape: **a conclusion drawn
+from a source nobody re-checked.** R25 (a mechanism inferred, not run), R26 (a
+field's keys assumed from a function's keys), and this. In all three the output
+looked authoritative and the input was never verified.
+
+The monitor is currently **stopped**, for a reason unrelated to the above: the
+three genuine agent deaths this session all arrived as ordinary `failed`
+task-notifications from the harness, with the stall reason attached. The
+watchdog's unique value -- catching an agent that hangs without notifying -- was
+never actually demonstrated. If you restart it, **either maintain
+`completed_agents.txt` on every single completion or derive completion from
+something the orchestrator cannot forget.** A half-maintained signal is worse
+than none.
 
 ## Do these next, in this order
 
-1. **C14a — the two charts and the evidence made legible.** Contract at
-   `### C14a`. Worktrees exist. This is the chunk that puts something on the page,
-   and after it every later chunk lands visibly instead of accumulating out of
-   sight. **Do this first even though it is not the critical path**, because the
-   person paying for this cannot steer on chunks they cannot see.
-2. **The C10 blocker** — `chunk/c21-unblock`, detail below. Then merge C10.
-3. **C16** — narrative adapters, contract settled by R13, worktrees exist.
-4. Then C4-C7, C11, C14's remaining seven elements, C17, C18.
+Rewritten 2026-08-24 after the C7 lineage merge. `main` is at **2154 passing**,
+seven gates green, and **18 of 22 chunks are merged**.
 
-## The C10 blocker, in full
+1. **Land the three in flight** -- C10's fix pass (R27's 18 survivors), C18
+   round two (R29's four rulings), and C22b's blind pair, dispatched together
+   from `0b26845`.
+2. **C14b** -- the four template elements: candidate table, excluded list,
+   dimension matrix, unavailability note. **Briefs are already written**
+   (`scratchpad/c14b_impl_brief.md` and `c14b_test_brief.md`) and it is blocked
+   only on C10's fix, because R27.5 changes the zero-column note and typing a
+   renderer against a note that is about to move is producer-beside-consumer.
+   **This is the chunk that finally moves the artifact** -- the render has been
+   24,564 bytes and the word "dimension" has appeared **0** times across three
+   merges.
+3. **C14c** -- the trend chart, the parameter strip and the multiplicity note,
+   once C22b puts them on the model. Read **R30** first: it decides all five of
+   C22b's open joins, and R30.5 carries the rule the renderer needs --
+   `Caveat.point` is now `RunPoint | None`, and a renderer walking caveats into
+   rows must ask before it indexes.
+4. **`candidate_field`'s point-less caveat filter** (R30.5). One line, in C5's
+   code, currently unreachable and a trap. Goes to whichever chunk next opens
+   that function.
+5. **The deferred repo-wide `ruff format` drift** -- tree at 88,
+   `pyproject.toml` says 100, ~26 files. Its own chunk, when the tree is quiet.
+   It is the last thing, not the next thing: it touches every file and would
+   conflict with every branch in flight.
 
-`from_evidence` must build a per-tag matrix. The matrix joins a `judge.verdict` to
-a golden-set item **by input text** (a verdict carries no `item_id`), so it needs
-the golden set. The golden set's path lives in the `migkit.comparison` payload,
-written *after* judging, so it is only in hand once the single streaming pass has
-finished. Both ways out are closed by merged tests:
+**Before dispatching any brief, grep the merged code for the ruling it is
+supposed to implement** (R28.1). A ruling in the plan with no brief behind it is
+a ruling nobody will execute, and this project shipped that failure twice in one
+session -- R21.5 sat in the plan and in this file's blocking list for four hours
+with no brief, and R25.5's contract-table edit was never made either.
 
-- **read the log twice** → `tests/test_report.py::test_the_log_is_read_once_for_both_the_headline_and_the_series` counts opens and asserts exactly 1.
-- **buffer the verdicts** → `tests/test_evidence_scale.py::test_rebuilding_the_report_does_not_hold_the_log_either` asserts peak allocation stays flat in log size. A `judge.verdict` embeds the input; the fixture's inputs are unique 4 KB strings.
+### Two errors of mine, both caught by agents, both the same shape
 
-Neither test may be weakened; `evidence.py` records the measurement behind them
-(an 86 MB log cost 502 MB extra resident).
+Recorded because the pattern is the useful part, not the individual mistakes.
 
-**The unexplored option is a digest.** C10's implementer rejected buffering a
-digest per verdict because `dimension_counts`' refusal quotes the unjoinable
-input. That is a *message* objection to a *memory* problem. A digest is ~32 bytes
-against a 4 KB input — under 1% of the log's growth — and a refusal naming the
-verdict's ordinal position ("the 47th verdict's input matches no item") is
-arguably more actionable than a truncated quote. **Measure it before accepting or
-rejecting it.**
+**R17.1** explained a real worked table with a mechanism I had inferred from
+reading code rather than running it. **R23.1** claimed `ReportModel.item_counts`
+carried three keys it does not carry, in a section whose own words were "checked
+rather than assumed" -- I had grepped, found a *function* reading those key
+names, and concluded the *field* had them. One hour apart, the second
+immediately after writing down the lesson from the first.
 
-The fix needs a change to a merged module — either `dimension_counts` gains a
-two-phase form, or the golden set resolves before the loop — which is why C10's
-implementer, correctly forbidden from touching them, could not solve it.
+> **When a revision claims something was checked, it must carry the output that
+> checked it.** A sentence saying "verified" is not evidence; a pasted
+> `KeyError` or printed dict is.
 
-**Also unsettled:** `dimension_counts` counts *every* `migkit.judging_completed`
-group, so a log of fourteen nightly runs yields a matrix summing all fourteen
-while the banner reports only the last. Nobody can reconcile those two numbers.
-Decide per-run or cumulative, and put the reasoning in the code.
+Both were caught by agents, both because the agent **needed the actual value to
+do its job** and so could not take the sentence on trust. That is an argument
+for briefs that make an agent derive a number rather than accept one.
+
+### The environment is fixed at the source -- follow `CLAUDE.md`, not old habits
+
+Two changes landed 2026-08-24 and they make this file's older advice obsolete.
+
+**The `.pth` trap is gone.** `scripts/worktree_path.py` is installed into the
+shared venv as an import hook, so a bare `python -c` from **any** worktree
+imports that worktree's code with **no `PYTHONPATH`**. Verified from four
+worktrees simultaneously; outside any checkout it still falls back to the main
+checkout, so nothing that worked before stopped working. `--uninstall` reverts.
+
+This closed the failure that caught the orchestrator and six agents, whose
+symptom was a result identical to the before-state -- indistinguishable from
+"the merge did nothing".
+
+> One bug was fixed before installing: `FALLBACK` was derived from `__file__`,
+> which is right in `scripts/` and resolves to a nonexistent `<venv>/Lib/src`
+> once the module lives in `site-packages`. It now bakes the path from the
+> `.pth` it replaces, so the fallback cannot depend on which worktree happened
+> to run `--install`.
+
+**`pytest-xdist` is installed** and is in the `dev` extra so CI can honour a
+`-n` without failing on an unknown flag. `-n 8` takes the suite from ~136 s to
+~97 s. **Pick the worker count from the load**: wall-clock here is dominated by
+other agents, not by the code, and four agents each running `-n 8` on 16 cores
+make each other slower. `-n 4` when the board is busy.
+
+The interpreter is still only in the main checkout:
+`C:\Users\ewehm\repos\migration-kit\.venv\Scripts\python.exe`. A bare
+`python` on PATH is a bare 3.14 with no pytest, which fails loudly and is
+therefore harmless.
+
+**`docs/superpowers/plans/METRICS.md` is where process measurements now go.** It
+carries what each role costs (implementer ~110k tokens, reviewer ~150k, blind
+tester ~169k, fix pass ~198k; a full chunk 600-650k), the evidence that **tokens
+predict work and wall-clock does not**, and the orchestrator's error taxonomy.
+Append to it; do not rewrite it.
+
+### The merge map, measured rather than guessed
+
+Run with `git merge-tree --write-tree --name-only <a> <b>` on 2026-08-24, so this
+is what git actually says and not what the branches look like they should do:
+
+| merge | result |
+|---|---|
+| `main` <- `chunk/c16-impl` | **clean** |
+| `main` <- `chunk/c4-impl` | **clean** |
+| `main` <- `chunk/c14a-impl` | `report.py` auto-merges; **`tests/test_report.py` conflicts** |
+| `chunk/c4-impl` + `chunk/c11-impl` | **conflicts in `series.py` and `tests/test_series.py`** |
+
+Both conflicts are two branches appending sections to one file, which is
+mechanical. Two things make them cheaper:
+
+- **C14a's is C21's fault, not C14a's.** C21 added section 20 to
+  `tests/test_report.py` after C14a branched. Merge C14a's side first and
+  re-append C21's section, rather than the reverse — C14a's tests are threaded
+  through the file and C21's are one contiguous block.
+- **C4 and C11 both add to `series.py`.** Merge **C4 first** (it is clean against
+  `main`), then C11. C11's implementer already exploded `__all__` to one name per
+  line with a magic trailing comma specifically so this merge would be
+  mechanical; do not undo that.
+
+**Deferred deliberately:** the repo-wide `ruff format` drift. Three separate
+agents reported it independently — the tree is formatted at 88 while
+`pyproject.toml` sets `line-length = 100`, and roughly 26 files are affected.
+It looks like the ideal safe filler task and it is the opposite: a repo-wide
+reformat with several chunks in flight conflicts with every one of them. Do it
+when the tree is quiet, in its own chunk, touching nothing else.
+
+## The C10 blocker, in full -- RESOLVED by C21, 2026-08-24
+
+Kept because the shape of the problem is the useful part, and because it took
+three sessions to state it clearly enough to solve.
+
+`from_evidence` must build a per-tag matrix. The matrix joins a `judge.verdict`
+to a golden-set item **by input text** (a verdict carries no `item_id`), so it
+needs the golden set. The golden set's path lives in the `migkit.comparison`
+payload, written *after* judging, so it is only in hand once the single
+streaming pass has finished. Both ways out are closed by merged tests, and
+neither may be weakened:
+
+- **read the log twice** -> `tests/test_report.py::test_the_log_is_read_once_for_both_the_headline_and_the_series` counts opens and asserts exactly 1.
+- **buffer the verdicts** -> `tests/test_evidence_scale.py::test_rebuilding_the_report_does_not_hold_the_log_either` asserts peak allocation stays flat in log size. A `judge.verdict` embeds the input; the fixture's inputs are unique 4 KB strings. `evidence.py` records the measurement behind it: an 86 MB log cost 502 MB extra resident.
+
+**The digest was the answer, and it was measured before being accepted.** Both
+guard tests are byte-identical to their pre-C21 versions and
+`test_evidence_scale.py` is untouched. blake2b at **16** bytes, not the ~32 this
+section guessed, and the cost is **per distinct input, not per verdict**: 317
+bytes per entry, so 1000 items costs ~311 KiB at 1 draw and ~311 KiB at 50.
+Flat in draws is the property; the 817x saving at 50 draws is a consequence of
+it. Peak allocation reads 2.48 MB at 8 MB of log and 2.68 MB at 24 MB, against a
+3.72 MB limit and an 8 MB ceiling -- two thirds of the ceiling unused.
+
+**One caveat that was not in the original framing.** The bound holds for inputs
+that *join*. The deferred phase cannot recognise an unjoinable input -- that is
+what deferred means -- so a log of non-joining inputs grows linearly at 317
+B/entry with no bound but the log, reaching the ceiling at roughly 18,000 such
+verdicts. The docstring claiming "bounded by the golden set, not by the log" was
+false and is corrected in the code.
+
+**"Also unsettled: per-run or cumulative" is settled: per-run.** Proven over a
+two-run log at both levels; the cumulative mutant fails with exactly the
+irreconcilable pair, `(30, 60, 6)` vs `(30, 30, 6)`. The reasoning lives in
+`DimensionTally.add`, in `ReportModel.dimension_counts`, and in the report-level
+test docstrings -- in the code, as this section asked.
+
+**What C21 did NOT do is deliver C10.** It delivers raw counts. The matrix --
+cells, tag order, baseline against candidates, both floors, six ways to be
+unavailable -- is still C10's work, and C10's contract had a second defect that
+would have re-blocked it: it prescribes `dimension_counts(records, items, *,
+judge)`, which cannot be called inside a single pass. **See R16 in the plan**
+for the two-phase form that replaces it, and for two further corrections to
+C10's contract. Do not dispatch C10 until C21's review lands.
+
+### Label every dispatch with its stage and its chunk
+
+Set the agent's `description` to a fixed format, so the running-agent list says
+what each one is without cross-referencing anything:
+
+```
+C18 impl · stage 1/5 · chunk 18/22
+```
+
+The five stages are **implementer, blind tester, merge, reviewer, fix pass**,
+and stage 3 is the orchestrator's, so agents occupy 1, 2, 4 and 5. Put the same
+line in the brief as well: an agent that knows a fix pass follows it will hand
+off rather than over-reach, which is exactly the boundary C22a's implementer had
+to reason out unaided when it shipped half a chunk and stopped.
+
+**Two limits, both learned the hard way.** A **resumed** agent keeps the
+description from its original dispatch and it cannot be changed -- so the label
+is only ever as good as the first dispatch. And the label must be set at
+dispatch time; there is no way to add it afterwards without restarting the
+agent, which costs its accumulated context and is almost never worth a tidier
+name.
 
 ## Four defects a reader found in the rendered report
 
@@ -127,8 +343,96 @@ Four agents per chunk, none sharing context:
 5. **Fix pass** — acts on the review; may edit both.
 
 Implementer and tester run **in parallel**. The reviewer is where most of the
-value has come from — three of three reviews found defects both other roles
-missed, and mutation testing found holes a green suite hid.
+value has come from — **six of six** reviews have now found defects both other
+roles missed, and mutation testing found holes a green suite hid.
+
+### The fix pass must unfix itself
+
+Added 2026-08-24, from C4's fix pass, which did this unprompted and should not
+have had to. After implementing its rulings and killing the reviewer's mutants,
+it **reverted each ruling one at a time and confirmed the suite went red for
+each**.
+
+Mutation testing asks *"does the suite notice a defect the reviewer invented?"*
+The unfix asks the question that actually matters once a fix has landed: **"does
+the suite notice if this fix is undone?"** A ruling can be implemented perfectly
+and left completely unguarded — the code is right, every test passes, and the
+next editor deletes it without one failure. That is how three of C4's eight
+surviving mutants came to exist in the first place.
+
+It costs one script and one suite run. **A ruling that survives its own reversal
+was written down, not enforced.**
+
+### Every worktree carries a stale copy of the plan, and agents read theirs
+
+Found independently by C4's reviewer and C11's reviewer, 2026-08-24. A chunk
+worktree is branched from `main` at dispatch time, so it holds the plan **as of
+that moment**. Revisions written afterwards land on `main` and never reach it.
+
+The concrete case: `chunk/c11-impl`'s plan ends at R13. Its C11 edge table still
+reads `probability ≈ 0.351` and its worked sentence still reads `"34% of cases"`
+— the two numbers R14.1 exists to strike. Both agents on that chunk got it right
+anyway, but only because the corrected value was in their briefs. **That was a
+courier working, not the document working**, and the next agent to open the
+contract from inside a worktree gets the struck numbers with nothing to warn it.
+
+Two things follow, and the second is the one that generalises:
+
+1. **Put the plan path in every brief, pointing at the main checkout**, not at
+   the worktree's copy. One line.
+2. **A revision is not landed when it is committed to `main`.** It is landed when
+   every reader of the thing it revises can see it. On this project the readers
+   are agents in worktrees that will never pull, so the brief is the only channel
+   that actually reaches them. Writing the revision and dispatching against the
+   stale copy is the same failure as not writing it.
+
+**The standing fix, applied 2026-08-24: banner the contract, not just the
+revision.** A revision section at the end of an 87KB file does not reach a reader
+who opens their own contract and stops — and "read only the chunk you are on",
+four lines up this page, is what *tells* them to stop. So every amended contract
+now carries a blockquote **immediately under its heading**, above its own text,
+saying what was superseded and pointing at the revision. Six are in place: C4,
+C5, C6, C7, C10, C11.
+
+Keep doing this. When a revision changes a contract, the revision records *why*
+and the banner makes sure the next reader sees *that*. A correction nobody reads
+is indistinguishable from one nobody wrote — and this project has now produced
+both a stale "OPEN" header that survived three days and a struck number that two
+agents read and only dodged because a brief couriered the fix.
+
+### The blindness leaks through the scratchpad, and what that cost
+
+Found on C4, 2026-08-24. Worktrees isolate the repo. They do **not** isolate the
+session scratchpad, and both agents of a pair default to the same directory. The
+tester wrote its test file over the implementer's staging file, and the harness's
+change notification put ~140 lines of the tester's file into the implementer's
+context unrequested.
+
+**Give every agent of a pair its own scratchpad subdirectory in its brief.** That
+is the fix and it is one line per brief.
+
+But the interesting part is what leaked, not that something did. The two agents
+had **independently reached opposite readings** of the same paragraph — §4.4's
+coverage flag, which the implementer read as across two runs and the tester read
+as across the two sides of one comparison. Both readings are defensible; the
+contract does not say; and my pre-dispatch ruling did not disambiguate it either,
+which is my defect and the root cause.
+
+That disagreement was not a problem. **It was the entire product of running a
+blind pair** — two independent readings of an ambiguous contract, surfaced as a
+conflict for the orchestrator to rule on. The leak did not merely contaminate the
+implementer. It *destroyed the signal*, by letting the disagreement resolve itself
+silently inside one agent instead of reaching me. The implementer capitulated to a
+comment it should never have seen, changed a correct implementation to the other
+reading, and the conflict very nearly disappeared into a commit message.
+
+It survived only because the implementer volunteered the leak in its report. Two
+lessons, and the second is the one worth keeping:
+
+1. Isolate the scratchpad.
+2. **Say in every brief: if you find yourself agreeing with something you were not
+   supposed to see, stop and report it.** An agent that hides a leak costs a
+   contract defect. An agent that reports one hands you the defect for free.
 
 ### When it is safe to go wide
 
@@ -180,6 +484,61 @@ Do **not** watch `tasks/<id>.output`. Those are zero-length placeholders and
 their mtime does not track tool activity: one agent was demonstrably working at
 04:23 with an `.output` untouched since 04:02. A watchdog on that signal reports
 health it cannot see, which is worse than no watchdog.
+
+**Liveness and completion are two different questions and need two different
+signals.** Built 2026-08-24 with only the first, and it false-alarmed on the
+first agent to finish: a completed agent's transcript stops growing, so it
+crosses the 20-minute line looking exactly like a hung one. Left alone that is
+one false alarm per completed agent, which is a watchdog nobody reads by the
+third chunk — the same failure as watching `.output`, arrived at from the other
+side.
+
+Two completion signals were tried and **both failed**; do not retry them:
+
+- `tasks/<id>.output` being non-empty — still 0 bytes for agents that had
+  completed and reported minutes earlier. RESTART's warning about `.output`
+  covers completion as well as liveness.
+- the last transcript line being an assistant message with no `tool_use` —
+  identical for agents that had finished and agents still working.
+
+What works is the one thing that is actually reliable: **the orchestrator is told
+when an agent completes, so the orchestrator writes it down.** One line of
+`<agent-id> <epoch>` appended to a file the watchdog reads. Store the timestamp,
+not just the id, so an agent that is later resumed — its transcript moving again
+*after* that time — is watched normally instead of being suppressed forever. That
+case is real: C4's implementer was resumed to act on a ruling.
+
+**Write the line every time, including after a resume.** The design above is
+correct and it still produced a false alarm, because the completion line was
+written *before* a resume and never again after it — so the second completion
+looked like a revival that then went quiet. The watchdog was right; the
+bookkeeping was late. Append the line in the same breath as reading the
+completion, and append one **per completion**, not one per agent.
+
+**A dead agent needs a line too.** Four agents were lost to an infrastructure
+stall in one minute; without a line each, all four would have crossed the
+45-minute mark and announced themselves as newly stalled, long after there was
+anything left to salvage.
+
+### Dispatch two at a time, and the second data point for it
+
+2026-08-24: four agents went out in two back-to-back calls — the C5 pair and the
+C7 pair. **All four died within about a minute of starting**, three with the
+harness's own "no progress for 600s, stream watchdog did not recover" and one
+with an API error. None had done any work: every worktree clean, no commits, no
+uncommitted files. The two agents that had been running for half an hour were
+untouched.
+
+So the failure hits agents *at start-up*, and starting four at once is what met
+it. This page already said "re-dispatch two at a time, not four" from an earlier
+incident; that now has a second and sharper data point, and a better reason. It
+is not about the orchestrator's attention — it is about the blast radius of one
+bad minute.
+
+**Re-dispatching cost nothing**, which is the useful half: with no commits and no
+partial state there was nothing to reconcile and no way to be wrong about what
+had been done. That is what "commit early and commit often" buys, arrived at
+from the other end.
 
 **A self-imposed bound in every brief.** "If one problem resists three genuine
 attempts, commit what you have, write down the blocker, and return." The watchdog

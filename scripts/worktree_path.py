@@ -138,7 +138,27 @@ def _cli() -> int:
     if args.install:
         if not original.exists():
             shutil.copy2(pth, original)
-        shutil.copy2(Path(__file__).resolve(), sp / "worktree_path.py")
+        # Bake the fallback as a literal rather than copying the file verbatim.
+        # `FALLBACK` is computed from `__file__`, which is correct in `scripts/`
+        # and wrong the moment the module lives in `site-packages`: there
+        # `parent.parent / "src"` is `<venv>/Lib/src`, which does not exist, so
+        # every cwd outside a checkout would lose the package entirely. The
+        # docstring above has always promised this rewrite; until now it was the
+        # one thing `--install` did not do.
+        # And bake the path the ORIGINAL .pth pointed at, not this script's own
+        # location. "Nothing that works today stops working" is a claim about
+        # what the .pth resolves to today; deriving it from `__file__` instead
+        # would silently make the fallback depend on which worktree happened to
+        # run --install, which is exactly the class of accident this module
+        # exists to remove.
+        source = Path(__file__).resolve()
+        previous = original.read_text(encoding="utf-8").strip() or str(FALLBACK)
+        baked = f"FALLBACK = {previous!r}\n"
+        lines = source.read_text(encoding="utf-8").splitlines(keepends=True)
+        rewritten = [baked if one.startswith("FALLBACK = ") else one for one in lines]
+        if not any(one == baked for one in rewritten):
+            raise SystemExit("could not find the FALLBACK assignment to bake")
+        (sp / "worktree_path.py").write_text("".join(rewritten), encoding="utf-8")
         pth.write_text("import worktree_path\n", encoding="utf-8")
         print(f"installed. original kept at {original}")
         print("verify: python -c \"import worktree_path as w; print(w.CHOSEN)\"")

@@ -123,6 +123,17 @@ report from scripted models by avoiding ``migkit demo``. A flag-driven banner is
 exactly the banner that goes missing from the screenshot someone pastes into a
 deck.
 
+**And there is a third state, because "was this scripted" has three answers.**
+An adapter name that was never recorded makes the question unanswerable, and a
+two-state design answers it *real* on the strength of nothing: blank both sides'
+adapters in the payload, delete the run artifacts, and a fully scripted demo
+renders clean, with a verdict and pass rates and no band. The log that does that
+is byte-identical to a real run whose adapter was never written down, so no
+reader can separate them -- which makes "the document does not know" the only
+honest answer and :class:`Provenance` the place it is said. The scripted claim
+still outranks the gap, and the ``<title>`` still carries only the scripted one:
+a prefix on every legacy log teaches readers to skip the prefix.
+
 **The document is bounded, and says by how much.** The report used to grow as
 ``changed_items x 2n x max_output_chars`` with nothing looking at the total: 200
 items at n=20 rendered 32.4 MB, 1000 items at n=20 rendered 161.8 MB holding
@@ -158,8 +169,8 @@ import math
 import os
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
-from datetime import datetime
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -172,24 +183,56 @@ from rich.table import Table
 from rich.text import Text
 
 from .contracts import EVENT_COMPARISON, EVENT_VERDICT, Verdict, hash_file, utc_now
+from .dimensions import (
+    MIN_ITEMS_FOR_A_VERDICT,
+    MIN_N_FOR_A_VERDICT,
+    UNTAGGED,
+    DimensionCell,
+    DimensionCounts,
+    DimensionTally,
+    TagCount,
+    dimension_cell,
+)
 from .errors import ArtifactError, GoldenSetError, ReportError
 from .evidence import resolve_evidence, stream_records
 from .goldenset import GoldenSet
 from .judging import JudgedArtifact
 from .runner import RunArtifact
-from .series import RunPoint, SeriesBuilder, parse_created
+from .series import (
+    CandidateField,
+    CandidateLineage,
+    Multiplicity,
+    ParameterChange,
+    RunPoint,
+    SeriesBuilder,
+    SpotCheck,
+    SpotCheckSubject,
+    Trend,
+    candidate_field,
+    correct_field,
+    parameter_strip,
+    parse_created,
+    spot_check,
+    trend,
+)
 
 __all__ = [
     "DEFAULT_MAX_REPORT_CHARS",
     "Completeness",
     "DetailBudget",
+    "DimensionMatrix",
     "FlipRow",
     "JudgeRow",
     "MethodologySection",
+    "PROVENANCE_RECORDED",
+    "PROVENANCE_SCRIPTED",
+    "PROVENANCE_UNRECORDED",
+    "Provenance",
     "RateStat",
     "ReportModel",
     "RunSummary",
     "TIMELINE_PAD",
+    "TagColumn",
     "Timeline",
     "UrlViolation",
     "assert_self_contained",
@@ -816,10 +859,339 @@ class DetailBudget:
         }
 
 
+#: :attr:`Provenance.state` when a ``Fake*`` adapter produced any run the document
+#: shows. The positive claim, and the only one the ``<title>`` carries.
+PROVENANCE_SCRIPTED = "scripted"
+
+#: :attr:`Provenance.state` when the evidence does not name the adapter that
+#: produced a headline run, so the document can say neither "scripted" nor "real".
+PROVENANCE_UNRECORDED = "unrecorded"
+
+#: :attr:`Provenance.state` when every headline run names an adapter and none of
+#: them is scripted. The only state that bands nothing.
+PROVENANCE_RECORDED = "recorded"
+
+#: The three states' band labels, ids and colours, keyed by state. A mapping
+#: rather than three ``if`` chains in three renderers: the terminal, the HTML band
+#: and any later surface read the same row, so a fourth state cannot be added to
+#: one of them and forgotten in the others.
+_PROVENANCE_BANDS: Mapping[str, tuple[str, str, str, str]] = {
+    PROVENANCE_SCRIPTED: ("FAKE MODELS", "fake-models", "fake", "red"),
+    PROVENANCE_UNRECORDED: (
+        "PROVENANCE NOT RECORDED",
+        "provenance-unrecorded",
+        "unrecorded",
+        "yellow",
+    ),
+}
+
+
+@dataclass(frozen=True)
+class Provenance:
+    """Where this document's numbers came from, in the three states that exist.
+
+    **Three states and not two, which is R29.2's ruling and the reason this class
+    exists.** ``is_demo`` answers "was any run scripted" and answers it from
+    adapter names; a log that records no adapter at all makes that question
+    unanswerable, and a two-state design resolves the unanswerable case to
+    *real* -- silently, on the strength of nothing. Blanking both sides' adapters
+    in the payload and deleting the run artifacts turned a fully scripted demo
+    into a clean report carrying a verdict and pass rates, which is exactly the
+    document §5.3 says cannot be obtained. The two logs are byte-identical, so no
+    amount of reading can tell them apart: the honest reading is that the
+    document does not know, and the honest rendering says so.
+
+    That is this package's own rule -- an absence must not render as a
+    measurement -- applied to its most important disclosure.
+
+    **The scripted state outranks the unrecorded one.** A ``Fake*`` adapter on
+    either side is a positive finding and a missing adapter on the other is a
+    gap; a document that has both has something definite to say and says it. The
+    consequence is that :attr:`unrecorded` can be non-empty while
+    :attr:`state` is :data:`PROVENANCE_SCRIPTED`, which is why the sentences
+    below never describe an unnamed side as real.
+
+    **The counts are in comparisons, and say so.** R29.4: a :class:`RunPoint`
+    carries no run id and no artifact path, so two comparisons naming the same
+    baseline run cannot be told from two comparisons naming two -- in the
+    showcase shape a night is four runs and six adapter mentions. A run count
+    off ``migkit.run_started`` would be exact where those records exist and
+    absent on precisely the hand-assembled logs this disclosure protects. A
+    coarser number that is right beats a precise one that is wrong.
+    """
+
+    #: One of the three ``PROVENANCE_*`` constants.
+    state: str
+    #: Whether the *headline* comparison's own sides name a ``Fake*`` adapter, as
+    #: distinct from the document containing scripted runs anywhere. R29.1 turns
+    #: on this: the two cases get different sentences, not one sentence with a
+    #: variable in it.
+    headline_scripted: bool
+    #: Comparisons the document draws -- one per ``migkit.comparison`` record.
+    comparisons: int
+    #: Of those, how many name a ``Fake*`` adapter on at least one side.
+    scripted_comparisons: int
+    #: Headline sides whose adapter the evidence never recorded, ``"baseline"``
+    #: before ``"candidate"``. Empty on every log this tool writes.
+    unrecorded: tuple[str, ...]
+    #: Comparisons whose payload ``created`` names a different UTC calendar day
+    #: from the evidence record carrying it. R29.3: detected, never assumed --
+    #: unconditional prose would be false on ``migkit demo``, where the two are
+    #: the same instant, and an asymmetry asserted where none was measured is
+    #: this package's rule inverted inside the chunk about unsuppressible
+    #: honesty.
+    dated_apart: int
+
+    @property
+    def banded(self) -> bool:
+        """Whether this document carries a band above its verdict banner."""
+        return self.state in _PROVENANCE_BANDS
+
+    @property
+    def label(self) -> str:
+        """The band's shouted half, or ``""`` when there is no band."""
+        return _PROVENANCE_BANDS.get(self.state, ("", "", "", ""))[0]
+
+    @property
+    def anchor(self) -> str:
+        """The band's ``id``, so a reviewer can link straight at it."""
+        return _PROVENANCE_BANDS.get(self.state, ("", "", "", ""))[1]
+
+    @property
+    def css(self) -> str:
+        """The band's modifier class."""
+        return _PROVENANCE_BANDS.get(self.state, ("", "", "", ""))[2]
+
+    @property
+    def border(self) -> str:
+        """The terminal panel's border colour. Never the only carrier of a fact."""
+        return _PROVENANCE_BANDS.get(self.state, ("", "", "", ""))[3]
+
+    @property
+    def sentence(self) -> str:
+        """The band's words, written once for the terminal and the HTML both.
+
+        The same discipline as :attr:`DetailBudget.sentence`: two copies of a
+        disclosure are two chances for one of them to go stale, and this one is
+        the disclosure the whole module is built around.
+        """
+        if self.state == PROVENANCE_SCRIPTED:
+            head = "these numbers describe scripted responses, not a real provider"
+            counted = self._counted
+            return f"{head}; {counted}" if counted else head
+        if self.state == PROVENANCE_UNRECORDED:
+            return (
+                f"the evidence does not name the adapter that produced "
+                f"{self._sides}, so this report cannot say whether these numbers "
+                f"came from a real provider or from a script"
+            )
+        return ""
+
+    @property
+    def _counted(self) -> str:
+        """The band's series-aware clause, or ``""`` when there is no series.
+
+        ``0`` comparisons is a model built by hand rather than a document with no
+        scripted runs in it, so it counts nothing rather than publishing a
+        ``0 of 0`` that reads like a measurement.
+
+        The one-comparison spellings are written out rather than reached with a
+        pluralising helper, because English will not let the number and the verb
+        be chosen independently: "all 1 comparison name a Fake adapter" is what a
+        helper produces, and a document whose loudest sentence is ungrammatical
+        is a document a reader trusts less than one that says nothing.
+        """
+        if not self.comparisons:
+            return ""
+        if self.scripted_comparisons == self.comparisons:
+            if self.comparisons == 1:
+                return "the one comparison in this document names a Fake adapter"
+            return (
+                f"all {self.comparisons} comparisons in this document name a Fake "
+                f"adapter"
+            )
+        if self.scripted_comparisons:
+            verb = "names" if self.scripted_comparisons == 1 else "name"
+            return (
+                f"{self.scripted_comparisons} of the {self.comparisons} comparisons "
+                f"in this document {verb} a Fake adapter"
+            )
+        if self.comparisons == 1:
+            return (
+                "the one comparison in this document names no Fake adapter in its "
+                "own payload, and this band comes from the run artifacts the "
+                "headline read"
+            )
+        return (
+            f"none of the {self.comparisons} comparisons in this document name a "
+            f"Fake adapter in their own payloads, and this band comes from the run "
+            f"artifacts the headline read"
+        )
+
+    @property
+    def _sides(self) -> str:
+        """Which headline run has no adapter recorded, named rather than counted."""
+        if len(self.unrecorded) == 1:
+            return f"the {self.unrecorded[0]} run"
+        return "either run"
+
+
 @dataclass(frozen=True)
 class MethodologySection:
     heading: str
     body: tuple[str, ...]  # paragraphs, already substituted with real numbers
+
+
+#: What :attr:`ReportModel.dimensions` carries when nothing ever counted. Only
+#: :meth:`ReportModel.from_evidence` counts, so this is the sentence a model built
+#: by any other route hands whoever asks. It is a sentence rather than an empty
+#: mapping for the reason
+#: :class:`~model_migration_kit.dimensions.DimensionCounts` gives for the same
+#: choice, and it is deliberately not one of that module's refusals: those say why
+#: counting declined, and this says counting was never asked for.
+_NO_DIMENSION_COUNTS = (
+    "no dimension counts were taken for this report: ReportModel.from_evidence is "
+    "the only thing that takes them."
+)
+
+#: What :attr:`ReportModel.trend` carries when nobody drew a line -- seven empty
+#: fields, and **no caveat** (R30.4). :func:`~model_migration_kit.series.trend`
+#: raises R21.5's assumed-lineage note whenever it is handed a lineage nobody
+#: declared, so every line this module draws carries it; a ``ReportModel`` that
+#: was never handed a series has assumed nothing, and putting the note here would
+#: make a default say something was measured and doubted when nothing was
+#: measured at all. That is this project's recurring defect (an absence rendering
+#: as a measurement) reached from the one direction nobody checks, because the
+#: sentence would be *true of every real report* and so would look right.
+#:
+#: A shared instance rather than a ``default_factory``: a :class:`Trend` is a
+#: ``NamedTuple`` of tuples, so there is no per-instance state to protect and
+#: nothing a caller could mutate through it. ``dimensions`` and ``detail`` need
+#: the factory because they are dataclasses; this does not.
+_NO_TREND = Trend(
+    points=(),
+    successions=(),
+    excluded=(),
+    undated=0,
+    caveats=(),
+    outside_lineage=(),
+    absent_models=(),
+)
+
+
+@dataclass(frozen=True)
+class TagColumn:
+    """One model's side of the matrix: a cell per tag, in the matrix's tag order.
+
+    **A sequence rather than a ``tag -> cell`` mapping, and that is the whole
+    reason this class exists.** ``DimensionCell.items`` is an int and
+    ``Mapping.items`` is a bound method, so a template writing ``column.items``
+    where it meant ``cell.items`` would print ``<built-in method items>`` into the
+    page and no test that renders a *populated* matrix would notice -- the two
+    spellings are one keystroke apart and both "work".
+    ``model_migration_kit.dimensions`` files that hazard against its own
+    ``by_model``, where the mapping is what the counter returns and cannot be
+    renamed away. Here it can: a cell already carries its own ``tag``, so the
+    mapping was never carrying information the cells did not, and dropping it
+    removes the attribute the slip needs in order to resolve to anything.
+
+    ``cells`` is aligned with :attr:`DimensionMatrix.tags` position for position,
+    so two columns can be read side by side by index. :meth:`cell` exists so that
+    no caller has to rely on that alignment to answer "how did this model do on
+    this tag".
+    """
+
+    model_id: str
+    cells: tuple[DimensionCell, ...]
+
+    def cell(self, tag: str) -> DimensionCell | None:
+        """This column's cell for ``tag``, or ``None`` if the tag is not in it.
+
+        ``None`` rather than a fabricated empty cell: a tag absent from the matrix
+        was absent from the golden set, and a zero cell would say it was measured
+        and produced nothing. Those are different findings. A tag the *set* holds
+        and this model produced nothing for is already present here, as zeros.
+        """
+        for one in self.cells:
+            if one.tag == tag:
+                return one
+        return None
+
+
+@dataclass(frozen=True)
+class DimensionMatrix:
+    """How every tag in the golden set did, per model -- or why there is no table.
+
+    A refusal is ``available=False`` and a ``reason`` a reader can act on, and it
+    arrives carrying nothing: no tags, no baseline cells, no candidate columns.
+    That mirrors the promise
+    :class:`~model_migration_kit.dimensions.DimensionCounts` makes about
+    ``by_model``, and it exists for the same reason -- every way this table can
+    decline is global, so there is no subset of cells that happens to be sound,
+    and half a matrix rendered as the matrix is the "missing data stated as zero"
+    failure this codebase has shipped once already.
+
+    **Six things can make it unavailable, and none of their sentences is written
+    here.** The golden set can be missing, unreadable, unrecorded or changed --
+    one reason, ``goldenset["reason"]``, in the words the completeness strip and
+    the warnings list already use -- and the counting itself declines for five
+    more of its own. Every one of them is quoted verbatim from where it was
+    written. A second phrasing would be a second chance for one of them to go
+    stale, which is the argument :attr:`DetailBudget.sentence` makes for writing a
+    disclosure once.
+
+    **:attr:`judge` is on the matrix because the counts underneath it are not.**
+    ``DimensionCounts`` carries no judge name, so on its own it is a per-judge
+    table with the judge erased -- and a panel writes one verdict per judge per
+    completion, so which judge produced these numbers is not a footnote. It is the
+    panel's first judge, which is what ``from_evidence`` selects.
+
+    :attr:`min_n` and :attr:`min_items` are the floors every cell here was judged
+    against. They travel with the matrix rather than being looked up by the
+    renderer, because a document that refuses a cell has to be able to say what it
+    refused against, and R9 gave it two floors to refuse against.
+    """
+
+    available: bool
+    reason: str  # "" when available
+    judge: str
+    #: Alphabetical, with :data:`~model_migration_kit.dimensions.UNTAGGED`
+    #: last. The contract said "golden-set tag order" and R27.3 corrected the
+    #: phrase: the set's *file* order is not reachable from anything this module
+    #: sees -- ``GoldenSet.stats()`` returns ``dict(sorted(...))`` and the counter
+    #: keys its inner mapping through ``sorted(index.tags)`` -- so a regression to
+    #: file order is unimplementable and alphabetical is the whole promise.
+    #: Last rather than first, which is where its empty string would sort:
+    #: it is the leftover bucket, and a table that opens with the leftovers reads
+    #: as one whose first row is the most important.
+    tags: tuple[str, ...]
+    #: The side the comparison payload names as the baseline, which is where the
+    #: side comes from: the counter keys by ``model_id`` and does not know which
+    #: side is which. A baseline that was judged and produced nothing is a column
+    #: of zeros, never a missing column -- the two are printed next to each other,
+    #: and a vanishing column turns a comparison into a single reading with no
+    #: sentence saying where the other one went.
+    baseline: TagColumn
+    #: Every other model the run named, the comparison's candidate first. Plural
+    #: because ``by_model`` holds every model a ``migkit.judging_completed``
+    #: named, and dropping one because the payload did not call it the candidate
+    #: would be a column of real measurements silently discarded.
+    candidates: tuple[TagColumn, ...]
+    min_n: int
+    min_items: int
+
+    def column(self, model_id: str) -> TagColumn | None:
+        """The column for ``model_id``, baseline or candidate, or ``None``.
+
+        Here rather than in the caller because :attr:`baseline` and
+        :attr:`candidates` are two fields holding one population, and a caller
+        that knows only a model id should not have to know which of the two it
+        landed in.
+        """
+        for one in (self.baseline, *self.candidates):
+            if one.model_id == model_id:
+                return one
+        return None
 
 
 @dataclass(frozen=True)
@@ -872,6 +1244,21 @@ class ReportModel:
     #: Printed in the provenance block, because a report that quietly read
     #: different files than the ones recorded is worse than one that failed.
     artifact_dir: str = ""
+    #: Comparison records whose payload ``created`` names a different UTC calendar
+    #: day from the ``ts`` of the evidence record carrying it. Counted in
+    #: :meth:`from_evidence` and nowhere else, because it is the one fact on this
+    #: model that the series cannot supply: ``series._created`` returns the
+    #: payload's ``created`` when it parses and **discards** the envelope ``ts``,
+    #: keeping only a ``created_source`` label, so by the time a
+    #: :class:`~model_migration_kit.series.RunPoint` exists the second clock is
+    #: gone. R29.3 ruled the counting happen here rather than widening
+    #: ``RunPoint``, which is outside C18's files.
+    #:
+    #: Zero on a model built by any other route, which is the same claim as "no
+    #: comparison disagreed with its own record": both mean the document says
+    #: nothing about dates, and the disclosure is written to appear only when the
+    #: count is positive.
+    dated_apart: int = 0
     #: One point per ``migkit.comparison`` record in the log, oldest first --
     #: every run the log holds, not only the one this report is about. A log of
     #: fourteen nightly runs used to render as one verdict with thirteen nights
@@ -882,6 +1269,233 @@ class ReportModel:
     #: the timeline can gain, lose or re-derive a field without the banner, the
     #: judge table, the flips or the provenance block moving with it.
     series: tuple[RunPoint, ...] = ()
+    #: How each tag in the golden set did, per model, under the panel's first
+    #: judge -- or the sentence saying why there is no such table. Never ``None``:
+    #: a report that has no counts says so in the same place as one that has them.
+    #:
+    #: Counted from the *headline* run and not from the whole log, which is the
+    #: opposite of :attr:`series` and is deliberate on both sides. The timeline is
+    #: about the history; this breaks the banner's number down by tag, so it has to
+    #: be about the banner's run. See
+    #: :meth:`~model_migration_kit.dimensions.DimensionTally.add`.
+    #:
+    #: **This replaces the raw ``dimension_counts`` that used to sit here, and
+    #: does not sit beside it.** A :class:`~model_migration_kit.dimensions.DimensionCell`
+    #: carries ``tag``, ``passes``, ``n`` and ``items``, so the matrix subsumes
+    #: every fact the raw counts held and nothing is lost by dropping them.
+    #: Carrying both would put one set of facts on the model at two fidelities,
+    #: which is two chances for them to disagree -- the same argument this field's
+    #: refusals make for never re-wording a decline reason.
+    #:
+    #: Defaulted for the reason ``series`` is: every constructor of a
+    #: ``ReportModel`` in this codebase and in anyone else's predates the field, and
+    #: a required argument would break each one. The default is a refusal rather
+    #: than an empty mapping -- ``{}`` is not a sentence anyone can print.
+    dimensions: DimensionMatrix = field(
+        default_factory=lambda: DimensionMatrix(
+            available=False,
+            reason=_NO_DIMENSION_COUNTS,
+            judge="",
+            tags=(),
+            baseline=TagColumn(model_id="", cells=()),
+            candidates=(),
+            min_n=MIN_N_FOR_A_VERDICT,
+            min_items=MIN_ITEMS_FOR_A_VERDICT,
+        )
+    )
+    #: The one candidate table this log can render, or ``None`` -- see
+    #: :func:`~model_migration_kit.series.candidate_field`, which is called on
+    #: :attr:`series` and reads nothing else.
+    #:
+    #: **It is the field :func:`~model_migration_kit.series.correct_field`
+    #: returned, not the one :func:`~model_migration_kit.series.candidate_field`
+    #: did** (R30.2), and :attr:`multiplicity` is the second half of that one
+    #: call. The correction appends one
+    #: :class:`~model_migration_kit.series.Caveat` per candidate whose
+    #: significance did not survive it, so keeping the uncorrected field here
+    #: would compute those caveats and drop them -- R21's finding, reproduced
+    #: inside the chunk written to fix R21. There is no second place that fact is
+    #: recorded: :attr:`~model_migration_kit.series.Multiplicity.changed` is a
+    #: tuple of model ids and not prose, and the sentence saying what the
+    #: correction did to a *particular* candidate exists only on that candidate's
+    #: caveat. Nothing else about the field moves -- a correction that changed
+    #: nothing, and a correction that was refused, both return the field
+    #: unchanged, and the rows, the exclusions and the key are the same objects
+    #: either way.
+    #:
+    #: **``None`` is carried through, and is not an empty field.** The producer
+    #: returns ``None`` when no comparability key holds two distinct candidate
+    #: models, which is a different claim from "a field of no candidates": the
+    #: first says this log cannot be tabled, the second says it was tabled and
+    #: came out empty. A view model that substituted a default here would publish
+    #: the second sentence on the evidence for the first, which is the failure
+    #: C7's first-run marker, C4's exclusions, C5's superseded exclusion and
+    #: C10's zero column each exist to prevent, one layer up. The renderer gates
+    #: on ``is not None`` and says why there is no table; nothing here decides
+    #: that for it.
+    #:
+    #: **The excluded-runs list is this field's own**
+    #: :attr:`~model_migration_kit.series.CandidateField.excluded`, per R23.2, and
+    #: there is deliberately no second top-level ``partition_comparable`` call.
+    #: Two partitions would put the same facts on the model twice, computed
+    #: against possibly different keys, and a disagreement between them could not
+    #: be adjudicated from the model. One partition, one source -- so the list and
+    #: the table it explains are guaranteed to be about the same set of runs.
+    #:
+    #: The consequence, flagged in R23.2 and accepted: when this is ``None`` the
+    #: exclusion sentences computed along the way die with it, so the document
+    #: cannot say *why* there is no table. That is the right trade -- a
+    #: wrong-but-present list is worse than an absent one -- but it means the
+    #: renderer's empty state must say that runs may have been excluded without
+    #: being able to name them, rather than printing an empty list that reads as
+    #: "nothing was excluded".
+    #:
+    #: Built with :func:`~model_migration_kit.series.candidate_field`'s own
+    #: default window. Nothing in the evidence log, the thresholds or the config
+    #: records a staleness window, so there is no recorded number to prefer; the
+    #: field carries whatever window it was built with on
+    #: :attr:`~model_migration_kit.series.CandidateField.stale_after_days`, so a
+    #: renderer can name it instead of guessing.
+    #:
+    #: Defaulted for the reason :attr:`series` and :attr:`dimensions` are: every
+    #: existing constructor of a ``ReportModel`` predates the field.
+    candidates: CandidateField | None = None
+    #: What a ``k``-prompt hand check of this run would probably have missed, or
+    #: ``None`` -- see :func:`~model_migration_kit.series.spot_check`.
+    #:
+    #: **The counting judge's candidate-side items**, per R26.3. Both halves are
+    #: rulings and neither is this module's to re-decide:
+    #:
+    #: * The judge is :attr:`judges`\ ``[0]``, reached through the same
+    #:   ``counting_judge`` local :attr:`dimensions` is built with. One document
+    #:   must not select its judge two different ways, and a spot check under one
+    #:   judge printed beside a tag matrix counted under another would be two
+    #:   numbers a reader has no way to reconcile. The panel is never summed:
+    #:   two judges grading the same sixty completions are a hundred and twenty
+    #:   records and sixty completions, and adding them would multiply ``N``.
+    #: * The side is the candidate. The number exists to say what a cheaper
+    #:   method would have missed, and the failures that argument is about are
+    #:   the ones the decision turns on.
+    #:
+    #: The counts are :attr:`JudgeRow.items_candidate` on that row -- the same
+    #: mapping the judge table prints through :func:`_item_counts` -- so the
+    #: ``N`` and ``F`` in the sentence are the numbers rendered a few rows above
+    #: it rather than a second reading of the same fact.
+    #:
+    #: **``None`` is carried through, and is not a zero.** The producer declines
+    #: on three separate grounds, and each is a different sentence the renderer
+    #: owes the reader: nothing failed, so there was nothing to miss; the check
+    #: would read every item, which is a census and not a spot check; or there is
+    #: no set to sample. A default here would print an absence as a measurement,
+    #: which is the failure this document's whole design rule is against. The
+    #: renderer gates on ``is not None``.
+    #:
+    #: **The subject is in the sentence, and a renderer must not caption around
+    #: it.** :class:`~model_migration_kit.series.SpotCheckSubject` carries the
+    #: judge and the side as facts, and the producer -- not this module and not a
+    #: template -- turns them into words. A caption supplying a subject the
+    #: sentence already states is two renderings of one fact, which is how they
+    #: come to disagree.
+    #:
+    #: An **unnamed** judge needs no handling here: a blank name is reachable from
+    #: real evidence and the producer says so in the sentence itself. A run with
+    #: no judge row at all is different and is not a subject that can be named, so
+    #: no spot check is attempted for it.
+    #:
+    #: Defaulted for :attr:`candidates`' reason.
+    spot_check: SpotCheck | None = None
+    #: This log's one candidate line, and everything it left out -- see
+    #: :func:`~model_migration_kit.series.trend`, called on :attr:`series` and
+    #: reading nothing else.
+    #:
+    #: **Never ``None``.** ``trend`` has no ``None`` return: a log it can draw no
+    #: line from comes back as a :class:`~model_migration_kit.series.Trend` whose
+    #: :attr:`~model_migration_kit.series.Trend.points` are empty and whose other
+    #: six fields say why -- which runs were excluded, how many could not be
+    #: dated, which ran on this baseline outside the succession, which declared
+    #: ids never ran at all. So the absence has a shape here rather than needing
+    #: an ``is None`` gate, and a renderer that has no line to draw still has
+    #: something to print. That is the opposite of :attr:`candidates`, and the two
+    #: differ because the producers do; neither shape is chosen here.
+    #:
+    #: **The lineage is always
+    #: :meth:`~model_migration_kit.series.CandidateLineage.assumed_from`** (R30.1).
+    #: Nothing outside ``series.py`` mentions a lineage: no config schema carries
+    #: one, ``from_evidence`` reads no config, and R21.3 forbids it starting. So
+    #: every report rendered today carries R21.5's caveat saying the succession
+    #: was assumed from the log rather than declared. **That is correct and is not
+    #: to be tuned down.** It is the true sentence about every log this project
+    #: can currently read, and a caveat on every report becomes noise only once a
+    #: declaration path exists and reports using it still carry it. Suppressing it
+    #: here -- a flag, a default declaration, a filter on the way out -- would
+    #: restore the silent default R21.5 rejected, and would do it in the wiring,
+    #: which R21.5 names as the one shape of this defect nobody would find.
+    #:
+    #: **``baseline_model`` is :attr:`baseline`'s** ``model_id`` and not
+    #: ``series[-1].baseline_model`` (R30.4). They are one fact and R23.2 allows
+    #: it one source; the tie goes to the one that is always there, since
+    #: :attr:`baseline` is read from the records while :attr:`series` can be
+    #: empty, and choosing the other would need an empty-series special case
+    #: purely to answer a question :attr:`baseline` already answers.
+    trend: Trend = _NO_TREND
+    #: Every tracked parameter as it stood across the line's last two runs -- see
+    #: :func:`~model_migration_kit.series.parameter_strip`. Empty exactly when
+    #: :attr:`trend` has no points.
+    #:
+    #: **Both points come from** :attr:`~model_migration_kit.series.Trend.points`
+    #: **and never from** :attr:`series` (R30.3). ``trend``'s own docstring
+    #: settles it: filtering the line by the field that moves "is what hid the
+    #: change", and the strip "was always able to show the change and was
+    #: prevented by its own caller". :attr:`series` is the whole log in the log's
+    #: order, so feeding the strip from it would compare two runs that may be
+    #: neither consecutive nor on the same line.
+    #:
+    #: Two consequences, both accepted rather than worked around:
+    #:
+    #: * ``points[-1]`` is the *line's* newest run, which is not always the
+    #:   headline run. If the headline was excluded from the line the strip is
+    #:   not about the banner -- and that is right: the strip belongs beside the
+    #:   timeline, where :attr:`~model_migration_kit.series.Trend.excluded`,
+    #:   :attr:`~model_migration_kit.series.Trend.outside_lineage` and
+    #:   :attr:`~model_migration_kit.series.Trend.undated` already say who is
+    #:   missing and why. A strip silently retargeted at the headline would
+    #:   compare two runs the chart above it does not draw as consecutive.
+    #: * **The strip is gated on the trend, not on itself.** An empty tuple here
+    #:   means an empty line, and the reason is in :attr:`trend`. A renderer that
+    #:   gates on this being non-empty publishes "no parameters tracked" over a
+    #:   log that simply has no line yet. When there *is* a line the tuple is
+    #:   never empty -- ``parameter_strip`` emits one row per tracked parameter
+    #:   including the ones that held -- so empty here is unambiguous.
+    #:
+    #: A one-point line passes ``previous=None``, which the producer renders as
+    #: :data:`~model_migration_kit.series.NO_PREVIOUS_RUN` in every ``before``
+    #: cell: a word, not a blank, so a genuine first run cannot be read as a run
+    #: that changed nothing.
+    parameter_strip: tuple[ParameterChange, ...] = ()
+    #: What correcting :attr:`candidates`' p-values across its candidates did, or
+    #: why it was declined -- the second half of the one
+    #: :func:`~model_migration_kit.series.correct_field` call that also produced
+    #: :attr:`candidates`.
+    #:
+    #: **``None`` exactly when :attr:`candidates` is ``None``, and never
+    #: otherwise** (R30.4). The two are one fact -- the multiplicity is *of* the
+    #: field -- and ``correct_field`` takes a
+    #: :class:`~model_migration_kit.series.CandidateField`, not an optional one.
+    #: A refusal :class:`~model_migration_kit.series.Multiplicity` invented for
+    #: the no-field case would be this module composing a producer's prose, which
+    #: R26.4 refused for the spot check's sentence and R21.5 refused for the
+    #: lineage caveat. The renderer already owes a sentence for
+    #: ``candidates is None``; a second one saying "and so nothing was corrected"
+    #: can only agree with it or contradict it, and the second is the outcome
+    #: that ships.
+    #:
+    #: When it is present it is never a silence: ``correct_field`` records a
+    #: refusal as a :class:`~model_migration_kit.series.Multiplicity` with
+    #: ``applied=False`` and its own note, so "fewer than two testable
+    #: candidates", "the members were tested at different levels" and "the
+    #: correction ran and changed nothing" are three readable outcomes rather
+    #: than one absent object.
+    multiplicity: Multiplicity | None = None
 
     # -- construction ------------------------------------------------------- #
 
@@ -952,13 +1566,28 @@ class ReportModel:
         # It is accumulated *beside* the three assignments below rather than in
         # place of them: nothing after this loop reads a point, so no later work
         # on the timeline can move which record the banner came from.
+        #
+        # The per-tag counting is accumulated in this loop for a harder reason
+        # than tidiness: it *cannot* be done anywhere else. A ``judge.verdict``
+        # carries no item id, so a verdict joins to a golden-set item by its input
+        # text -- and the golden set's path and hash live in the
+        # ``migkit.comparison`` payload, which is written after judging and is
+        # therefore one of the last records this loop sees. Reading the log again
+        # to do the join is the one-pass rule this comment block opens with;
+        # buffering the verdicts is the amplification ``evidence.py`` measured. So
+        # :class:`~model_migration_kit.dimensions.DimensionTally` splits the work:
+        # it files each verdict under a digest of its input on the way past, and
+        # the join happens below, once the comparison record has named the set.
         comparison = None
         verdict_record = None
         last = None
+        dated_apart = 0
         builder = SeriesBuilder()
+        tally = DimensionTally()
         for record in _stream_records(path):
             last = record
             builder.add(record)
+            tally.add(record)
             # Last one wins, and a comparison clears the verdict beside it, so
             # these are one reduction over the log and not two independent
             # last-wins variables. Independent, they let a verdict written on an
@@ -971,6 +1600,11 @@ class ReportModel:
             if record.event_type == EVENT_COMPARISON:
                 comparison = record
                 verdict_record = None
+                # Counted here and not from the series: see
+                # :attr:`ReportModel.dated_apart`. This is the loop's only
+                # remaining reader of an envelope ``ts``, and it has to be, because
+                # a ``RunPoint`` no longer carries one.
+                dated_apart += _dated_apart(record.payload, str(record.ts or ""))
             elif record.event_type == EVENT_VERDICT:
                 verdict_record = record
         series = builder.points()
@@ -1022,6 +1656,18 @@ class ReportModel:
                 )
 
         judges = tuple(_judge_row(one) for one in payload.get("judges", ()))
+        # The panel's first judge, selected once. A panel writes one verdict per
+        # judge per completion, so counting two would multiply every denominator
+        # by the panel size -- and the matrix has to be able to say which judge it
+        # counted under, which the counts underneath it cannot.
+        #
+        # The *row* is bound here and the name derived from it, rather than each
+        # consumer writing ``judges[0]`` again, because the tag matrix and the
+        # spot check must be about the same judge (R26.3): one document selecting
+        # its judge in two places is one edit away from selecting two judges.
+        counting = judges[0] if judges else None
+        counting_judge = counting.name if counting is not None else ""
+        counts = _close_the_tally(tally, gs_view, counting_judge)
         rows = _ChangeContext(
             goldenset=gs_view,
             base_run=base_run,
@@ -1059,6 +1705,95 @@ class ReportModel:
         )
 
         thresholds = dict(payload.get("thresholds", {}) or {})
+        # Built here rather than beside ``counts`` because a cell echoes the run's
+        # own gate, and the gate is in ``thresholds``. An absent confidence is
+        # passed on as ``None`` rather than defaulted here: the cell discloses
+        # rigor's fallback in its own note, and a default applied twice is a
+        # printed interval whose level nothing on the page can be held to.
+        dimensions = _dimension_matrix(
+            counts,
+            judge=counting_judge,
+            baseline_id=baseline.model_id,
+            candidate_id=candidate.model_id,
+            confidence=_number(thresholds.get("confidence")),
+            floor=_number(thresholds.get("pass_rate_floor")),
+        )
+        # Pure arithmetic over the series the loop above already built, so this
+        # opens no file and re-reads nothing -- see :attr:`candidates`. ``None``
+        # is passed straight through: there is no ``or CandidateField(...)`` here
+        # and there must never be one, because the absence is the finding and a
+        # default would publish it as a measurement.
+        candidates = candidate_field(series)
+        # R30.2: the corrected field replaces the uncorrected one rather than
+        # sitting beside it. `correct_field` appends one caveat per candidate
+        # whose significance did not survive the correction, and those caveats
+        # live nowhere else -- keeping the field `candidate_field` returned would
+        # compute them and throw them away, which is R21's finding rebuilt inside
+        # the chunk written to fix R21. Rebinding rather than a second name for
+        # the same reason C22a gives for one partition: two fields differing only
+        # in their caveats is a disagreement nothing on the model can adjudicate.
+        #
+        # R30.4: `multiplicity` is `None` exactly here, where there is no field to
+        # correct, and never anywhere else. No refusal `Multiplicity` is invented
+        # for this case -- `correct_field` mints refusals for the families it can
+        # see, and one minted here would be this module writing a producer's
+        # prose. A correction of nothing is not a refused correction.
+        multiplicity: Multiplicity | None = None
+        if candidates is not None:
+            candidates, multiplicity = correct_field(candidates)
+        # R30.1: the lineage is assumed, on every report, because nothing in this
+        # package reads a declared one and R21.3 forbids this method starting.
+        # `trend` then raises R21.5's caveat on every line drawn from today, which
+        # is the true sentence about every log this tool can read -- it is not a
+        # placeholder and it is not to be suppressed here. R21.5 rules that the
+        # words are the producer's; all this passes is the fact of how the
+        # succession was come by, which only the caller knows.
+        #
+        # `baseline.model_id` and not `series[-1].baseline_model` (R30.4): one
+        # fact, one source, and this is the source that survives an empty series.
+        # Assembly is `CandidateLineage.assumed_from`'s and deliberately not
+        # rebuilt here -- it restricts the assumption to `trend`'s own selection,
+        # and a copy of the loop here could not see that rule.
+        line = trend(
+            series,
+            baseline_model=baseline.model_id,
+            lineage=CandidateLineage.assumed_from(
+                series, baseline_model=baseline.model_id
+            ),
+        )
+        # R30.3: the strip's two points are the line's, never the log's. `series`
+        # is every experiment in the file in the file's order, so `series[-2:]`
+        # can be two runs that are neither consecutive nor on one line; the strip
+        # exists to license an attribution, and two runs the chart does not draw
+        # as consecutive license the wrong one. An empty line yields an empty
+        # tuple rather than a strip of NO_PREVIOUS_RUN rows against a run that
+        # was never selected.
+        strip = (
+            ()
+            if not line.points
+            else parameter_strip(
+                line.points[-2] if len(line.points) > 1 else None, line.points[-1]
+            )
+        )
+        # The counting judge's candidate-side items, R26.3, computed from the
+        # rows already parsed above -- see :attr:`spot_check`. ``counting`` and
+        # ``counting_judge`` are the same selection :attr:`dimensions` was built
+        # from, taken above and not repeated here.
+        #
+        # Guarded on the row existing rather than on its name. An empty panel has
+        # no side whose counts could be passed and no subject that could name
+        # one; a row whose ``name`` is blank has both, and the producer states
+        # that gap in its own sentence, so it is not this module's to screen.
+        spot = (
+            None
+            if counting is None
+            else spot_check(
+                int(counting.items_candidate.get("passing", 0) or 0),
+                int(counting.items_candidate.get("failing", 0) or 0),
+                int(counting.items_candidate.get("unstable", 0) or 0),
+                subject=SpotCheckSubject(judge=counting_judge, side="candidate"),
+            )
+        )
         config_path = str(payload.get("config_path", "") or "")
         # Per-threshold provenance -- CLI flag versus config file versus built-in
         # default -- is not carried in the comparison payload (contract §1.2), and
@@ -1101,7 +1836,14 @@ class ReportModel:
             config_path=config_path,
             command=str(payload.get("command", "") or ""),
             artifact_dir="" if artifact_dir is None else str(artifact_dir),
+            dated_apart=dated_apart,
             series=series,
+            dimensions=dimensions,
+            candidates=candidates,
+            spot_check=spot,
+            trend=line,
+            parameter_strip=strip,
+            multiplicity=multiplicity,
         )
 
     # -- derived ------------------------------------------------------------ #
@@ -1133,6 +1875,51 @@ class ReportModel:
         )
 
     @property
+    def provenance(self) -> Provenance:
+        """What this document can say about where its numbers came from.
+
+        :attr:`is_demo` is untouched and still means exactly what it meant: it is
+        the *positive* claim, and everything keyed off it -- the ``<title>``
+        prefix, the latency omission, the appendix -- keeps keying off it. This
+        adds the state it cannot express, which is "the evidence does not say".
+
+        The precedence is R29.2's: scripted outranks unrecorded, because a
+        ``Fake*`` adapter is a finding and a missing adapter is a gap.
+
+        **The unrecorded state is read off the headline sides only.** The series
+        is deliberately not consulted for it. ``test_a_series_of_real_runs_does_
+        not_band_the_report`` was written by C3's reviewer around exactly the
+        input "an earlier run whose adapter strings are empty, under a real
+        headline", and whether that shape should now disclose a gap is a question
+        R29.2 did not reach -- it decided the *sides*, in the vocabulary of the
+        headline. It is reported open rather than answered here.
+        """
+        unrecorded = tuple(
+            name
+            for name, side in (("baseline", self.baseline), ("candidate", self.candidate))
+            if not side.adapter.strip()
+        )
+        if self.is_demo:
+            state = PROVENANCE_SCRIPTED
+        elif unrecorded:
+            state = PROVENANCE_UNRECORDED
+        else:
+            state = PROVENANCE_RECORDED
+        return Provenance(
+            state=state,
+            headline_scripted=self.baseline.is_fake or self.candidate.is_fake,
+            comparisons=len(self.series),
+            scripted_comparisons=sum(
+                1
+                for point in self.series
+                if point.adapter_baseline.startswith(_FAKE_PREFIX)
+                or point.adapter_candidate.startswith(_FAKE_PREFIX)
+            ),
+            unrecorded=unrecorded,
+            dated_apart=self.dated_apart,
+        )
+
+    @property
     def exit_code(self) -> int:
         return Verdict.exit_code(self.verdict or Verdict.ERROR)
 
@@ -1157,6 +1944,41 @@ class ReportModel:
 #: through it, and renaming the thing a guard points at is how a guard quietly
 #: stops guarding.
 _stream_records = stream_records
+
+
+def _dated_apart(payload: Any, ts: str) -> int:
+    """``1`` when this comparison's two clocks name different UTC days, else ``0``.
+
+    Two clocks, two claims. ``payload["created"]`` is written by the comparison
+    and is the date the timeline plots; ``record.ts`` is written when the line was
+    appended to the log. A seed generator that dates fourteen nights into one
+    sitting patches the first and cannot patch the second, so the gap is the
+    signature of a document whose history was manufactured -- and C17's contract
+    requires that asymmetry disclosed rather than left for a careful reader to
+    notice and distrust.
+
+    **A whole UTC day apart, and not a millisecond**, which is R29.3's threshold
+    and is what makes this a detector rather than a coin flip. A real ``compare``
+    writes ``created`` and appends the record microseconds later; the two strings
+    routinely differ and occasionally straddle a second, so any tighter rule
+    would fire on ``migkit demo`` and turn the disclosure into noise. Normalising
+    to UTC before taking the date is the other half: ``2026-08-24T23:30-05:00``
+    and ``2026-08-25T04:30Z`` are the same instant written by two machines, and a
+    detector that read the calendar day off the string would call them a gap.
+
+    Unparseable or absent on either side counts as no gap. That is deliberately
+    *not* the same as "the dates agree" -- it is "this record cannot be asked" --
+    and the distinction survives because the disclosure this feeds appears only
+    on a positive count and says nothing otherwise.
+    """
+    mapping = payload if isinstance(payload, Mapping) else {}
+    created = parse_created(str(mapping.get("created") or ""))
+    written = parse_created(str(ts or ""))
+    if created is None or written is None:
+        return 0
+    left = created.astimezone(timezone.utc).date()
+    right = written.astimezone(timezone.utc).date()
+    return 1 if left != right else 0
 
 
 def _tool_version() -> str:
@@ -1389,6 +2211,245 @@ def _load_goldenset(
         }
     )
     return view
+
+
+def _close_the_tally(
+    tally: DimensionTally, gs_view: Mapping[str, Any], judge: str
+) -> DimensionCounts:
+    """Close the tally against the golden set, or hand back the golden set's own words.
+
+    **Named for what it does rather than for what it looked like.** This was
+    ``_dimension_counts``, which reads as a wrapper around
+    :func:`~model_migration_kit.dimensions.dimension_counts` and is not one: that
+    function takes a stream and a golden set and runs both phases back to back,
+    while this one takes a :class:`~model_migration_kit.dimensions.DimensionTally`
+    whose first phase already ran on ``from_evidence``'s single pass and calls
+    :meth:`~model_migration_kit.dimensions.DimensionTally.counts` on it. The two
+    are not interchangeable and the old name said they were. ``_close_the_tally``
+    is the second phase, which is the thing C10 will reach for by name.
+
+    Nothing here opens a file and nothing here reads the log a second time: the
+    tally already holds everything the log had to say, in a form keyed by distinct
+    input rather than by record -- so repeated draws of one item collapse onto one
+    entry and a set sampled fifty times costs what the same set sampled once costs.
+
+    That is *not* "bounded by the golden set rather than by the log", which is what
+    this sentence used to claim and which
+    :class:`~model_migration_kit.dimensions.DimensionTally` had already corrected
+    on its own copy in the same commit series. Distinct inputs are the golden set's
+    size only while the inputs come from the golden set. On the single pass this
+    function closes, the join has not happened yet, so an input that joins to
+    nothing cannot be recognised and is filed like any other: a log full of them
+    grows the tally linearly, with no bound but the log. The tally's own docstring
+    carries the measured constant and the ceiling it implies.
+
+    **A golden-set refusal is quoted, never re-worded.** ``gs_view["reason"]``
+    already explains a missing, unreadable, unrecorded or changed golden set in the
+    words the completeness strip and the warnings list use. A second phrasing here
+    would be a second chance for one of them to go stale, which is the argument
+    :attr:`DetailBudget.sentence` makes for writing a disclosure once. The
+    counting's own refusals arrive the same way, from
+    :attr:`~model_migration_kit.dimensions.DimensionCounts.reason`.
+
+    ``judge`` is the panel's first judge, taken from the comparison payload. A
+    panel writes one verdict per judge per completion, so counting two would
+    multiply every denominator by the panel size. An empty name -- a comparison
+    that recorded no judges at all -- reaches the counter and comes back as its
+    "this judge wrote nothing" refusal, which is the true sentence.
+    """
+    if not gs_view["available"]:
+        return DimensionCounts(
+            available=False, reason=str(gs_view["reason"]), by_model={}
+        )
+    return tally.counts(gs_view["by_id"], judge=judge)
+
+
+def _matrix_tags(by_model: Mapping[str, Mapping[str, TagCount]]) -> tuple[str, ...]:
+    """The tag universe of the counts, alphabetical, with ``UNTAGGED`` last.
+
+    Read off the columns rather than off ``goldenset["tags"]``, which looks like
+    the same list and is not: that one is built from tag *counts* and so has no
+    entry for the untagged bucket at all. The columns are what the cells will be
+    built from, so they are what the header has to be built from.
+
+    They cannot disagree about anything else. :meth:`ReportModel.from_evidence` is
+    the only caller, and it takes the counts and ``goldenset["tags"]`` from the
+    same ``view.update(...)`` of the same loaded set -- so the "different golden
+    sets" hazard this docstring used to give as its second reason describes a
+    state the code cannot reach, and is gone (R27.7).
+
+    The key is :data:`~model_migration_kit.dimensions.UNTAGGED` rather than an
+    inline ``""``. The sentinel is empty on purpose -- ``"untagged"`` is a legal
+    tag, and a set that used it would collide with this bucket and read as a
+    larger slice -- and typing the empty string here would put a second, silent
+    copy of that decision in a second file.
+    """
+    seen: set[str] = set()
+    for column in by_model.values():
+        seen.update(column)
+    ordered = sorted(one for one in seen if one != UNTAGGED)
+    if UNTAGGED in seen:
+        ordered.append(UNTAGGED)
+    return tuple(ordered)
+
+
+def _matrix_models(
+    by_model: Mapping[str, Mapping[str, TagCount]], baseline_id: str, candidate_id: str
+) -> tuple[str, ...]:
+    """Every model the matrix shows, the payload's two sides first and in order.
+
+    The two sides come from the comparison payload and never from position in
+    ``by_model``: the counter keys by ``model_id`` and does not know which side is
+    which, so a matrix that took the first key as the baseline would swap the
+    columns on any log whose model ids happen to sort the other way.
+
+    A side the payload names that the counter never saw is still listed, and comes
+    back below as a column of zeros. The alternative is a comparison rendered as a
+    single column with nothing on the page saying where the other one went.
+    """
+    ordered = [baseline_id]
+    if candidate_id != baseline_id:
+        ordered.append(candidate_id)
+    ordered.extend(sorted(set(by_model) - set(ordered)))
+    return tuple(ordered)
+
+
+#: Appended to every cell of a side the comparison payload names and the counting
+#: never saw. Three different situations render as a column of zeros -- a judged
+#: side that produced nothing, a side no judging pass ever closed, and a tag no
+#: model produced -- and the first two have different fixes: check the judge
+#: configuration, versus check whether the run completed at all. The note is where
+#: this document says such things, so the distinction goes in the note rather than
+#: in a field nothing else on the page would carry (R27.5). The zeros themselves
+#: stay, because dropping the column would leave a one-column "comparison" with
+#: nothing saying where the other side went.
+_NEVER_CLOSED = (
+    "No judging pass closed for {model_id} in this log, so this side was never "
+    "counted at all: these zeros are a missing judging pass rather than a "
+    "measurement."
+)
+
+
+def _tag_column(
+    model_id: str,
+    counted: Mapping[str, TagCount],
+    tags: Sequence[str],
+    *,
+    confidence: float | None,
+    floor: float | None,
+    min_n: int,
+    min_items: int,
+    closed: bool,
+) -> TagColumn:
+    """One model's cells, one per tag in ``tags``, in that order.
+
+    A tag the model produced nothing for is a cell of zeros rather than an absent
+    one, because the tag was in the golden set: "measured nothing here" is a
+    finding, and ``dimension_cell`` renders it as one. Nothing is invented to fill
+    it -- the zeros are the count, and ``item_counts`` is never consulted, because
+    it is an aggregate and splitting it across tags by any rule at all would be
+    the invention this whole module exists to refuse.
+
+    ``closed`` is whether the counting saw this model at all -- a model with a
+    ``migkit.judging_completed`` is present in ``by_model`` even when it graded
+    nothing, and a model the payload names and no judging pass ever closed is not.
+    Both render as zeros and they are not the same finding, so the second one says
+    so in its note. See :data:`_NEVER_CLOSED`.
+
+    The floors arrive from :func:`_dimension_matrix` rather than being named again
+    here, so that the numbers :class:`DimensionMatrix` publishes as what it refused
+    against and the numbers the cells actually refused against are one expression
+    rather than three that agree today.
+    """
+    cells: list[DimensionCell] = []
+    for tag in tags:
+        one = counted.get(tag)
+        passes, n, items = (0, 0, 0) if one is None else (one.passes, one.n, one.items)
+        cell = dimension_cell(
+            tag,
+            passes,
+            n,
+            items,
+            confidence=confidence,
+            floor=floor,
+            min_n=min_n,
+            min_items=min_items,
+        )
+        if not closed:
+            said = _NEVER_CLOSED.format(model_id=model_id)
+            cell = replace(cell, note=f"{cell.note} {said}".strip())
+        cells.append(cell)
+    return TagColumn(model_id=model_id, cells=tuple(cells))
+
+
+def _dimension_matrix(
+    counts: DimensionCounts,
+    *,
+    judge: str,
+    baseline_id: str,
+    candidate_id: str,
+    confidence: float | None,
+    floor: float | None,
+) -> DimensionMatrix:
+    """Turn one judge's raw per-tag counts into the table the document prints.
+
+    **A decline is passed through and never re-worded.** ``counts.reason`` already
+    holds whichever of the six sentences applies -- the golden set's own, quoted
+    by :func:`_close_the_tally`, or one of the five the counting writes for itself
+    -- and every one of them names a different fix. Rephrasing here would be a
+    third copy of a disclosure that already has two.
+
+    **A decline also comes back carrying nothing**, which is not tidiness. Every
+    way this table can decline is global rather than per-cell, so there is no
+    subset of it that happens to be sound; emptiness is what stops a renderer
+    being tempted by one. That is the promise
+    :class:`~model_migration_kit.dimensions.DimensionCounts` makes about
+    ``by_model``, kept one layer up.
+
+    **The two floors are read once, here.** They are the numbers the matrix
+    publishes as what it refused against *and* the numbers the cells are refused
+    against, and until R27.7 they were three separate references to the module
+    constants -- a design whose own docstring claimed it was one expression. One
+    local, passed to both, is what makes that sentence true.
+    """
+    min_n, min_items = MIN_N_FOR_A_VERDICT, MIN_ITEMS_FOR_A_VERDICT
+    if not counts.available:
+        return DimensionMatrix(
+            available=False,
+            reason=counts.reason,
+            judge=judge,
+            tags=(),
+            baseline=TagColumn(model_id="", cells=()),
+            candidates=(),
+            min_n=min_n,
+            min_items=min_items,
+        )
+    tags = _matrix_tags(counts.by_model)
+    columns = {
+        model_id: _tag_column(
+            model_id,
+            counts.by_model.get(model_id, {}),
+            tags,
+            confidence=confidence,
+            floor=floor,
+            min_n=min_n,
+            min_items=min_items,
+            closed=model_id in counts.by_model,
+        )
+        for model_id in _matrix_models(counts.by_model, baseline_id, candidate_id)
+    }
+    return DimensionMatrix(
+        available=True,
+        reason="",
+        judge=judge,
+        tags=tags,
+        baseline=columns[baseline_id],
+        candidates=tuple(
+            column for model_id, column in columns.items() if model_id != baseline_id
+        ),
+        min_n=min_n,
+        min_items=min_items,
+    )
 
 
 def _load_side(
@@ -1778,6 +2839,150 @@ def _bool_or_none(value: Any) -> bool | None:
 # --------------------------------------------------------------------------- #
 
 
+#: The scripted paragraph's closing, which is true in both of R29.1's cases and
+#: is the sentence the whole disclosure exists to deliver.
+_MACHINERY_IS_REAL = (
+    "The only real thing in this document is the machinery: the sampling, the "
+    "judging, the statistics and the decision rules are the production paths, "
+    "exercised end to end. The quality difference they measure was written into "
+    "the script."
+)
+
+
+def _scripted_paragraph(model: ReportModel, provenance: Provenance) -> str:
+    """The appendix's opening paragraph, for a document with scripted runs in it.
+
+    **Two openings, not one opening with a variable in it** -- R29.1, and the
+    defect it rules on was live in the rendered document. The old paragraph was
+    headline-scoped while ``is_demo`` is series-scoped, so a real headline over a
+    scripted history printed, verbatim:
+
+        At least one side of this comparison was produced by a Fake adapter
+        (AnthropicAdapter for the baseline, OpenAICompatAdapter for the
+        candidate).
+
+    Both named adapters are real. That is worse than an absence rendering as a
+    measurement: it is a disclosure disclosing the wrong thing, in the paragraph
+    a sceptical reader opens first, and it named two real adapters *as the
+    evidence for its own claim*. The second opening therefore names no adapter at
+    all -- the evidence is in comparisons the sentence is not about, and there is
+    nothing on this side of the document to point at.
+
+    Neither opening describes an unnamed side as real. The scripted state
+    outranks the unrecorded one, so a headline side whose adapter was never
+    recorded can reach here, and "both sides are real" would be a claim the
+    evidence does not support.
+    """
+    if provenance.headline_scripted:
+        opening = (
+            "These numbers describe scripted responses, not a real provider. At "
+            f"least one side of this comparison was produced by a Fake adapter "
+            f"({model.baseline.adapter or 'unknown'} for the baseline, "
+            f"{model.candidate.adapter or 'unknown'} for the candidate)."
+        )
+    else:
+        opening = (
+            "This document draws scripted runs, and the comparison in front of "
+            "you is not one of them: neither of its sides names a Fake adapter. "
+            "No adapter is named here as the evidence, because the scripted runs "
+            "are other comparisons on the timeline and naming this one's sides "
+            "would name the wrong runs."
+        )
+    return " ".join(
+        one
+        for one in (
+            opening,
+            _counted_paragraph(provenance),
+            _MACHINERY_IS_REAL,
+            _dated_sentence(provenance),
+        )
+        if one
+    )
+
+
+def _counted_paragraph(provenance: Provenance) -> str:
+    """How much of the document is scripted, counted in comparisons. R29.4.
+
+    Comparisons and never runs: a :class:`~model_migration_kit.series.RunPoint`
+    carries no run id, so two comparisons against one baseline run cannot be told
+    from two comparisons against two, and a run count would render 84 for a
+    document holding 56 runs. The reasoning is on :class:`Provenance`.
+
+    Silent when the document draws no timeline at all, because ``0 of 0`` is a
+    model built by hand rather than a measured absence of scripted runs.
+    """
+    if not provenance.comparisons:
+        return ""
+    total = provenance.comparisons
+    scripted = provenance.scripted_comparisons
+    if scripted == total:
+        if total == 1:
+            return (
+                "The one comparison drawn in this document names a Fake adapter on "
+                "at least one side."
+            )
+        return (
+            f"All {total} comparisons drawn in this document name a Fake adapter on "
+            f"at least one side."
+        )
+    if scripted:
+        rest = total - scripted
+        return (
+            f"{scripted} of the {total} comparisons drawn in this document "
+            f"{'names' if scripted == 1 else 'name'} a Fake adapter on at least one "
+            f"side; {'the other one does not' if rest == 1 else f'the other {rest} do not'}."
+        )
+    if total == 1:
+        return (
+            "The one comparison drawn in this document names no Fake adapter in its "
+            "own payload: this paragraph is here because the run artifacts the "
+            "headline read do, which is a disagreement between the log and the "
+            "files it points at."
+        )
+    return (
+        f"None of the {total} comparisons drawn in this document name a Fake "
+        f"adapter in their own payloads: this paragraph is here because the run "
+        f"artifacts the headline read do, which is a disagreement between the log "
+        f"and the files it points at."
+    )
+
+
+def _dated_sentence(provenance: Provenance) -> str:
+    """C17's timestamp asymmetry, disclosed when it is there and not when it is not.
+
+    R29.3. Unconditional prose was refused because it is false on ``migkit demo``,
+    whose comparison ``created`` and whose record ``ts`` are the same instant -- an
+    asymmetry asserted where none was measured, inside the chunk whose subject is
+    unsuppressible honesty.
+    """
+    if not provenance.dated_apart:
+        return ""
+    if provenance.dated_apart == provenance.comparisons == 1:
+        opening = (
+            "The one comparison here records a created date on a different UTC day "
+            "from the evidence record carrying it."
+        )
+    elif provenance.dated_apart == provenance.comparisons:
+        opening = (
+            f"All {provenance.comparisons} comparisons record a created date on a "
+            f"different UTC day from the evidence record carrying each."
+        )
+    else:
+        opening = (
+            f"{provenance.dated_apart} of the {provenance.comparisons} comparisons "
+            f"{'records' if provenance.dated_apart == 1 else 'record'} a created "
+            f"date on a different UTC day from the evidence record carrying each."
+        )
+    return (
+        f"{opening} Those are two clocks making two claims: created is written by "
+        f"the comparison, and the record's own timestamp is written when the line "
+        f"was appended to the log. A document seeded one night at a time has that "
+        f"gap by construction -- the comparison dates are the seed's and the run "
+        f"and judging records keep the real clock -- and it is disclosed here "
+        f"rather than left for a reader to find and distrust."
+    )
+
+
 def methodology_sections(model: ReportModel) -> tuple[MethodologySection, ...]:
     """The SR 11-7 artifact, substituted with this run's actual numbers.
 
@@ -1795,17 +3000,14 @@ def methodology_sections(model: ReportModel) -> tuple[MethodologySection, ...]:
     fired = model.decided_by or ""
 
     tested: list[str] = []
-    if model.is_demo:
-        tested.append(
-            "These numbers describe scripted responses, not a real provider. At "
-            f"least one side of this comparison was produced by a Fake adapter "
-            f"({model.baseline.adapter or 'unknown'} for the baseline, "
-            f"{model.candidate.adapter or 'unknown'} for the candidate). The only "
-            "real thing in this document is the machinery: the sampling, the "
-            "judging, the statistics and the decision rules are the production "
-            "paths, exercised end to end. The quality difference they measure was "
-            "written into the script."
-        )
+    # R29.2 decided two surfaces for the unrecorded state -- the band and the
+    # terminal -- and this appendix is neither. The scripted paragraph stays
+    # because §5.3 named it as one of the five places that say the models are
+    # scripted; a third wording of the unrecorded gap would be a third thing to
+    # keep in step for no ruling that asked for it.
+    provenance = model.provenance
+    if provenance.state == PROVENANCE_SCRIPTED:
+        tested.append(_scripted_paragraph(model, provenance))
     tested.append(
         f"{model.n_per_item or model.baseline.n_per_item} draws per item over "
         f"{model.goldenset.get('size') or model.baseline.items} items, giving "
@@ -1985,6 +3187,46 @@ def _interval(value: tuple[float, float] | None, dash: str = EM_DASH) -> str:
     return f"[{value[0]:.4f}, {value[1]:.4f}]"
 
 
+def _pp(value: Any, dash: str = EM_DASH) -> str:
+    """A percentage-point delta, signed, at one decimal place.
+
+    Rounded here and never on the model.
+    :attr:`~model_migration_kit.series.Candidate.delta_pp` is deliberately
+    unrounded so that a renderer wanting one decimal place can take one, while a
+    model that had already rounded could not give back what it dropped. This is
+    that edge, and it is also where the binary-float residue
+    (``9.999999999999998`` where the arithmetic says ten) stops being visible.
+
+    The sign is explicit because the number's whole subject is direction: an
+    unsigned ``0.6`` beside an unsigned ``0.4`` reads as two magnitudes, and one of
+    them may be a regression.
+
+    ``None`` is the dash, on :func:`_pct`'s rule: a delta that could not be
+    computed because a side recorded no rate is not a delta of zero.
+    """
+    number = _number(value)
+    if number is None:
+        return dash
+    return f"{number:+.1f} pp"
+
+
+def _days(value: Any, dash: str = EM_DASH) -> str:
+    """A span in days at one decimal place, or the dash where none was measurable.
+
+    ``None`` is the dash and is never ``0.0``. Three findings arrive at this filter
+    and only one of them is a zero: a field whose spread could not be measured at
+    all (fewer than two dated rows), a row whose own date was never recorded, and
+    the newest row in a field, which really is zero days old. Printing the first
+    two as ``0.0 days`` would state "measured in a single sitting" on the evidence
+    for "we do not know when this was measured" -- the failure this document is
+    built to refuse, in the smallest possible space.
+    """
+    number = _number(value)
+    if number is None:
+        return dash
+    return f"{number:.1f} days"
+
+
 def _flag(value: bool | None, dash: str = EM_DASH) -> str:
     if value is None:
         return dash
@@ -2067,15 +3309,18 @@ def render_terminal(model: ReportModel, *, console: Console | None = None) -> No
     tests around this function are watching for.
     """
     out = console or Console()
-    if model.is_demo:
+    # Both provenance bands, from the one place their words are written. R29.2
+    # item 3: the terminal and the HTML must say the same words, which they did
+    # not while each renderer held its own copy of the scripted sentence. The
+    # separator is an ASCII hyphen and not the HTML's em dash on purpose -- rich
+    # substitutes box characters on a legacy Windows console and not arbitrary
+    # text, and this line prints before anything else has had a chance to fail.
+    provenance = model.provenance
+    if provenance.banded:
         out.print(
             Panel(
-                Text(
-                    "FAKE MODELS - these numbers describe scripted responses, "
-                    "not a real provider",
-                    style="bold",
-                ),
-                border_style="red",
+                Text(f"{provenance.label} - {provenance.sentence}", style="bold"),
+                border_style=provenance.border,
             )
         )
     verdict = model.verdict_word
@@ -2582,6 +3827,11 @@ h2 {
   background: #a1141a;
   color: #ffffff;
 }
+.band.unrecorded {
+  background: #fbe9c8;
+  color: #4a3400;
+  border: 2px solid #a8760a;
+}
 .band.mismatch {
   background: #fbe9c8;
   color: #4a3400;
@@ -2607,6 +3857,23 @@ h2 {
   margin: 0.6rem 0 0 0;
   font-size: 0.9rem;
   color: #3d434a;
+}
+.banner .bar {
+  margin: 0.75rem 0 0 0;
+}
+.chart {
+  margin: 0.75rem 0 0.25rem 0;
+}
+/* Both charts are drawn to a fixed viewBox and scaled down by the viewport, so
+   a narrow window shrinks them rather than scrolling the page sideways. */
+.banner .bar svg, .chart svg {
+  max-width: 100%;
+  height: auto;
+}
+.draws {
+  color: #4a5058;
+  font-size: 0.88rem;
+  margin: 0.15rem 0 0.6rem 0;
 }
 .banner.go {
   border-color: #1d6b32;
@@ -2641,6 +3908,19 @@ th {
 }
 td.num {
   font-variant-numeric: tabular-nums;
+}
+/* A cell whose sample is too small to read as a judgement. Shaded and never
+   coloured: DimensionCell.verdict_refused is the only field that decides whether
+   the numbers may be read as a verdict, and a refused cell still shows its
+   interval -- what it does not do is claim one. */
+td.refused {
+  background: #f6f7f9;
+}
+.cellnote {
+  display: block;
+  color: #46301b;
+  font-size: 0.85rem;
+  margin-top: 0.2rem;
 }
 dl.facts {
   display: grid;
@@ -2724,15 +4004,16 @@ footer {
 </style>
 </head>
 <body>
-{% if model.is_demo %}
-<div class="band fake" id="fake-models" role="alert">
-FAKE MODELS {{ dash }} these numbers describe scripted responses, not a real provider
+{% if model.provenance.banded %}
+<div class="band {{ model.provenance.css }}" id="{{ model.provenance.anchor }}" role="alert">
+{{ model.provenance.label }} {{ dash }} {{ model.provenance.sentence }}
 </div>
 {% endif %}
 <main>
 <section class="banner {{ verdict_class }}" id="verdict">
   <p class="word">{{ model.verdict_word }}</p>
   <p class="reason">{{ model.verdict_reason }}</p>
+  <div class="bar">{{ model | interval_bar | safe }}</div>
   <p class="meta">
     Exit code a CI system would have received: <strong>{{ model.exit_code }}</strong>
     {{ dash }} decided by {{ model.decided_by or 'no recorded rule' }}
@@ -2740,9 +4021,27 @@ FAKE MODELS {{ dash }} these numbers describe scripted responses, not a real pro
   </p>
 </section>
 
+{#- Bound once and read by both the nav and the sections below, so that a link
+    and the section it points at cannot come to disagree about whether the
+    section exists. `excluded` renders in two disjoint states -- a named list,
+    and the sentence for a log that cannot name its exclusions at all -- and
+    spelling that condition twice is how a nav entry starts dangling. -#}
+{% set candidate_field = model.candidates %}
+{% set excluded_shown = candidate_field is none or candidate_field.excluded %}
+{% set matrix = model.dimensions %}
 <nav>
   <ol>
+{% if candidate_field is not none %}
+    <li><a href="#candidates">Candidates measured against one baseline</a></li>
+{% endif %}
+{% if excluded_shown %}
+    <li><a href="#excluded">Runs outside the candidate table</a></li>
+{% endif %}
+    <li><a href="#dimensions">Results by dimension</a></li>
     <li><a href="#compared">What was compared</a></li>
+{% if model.series %}
+    <li><a href="#timeline">Run history</a></li>
+{% endif %}
     <li><a href="#judges">Per-judge results</a></li>
     <li><a href="#latency">Latency (descriptive only)</a></li>
     <li><a href="#flips">Flips</a></li>
@@ -2765,6 +4064,176 @@ FAKE MODELS {{ dash }} these numbers describe scripted responses, not a real pro
         at {{ model.completeness.last_ts or 'an unrecorded time' }}</li>
   </ul>
 </div>
+{% endif %}
+
+{% if candidate_field is not none %}
+<h2 id="candidates">Candidates measured against one baseline</h2>
+<p class="secondary">
+  Every candidate model this evidence log measured under one comparability key:
+  same golden set, same judges, same draws per item, same baseline model. Rows are
+  ordered by model name and never by result {{ dash }} a table sorted by its own
+  outcome invites the reading that position <em>is</em> the outcome, and this is a
+  set of measurements taken under one key, not a ranking.
+</p>
+<dl class="facts">
+  <dt>baseline model</dt>
+      <dd><code>{{ candidate_field.key.baseline_model or dash }}</code></dd>
+  <dt>baseline pass rate</dt>
+      <dd>{{ candidate_field.baseline_pass_rate | pct }}
+      <span class="secondary">{{ dash }} one reading, taken from the newest run in
+      this field. Every delta below was computed against the baseline
+      <em>its own</em> run measured, so adding this number back to a delta does not
+      recover that row's pass rate: wherever the baseline moved between two nights
+      the sum is a rate no run recorded.</span></dd>
+  <dt>golden set hash</dt>
+      <dd><span class="hash">{{ candidate_field.key.goldenset_hash or dash }}</span></dd>
+  <dt>judges hash</dt>
+      <dd><span class="hash">{{ candidate_field.key.judges_hash or dash }}</span></dd>
+  <dt>n per item</dt><dd>{{ candidate_field.key.n_per_item or dash }}</dd>
+  <dt>measured how far apart</dt>
+      <dd>
+      {% if candidate_field.spread_days is none %}
+      not measurable {{ dash }} fewer than two rows carry a date, and one dated run
+      is a single observation, which can no more say how far apart this field was
+      taken than no observation can
+      {% else %}
+      {{ candidate_field.spread_days | days }} between the oldest and the newest
+      row, against a window of {{ candidate_field.stale_after_days | days }}
+      {% if candidate_field.spread_flagged %}
+      {{ dash }} <strong>wider than the window</strong>: these rows may not have
+      been measured close enough together to be read side by side
+      {% endif %}
+      {% endif %}
+      </dd>
+</dl>
+<table>
+  <thead><tr>
+    <th>candidate</th><th>run</th><th>pass rate</th>
+    <th>delta vs its own baseline</th><th>age in this field</th>
+  </tr></thead>
+  <tbody>
+  {% for row in candidate_field.candidates %}
+    <tr>
+      <td><code>{{ row.model or dash }}</code></td>
+      <td>{{ row.point.created or 'no recorded date' }}
+          <span class="secondary">({{ row.point.created_source }} clock)</span></td>
+      <td class="num">{{ row.point.pass_rate | pct }}</td>
+      <td class="num">{{ row.delta_pp | pp }}</td>
+      <td class="num">{{ row.stale_days | days }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% if candidate_field.caveats %}
+<p class="secondary">Rows that are in the table above under protest:</p>
+<ul class="secondary">
+  {% for caveat in candidate_field.caveats %}
+  <li>
+    {% if caveat.point is none %}
+    about this field as a whole:
+    {% else %}
+    <code>{{ caveat.point.candidate_model or 'unnamed candidate' }}</code>,
+    {{ caveat.point.created or 'undated' }}:
+    {% endif %}
+    {{ caveat.reason }}
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% endif %}
+
+{% if excluded_shown %}
+<h2 id="excluded">Runs outside the candidate table</h2>
+{% if candidate_field is none %}
+<p class="note">
+  <strong>There is no candidate table above, and this page cannot list what was
+  left out of one.</strong> No group of runs in this log both shares a
+  comparability key and names two distinct candidate models, so no field of
+  candidates could be assembled {{ dash }} and the sentence explaining each
+  omission is written by the same pass that assembles it, so those sentences do
+  not exist either. Runs in this log may have been excluded from a comparison
+  without this page being able to name them. Read this as <em>not known</em>, and
+  never as "nothing was excluded".
+</p>
+{% else %}
+<p class="secondary">
+  Every point in this log the table above does not hold, each with the sentence
+  saying why {{ dash }} runs under <em>other</em> comparability keys included, so
+  that a table which quietly dropped a third of the log cannot look complete.
+</p>
+<ul>
+  {% for one in candidate_field.excluded %}
+  <li><code>{{ one.point.candidate_model or 'unnamed candidate' }}</code>
+      {{ dash }} {{ one.point.created or 'no recorded date' }}
+      {{ dash }} {{ one.reason }}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% endif %}
+
+<h2 id="dimensions">Results by dimension</h2>
+{% if not matrix.available %}
+<p class="note">
+  <strong>There is no per-dimension table.</strong> {{ matrix.reason }}
+</p>
+{% elif not matrix.tags %}
+<p class="note">
+  <strong>There is no per-dimension table.</strong> The counting ran and came back
+  with no tags to break this run down by, so there is nothing here to show. That
+  is an empty tag universe in the golden set, not a set of dimensions that every
+  model scored zero on.
+</p>
+{% else %}
+{% set columns = [matrix.baseline] + (matrix.candidates | list) %}
+<p class="secondary">
+  How every tag in the golden set did, per model, under
+  <strong>{{ matrix.judge }}</strong> {{ dash }} the panel's first judge, and the
+  only judge these numbers come from; a panel writes one verdict per judge per
+  completion and they are never summed. Counted from the run this report is about
+  and not from the whole log: the run history below is the history, this breaks the
+  banner's own number down by tag. A cell is shaded where the sample cannot
+  support a verdict at all {{ dash }} the numbers are still printed, because
+  declining to read a measurement as a judgement is not the same as not having
+  one. The floors every cell here was judged against are {{ matrix.min_n }}
+  graded completions and {{ matrix.min_items }} items.
+</p>
+<table>
+  <thead><tr>
+    <th>dimension</th>
+    {% for column in columns %}
+    {#- loop.index0 == 1 is matrix.candidates[0], which is the comparison's own
+        candidate by construction (R27.8). Named by position rather than through a
+        matrix.candidate accessor: a second way to name one side is a second thing
+        that can disagree with the first. -#}
+    <th><code>{{ column.model_id or dash }}</code>
+        <span class="secondary">
+        {% if loop.first %}baseline
+        {% elif loop.index0 == 1 %}candidate
+        {% else %}also judged in this run
+        {% endif %}
+        </span></th>
+    {% endfor %}
+  </tr></thead>
+  <tbody>
+  {% for tag in matrix.tags %}
+    <tr>
+      <th>{{ tag }}</th>
+      {% for column in columns %}
+      {% set cell = column.cell(tag) %}
+      <td class="num{% if cell.verdict_refused %} refused{% endif %}">
+        {{ cell.rate | pct }}
+        <span class="secondary">{{ cell.interval | interval }}</span><br>
+        <span class="secondary">{{ cell.passes }} of {{ cell.n }} graded
+        completions, over {{ cell.items }} item(s)</span>
+        {% if cell.note %}
+        <span class="cellnote">{{ cell.note }}</span>
+        {% endif %}
+      </td>
+      {% endfor %}
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
 {% endif %}
 
 <h2 id="compared">What was compared</h2>
@@ -2807,7 +4276,7 @@ FAKE MODELS {{ dash }} these numbers describe scripted responses, not a real pro
   <tbody>
   {% for name, value in model.thresholds.items() %}
     <tr><td>{{ name }}</td><td class="num">{{ value }}</td>
-        <td>{{ model.threshold_sources.get(name, unrecorded) }}</td></tr>
+        <td>{{ model.threshold_sources.get(name, unrecorded) | source_label }}</td></tr>
   {% endfor %}
   {% if not model.thresholds %}
     <tr><td colspan="3">no thresholds recorded in the evidence</td></tr>
@@ -2819,8 +4288,44 @@ FAKE MODELS {{ dash }} these numbers describe scripted responses, not a real pro
   verdict, so a loosened gate cannot be hidden. Which of CLI flag, config file or
   built-in default set any individual number is not carried in the evidence
   payload; where it says {{ unrecorded }}, that is a gap in the record and not a
-  claim about the default.
+  claim about the default. A source that is a file is named by its filename here;
+  its full path is shown once, whole, and where it can be checked {{ dash }} under
+  <em>config</em> in "What was compared", above.
 </p>
+
+{% if model.series %}
+{% set timeline = model.series | timeline %}
+<h2 id="timeline">Run history {{ dash }} {{ model.series | length }} comparison(s) in this log</h2>
+<div class="chart">{{ timeline.svg | safe }}</div>
+<p class="secondary">
+  Every comparison this evidence log holds, oldest first, with the candidate's
+  pass rate against the floor each run was actually held to. <strong>The axis is
+  time, not run number</strong>, so a three-week gap between the run that was
+  green and the run that was not is drawn as three weeks. Nothing is
+  interpolated: no line joins the markers, because a line between two runs would
+  assert a pass rate on the dates in between, and on those dates nothing ran. The
+  banner above, and the bar inside it, report the <strong>last comparison this log
+  records</strong> {{ dash }} which is the newest marker on this chart whenever the
+  clock agrees with the file, and is not when it does not: the series is drawn in
+  time order and the log is read in write order, and a run appended with an older
+  timestamp sits to the left of the run the banner describes.
+</p>
+{% if timeline.runs_without_rate or timeline.runs_without_floor %}
+<p class="secondary">Not everything could be drawn, and the gaps are counted
+rather than hidden:</p>
+<ul class="secondary">
+  {% if timeline.runs_without_rate %}
+  <li>{{ timeline.runs_without_rate }} run(s) recorded no pass rate, so they
+      carry no marker</li>
+  {% endif %}
+  {% if timeline.runs_without_floor %}
+  <li>{{ timeline.runs_without_floor }} run(s) recorded no floor, so the rule is
+      broken where they sit {{ dash }} which is a gap in the record, not a floor
+      of zero</li>
+  {% endif %}
+</ul>
+{% endif %}
+{% endif %}
 
 <h2 id="judges">Per-judge results</h2>
 <p class="secondary">
@@ -2889,15 +4394,38 @@ measures quality.</p>
 <p class="secondary"><strong>Descriptive only. Latency is never a gate</strong>
 {{ dash }} a migration that is slower per call is a product decision, not a
 quality regression.</p>
+{% if model.baseline.is_fake and model.candidate.is_fake %}
+<p class="secondary">
+  <strong>Not measured.</strong> Both sides of this comparison ran on scripted
+  adapters, which return their answers without calling a provider, so every
+  timing here would be a few microseconds of local dictionary lookup. The table
+  is omitted rather than printed as zeros: a row that reads
+  <code>0.000 / 0.000</code> is not a fast model, it is the absence of a
+  measurement, and a reader should not have to work that out.
+</p>
+{% else %}
 <table>
   <thead><tr><th></th><th>median (s)</th><th>p90 (s)</th></tr></thead>
   <tbody>
-    <tr><td>baseline</td><td class="num">{{ model.baseline.latency_median | num3 }}</td>
-        <td class="num">{{ model.baseline.latency_p90 | num3 }}</td></tr>
-    <tr><td>candidate</td><td class="num">{{ model.candidate.latency_median | num3 }}</td>
-        <td class="num">{{ model.candidate.latency_p90 | num3 }}</td></tr>
+    <tr><td>baseline</td>
+    {% if model.baseline.is_fake %}
+        <td colspan="2">not measured {{ dash }} scripted adapter</td>
+    {% else %}
+        <td class="num">{{ model.baseline.latency_median | num3 }}</td>
+        <td class="num">{{ model.baseline.latency_p90 | num3 }}</td>
+    {% endif %}
+        </tr>
+    <tr><td>candidate</td>
+    {% if model.candidate.is_fake %}
+        <td colspan="2">not measured {{ dash }} scripted adapter</td>
+    {% else %}
+        <td class="num">{{ model.candidate.latency_median | num3 }}</td>
+        <td class="num">{{ model.candidate.latency_p90 | num3 }}</td>
+    {% endif %}
+        </tr>
   </tbody>
 </table>
+{% endif %}
 
 {% if not model.goldenset.available %}
 <div class="band mismatch" id="goldenset-mismatch">
@@ -2905,10 +4433,26 @@ quality regression.</p>
 </div>
 {% endif %}
 
+{% set printed = model | printed_chars %}
+{#
+  The budget sentence counts what the run *produced*. Identical draws are printed
+  once below, so what is on the page is smaller, and both numbers are given
+  rather than letting one quietly replace the other: the sentence is a
+  completeness claim, and a completeness claim that starts counting what survived
+  the presentation layer certifies a smaller thing in the same words.
+#}
 {% if model.detail.capped %}
 <div class="note" id="detail-budget">
   <strong>The quoted model text in this report is bounded.</strong>
   {{ model.detail.sentence }}
+  {% if printed != model.detail.embedded %}
+  The rows that do carry their outputs embedded
+  {{ '{:,}'.format(model.detail.embedded) }} characters of model text, of which
+  {{ '{:,}'.format(printed) }} are printed below: where every draw of a side came
+  back byte-identical it is shown once and counted, rather than repeated. The
+  first figure counts what the models produced, which is what completeness is
+  about; the second counts what this page spends on it.
+  {% endif %}
   <ul>
     <li>rows are visited round-robin across flips, gains and unstable, in
         golden-set order within each, so no section crowds out another</li>
@@ -2919,11 +4463,22 @@ quality regression.</p>
   </ul>
 </div>
 {% else %}
-<p class="secondary" id="detail-budget">{{ model.detail.sentence }}</p>
+<p class="secondary" id="detail-budget">{{ model.detail.sentence }}
+{% if printed != model.detail.embedded %}
+  Of those, {{ '{:,}'.format(printed) }} characters are printed below: where every
+  draw of a side came back byte-identical it is shown once and counted, rather
+  than repeated. The figure above counts what the models produced, which is what
+  completeness is about.
+{% endif %}
+</p>
 {% endif %}
 
 <h2 id="flips">Flips {{ dash }} items that stopped working ({{ model.flips | length }})</h2>
-{{ changes(model.flips) }}
+<p class="secondary">
+  <strong>Open by default</strong>, because these are the finding. Everything
+  else in this document is context for them.
+</p>
+{{ changes(model.flips, True) }}
 
 <h2 id="gains">Gains {{ dash }} items that started working ({{ model.gains | length }})</h2>
 <p class="secondary">
@@ -2992,12 +4547,18 @@ quality regression.</p>
 """
 
 _CHANGES_MACRO = """
-{% macro changes(rows) %}
+{#
+  ``opened`` is passed true only for flips. Gains stay closed on purpose: they
+  are context, not the finding, and this document already argues that netting the
+  two lists is how a bad migration ships. Opening them by default would give a
+  reader's eye the same weight for both.
+#}
+{% macro changes(rows, opened=False) %}
 {% if not rows %}
 <p class="secondary">None.</p>
 {% else %}
 {% for row in rows %}
-<details>
+<details{% if opened %} open{% endif %}>
   <summary>{{ row.summary }}</summary>
   <div>
     {% if not row.detail_embedded %}
@@ -3022,17 +4583,25 @@ _CHANGES_MACRO = """
     {% else %}
     <p class="secondary">Input not shown: the golden set is unavailable or has changed.</p>
     {% endif %}
-    <h4>Baseline outputs ({{ row.baseline_outputs | length }})</h4>
-    {% for text in row.baseline_outputs %}
+    {% set baseline_draws = row.baseline_outputs | draws %}
+    <h4>Baseline outputs ({{ baseline_draws.total }})</h4>
+    {% for text in baseline_draws.texts %}
     <pre class="output">{{ text }}</pre>
     {% endfor %}
+    {% if baseline_draws.sentence %}
+    <p class="draws">{{ baseline_draws.sentence }}</p>
+    {% endif %}
     {% if not row.baseline_outputs %}
     <p class="secondary">No baseline outputs available.</p>
     {% endif %}
-    <h4>Candidate outputs ({{ row.candidate_outputs | length }})</h4>
-    {% for text in row.candidate_outputs %}
+    {% set candidate_draws = row.candidate_outputs | draws %}
+    <h4>Candidate outputs ({{ candidate_draws.total }})</h4>
+    {% for text in candidate_draws.texts %}
     <pre class="output">{{ text }}</pre>
     {% endfor %}
+    {% if candidate_draws.sentence %}
+    <p class="draws">{{ candidate_draws.sentence }}</p>
+    {% endif %}
     {% if not row.candidate_outputs %}
     <p class="secondary">No candidate outputs available.</p>
     {% endif %}
@@ -3053,6 +4622,164 @@ _CHANGES_MACRO = """
 {% endif %}
 {% endmacro %}
 """
+
+
+class _Draws(NamedTuple):
+    """One side's draws, grouped for printing rather than for counting.
+
+    Presentation only. Nothing here reaches a statistic: the rate, the interval
+    and every count in the document are read from the evidence payload, and this
+    decides how many ``<pre>`` blocks a row spends on text the models produced.
+
+    The distinction the type exists to make is *uniformity*. Five byte-identical
+    draws and five different ones are the same five blocks today, so a reader
+    cannot see whether the draws agreed -- and whether they agreed is the fact
+    that says how much weight one draw carries. Repetition is not evidence.
+    """
+
+    #: What to print. One entry when every draw was byte-identical; otherwise
+    #: every draw, in the order they were recorded.
+    texts: tuple[str, ...]
+    #: Draws the run produced. Never derived from ``texts``, which is the whole
+    #: point: after a collapse the two differ, and the sentence below needs both.
+    total: int
+    #: Distinct texts among them.
+    distinct: int
+
+    @property
+    def collapsed(self) -> bool:
+        """True when this is printing fewer blocks than the run produced draws."""
+        return len(self.texts) < self.total
+
+    @property
+    def sentence(self) -> str:
+        """What the reader is owed about the draws, or ``""`` when nothing is.
+
+        Three cases and three different facts. Every draw agreeing is stated
+        *because* only one block is shown -- the count would otherwise be missing
+        from the page entirely. Draws differing is stated because the number that
+        differed is the finding, and today it is invisible: uniformity and
+        variation render identically. A single draw gets no sentence, because
+        "1 draw, 1 distinct" tells a reader nothing they cannot see.
+        """
+        if self.total < 2:
+            return ""
+        if self.distinct == 1:
+            return f"all {self.total} draws identical"
+        return f"{self.total} draws, {self.distinct} distinct"
+
+
+def _draws(outputs: Sequence[str]) -> _Draws:
+    """Group one side's outputs, collapsing only total agreement.
+
+    Only the all-identical case collapses. Partial grouping -- three of one text
+    and two of another shown as two blocks with counts -- was considered and
+    rejected: it silently reorders the draws, and the order draws were recorded
+    in is the only evidence a reader has about *when* a model changed its answer
+    within a run. Total agreement has no order to lose.
+
+    First-appearance order, not sorted, for the same reason.
+    """
+    seen: list[str] = []
+    for text in outputs:
+        if text not in seen:
+            seen.append(text)
+    if len(seen) == 1 and len(outputs) > 1:
+        return _Draws((seen[0],), len(outputs), 1)
+    return _Draws(tuple(outputs), len(outputs), len(seen))
+
+
+def _banner_bar(model: ReportModel) -> str:
+    """The headline run's pass rate, interval and floor, as one inline SVG.
+
+    Read from ``series[-1]`` rather than from a judge row, and that is the point
+    of the field rather than a shortcut. :class:`~model_migration_kit.series.RunPoint`
+    carries ``floor`` together with ``floor_source``, so the bar draws *the number
+    the run was held to* and can tell that apart from the number that was merely
+    configured. A judge row carries neither, and a bar drawn from
+    ``model.thresholds`` would show a rule the gate may not have applied.
+
+    ``[-1]`` and not "the newest by clock", which is the same run on every log
+    this pipeline writes and not on every log that exists.
+    :func:`~model_migration_kit.series.read_series` sorts nothing -- file order is
+    the series order, so that a log whose clock stepped back over a daylight-saving
+    boundary is not silently reordered -- while :func:`timeline_svg` sorts by
+    parsed ``created``, because its axis is time. So ``series[-1]`` is exactly the
+    comparison ``from_evidence``'s own last-wins reduction kept for the banner,
+    which is what makes the bar and the banner one reading; it is *not* guaranteed
+    to be the rightmost marker on the chart. The prose beneath the chart says
+    which of the two it is, because a document that lets a reader assume they are
+    the same is a document that can show a GO beside a chart ending in red.
+
+    An empty series is not an error and not a zero. Every model built by some
+    route other than :meth:`ReportModel.from_evidence` has one, and
+    :func:`interval_bar_svg` already draws each missing value as its own named
+    picture -- a floor of ``None`` draws no line at all rather than a line at 0.0,
+    because a rule that was never set, rendered as a floor of zero, makes the
+    document claim a bar cleared a bar that does not exist.
+    """
+    point = model.series[-1] if model.series else None
+    if point is None:
+        return interval_bar_svg(rate=None, interval=None, floor=None, label="candidate")
+    label = f"candidate {point.judge_name}".strip()
+    return interval_bar_svg(
+        rate=point.pass_rate,
+        interval=point.interval,
+        floor=point.floor,
+        label=label,
+    )
+
+
+def _printed_chars(model: ReportModel) -> int:
+    """Characters of quoted model text the document actually prints.
+
+    Not what it embedded -- :attr:`DetailBudget.embedded` counts that, and the two
+    differ by exactly the draws this document collapsed. Both numbers are printed,
+    beside each other, because the budget sentence is a *completeness* claim and
+    completeness is about what the run produced. Letting that sentence quietly
+    start counting what was printed would shrink the thing it certifies while
+    leaving the wording intact, which is the same failure as stating missing data
+    as zero, in a new coat.
+    """
+    total = 0
+    for section in (model.flips, model.gains, model.unstable):
+        for row in section:
+            if not row.detail_embedded:
+                continue
+            total += len(row.input or "")
+            total += sum(len(text) for text in _draws(row.baseline_outputs).texts)
+            total += sum(len(text) for text in _draws(row.candidate_outputs).texts)
+            total += sum(len(reason) for reason in row.reasons.values())
+    return total
+
+
+def _source_label(value: object) -> str:
+    """A threshold's source, shortened to a basename only when it is a full path.
+
+    The thresholds table prints its source once per row, and on the demo run that
+    is the same absolute path six times, each about 130 characters, in a document
+    whose readable width is 60rem. The full path is already shown once, whole, and
+    where it can be checked, under ``config`` in "What was compared" -- and there
+    only. The provenance block carries the *evidence log's* path and the config
+    *hash*, not the config path, so the prose beneath the table names the one
+    place the whole path is: a shortening that sends a reviewer to a section the
+    path is not in is a hiding.
+
+    Shortened only when :func:`_is_absolute` says so, so that
+    ``THRESHOLD_SOURCE_UNRECORDED`` and any other prose passes through untouched:
+    a sentence containing a slash is not a path, and :func:`_basename` would cut
+    it at the slash.
+
+    **Not put in a ``title=``**, which is what C14a's contract asked for. A
+    Windows path is a scheme by ``_SCHEME_RE``'s reading -- ``C:`` matches
+    ``[a-zA-Z][a-zA-Z0-9+.-]*:`` -- and ``title`` is not exempt under
+    ``_NEVER_DEREFERENCED_RE``, so the tooltip would make
+    :func:`assert_self_contained` refuse the whole document, on Windows only.
+    Measured, not reasoned: see
+    ``test_a_windows_path_in_a_title_attribute_would_fail_the_self_containment_gate``.
+    """
+    text = "" if value is None else str(value)
+    return _basename(text) if _is_absolute(text) else text
 
 
 def _environment() -> Environment:
@@ -3080,8 +4807,23 @@ def _environment() -> Environment:
     env.filters["num3"] = lambda value: _num(_number(value), 3)
     env.filters["num6"] = lambda value: _num(_number(value), 6)
     env.filters["interval"] = _interval
+    # A delta and a span, formatted at the edge rather than on the model, and each
+    # rendering its ``None`` as the dash rather than as a zero -- see _pp and _days.
+    env.filters["pp"] = _pp
+    env.filters["days"] = _days
     env.filters["flag"] = _flag
     env.filters["counts"] = _item_counts
+    # The two hand-rolled SVGs, reached as filters so that each one's markup
+    # enters the document at exactly one point that the template marks ``| safe``.
+    # A helper called anywhere else, or a ``| safe`` on anything else, is caught by
+    # test_the_document_marks_exactly_one_expression_safe_per_hand_rolled_svg_and_no_others,
+    # which asserts the *set* of safe expressions by name: two safes in the wrong
+    # places is the mutation a count would pass.
+    env.filters["interval_bar"] = _banner_bar
+    env.filters["timeline"] = lambda points: timeline_svg(tuple(points))
+    env.filters["draws"] = _draws
+    env.filters["printed_chars"] = _printed_chars
+    env.filters["source_label"] = _source_label
     return env
 
 
@@ -3095,7 +4837,7 @@ def render_html_string(
     stored evidence log and get the file they were sent.
     """
     generated = now or model.generated
-    heading = title or _default_title(model)
+    heading = _warned_title(model, title) if title else _default_title(model)
     template = _environment().get_template(_TEMPLATE_NAME)
     return template.render(
         model=model,
@@ -3149,13 +4891,41 @@ _VERDICT_CLASS = {
 }
 
 
+#: The ``<title>``'s half of the scripted-models warning. Session 3 §5.3 names
+#: five places that say it and calls none of them a footnote; this is the first
+#: of the five, and the only one that survives being pasted into a chat window as
+#: a link preview or read out by a screen reader announcing the tab.
+_FAKE_TITLE_PREFIX = "FAKE MODELS"
+
+
+def _warned_title(model: ReportModel, head: str) -> str:
+    """``head``, carrying the scripted-models warning whenever the report is one.
+
+    Applied to a caller's ``title=`` and not only to :func:`_default_title`,
+    because the two are the same surface and only one of them was covered. §5.3
+    lists the ``<title>`` among the five places that say the models are scripted;
+    ``render_html_string(model, title="Nightly quality report")`` removed it, and
+    the removal is invisible in the body, which still bands. That is the exact
+    failure the rule is written against -- the warning going missing from the
+    thing someone pastes into a deck -- reached through an argument rather than
+    through a flag, which is why the "no ``demo=``/``fake=`` keyword" test never
+    saw it.
+
+    The guard is a *prefix* check and deliberately not a substring one. A title
+    that merely contains the words -- "what our FAKE MODELS review found" -- must
+    still be prefixed, or the suppression vector is spelled out in the docstring
+    of the function that closes it.
+    """
+    if not model.is_demo or head.upper().startswith(_FAKE_TITLE_PREFIX):
+        return head
+    return f"{_FAKE_TITLE_PREFIX} {EM_DASH} {head}"
+
+
 def _default_title(model: ReportModel) -> str:
     base = model.baseline.model_id or "baseline"
     cand = model.candidate.model_id or "candidate"
     head = f"{model.verdict_word} {EM_DASH} {base} to {cand} {EM_DASH} model-migration-kit"
-    if model.is_demo:
-        return f"FAKE MODELS {EM_DASH} {head}"
-    return head
+    return _warned_title(model, head)
 
 
 # --------------------------------------------------------------------------- #

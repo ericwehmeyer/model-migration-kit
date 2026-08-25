@@ -20,18 +20,25 @@ no path, and does not import ``report`` -- ``report`` imports this.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+import hashlib
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from opik_rigor import EvidenceRecord, wilson_interval
 from opik_rigor.distribution import DEFAULT_CONFIDENCE
 
-from .contracts import EVENT_COMPLETION, EVENT_JUDGING_COMPLETED, GoldenItem
+from .contracts import (
+    EVENT_COMPARISON,
+    EVENT_COMPLETION,
+    EVENT_JUDGING_COMPLETED,
+    GoldenItem,
+)
 
 __all__ = [
     "DimensionCell",
     "DimensionCounts",
+    "DimensionTally",
     "MIN_ITEMS_FOR_A_VERDICT",
     "MIN_N_FOR_A_VERDICT",
     "TagCount",
@@ -155,10 +162,748 @@ def _declined(reason: str) -> DimensionCounts:
     return DimensionCounts(available=False, reason=reason, by_model={})
 
 
+def _excerpt(text: str) -> str:
+    """The most of an input this module ever *holds*: enough to quote, never more.
+
+    One character past the limit, so :func:`_shown_excerpt` can still tell a text
+    that was truncated from one that happened to end exactly on the limit.
+    """
+    return text[: _INPUT_SHOWN + 1]
+
+
+def _shown_excerpt(excerpt: str) -> str:
+    if len(excerpt) > _INPUT_SHOWN:
+        return repr(excerpt[:_INPUT_SHOWN] + "...")
+    return repr(excerpt)
+
+
+def _shown_value(value: object) -> str:
+    """``repr`` of anything the log supplied, at the width a quoted input gets.
+
+    Every value a refusal names comes out of an evidence log, and an evidence log
+    is *designed* to be shared -- ``report.py``'s own docstring says the happy path
+    is a log rendered later, on another machine, by somebody who was not there. So
+    a model id, an item id, a judge name and a payload value that should have been
+    a string are all input from outside the trust boundary, and the premise
+    ``tests/test_report_untrusted_input.py`` opens with applies to their *length*
+    as much as to their content.
+
+    The ellipsis sits outside the quotes rather than inside them, which is the one
+    place this differs from :func:`_shown_excerpt`. There the excerpt is a string
+    and ``'abc...'`` is still a readable quotation of a string; here what was cut
+    is a ``repr``, and a truncated ``repr`` is not a ``repr`` of anything. Putting
+    the marker outside says so instead of handing the reader a literal they might
+    trust.
+    """
+    shown = repr(value)
+    if len(shown) > _INPUT_SHOWN:
+        return shown[:_INPUT_SHOWN] + "..."
+    return shown
+
+
+#: How many names a refusal that lists them prints before it starts counting. The
+#: per-name width above bounds each entry and not how many there are, and the
+#: models a log can name is a property of the log rather than of the golden set.
+_MAX_NAMED = 5
+
+
+def _shown_names(names: Sequence[str]) -> str:
+    """A comma-joined list of names, bounded in width *and* in count."""
+    head = ", ".join(_shown_value(one) for one in names[:_MAX_NAMED])
+    rest = len(names) - _MAX_NAMED
+    return f"{head} and {rest} more" if rest > 0 else head
+
+
 def _shown(text: object) -> str:
     if not isinstance(text, str):
-        return repr(text)
-    return repr(text if len(text) <= _INPUT_SHOWN else text[:_INPUT_SHOWN] + "...")
+        # Not a string, so there is no excerpt to take: what gets quoted is the
+        # ``repr``, and it is bounded here rather than filed whole. An earlier
+        # version of this returned the bare ``repr``, and a 2 MB JSON list in the
+        # ``input`` slot of one judge.verdict produced a 1,500,253-character
+        # ``reason`` -- carried on the run, onto ``ReportModel.dimension_counts``,
+        # and into whatever renders it.
+        return _shown_value(text)
+    return _shown_excerpt(_excerpt(text))
+
+
+#: Bytes of digest standing in for an input while the golden set is not yet in
+#: hand. Sixteen rather than thirty-two, and the number holds by a wide margin --
+#: but the sentence that used to justify it named neither place where a collision
+#: would actually matter, so it is worth setting down properly.
+#:
+#: That sentence said a digest here "is ever compared only against digests of the
+#: golden set's *own* inputs -- hundreds or thousands of them". It is not. The
+#: digest is the **key of the tally store**: ``_Run.group``, ``_Run.closed`` and
+#: ``_Run.excerpts`` are all keyed by it, so digests of *log* inputs are compared
+#: against each other, and that population is the log's distinct inputs rather
+#: than the set's. ``DimensionTally``'s own scale paragraph puts it near 19,000
+#: entries at the guard's ceiling -- roughly eighteen times the golden-set
+#: surface, and with no bound but the log above it.
+#:
+#: There are therefore two populations, and 128 bits clears both by about thirty
+#: orders of magnitude. Over a thousand golden-set items the birthday probability
+#: is ~1.5e-33; over the ~19,000 entries a tally holds at the scale guard's
+#: ceiling, ~5e-31; over the ~100,000 verdicts an 86 MB log carries, ~1.5e-29.
+#: Thirty-two bytes would buy nothing measurable and would double the one store
+#: this module exists to keep small.
+#:
+#: **What a collision would do, since nothing would catch it.** ``_index`` builds
+#: ``by_digest`` by assignment, so two golden-set inputs landing on one digest
+#: silently overwrite an item id rather than refusing -- unlike two items sharing
+#: an *input*, which is refused as a precondition. Every verdict for either then
+#: joins to whichever item was seen last, and the matrix comes back available,
+#: complete and wrong. That is the failure mode the width is buying off;
+#: ``test_a_digest_collision_attributes_verdicts_to_the_wrong_item`` demonstrates
+#: it by narrowing the digest to one byte, and
+#: ``test_the_digest_is_sixteen_bytes_wide`` pins the width, because no test at a
+#: realistic scale can tell fifteen bytes from sixteen and the width is the only
+#: control there is.
+_DIGEST_BYTES = 16
+
+
+def _digest(text: str) -> bytes:
+    return hashlib.blake2b(text.encode("utf-8"), digest_size=_DIGEST_BYTES).digest()
+
+
+#: What a verdict is filed under: a golden-set item id once the join can be made,
+#: and a digest of the input until then.
+_Key = str | bytes
+
+
+@dataclass(frozen=True)
+class _Index:
+    """The golden set inverted for the join, or the sentence refusing to invert it."""
+
+    by_input: Mapping[str, str]
+    by_digest: Mapping[bytes, str]
+    tags: frozenset[str]
+    reason: str
+
+
+def _index(items: Mapping[str, GoldenItem]) -> _Index:
+    """Invert the golden set once: input -> id, digest -> id, and the tag universe.
+
+    The duplicate-input guard lives here, which makes it a *precondition on
+    ``items``* rather than something that fires only when a verdict lands on the
+    ambiguous input. Three reasons. The join runs set -> input, so the collision is
+    discovered here or not at all; a stream cannot be rewound to re-ask the
+    question later. Deferring it would make availability depend on which items
+    happened to be sampled, so one golden set would render on Tuesday and refuse
+    on Wednesday with nothing in the document to say why. And the defect is in the
+    set, not in the run: the fix -- give the two items distinct inputs -- is the
+    same whether or not a verdict landed on them. The cost is refusing a matrix
+    that would have been arithmetically correct; the price of the other reading is
+    a refusal nobody can reproduce.
+
+    ``by_digest`` is built whether or not anything will read it. It is one hash per
+    golden-set item, against a log the rest of this module exists to avoid holding,
+    and the alternative -- building it only on the deferred path -- would make the
+    two phases disagree about what the golden set is, which is the one thing an
+    index must not do.
+    """
+    by_input: dict[str, str] = {}
+    by_digest: dict[bytes, str] = {}
+    tags: set[str] = set()
+    for item_id, item in items.items():
+        assert len(set(item.tags)) == len(item.tags), (
+            f"golden-set item {item_id!r} carries duplicate tags {item.tags!r}; "
+            f"goldenset._parse_tags returns a duplicate-free tuple, so this mapping "
+            f"did not come from a parsed golden set"
+        )
+        first = by_input.get(item.input)
+        if first is not None:
+            return _Index(
+                by_input={},
+                by_digest={},
+                tags=frozenset(),
+                reason=(
+                    f"golden-set items {_shown_value(first)} and "
+                    f"{_shown_value(item_id)} share the same input "
+                    f"text. A verdict joins to an item by its input -- judge.verdict "
+                    f"carries no item id -- and a golden set enforces unique ids and "
+                    f"not unique inputs, so these two cannot be told apart and every "
+                    f"verdict for either would be attributed to whichever was seen "
+                    f"first."
+                ),
+            )
+        by_input[item.input] = item_id
+        by_digest[_digest(item.input)] = item_id
+        # The key set is the golden set's own tag universe, so ``UNTAGGED``
+        # appears exactly when some item carries no tags and is absent otherwise.
+        # This is not in tension with the zero-cells below: a tag that exists in
+        # the set and produced nothing is a finding, while an "untagged" row for a
+        # set in which every item is tagged is a category that does not exist.
+        tags.update(item.tags or (UNTAGGED,))
+    return _Index(by_input=by_input, by_digest=by_digest, tags=frozenset(tags), reason="")
+
+
+def _unjoinable(judge: str, shown: str) -> str:
+    return (
+        f"a judge.verdict for judge {_shown_value(judge)} carries an input that is in "
+        f"no golden-set item: {shown}. The golden set's hash was "
+        f"already checked against the one the run used, so an unjoinable "
+        f"input means the log and the set disagree in a way that hash did "
+        f"not catch."
+    )
+
+
+def _unknown_item(model_id: object, item_id: object) -> str:
+    return (
+        f"a failed migkit.completion for {_shown_value(model_id)} names item "
+        f"{_shown_value(item_id)}, which is in no golden-set item. Guessing "
+        f"which item failed would move a failure to the wrong tag."
+    )
+
+
+def _for_judge(mapping: object, judge: str) -> int:
+    return mapping.get(judge, 0) if isinstance(mapping, Mapping) else 0
+
+
+def _judges_named(*sources: object) -> set[str]:
+    """Every judge the sources between them mention.
+
+    A judge with an open group and no entry in ``graded`` is a group of verdicts
+    the closing record says were never written, and a judge in ``graded`` with no
+    open group is the same disagreement seen from the other side. Both are the
+    shortfall the group-size check exists to catch, so the check runs over the
+    union rather than over either side alone.
+    """
+    names: set[str] = set()
+    for source in sources:
+        if isinstance(source, Mapping):
+            names.update(str(key) for key in source)
+    return names
+
+
+@dataclass(frozen=True)
+class _NoModelClose:
+    """A ``migkit.judging_completed`` that named no model, held until a judge asks.
+
+    The sentence names a judge and how many of *that judge's* verdicts the record
+    was closing, and neither is known when the record goes past: a tally reads
+    every judge the panel wrote and is told which one the document wants
+    afterwards. So the two facts that vary are captured and the sentence written on
+    demand, rather than a sentence being written about the wrong judge.
+    """
+
+    sizes: Mapping[str, int]
+
+    def text(self, judge: str) -> str:
+        return (
+            f"a migkit.judging_completed record names no model, so the "
+            f"{self.sizes.get(judge, 0)} verdict(s) for judge "
+            f"{_shown_value(judge)} that it closes cannot be attributed to a side."
+        )
+
+
+@dataclass
+class _Run:
+    """One run's tally: everything a single ``migkit.comparison`` closes over.
+
+    Every field here is keyed by *distinct input* and by the panel rather than by
+    the record, so a set sampled fifty times per item costs what the same set
+    sampled once costs, and ``excerpts`` holds at most :data:`_INPUT_SHOWN`
+    characters per distinct input -- the one thing a refusal has to be able to
+    quote.
+
+    **That is not the same as being bounded by the golden set, and this docstring
+    used to say it was.** Distinct inputs are the golden set's size only while the
+    inputs come from the golden set, which is true of a real judging pass and is
+    not true of a log. An input that joins to no item is filed like any other while
+    the join is deferred -- the deferred phase cannot recognise it, which is what
+    "deferred" means -- so a log of such inputs grows these fields linearly at a
+    measured 317 bytes each, with no bound but the log. See
+    :class:`DimensionTally`, which sets out where the bound is the golden set's and
+    where it is not, and what that costs at the scale guard's ceiling.
+    """
+
+    #: judge -> model -> key -> [n, passes]. A model reaches this only once a
+    #: ``migkit.judging_completed`` has named it.
+    closed: dict[str, dict[str, dict[_Key, list[int]]]] = field(default_factory=dict)
+    #: judge -> key -> [n, passes], for the group no ``judging_completed`` has
+    #: closed yet. The side comes from ordering, and this is what waits for it.
+    group: dict[str, dict[_Key, list[int]]] = field(default_factory=dict)
+    #: judge -> verdict *records* in the open group. Not ``len(group)``: the group
+    #: is keyed by distinct input and the group-size check counts records.
+    group_size: dict[str, int] = field(default_factory=dict)
+    verdicts: dict[str, int] = field(default_factory=dict)
+    closes: int = 0
+    closed_models: set[str] = field(default_factory=set)
+    #: model -> item id -> failed completions. Judge-independent by construction: a
+    #: completion that failed never reached ``evaluate()`` under any judge.
+    failed: dict[str, dict[str, int]] = field(default_factory=dict)
+    #: ``(the judge this refusal is about or None for every judge, the sentence)``,
+    #: in the order the stream produced them -- so the first entry a judge matches
+    #: is the one a function returning at the first refusal would have returned.
+    refusals: list[tuple[str | None, str | _NoModelClose]] = field(default_factory=list)
+    refused: set[str] = field(default_factory=set)
+    refused_all: bool = False
+    #: digest -> the first :data:`_INPUT_SHOWN` characters of the input behind it.
+    #: Populated only while the join is deferred; the joined phase files under the
+    #: item id and has the input in hand at the moment it needs to quote it.
+    excerpts: dict[bytes, str] = field(default_factory=dict)
+
+    def refuse(self, judge: str | None, reason: str | _NoModelClose) -> None:
+        self.refusals.append((judge, reason))
+        if judge is None:
+            self.refused_all = True
+        else:
+            self.refused.add(judge)
+
+    def reason_for(self, judge: str) -> str | None:
+        for scope, reason in self.refusals:
+            if scope is None or scope == judge:
+                return reason if isinstance(reason, str) else reason.text(judge)
+        return None
+
+
+class DimensionTally:
+    """Per-tag counting in two phases: read the log, then join it to the golden set.
+
+    :func:`dimension_counts` is this class with both phases run back to back, and is
+    the shape to reach for whenever the golden set is already in hand. This one
+    exists for the caller that cannot have it yet.
+
+    **Why the phases had to come apart.** ``report.from_evidence`` rebuilds the
+    document in *one* streaming pass over the evidence log -- C3 requires it and
+    ``tests/test_report.py`` counts the text-mode opens of the file -- and the
+    golden set's path and hash live in the ``migkit.comparison`` payload, which is
+    written *after* judging and is therefore among the last records that pass sees.
+    So the verdicts arrive before the thing they join to. Reading the log again is
+    the one-pass rule; buffering the verdicts is the memory claim ``evidence.py``
+    measured at 5.0-5.8 times the log's own bytes resident, since a ``judge.verdict``
+    embeds the input, the output and the judge's raw reply for every completion.
+    Both roads were closed, and this is the third: hold neither the records nor the
+    inputs, only what a join will need.
+
+    **What survives the pass is bounded by the golden set, not by the log.** A
+    verdict is filed under a 16-byte digest of its input, and repeated draws of one
+    item collapse onto one key -- so a thousand items judged fifty times each costs
+    a thousand entries per side and per judge, not fifty thousand. Beside each key
+    sits at most :data:`_INPUT_SHOWN` characters of the input. That excerpt is the
+    reason the deferred phase can still write the *same* refusal sentence the
+    joined phase writes: the disclosure did not have to be traded away for the
+    memory bound, because an excerpt is bounded for exactly the reason the digest
+    is.
+
+    **Measured, because "bounded" is a claim and not an argument.** One entry costs
+    317 bytes: a 16-byte digest as a ``bytes`` object, the ``[n, passes]`` list, the
+    excerpt, and the two dict slots holding them. Against records carrying a 4 KB
+    input, an output and a raw reply -- rigor's real shape -- buffering costs 5,211
+    bytes *per verdict*. So a thousand items drawn fifty times holds 311 KiB here
+    against 248 MB buffered, and the 311 KiB does not move between one draw and
+    fifty. That flatness is the property; the ratio is a consequence of it, and
+    ``test_repeated_draws_of_one_item_cost_the_deferred_store_nothing_extra`` pins
+    it.
+
+    **Where the bound is the golden set's, and where it is not.** Entries are keyed
+    by distinct *input*, and a real judging pass draws its inputs from the golden
+    set, so distinct inputs are the set's size and the paragraph above holds. An
+    input that joins to no item is the exception, and the two phases are not
+    symmetric about it. The joined phase recognises it immediately, latches the
+    refusal, and every later verdict for that judge returns at the top of
+    :meth:`_verdict` -- so the store stops growing at the first one. The deferred
+    phase cannot recognise it at all: that is what "deferred" means, and the golden
+    set that would settle it has not arrived. So it files the digest and the
+    excerpt like any other, and a log of inputs that join to nothing grows the
+    store linearly at those 317 bytes, with no bound but the log.
+
+    This is not hypothetical -- it is exactly what ``_inflate`` in
+    ``tests/test_evidence_scale.py`` writes, one distinct synthetic input per
+    record, and therefore what the peak-allocation guard there measures. It passes
+    with room: 2.68 MB peak on a 24 MB log against that test's 8 MB ceiling, where
+    the same guard measured 2.28 MB before this module was wired in. That leaves
+    about 5.7 MB of headroom, which is roughly **19,000 entries** at 317 bytes.
+
+    **How much log 19,000 entries is depends entirely on the log's shape, and this
+    paragraph used to answer it with the wrong log's.** It said "about 220 MB of
+    log; the 86 MB log that motivated ``stream_records`` lands near 4.5 MB" --
+    which computes at ``_inflate``'s shape, a measured 12,243 bytes per record,
+    while naming the 86 MB log from ``test_evidence_scale.py``'s own header. Those
+    are two different logs. The irony is worth recording in the place it happened:
+    the sentence takes one log's identity and another log's shape, which is the
+    class of error it was written to correct.
+
+    Both shapes, computed:
+
+    * At ``_inflate``'s 12,243 bytes per record, one verdict each, the ceiling
+      arrives at about **232 MB** of log, and 86 MB of it holds ~7,000 verdicts
+      for a peak near 4.6 MB. Those are the two numbers the old sentence gave, and
+      they are right about ``_inflate``.
+    * The header's 86 MB log is ~200,000 records at ~430 bytes, of which ~100,000
+      are verdicts. All non-joining, that is ~100,000 entries -- **about 32 MB**,
+      four times the ceiling -- and the ceiling arrives at roughly **15 MB** of
+      such a log, not 220 MB.
+
+    So the guard passes because ``_inflate`` writes very large records, not because
+    the bound is comfortable. On a real log of rigor-shaped verdicts the margin is
+    an order of magnitude smaller than the old sentence suggested, and the case
+    that matters is a log whose inputs join to nothing -- a golden set swapped
+    under a run, which is precisely the disagreement the unjoinable refusal exists
+    to name.
+
+    It is recorded rather than fixed because no fix preserves the semantics: the
+    entries are needed if a later ``migkit.comparison`` closes the run they are
+    accumulating into, and nothing in a stream can see that coming.
+
+    An input that is not a string is refused where it is read rather than filed. It
+    can join to no golden set at all, so nothing is learned by keeping it.
+
+    **A refusal sentence is bounded too, and it was not always.** This paragraph
+    used to end "``repr`` of an arbitrary payload value has no length this module
+    controls", offering that as the reason for refusing rather than filing -- and
+    the refusal then carried the whole ``repr`` anyway, so the value was not filed
+    but was still held, on the run, on ``ReportModel.dimension_counts``, and into
+    whatever renders it. Measured on the build before the fix: a 2 MB JSON list in
+    one ``judge.verdict``'s ``input`` slot produced a 1,500,253-character
+    ``reason``, and a 500,000-character ``model_id`` on one failed
+    ``migkit.completion`` produced a 500,145-character one, while a 2,000,000-
+    character *string* input truncated correctly to 335. Every value a refusal
+    names now goes through :func:`_shown_value`, and the one refusal that lists
+    names rather than naming one goes through :func:`_shown_names`, which bounds
+    the count as well -- 10,000 models known only from failed completions
+    measured 139,248 characters, and no golden set bounds how many models a log
+    may name.
+
+
+    **Every judge on the panel is tallied, and the judge is named at the end.**
+    ``report`` learns which judge to count from the ``judges`` list on that same
+    ``migkit.comparison`` record, so the filter cannot be applied on the way past
+    either. A panel writes one verdict per judge per completion, so this multiplies
+    the store by the panel size -- three or four, against a log of hundreds of
+    thousands of records.
+
+    **The matrix is one run's, and the run is the one the last
+    ``migkit.comparison`` closed.** See :meth:`add`.
+    """
+
+    def __init__(self, items: Mapping[str, GoldenItem] | None = None) -> None:
+        """Args:
+        items: the golden set, ``gs_view["by_id"]``, when it is already known.
+            Passing it makes the join happen as each verdict goes past, which is
+            what :func:`dimension_counts` does; leaving it out defers the join to
+            :meth:`counts`, which is what a single pass over an evidence log needs.
+        """
+        self._by_id = items
+        self._index: _Index | None = None if items is None else _index(items)
+        self._joined = self._index is not None and not self._index.reason
+        self._run = _Run()
+        self._closed_run: _Run | None = None
+
+    def add(self, record: EvidenceRecord) -> None:
+        """Read one record of the evidence log, holding none of it.
+
+        **A ``migkit.comparison`` ends a run rather than being ignored, and that is
+        the answer to "is the matrix per-run or cumulative".** It is per-run.
+
+        A log of fourteen nightly runs holds fourteen judging passes, and summing
+        them would print a matrix of fourteen nights directly beneath a banner
+        reporting the last one, with nothing on the page able to reconcile the two
+        numbers. Everything else ``ReportModel.from_evidence`` reads -- the verdict,
+        the judges, the thresholds, the flips, the completeness strip -- comes from
+        the *last* ``migkit.comparison``. The timeline is the one deliberately
+        cumulative thing in the document and its own docstring says so. The matrix
+        sits under the banner and breaks the banner's number down by tag, so it is
+        the banner's run or it is a second, unlabelled claim about a different
+        population.
+
+        Cumulative is also the unsound reading, not merely the confusing one. A
+        golden set can change between nights; the hash check that guards this one is
+        against the last comparison's ``goldenset_hash`` alone. Summing across nights
+        would add verdicts taken against sets nobody checked against each other,
+        over a tag universe that is not the same universe -- and would do it
+        silently, because a tag that exists in both sets looks like one column.
+
+        So the tally is snapshotted and reset at every ``migkit.comparison``, and
+        :meth:`counts` reports the last snapshot. Two consequences worth stating.
+        Verdicts *after* the last comparison belong to a judging pass that was never
+        compared -- a night still running, or one that died before deciding -- and
+        are read and dropped rather than counted. And a log holding no
+        ``migkit.comparison`` at all is one run, which is what a caller handing over
+        a hand-built stream of judging records means and is what
+        :func:`dimension_counts` has always done.
+        """
+        payload = record.payload if isinstance(record.payload, Mapping) else {}
+
+        if record.event_type == EVENT_COMPARISON:
+            # A comparison closes a run only if there was a run under it. An empty
+            # stretch between two comparisons is not a night that judged nothing;
+            # it is the tail of the night before, and treating it as a run of its
+            # own would let a `migkit.comparison` appended to a log erase a matrix
+            # that is still the right one -- which is the same field-invariance
+            # `test_prepending_an_earlier_run_changes_no_field_but_the_series`
+            # asserts for every other field on the model.
+            #
+            # `refusals` is in that test on its own account and not for symmetry.
+            # A global refusal latches `refused_all`, which returns at the top of
+            # this method for every later record -- so a run whose first record is
+            # a failed `migkit.completion` naming no model, or naming an item id
+            # that is missing or not a string, reaches its `migkit.comparison`
+            # with no close, no verdict and no failure filed. Without this clause
+            # that run reads as an empty stretch and is discarded *with its
+            # refusal inside it*: the reader gets the previous night's cells under
+            # tonight's banner and no sentence saying so, or -- on a log with no
+            # earlier night -- the "no migkit.judging_completed record" refusal,
+            # which is false and sends them after the wrong fix. A refusal is the
+            # loudest thing a run can produce and is the last thing that may be
+            # swallowed. The empty stretch this guard was written for is a
+            # `migkit.verdict` between two comparisons, which refuses nothing.
+            if (
+                self._run.closes
+                or self._run.verdicts
+                or self._run.failed
+                or self._run.refusals
+            ):
+                self._closed_run = self._run
+            self._run = _Run()
+            return
+
+        run = self._run
+        if run.refused_all:
+            # The refusal is global and already latched; no later record can change
+            # the sentence, and accumulating past it would grow a store whose only
+            # reader has already declined.
+            return
+
+        if record.event_type == _EVENT_JUDGE_VERDICT:
+            self._verdict(run, payload)
+        elif record.event_type == EVENT_JUDGING_COMPLETED:
+            self._close(run, payload)
+        elif record.event_type == EVENT_COMPLETION and payload.get("ok") is False:
+            self._failure(run, payload)
+
+    def _verdict(self, run: _Run, payload: Mapping[str, Any]) -> None:
+        judge = payload.get("judge")
+        if not isinstance(judge, str) or judge in run.refused:
+            return
+        run.verdicts[judge] = run.verdicts.get(judge, 0) + 1
+
+        text = payload.get("input")
+        key: _Key
+        if not isinstance(text, str):
+            run.refuse(judge, _unjoinable(judge, _shown(text)))
+            return
+        if self._joined:
+            assert self._index is not None
+            joined = self._index.by_input.get(text)
+            if joined is None:
+                run.refuse(judge, _unjoinable(judge, _shown(text)))
+                return
+            # The id rather than the input: this group is held until the next
+            # migkit.judging_completed, and the input is the largest string in the
+            # payload.
+            key = joined
+        else:
+            key = _digest(text)
+            if key not in run.excerpts:
+                run.excerpts[key] = _excerpt(text)
+
+        group = run.group.setdefault(judge, {})
+        slot = group.get(key)
+        if slot is None:
+            slot = group[key] = [0, 0]
+        slot[0] += 1
+        slot[1] += 1 if payload.get("passed") else 0
+        run.group_size[judge] = run.group_size.get(judge, 0) + 1
+
+    def _close(self, run: _Run, payload: Mapping[str, Any]) -> None:
+        run.closes += 1
+        model_id = payload.get("model_id")
+        if not isinstance(model_id, str) or not model_id:
+            run.refuse(None, _NoModelClose(dict(run.group_size)))
+            return
+
+        graded = payload.get("graded")
+        imputed = payload.get("imputed")
+        failures = payload.get("parse_failures")
+        for judge in _judges_named(graded, imputed, failures, run.group):
+            if judge in run.refused:
+                continue
+            n_graded = _for_judge(graded, judge)
+            n_imputed = _for_judge(imputed, judge)
+            n_failed = _for_judge(failures, judge)
+            expected = n_graded - n_imputed - n_failed
+            written = run.group_size.get(judge, 0)
+            if written != expected:
+                run.refuse(
+                    judge,
+                    f"judging for {_shown_value(model_id)} closed a group of "
+                    f"{written} judge.verdict record(s) for judge "
+                    f"{_shown_value(judge)}, but that record "
+                    f"says {expected} were written ({n_graded} graded - {n_imputed} "
+                    f"imputed - {n_failed} unparseable, since an imputed or "
+                    f"unparseable record never reaches evaluate() and so writes no "
+                    f"verdict). Judging skips already-graded records on a resume, so "
+                    f"a resumed pass writes fewer verdicts to this log than the "
+                    f"judged artifact holds, and counting them anyway would "
+                    f"under-report every tag by an amount nothing in the log reveals.",
+                )
+                continue
+            per_model = run.closed.setdefault(judge, {}).setdefault(model_id, {})
+            for key, counted in run.group.get(judge, {}).items():
+                slot = per_model.get(key)
+                if slot is None:
+                    slot = per_model[key] = [0, 0]
+                slot[0] += counted[0]
+                slot[1] += counted[1]
+        # A side that was judged gets a column even if it produced nothing: zeros
+        # are a finding, a missing column is a silence. Recorded on the run rather
+        # than under a judge, because which judge the document will ask for is not
+        # known here and a side was judged by the whole panel or by none of it.
+        run.closed_models.add(model_id)
+        run.group.clear()
+        run.group_size.clear()
+
+    def _failure(self, run: _Run, payload: Mapping[str, Any]) -> None:
+        model_id = payload.get("model_id")
+        item_id = payload.get("item_id")
+        if not isinstance(model_id, str) or not model_id:
+            run.refuse(
+                None,
+                "a failed migkit.completion names no model, so the completion it "
+                "records cannot be counted against a side, and dropping it would "
+                "take a failure out of the denominator.",
+            )
+            return
+        if not isinstance(item_id, str) or (self._joined and not self._knows(item_id)):
+            # Refused where it is read when the golden set is already in hand, and
+            # at the join when it is not. Either way the item id itself is small, so
+            # the deferred path holds it and refuses with the same sentence.
+            run.refuse(None, _unknown_item(model_id, item_id))
+            return
+        per_item = run.failed.setdefault(model_id, {})
+        per_item[item_id] = per_item.get(item_id, 0) + 1
+
+    def _knows(self, item_id: str) -> bool:
+        return self._by_id is not None and item_id in self._by_id
+
+    def counts(
+        self, items: Mapping[str, GoldenItem] | None = None, *, judge: str
+    ) -> DimensionCounts:
+        """Join what was tallied to the golden set, for one judge.
+
+        The refusals are returned in the order the single-pass form would have
+        reached them: whatever the stream latched first, then the join, then the
+        four questions only the end of a run can answer -- no judging pass at all,
+        a group still open, a judge that wrote nothing, and a model known only from
+        the completions that failed.
+
+        Args:
+            items: the golden set, ``gs_view["by_id"]``. Required unless the tally
+                was built with it; passing it again re-indexes the set, so the
+                caller that already handed it over passes nothing.
+            judge: whose verdicts to count. A panel writes one verdict per judge per
+                completion, so mixing two judges would multiply every denominator by
+                the panel size.
+
+        Returns:
+            Counts for every model the run named, or ``available=False`` and a
+            reason. A refusal never arrives with a partial matrix -- see
+            :class:`DimensionCounts`.
+
+        Raises:
+            ValueError: if no golden set was given here or at construction. The
+                alternative is an empty matrix built against an empty set, which is
+                a plausible-looking table of zeros.
+        """
+        by_id = self._by_id if items is None else items
+        index = self._index if items is None else _index(items)
+        if by_id is None or index is None:
+            raise ValueError(
+                "DimensionTally.counts needs the golden set: it was not given one at "
+                "construction, so it has to be handed the items it joins against"
+            )
+        if index.reason:
+            return _declined(index.reason)
+
+        run = self._closed_run if self._closed_run is not None else self._run
+
+        latched = run.reason_for(judge)
+        if latched is not None:
+            return _declined(latched)
+
+        counts: dict[str, dict[str, _Acc]] = {}
+
+        def attribute(model_id: str, item_id: str, n: int, passes: int) -> None:
+            per_tag = counts.setdefault(model_id, {})
+            for tag in by_id[item_id].tags or (UNTAGGED,):
+                acc = per_tag.get(tag)
+                if acc is None:
+                    acc = per_tag[tag] = _Acc()
+                acc.n += n
+                acc.passes += passes
+                acc.item_ids.add(item_id)
+
+        for model_id, keyed in run.closed.get(judge, {}).items():
+            counts.setdefault(model_id, {})
+            for key, counted in keyed.items():
+                if isinstance(key, str):
+                    item_id: str | None = key
+                else:
+                    item_id = index.by_digest.get(key)
+                    if item_id is None:
+                        return _declined(
+                            _unjoinable(judge, _shown_excerpt(run.excerpts[key]))
+                        )
+                attribute(model_id, item_id, counted[0], counted[1])
+
+        for model_id, per_item in run.failed.items():
+            counts.setdefault(model_id, {})
+            for item_id, how_many in per_item.items():
+                if item_id not in by_id:
+                    return _declined(_unknown_item(model_id, item_id))
+                attribute(model_id, item_id, how_many, 0)
+
+        for model_id in run.closed_models:
+            counts.setdefault(model_id, {})
+
+        if run.closes == 0:
+            return _declined(
+                f"the log holds no migkit.judging_completed record, so no verdict can be "
+                f"attributed to a model and judge {_shown_value(judge)} has no side to "
+                f"count under. A "
+                f"judging pass either did not run or did not finish."
+            )
+        if run.group.get(judge):
+            return _declined(
+                f"{run.group_size.get(judge, 0)} judge.verdict record(s) for judge "
+                f"{_shown_value(judge)} are still open at the end of the log: no "
+                f"migkit.judging_completed follows them, so nothing names which model "
+                f"they belong to. A judging pass did not complete."
+            )
+        if run.verdicts.get(judge, 0) == 0:
+            return _declined(
+                f"judge {_shown_value(judge)} produced no judge.verdict records anywhere "
+                f"in this log. "
+                f"Either no judging pass ran under that name, or the panel spells it "
+                f"differently there."
+            )
+        unclosed = sorted(set(counts) - run.closed_models)
+        if unclosed:
+            return _declined(
+                f"the log names {_shown_names(unclosed)} only in failed "
+                f"migkit.completion records: no migkit.judging_completed ever closes a "
+                f"group for that model, so its judging pass did not run or did not "
+                f"finish. Counting it anyway would publish a column built entirely out "
+                f"of the completions that failed -- a full, plausible matrix in which a "
+                f"truncated run reads as a model that got everything wrong."
+            )
+
+        by_model = {
+            model_id: {
+                # A tag that was in the golden set and produced nothing for this
+                # model is a finding rather than an absence, so the key is present
+                # and zero.
+                tag: (
+                    TagCount(per_tag[tag].passes, per_tag[tag].n, len(per_tag[tag].item_ids))
+                    if tag in per_tag
+                    else TagCount(0, 0, 0)
+                )
+                for tag in sorted(index.tags)
+            }
+            for model_id, per_tag in counts.items()
+        }
+        return DimensionCounts(available=True, reason="", by_model=by_model)
 
 
 def dimension_counts(
@@ -171,10 +916,16 @@ def dimension_counts(
 
     ``records`` is what :func:`evidence.stream_records` yields, and it is consumed
     as a stream. A ``judge.verdict`` embeds the input, the output and the judge's
-    raw reply for every completion, and holding a log was measured at 5.0-5.8
-    times the log's own bytes resident; nothing here materialises the records, and
-    the largest thing held is one ``(item id, passed)`` pair per verdict in the
-    currently open judging group. ``items`` is ``gs_view["by_id"]``, id -> item.
+    raw reply for every completion, and holding a log was measured at 5.0-5.8 times
+    the log's own bytes resident; nothing here materialises the records, and the
+    largest thing held is one ``(item id, passes, n)`` entry per *distinct input* in
+    the currently open judging group. ``items`` is ``gs_view["by_id"]``, id -> item.
+
+    This is :class:`DimensionTally` with both of its phases run back to back, and it
+    is the shape to reach for whenever the golden set is already in hand. The caller
+    that cannot have it yet -- ``report.from_evidence``, whose single pass meets the
+    verdicts long before it meets the ``migkit.comparison`` record that names the
+    golden set -- drives the two phases itself.
 
     **The join is by input text, because a verdict carries no item id.** Judging
     passes the golden-set input through to the judge verbatim, so an item is
@@ -199,217 +950,58 @@ def dimension_counts(
     *judge* having been unintelligible, and that conflating the two would let an
     unreliable judge read as an unreliable model. In the log they are
     ``judge.parse_failure`` records, which carry no ``input`` and therefore cannot
-    join to an item at all -- so a dimension view that agrees with the gate above
-    it needs no branch here, only this paragraph. Imputed records stay in, from the
+    join to an item at all -- so a dimension view that agrees with the gate above it
+    needs no branch here, only this paragraph. Imputed records stay in, from the
     same source: a model that times out has told us something.
 
-    Every failure is a refusal carrying a reason, never a silent approximation.
-    Two items sharing an input, a verdict whose input joins to nothing, a judging
-    group short of what the log says was written, verdicts left open at the end of
-    the stream, a model seen only in failed completions, and a judge that produced
+    Every failure is a refusal carrying a reason, never a silent approximation. Two
+    items sharing an input, a verdict whose input joins to nothing, a judging group
+    short of what the log says was written, verdicts left open at the end of the
+    stream, a model seen only in failed completions, and a judge that produced
     nothing anywhere are all declines.
 
     **"No judging_completed at all" and "this judge produced no verdicts" stay two
-    refusals, checked in that order.** They fire together on an empty log, so it
-    is tempting to merge them, and merging them would cost the reader the only
-    thing a refusal is for. The first says judging never ran, and the fix is to
-    run it. The second says judging ran and wrote nothing under this name, and the
-    fix is to check how the panel spells the judge. Answering the second question
-    to someone whose real problem is the first sends them hunting a name that was
-    never wrong, so the no-judging check goes first. The distinguisher is the
-    sentence and deliberately not a machine-readable code: the caller prints
-    ``reason``, and a code that is only ever printed is a second home for a fact
-    that already has one.
+    refusals, checked in that order.** They fire together on an empty log, so it is
+    tempting to merge them, and merging them would cost the reader the only thing a
+    refusal is for. The first says judging never ran, and the fix is to run it. The
+    second says judging ran and wrote nothing under this name, and the fix is to
+    check how the panel spells the judge. Answering the second question to someone
+    whose real problem is the first sends them hunting a name that was never wrong,
+    so the no-judging check goes first. The distinguisher is the sentence and
+    deliberately not a machine-readable code: the caller prints ``reason``, and a
+    code that is only ever printed is a second home for a fact that already has one.
 
-    The expected size of a judging group is ``graded - imputed - parse_failures``
-    for this judge, not ``graded``. ``graded`` counts every ``JudgeRecord``
-    written, and an imputed or unparseable record never calls ``evaluate()`` and so
-    emits no ``judge.verdict``; comparing against ``graded`` alone would decline
-    every run in which a single completion failed.
+    The expected size of a judging group is ``graded - imputed - parse_failures`` for
+    this judge, not ``graded``. ``graded`` counts every ``JudgeRecord`` written, and
+    an imputed or unparseable record never calls ``evaluate()`` and so emits no
+    ``judge.verdict``; comparing against ``graded`` alone would decline every run in
+    which a single completion failed.
+
+    A log holding more than one ``migkit.comparison`` is more than one run, and what
+    comes back is the last complete one rather than the sum -- see
+    :meth:`DimensionTally.add`. A stream with no comparison record in it, which is
+    what a hand-built list of judging records is, is one run and is counted whole.
 
     Args:
         records: the evidence log, streamed.
         items: golden-set items by id, from ``gs_view["by_id"]``.
         judge: whose verdicts to count. A panel writes one verdict per judge per
-            completion, so mixing two judges would multiply every denominator by
-            the panel size.
+            completion, so mixing two judges would multiply every denominator by the
+            panel size.
 
     Returns:
         Counts for every model the log names, or ``available=False`` and a reason.
     """
-    # The golden set is checked before a single record is read, and the
-    # duplicate-input guard below is therefore a *precondition on ``items``*
-    # rather than something that fires only when a verdict lands on the ambiguous
-    # input. Three reasons. The join runs set -> input, so the collision is
-    # discovered here or not at all; a stream cannot be rewound to re-ask the
-    # question later. Deferring it would make availability depend on which items
-    # happened to be sampled, so one golden set would render on Tuesday and refuse
-    # on Wednesday with nothing in the document to say why. And the defect is in
-    # the set, not in the run: the fix -- give the two items distinct inputs -- is
-    # the same whether or not a verdict landed on them. The cost is refusing a
-    # matrix that would have been arithmetically correct; the price of the other
-    # reading is a refusal nobody can reproduce.
-    by_input: dict[str, str] = {}
-    tag_universe: set[str] = set()
-    for item_id, item in items.items():
-        assert len(set(item.tags)) == len(item.tags), (
-            f"golden-set item {item_id!r} carries duplicate tags {item.tags!r}; "
-            f"goldenset._parse_tags returns a duplicate-free tuple, so this mapping "
-            f"did not come from a parsed golden set"
-        )
-        first = by_input.get(item.input)
-        if first is not None:
-            return _declined(
-                f"golden-set items {first!r} and {item_id!r} share the same input "
-                f"text. A verdict joins to an item by its input -- judge.verdict "
-                f"carries no item id -- and a golden set enforces unique ids and not "
-                f"unique inputs, so these two cannot be told apart and every verdict "
-                f"for either would be attributed to whichever was seen first."
-            )
-        by_input[item.input] = item_id
-        # The key set is the golden set's own tag universe, so ``UNTAGGED``
-        # appears exactly when some item carries no tags and is absent otherwise.
-        # This is not in tension with the zero-cells below: a tag that exists in
-        # the set and produced nothing is a finding, while an "untagged" row for a
-        # set in which every item is tagged is a category that does not exist.
-        tag_universe.update(item.tags or (UNTAGGED,))
-
-    counts: dict[str, dict[str, _Acc]] = {}
-    closed_models: set[str] = set()
-    group: list[tuple[str, bool]] = []
-    verdicts_seen = 0
-    closes_seen = 0
-
-    def attribute(model_id: str, item_id: str, passed: bool) -> None:
-        per_tag = counts.setdefault(model_id, {})
-        for tag in items[item_id].tags or (UNTAGGED,):
-            acc = per_tag.get(tag)
-            if acc is None:
-                acc = per_tag[tag] = _Acc()
-            acc.n += 1
-            if passed:
-                acc.passes += 1
-            acc.item_ids.add(item_id)
-
+    tally = DimensionTally(items)
+    # The golden set is checked before a single record is read, and the stream is
+    # not touched at all when that check fails: see :func:`_index` for why the
+    # duplicate-input guard is a precondition rather than a lazy trigger.
+    refusal = "" if tally._index is None else tally._index.reason
+    if refusal:
+        return _declined(refusal)
     for record in records:
-        payload = record.payload if isinstance(record.payload, Mapping) else {}
-
-        if record.event_type == _EVENT_JUDGE_VERDICT:
-            if payload.get("judge") != judge:
-                continue
-            verdicts_seen += 1
-            text = payload.get("input")
-            item_id = by_input.get(text) if isinstance(text, str) else None
-            if item_id is None:
-                return _declined(
-                    f"a judge.verdict for judge {judge!r} carries an input that is in "
-                    f"no golden-set item: {_shown(text)}. The golden set's hash was "
-                    f"already checked against the one the run used, so an unjoinable "
-                    f"input means the log and the set disagree in a way that hash did "
-                    f"not catch."
-                )
-            # The id rather than the input: this group is held until the next
-            # migkit.judging_completed, and the input is the largest string in the
-            # payload.
-            group.append((item_id, bool(payload.get("passed"))))
-
-        elif record.event_type == EVENT_JUDGING_COMPLETED:
-            closes_seen += 1
-            model_id = payload.get("model_id")
-            if not isinstance(model_id, str) or not model_id:
-                return _declined(
-                    f"a migkit.judging_completed record names no model, so the "
-                    f"{len(group)} verdict(s) for judge {judge!r} that it closes "
-                    f"cannot be attributed to a side."
-                )
-            graded = payload.get("graded")
-            imputed = payload.get("imputed")
-            failures = payload.get("parse_failures")
-            n_graded = graded.get(judge, 0) if isinstance(graded, Mapping) else 0
-            n_imputed = imputed.get(judge, 0) if isinstance(imputed, Mapping) else 0
-            n_failed = failures.get(judge, 0) if isinstance(failures, Mapping) else 0
-            expected = n_graded - n_imputed - n_failed
-            if len(group) != expected:
-                return _declined(
-                    f"judging for {model_id!r} closed a group of {len(group)} "
-                    f"judge.verdict record(s) for judge {judge!r}, but that record "
-                    f"says {expected} were written ({n_graded} graded - {n_imputed} "
-                    f"imputed - {n_failed} unparseable, since an imputed or "
-                    f"unparseable record never reaches evaluate() and so writes no "
-                    f"verdict). Judging skips already-graded records on a resume, so "
-                    f"a resumed pass writes fewer verdicts to this log than the "
-                    f"judged artifact holds, and counting them anyway would "
-                    f"under-report every tag by an amount nothing in the log reveals."
-                )
-            for verdict_item_id, passed in group:
-                attribute(model_id, verdict_item_id, passed)
-            # A side that was judged gets a column even if it produced nothing:
-            # zeros are a finding, a missing column is a silence.
-            counts.setdefault(model_id, {})
-            closed_models.add(model_id)
-            group.clear()
-
-        elif record.event_type == EVENT_COMPLETION and payload.get("ok") is False:
-            model_id = payload.get("model_id")
-            failed_item_id = payload.get("item_id")
-            if not isinstance(model_id, str) or not model_id:
-                return _declined(
-                    "a failed migkit.completion names no model, so the completion it "
-                    "records cannot be counted against a side, and dropping it would "
-                    "take a failure out of the denominator."
-                )
-            if not isinstance(failed_item_id, str) or failed_item_id not in items:
-                return _declined(
-                    f"a failed migkit.completion for {model_id!r} names item "
-                    f"{failed_item_id!r}, which is in no golden-set item. Guessing "
-                    f"which item failed would move a failure to the wrong tag."
-                )
-            attribute(model_id, failed_item_id, passed=False)
-
-    if closes_seen == 0:
-        return _declined(
-            f"the log holds no migkit.judging_completed record, so no verdict can be "
-            f"attributed to a model and judge {judge!r} has no side to count under. A "
-            f"judging pass either did not run or did not finish."
-        )
-    if group:
-        return _declined(
-            f"{len(group)} judge.verdict record(s) for judge {judge!r} are still open "
-            f"at the end of the log: no migkit.judging_completed follows them, so "
-            f"nothing names which model they belong to. A judging pass did not "
-            f"complete."
-        )
-    if verdicts_seen == 0:
-        return _declined(
-            f"judge {judge!r} produced no judge.verdict records anywhere in this log. "
-            f"Either no judging pass ran under that name, or the panel spells it "
-            f"differently there."
-        )
-    unclosed = sorted(set(counts) - closed_models)
-    if unclosed:
-        return _declined(
-            f"the log names {', '.join(repr(one) for one in unclosed)} only in failed "
-            f"migkit.completion records: no migkit.judging_completed ever closes a "
-            f"group for that model, so its judging pass did not run or did not "
-            f"finish. Counting it anyway would publish a column built entirely out "
-            f"of the completions that failed -- a full, plausible matrix in which a "
-            f"truncated run reads as a model that got everything wrong."
-        )
-
-    by_model = {
-        model_id: {
-            # A tag that was in the golden set and produced nothing for this model
-            # is a finding rather than an absence, so the key is present and zero.
-            tag: (
-                TagCount(per_tag[tag].passes, per_tag[tag].n, len(per_tag[tag].item_ids))
-                if tag in per_tag
-                else TagCount(0, 0, 0)
-            )
-            for tag in sorted(tag_universe)
-        }
-        for model_id, per_tag in counts.items()
-    }
-    return DimensionCounts(available=True, reason="", by_model=by_model)
+        tally.add(record)
+    return tally.counts(judge=judge)
 
 # --- C9: the cell, the refusal, and the two floors ---------------------------
 #

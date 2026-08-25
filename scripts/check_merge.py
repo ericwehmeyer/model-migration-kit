@@ -140,6 +140,12 @@ def _top_level_names(tree: ast.Module) -> dict[str, list[int]]:
             for target in node.targets:
                 if isinstance(target, ast.Name):
                     seen[target.id].append(node.lineno)
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            # ``NAME: Final = ...`` binds exactly as ``NAME = ...`` does and was
+            # invisible here. Measured across the tracked tree when this was
+            # added: zero new reports, so it costs nothing and closes a hole a
+            # type annotation would otherwise have opened.
+            seen[node.target.id].append(node.lineno)
     return seen
 
 
@@ -151,9 +157,20 @@ def check_no_shadowed_top_level_names() -> list[str]:
         except (SyntaxError, OSError):
             continue  # already reported by the parse check
         for name, lines in _top_level_names(tree).items():
-            if len(lines) > 1 and not name.isupper():
-                # An upper-case rebind is usually a deliberate constant edit;
-                # a redefined def/class is what silently loses a chunk's work.
+            if len(lines) > 1:
+                # This used to skip UPPER_CASE names, on the premise that an
+                # upper-case rebind is usually a deliberate constant edit. C22b's
+                # merge falsified it: two branches independently defined a
+                # module-level ``THIRD_MODEL`` in tests/test_report.py, the later
+                # won for every reference in the file, and this check said PASS.
+                # It was caught only because one of C10's tests happened to
+                # assert an ordering over the constant it had lost.
+                #
+                # A deliberate constant edit rebinds a constant in *one* branch's
+                # working copy; it does not leave two module-level assignments
+                # standing. Measured before removing the exclusion: **zero**
+                # upper-case module-level rebinds across the whole tracked tree,
+                # so the premise cost a real catch and bought nothing.
                 bad.append(
                     f"{path.relative_to(REPO)}: {name!r} defined at "
                     f"{', '.join(str(n) for n in lines)} -- the later one wins"

@@ -592,6 +592,17 @@ input, including a series whose adapter strings are empty.
 
 #### C4 — the comparability key and the partition
 
+> **AMENDED — read R14.2, R14.3 and R18.4 before this section.** The signature
+> below is superseded: `partition_comparable` returns a **three-field
+> `Partition` NamedTuple** (`kept`, `excluded`, `caveats`), and the type named
+> `Flag` below is now **`Caveat`** — it collided with `enum.Flag` in two
+> rendering chunks. The coverage flag reads `judged_baseline` /
+> `judged_candidate`, **not `records`**, which `RunPoint` does not carry, and
+> compares the two *sides of one comparison*, not two runs. The edge table below
+> is a **floor, not a ceiling**: review added exclusions for both sides graded
+> zero, for one side graded zero, for `n_per_item == 0` and for an unrecorded
+> `baseline_model`, plus a caveat for self-comparison.
+
 **Files.** `series.py`, `tests/test_series.py`.
 
 **Contract.**
@@ -655,6 +666,25 @@ both failed to record a golden-set hash have equal keys and are not comparable.
 ---
 
 #### C5 — the candidate field
+
+> **AMENDED — read R20 before this section.** `CandidateField` gains an eighth
+> field, `stale_after_days: float`, recording the window the field was built
+> with. Without it a renderer prints "measured more than 7 days apart" beside a
+> field built with `stale_after_days=30.0`, which is a lie assembled from two
+> true halves. The test asserting the field set is exactly seven names changes
+> with it. R20 also carries nine defects the review found and how each was
+> ruled.
+
+> **AMENDED — read R17.2 through R17.5 before this section.** Four corrections.
+> (1) `Candidate.delta_pp` and `CandidateField.baseline_pass_rate` need a
+> baseline pass rate, and **`RunPoint` has no such field** — its `pass_rate` is
+> the *candidate* side. Reconstruct it exactly as
+> `(judged_baseline - judge_failures_baseline) / judged_baseline`, `None` when
+> the denominator is zero. (2) `CandidateField` gains `caveats` beside
+> `excluded`, following C4's `Partition`. (3) "ignoring `candidate_model`" is
+> stale — `ComparabilityKey` never contained it. (4) The tie-break must be
+> **total**: largest group, then newest point, then the key in sorted order, or
+> the document differs between two renders of one log.
 
 **Files.** `series.py`, `tests/test_series.py`.
 
@@ -728,6 +758,19 @@ machines if it falls back to dict ordering of hashes.
 
 #### C6 — multiplicity, corrected at render and said out loud
 
+> **AMENDED — read R17.1 before this section, and do not implement `changed` as
+> written below.** Holm **steps down**: once a test fails to reject, nothing
+> larger is rejected either, *regardless of its own threshold*. For every
+> candidate after the stop, `holm_bonferroni` returns the uncorrected `alpha` as
+> the threshold, so the rule `p_value >= holm_threshold` goes **vacuously
+> false** and the candidate silently drops out of `changed`. It misses the
+> largest sub-alpha p-value in every family — in the one set whose purpose is to
+> make the correction's effect visible. Correct rule: **`p_value < alpha and not
+> rejected`**, taking `rejected` from `holm_bonferroni`'s own return. Never
+> compare a p-value to the returned threshold to decide significance. **The
+> named first test below passes against the broken rule**; it needs a second
+> assertion.
+
 **Files.** `series.py`, `tests/test_series.py`.
 
 **Contract.**
@@ -800,6 +843,15 @@ the overclaim the spec exists to prevent.
 
 #### C7 — the trend and the parameter strip
 
+> **AMENDED — R15 replaces `trend`'s signature and return type. Read it first.**
+> `trend` no longer filters by a single `candidate_model` — filtering on the
+> field that moves is what made the change invisible. It takes a
+> **caller-declared `candidate_models` lineage** (never inferred: stripping a
+> version suffix is forbidden), partitions through C4's `partition_comparable`,
+> and returns a **`Trend` NamedTuple** (`points`, `successions`, `excluded`,
+> `undated`). `parameter_strip` below is **unchanged and needs no change** — it
+> was always able to show the model change and was prevented by its own caller.
+
 **Files.** `series.py`, `tests/test_series.py`.
 
 **Contract.**
@@ -843,8 +895,34 @@ Tracked parameters and their sources:
 | `config` | `config_hash`, 16 chars |
 
 `previous is None` (the first run in the series) yields every row with
-`before=""`, `after=<value>`, `changed=False` — the first run changed nothing
-because there was nothing to change from.
+`after=<value>`, `changed=False` — the first run changed nothing because there
+was nothing to change from.
+
+> **AMENDED 2026-08-24: `before` is NOT `""` on a first run.** This clause said
+> so twice, and C7's blind tester asserted it literally and then argued against
+> the contract it had just tested. It was right.
+>
+> A blank cell reading as "unchanged" is the failure mode this chunk exists to
+> prevent — and this is not a general tension, it is *the specific rendering R15
+> was written about*: "the `model_id` row reports `changed=False` with an empty
+> `before`." The defence that on a first run the blank is *true* does not save
+> it, because **when the series was wrongly split `previous` was `None` too**, so
+> all six rows were blank in that case as well. A first run and a wrongly-split
+> series render identically — six blanks, six `changed=False` — and a reader
+> cannot tell them apart. That indistinguishability is the bug R15 exists to
+> kill, sitting at the top of every line instead of the middle of one.
+>
+> R15 makes the split much less likely, since the lineage is now declared and a
+> split requires the operator to declare it wrong. That is precisely the case
+> where a reader most needs to notice and can least afford a silent blank.
+>
+> **Ruling: a first-run row must be visibly distinguishable from an unchanged
+> row.** `before` renders a distinct marker behind a named constant in the
+> `_UNRECORDED` style, never an inline literal — `series.py` already sets that
+> precedent deliberately. And the marker must not be the word `"unrecorded"`:
+> "there was no previous run" and "the value was not recorded" are **different
+> absences** and must not print the same word. `changed` stays `False`;
+> `ParameterChange` stays at exactly four fields.
 
 **Edges.**
 
@@ -1068,6 +1146,40 @@ stale, which is the reasoning already written at `report.py:645-650`.
 
 #### C11 — the spot-check line, with its assumption stated
 
+> **AMENDED — the signature below is stale; read R26.4 first.** `spot_check`
+> now takes a **required** keyword-only `subject: SpotCheckSubject`
+> (`judge: str`, `side: str`), and `SpotCheck` carries it as a seventh field.
+> The sentence names it: *"A 12-prompt spot check **of the candidate under
+> judge accuracy**, drawn at random from these 96 items…"*. `side` is validated
+> against `{"baseline", "candidate"}`; an unnamed judge is rendered in words
+> rather than as a gap. Everything else below — the hypergeometric, the
+> unstable-counts-as-passing choice, and every `None` case — is unchanged.
+>
+> Two measured facts that belong with it. **At the bundled demo's defaults the
+> golden set is 12 items and `k` defaults to 12, so `items <= k` and
+> `spot_check` correctly returns `None` on both sides** — the demo renders no
+> spot-check sentence however well this is wired, and that absence is correct
+> behaviour, not a bug to chase (R26.5). And R23.1's claim that
+> `ReportModel.item_counts` carries `passing`/`failing`/`unstable` at its top
+> level is **wrong** — they are two levels down, per judge and per side.
+
+> **AMENDED — read R14.1, R18.1, R18.2 and R18.3 before this section.** Four
+> corrections, one of which reverses this contract's own argument.
+> (1) The probability for the `88/8/0, k=12` row is **0.32877**, not `0.351`;
+> `0.351` is `(88/96) ** 12`, the with-replacement answer this contract's own
+> "Must not" forbids twelve lines below it.
+> (2) **The claim that counting unstable items as passing means "the tool never
+> inflates its own case" is FALSE.** Folding them into passing gives P=0.3288;
+> counting them as failures gives P=0.2106. Higher P means a blinder spot check,
+> which is a *stronger* argument for this harness. The rule is right for a
+> different reason — the tool does not claim regressions it has not established
+> — and its effect on the quoted number runs the other way. Say both.
+> (3) "Understates by roughly an order of magnitude" describes a different error
+> than the one committed; the with-replacement form **overstates, by 7%**.
+> (4) The sentence names how many items failed and ends "of such checks", and
+> **`N == k` returns `None`** — a draw taking every item is a census, not a spot
+> check.
+
 Read [§7.4](#74-the-counterfactual-line-is-not-a-power-calculation) before
 implementing. This chunk deliberately implements something narrower than the spec
 describes, and the narrowing is the point.
@@ -1111,7 +1223,7 @@ Returns `None` — no sentence at all — when any of:
 *"drawn at random"* and must say **spot checks**, not **runs**:
 
 > A 12-prompt spot check drawn at random from these 96 items would have shown no
-> failures at all in 34% of cases.
+> failures at all in 33% of spot checks.   <!-- corrected by R14.1: was "34% of cases" -->
 
 **Edges.**
 
@@ -1119,7 +1231,7 @@ Returns `None` — no sentence at all — when any of:
 |---|---|
 | `passing=96, failing=0, unstable=0` | `None` |
 | `passing=8, failing=1, unstable=0, k=12` | `None` (N=9 < 12) |
-| `passing=88, failing=8, unstable=0, k=12` | probability ≈ 0.351 |
+| `passing=88, failing=8, unstable=0, k=12` | probability = 0.32877 (**corrected by R14.1**; the plan long read `≈ 0.351`, which is `(88/96) ** 12`, the with-replacement answer this contract's own "Must not" forbids) |
 | `passing=85, failing=8, unstable=3, k=12` | unstable counted as passing; identical to the row above at N=96, F=8 |
 | `failing == N` | `probability == 0.0`, sentence still returned |
 | `k == 0` | `ValueError` |
@@ -1297,6 +1409,12 @@ different floors; a floor that ramps is a floor that never existed.
 ---
 
 #### C14 — the template: zones 1, 1b, 2, and REVIEW as a shape
+
+> **BLOCKED — read R21 before this section, and do not dispatch the remaining
+> seven elements against it.** Six of the nine elements are gated on values
+> `ReportModel` does not carry and no chunk was ever assigned to put there. The
+> template cannot reach them, and C14's own Must-not forbids inventing the
+> reference. **C22 closes this and must land first.**
 
 **Files.** `report.py` `_TEMPLATE` (`report.py:2135-2584`), `_CHANGES_MACRO`,
 `render_html_string`, `_environment` (new filters). `tests/test_report.py`.
@@ -1477,6 +1595,30 @@ flake. Check `concurrency=1` is not merely a default the caller could change but
 is asserted where it matters.
 
 #### C17 — the driver
+
+> **AMENDED — C17 owes a showcase rubric, and the demo's rubric is actively
+> wrong for the showcase set. Counted, not inferred:**
+>
+> | | demo golden set | showcase golden set |
+> |---|---|---|
+> | items | 12 | 96 |
+> | reference-less | 4 | 32 |
+> | their primary tags | **refusal ×4** | **refusal ×16, summarisation ×16** |
+>
+> The demo's judge grades every reference-less item by "did it decline". On the
+> demo set that is correct for all four, so **the shipped 0.1.1 demo is not
+> affected** — worth stating plainly, because "the judge is wrong" invites that
+> question first. On the showcase set it is correct for exactly half and
+> **inverted for the other half**: every summarisation item would score 1 for
+> declining to summarise, `#summarisation` would read ~0% on all fourteen
+> nights, and the document would be silently, plausibly wrong.
+>
+> C16's implementer wrote a judge that splits on the item's primary tag. It is
+> uncontracted and load-bearing. **C17 must ship `showcase.toml` and a rubric
+> describing that split** — `demo_rubric.md` describes the decline-based
+> grading, so shipping it unchanged hashes a rubric into the provenance footer
+> that does not match the judge that ran. A provenance footer attesting to the
+> wrong rubric is worse than none.
 
 **Files.** as C16, plus `tests/test_showcase.py`.
 
@@ -1683,6 +1825,11 @@ required)").
 But the sentence the spec wants is a different quantity:
 
 > A 12-prompt spot check would have shown no failures at all in 34% of runs.
+>
+> *(Corrected by R14.1: the true value is 33%, not 34%. The number is left as the
+> spec wrote it here because this paragraph is quoting the spec in order to argue
+> with its noun; the arithmetic is wrong too, and both are wrong for the same
+> reason — see R14.1's addendum.)*
 
 That is *"what is the probability that a k-item sample from this set contains
 none of the F failing items"*. It is hypergeometric, it is `comb(N-F, k)/comb(N,
@@ -2011,10 +2158,26 @@ C12's `data-value` is also pinned, for the same reason the constant is: the
 to check the model's number reached the drawing without re-deriving the
 projection, and a rounded one would make the check circular.
 
-### R8 — OPEN: the headline verdict and `series[-1].verdict` can disagree
+### R8 — CLOSED by C19: the headline verdict and `series[-1].verdict` can disagree
 
-Not settled. Raised by C3's implementer and recorded here so the reviewer arrives
-at it with the evidence rather than rediscovering it.
+**Closed. This header read "OPEN" for three days after it stopped being true**,
+and `RESTART.md` and this plan disagreed about it the whole time — RESTART said
+closed, this said open, and nothing reconciled them until 2026-08-24, when the
+stale half got repeated into R15 before being caught. Recorded rather than
+quietly fixed, because two documents disagreeing about whether a question is
+settled is worse than either answer.
+
+C19 replaced FIFO pairing with "the verdict belongs to the comparison before it"
+— `SeriesBuilder.add` now updates *the most recently opened point*. Re-run R8's
+own counterexample under that rule: given `C1 C2 V1`, `V1` attaches to `C2`, so
+`series[-1].verdict` is `V1` and the headline is `V1`. They agree. The shape that
+produced the disagreement can no longer produce it.
+
+The original entry follows, unedited, because the reasoning in it is still the
+reasoning that justified C19.
+
+Raised by C3's implementer and recorded here so the reviewer arrives at it with
+the evidence rather than rediscovering it.
 
 C3's Edges table requires that "`series[-1]` describes the same run as the
 headline fields". Its "Must not" requires that no existing field change value. On
@@ -2799,6 +2962,36 @@ require a rigor release and migkit pins `>=0.2,<0.3`.**
 
 ### C10 (restated) — wire the matrix into `ReportModel`, with six ways to be unavailable
 
+> **AMENDED — read R16 before this section. The call this contract prescribes
+> cannot be made.** `dimension_counts(records, items, *, judge)` needs the
+> records and the golden set at the same moment, and the golden set is named on
+> a record that arrives last. **That is the C10 blocker.** Use C21's two-phase
+> form instead: construct `DimensionTally()` with no golden set, `add(record)`
+> through the single streaming pass, then `counts(items, judge=judge)` once the
+> comparison record resolves it. The `__all__` quoted below is stale — it has
+> since gained `DimensionTally`. And `dimensions: DimensionMatrix` **replaces**
+> `ReportModel.dimension_counts`; it does not sit beside it.
+>
+> **Three more, from C21's review (2026-08-24):**
+>
+> 1. The helper is now **`report._close_the_tally`**, not `_dimension_counts` —
+>    it never wrapped `dimension_counts`, it calls `tally.counts()`. Already
+>    merged; this is the name to type.
+> 2. **Do not ship `baseline` and `candidates` as `Mapping`s.** They reproduce
+>    *exactly* the `column.items` hazard this contract's own Reviewer note tells
+>    the reviewer to check for: `baseline.items` is `dict.items` and renders as a
+>    bound method. C21 documented the hazard on `DimensionCounts.by_model` and
+>    could not fix it there; C10 can, and if C10 ships mappings the hazard
+>    survives the very chunk that was told to look for it. Use
+>    `tuple[DimensionCell, ...]` — each cell already carries its `tag` — or a
+>    small frozen `TagColumn`.
+> 3. **Re-point C21's seven wiring tests at the new field; do not delete them.**
+>    They exist because deleting `tally.add(record)` from the loop once left the
+>    entire suite green, and a mutant that swapped `judges[0]` for `judges[-1]`
+>    survived until C21's fix pass. `DimensionMatrix` already carries `judge:
+>    str`, which fixes the missing-judge defect for free — `DimensionCounts` is
+>    a per-judge table with the judge erased.
+
 This replaces the C10 section at line 989 and the `### C10 (amended)` note after
 R9. Read R1, this, and nothing else in the plan.
 
@@ -3055,3 +3248,2622 @@ presentation attributes taking a CSS `<url>` (`fill`, `filter`, `mask`,
 inline SVG into the document for the first time, so `fill="url(...)"` is now
 reachable in a way it was not before. Check what the two helpers actually emit.
 **Three:** mutate each `| safe` off and confirm something goes red.
+
+---
+
+### R14 — six contract defects found before dispatch, and the rulings that settled them
+
+Five of these were found by reading contracts against the code they name, in the
+pre-dispatch pass §"When it is safe to go wide" asks for. One came back from
+C16's implementer. All six would have split an implementer/tester pair, which is
+the specific failure R6 and R7 exist to prevent: two agents each pick a different
+reading of the same sentence and neither is wrong.
+
+#### R14.1 — C11's probability is stated twice and both statements are wrong
+
+C11's edge table says `passing=88, failing=8, unstable=0, k=12` gives
+"probability ≈ 0.351". The worked example sentence, and §7.4's version of it,
+both say "34%". These are the same scenario — 96 items, 8 failing, k=12 — so the
+plan gives two different answers to one question, and neither is right:
+
+```
+comb(96 - 8, 12) / comb(96, 12) = 0.3287693171387045
+```
+
+**Ruling: 0.32877, which is 33%.** Both printed numbers are struck. An
+implementer would have coded the formula and got 0.32877; a tester reading the
+edge table would have asserted 0.351 and filed a bug against correct code. The
+formula was always right; only the arithmetic done on it was wrong.
+
+**Addendum, from C11's tester, which is the better half of this finding.** 0.351
+is not a typo and not a rounding:
+
+```
+(88 / 96) ** 12 == 0.3519956280141369
+```
+
+It is the **with-replacement** answer — the independent-draws error that C11's
+own "Must not" forbids twelve lines further down the same contract, and that
+§7.4 spends three paragraphs explaining is the specific mistake a reviewer would
+find. The contract committed the error it was written to prevent, and then
+printed the result as the expected value a tester would assert against.
+
+Two things follow. First, §7.4's worked example needs correcting too, not just
+C11's edge table — the wrong number propagated. Second, and worth more: a
+"must not" is not self-enforcing. This plan's own edge tables are the place to
+check whether its prohibitions were obeyed, because an expected value computed
+the forbidden way looks exactly like an expected value computed the right way.
+
+#### R14.2 — C4's flag has nowhere to go
+
+C4's edge table requires that a point whose key matches but whose per-side
+coverage differs is **kept**, "and the sentence is a flag on the kept point, not
+an exclusion". But `partition_comparable` returns `(kept, excluded)` and
+`RunPoint` is frozen with no flag field. There is no third place.
+
+**Ruling: `partition_comparable` returns a three-tuple**, and a `Flag`
+dataclass parallel to `Exclusion`:
+
+```python
+@dataclass(frozen=True)
+class Flag:
+    point: RunPoint
+    reason: str
+
+def partition_comparable(
+    points: Sequence[RunPoint], *, against: ComparabilityKey
+) -> tuple[tuple[RunPoint, ...], tuple[Exclusion, ...], tuple[Flag, ...]]: ...
+```
+
+> **SUPERSEDED by R18.4.** `Flag` is now **`Caveat`** — it collided with
+> `enum.Flag` in two rendering chunks — and the bare three-tuple is now a
+> **`Partition` NamedTuple** (`kept`, `excluded`, `caveats`). The reasoning below
+> is unchanged and still correct; only the two names are.
+
+A flagged point is **also** in `kept` — a flag annotates, it does not remove. The
+empty case is `((), (), ())`. C5's `CandidateField` will need a `flags` field to
+match; it is not yet dispatched, so this is still cheap.
+
+#### R14.3 — C4 flags on a field that does not exist
+
+§4.4 says "`records` is recorded per side and is the available proxy". That is
+true of the payload. It is **not** true of `RunPoint`, which has no `records`
+field — enumerated on main, not read off this plan. Adding one means editing the
+producer (C1/C2) while its consumers are in flight, which §"When it is safe to go
+wide" rule 2 forbids.
+
+**Ruling: the flag reads `judged_baseline` / `judged_candidate`.** These are not
+interchangeable with `records` and the difference must survive into the wording:
+they count completions the judge **graded**, not completions produced. A
+completion produced but whose judge reply would not parse is counted by neither.
+So the flag sentence says *graded*. Saying "completions" here re-commits the
+exact conflation `RunPoint.judged_baseline`'s docstring exists to prevent.
+
+#### R14.4 — "byte-identical artifacts" is unachievable for any adapter
+
+C16's contract asks for byte-identical artifacts across runs. `RunHeader.created`
+is `utc_now()` and `Completion.duration` is a wall-clock measurement inside
+rigor's `sample`. No adapter can satisfy this; the demo has the same property. A
+tester taking it literally writes a red test against correct code.
+
+**Ruling: the testable form is two-part** — the projection
+`(item_id, sample_index, output, error)` over all completions is identical
+between runs, **and** `created` and `duration` are the only keys that differ
+anywhere in the artifact. The second half is the stronger claim and the one worth
+writing: a projection-only test would not notice a third source of
+nondeterminism appearing later.
+
+#### R14.5 — §7.3's blind-testable property is the wrong noun
+
+"night 14's `#refusal` completions for candidate B are strictly fewer than night
+13's". The completions are 85 on both nights — everything gets graded. What
+drops is **passing** completions, 85 to 5.
+
+**Ruling: assert passing completions.** Related: the collapse takes the 16 items
+whose *primary* tag is `refusal`, not all 17 tagged ones — `synthetic-summarise-09`
+borrows the tag and keeps passing — so the floor is 5/85, not 0/85. A test
+asserting the dimension goes to zero is wrong, and the reason it is 5 is worth
+pinning: it puts the golden set's two-tag arithmetic on display.
+
+#### R14.6 — C7's `trend` and C16's night-14 story cannot both be satisfied
+
+C16 requires night 14 to produce exactly one `changed=True` parameter row, and
+with n, items, judges, golden set and config all held, the only tracked
+parameter that *can* change is `model_id`. But `trend(points, *, baseline_model,
+candidate_model)` filters the series **by** `candidate_model`, so nights 1–13
+(`-b-v1`) and night 14 (`-b-v2`) can never appear in one series. The strip can
+never see the change it exists to show, and candidate B's timeline splits 13+1.
+
+**Not yet ruled.** C7 is unimplemented, so it is still the cheap side to move,
+and C16's reading (the id changes) is implemented. Settle before C7 is
+dispatched. This is the second time an identity field has forced a choice
+between "the series is one line" and "the change is visible"; R8 is the first,
+and it is still open.
+
+#### And one that is not a wording defect
+
+C10's contract tells the implementer to consume
+`dimension_counts(records, items, *, judge)`. That call cannot be made inside
+`from_evidence`'s single pass: it needs the records and the golden set at the
+same moment, and the golden set is named on a record that arrives last. **That
+is the C10 blocker**, and the contract still prescribes the impossible call.
+C10 must be amended to: feed `DimensionTally` in the loop, call `.counts()`
+after the comparison record. C10 also states the public surface is "exactly" an
+`__all__` that omits `DimensionTally`, which C21 added and C10 must use; and it
+expects `ReportModel.dimensions: DimensionMatrix` where C21 delivers
+`dimension_counts: DimensionCounts`, raw counts only. **C21 did not deliver
+C10** — building the matrix from those counts is still C10's work.
+
+---
+
+### R15 — the series is one line and the change stays visible; R14.6 ruled
+
+Ruled by the person paying for this, 2026-08-24: **make the series one line, keep
+the change visible.** Both, not a trade. This section says how, and records why
+the two were only ever in tension by accident.
+
+#### The tension was manufactured by the filter
+
+R14.6 framed this as a choice: either candidate B's fourteen nights are one line
+(and the v1→v2 change is hidden inside it) or the change is visible (and the line
+splits 13+1). That framing is wrong, and the error is worth naming because it
+will recur.
+
+`trend(points, *, baseline_model, candidate_model)` filters the series **by the
+very field that moved**. The change is invisible *because* the filter hides it:
+night 14 is not in the same series as night 13, so `parameter_strip`'s
+`previous` is `None`, so the `model_id` row reports `changed=False` with an empty
+`before` — the first run changed nothing because there was nothing to change
+from. The strip is already built to show exactly this and is prevented from
+doing so by its own caller.
+
+Stop filtering on the thing that moves, and both properties hold at once. The
+strip needs no change whatever.
+
+#### R15.1 — the lineage is declared, never inferred
+
+`trend` takes a caller-declared sequence of candidate ids:
+
+```python
+def trend(
+    points: Sequence[RunPoint],
+    *,
+    baseline_model: str,
+    candidate_models: Sequence[str],
+) -> Trend: ...
+```
+
+**The tool must not infer that `-b-v2` succeeds `-b-v1`.** Stripping a trailing
+version suffix is the obvious implementation and it is forbidden. Whether two
+model ids name the same lineage is a fact about the world that no log records,
+and a wrong guess silently joins two unrelated models into one line — which is
+precisely the "two unrelated numbers side by side" failure
+`_require_comparable` exists to prevent, arrived at from a new direction. The
+operator knows the lineage. The operator says so.
+
+Order within `candidate_models` is not significant; time ordering comes from
+`created`. A single-element sequence reproduces today's **selection** exactly, so
+this is a strict generalisation and not a behaviour change for any existing
+caller.
+
+**Amended 2026-08-24: "reproduces today's behaviour exactly" and R15.2's
+unconditional partitioning contradict each other**, because the old `trend`
+partitioned nothing — so on a log containing an incomparable run the two rules
+give different answers. C7's implementer found this and followed R15.2. Ruled the
+same way: **partitioning is unconditional.** A line joining one model's runs
+across an edited golden set is the same false line R15.2 exists to prevent, and
+the number of ids in the lineage has nothing to do with it. On any log where the
+selected runs are comparable — every normal nightly case — the two readings
+coincide, so the promise this sentence was making is kept everywhere it was
+actually being relied on.
+
+#### R15.2 — joining two ids asserts comparability, so it must be checked
+
+Putting two model ids on one line is a claim that the runs are comparable. That
+claim is C4's to adjudicate, so `trend` partitions its candidates through
+`partition_comparable` against the group key and carries the exclusions out with
+it. A lineage whose members disagree on golden set, judges or `n_per_item` is
+not one line and must not be drawn as one.
+
+This makes C7 depend on C4, which §6's graph does not show. Amend the graph.
+
+#### R15.3 — `trend` returns a `Trend`, because a bare tuple has nowhere to put the answer
+
+```python
+class Succession(NamedTuple):
+    index: int        # into points, of the FIRST run under the new id
+    before: str
+    after: str
+    created: str
+
+class Trend(NamedTuple):
+    points: tuple[RunPoint, ...]           # one line, ascending by created
+    successions: tuple[Succession, ...]
+    excluded: tuple[Exclusion, ...]        # C4's type, from R15.2
+    undated: int                           # dropped for unparseable created
+    caveats: tuple[Caveat, ...]            # added after the fact -- see below
+```
+
+> **`caveats` was added on 2026-08-24, and the reason is embarrassing enough to
+> keep.** C7's implementer found that `partition_comparable` computes the
+> A/A-calibration and uneven-coverage caveats and `Trend` had nowhere to put
+> them, so they were computed and discarded — **which is precisely the defect
+> class the next three paragraphs name, committed in the type written to fix
+> it.** It went last so that tuple-prefix unpacking and any assertion about the
+> first four positions survive. None are filtered — this is not C5, where a
+> caveat on a superseded run has no row and is correctly dropped.
+>
+> The reason first given for carrying them all was "every point in
+> `Trend.points` is drawn, so every caveat has a row." **That is false**, and
+> C7's implementer said so while implementing the ruling. A point the partition
+> *keeps* and datedness then *drops* has no row at all — and that is exactly the
+> case where filtering would be worst, because `undated` is a bare count that
+> names no point, so the caveat is the only surviving trace of that run. A
+> `Caveat` carries its own point, so a renderer with no row for one can say so
+> rather than invent one. Dropping it would have been this defect class a fifth
+> time, inside the amendment fixing its fourth. The ruling stands; the reason for
+> it is the implementer's, and it is in the code's docstrings so nobody tidies it
+> back.
+>
+> The implementer declined to add the field unilaterally, correctly: the contract
+> fixed four fields, and a blind tester asserting `len(t) == 4` would have gone
+> red against correct code. It reported the defect and waited for a ruling. That
+> is the judgement call this pipeline wants, and it is the only reason the
+> amendment reached the tester before the tests were written rather than after.
+
+`undated` fixes a defect C7's contract already had: it says undated points "are
+excluded from the return and the caller learns of them separately", and then
+returns a bare `tuple[RunPoint, ...]` through which the caller can learn nothing.
+**This is the third instance of the same defect class in one plan** — C4's flag
+with no field to live in (R14.2), C13's counts that had to become a `Timeline`
+NamedTuple (R6), and now this. The pattern: a contract states that the caller is
+told about an absence, and gives a return type with room for presences only. It
+is worth checking every remaining contract for it before dispatch.
+
+#### R15.4 — the change is visible in three places, which fail differently
+
+Redundancy here is deliberate. Each of these is silent in a different failure.
+
+1. **The parameter strip** — the `model_id` row, `changed=True`, both ids. Needs
+   no code change; R15.1 is what lets it fire. This is the attributable-drop
+   claim and it is the load-bearing one.
+2. **The timeline** — a rule drawn at each succession, so nobody reads a
+   continuous line as one continuous model. See R15.5 for when.
+3. **A caption beneath the chart** naming each succession in words, because a
+   mark with no legend is a mark a reader invents a meaning for.
+
+If the strip were the only one, a reader looking at the picture would see an
+unbroken line and never scroll. If the mark were the only one, the change would
+be visible and unattributable.
+
+#### R15.5 — the SVG mark waits for C14a, and arrives backward-compatibly
+
+`timeline_svg` is merged **and reviewed**, and C14a — the chunk that first calls
+it — is in review as this is written. Changing its signature now is precisely the
+rename hazard §"When it is safe to go wide" is built around: C1's review renamed
+fields after C2 had started typing them, and nothing collided, the work simply
+had to be redone.
+
+So: the mark is a follow-on chunk, dispatched after C14a merges, and it adds a
+keyword argument that defaults to drawing nothing. `timeline_svg(points)` keeps
+its current meaning and its current output byte for byte.
+
+#### What this settles, and what it does not
+
+C16's night 14 now works as its contract intends: the showcase driver declares
+`("synthetic-candidate-b-v1", "synthetic-candidate-b-v2")` as one lineage,
+candidate B is fourteen points on one line with one succession at index 13, and
+the strip's `model_id` row reads `changed=True` with both ids — **exactly one
+`changed=True` row**, and now actually observable rather than merely required.
+
+**Correction, same day: R8 does not remain open.** This paragraph originally said
+it did, on the strength of R8's own "OPEN" header — which had been stale for
+three days. C19 closed it: pairing now attaches a verdict to the most recently
+opened point, so R8's counterexample `C1 C2 V1` gives `series[-1].verdict == V1`
+and a headline of `V1`, in agreement. `RESTART.md` had this right and this plan
+did not, and the disagreement was repeated here before it was caught.
+
+The grouping was loose in the other direction too: R14.6 is about an identity
+field splitting a series, R8 was about verdict pairing, and they were never two
+halves of one question. Nothing in R15 reaches R8 because there is nothing left
+of R8 to reach.
+
+---
+
+### R16 — C10 is unblocked; three corrections to its restated contract
+
+C10 has been blocked since its first dispatch and the reason was never written
+down anywhere an implementer would find it. It is written down now, and it is
+closed. Everything below was checked against `dimensions.py` on main after C21
+merged, not read off this plan.
+
+#### R16.1 — the blocker, named, and the call that replaces it
+
+C10's contract tells the implementer to consume:
+
+```python
+dimension_counts(records, items, *, judge) -> DimensionCounts
+```
+
+**That call cannot be made inside `from_evidence`.** It needs the records and the
+golden set *at the same moment*, and the golden set's path lives in the
+`migkit.comparison` payload, which is written after judging and is therefore
+among the last records the pass sees. Both ways around it are closed by merged
+tests that may not be weakened: reading the log twice fails
+`test_the_log_is_read_once_for_both_the_headline_and_the_series`, and buffering
+the verdicts fails `test_rebuilding_the_report_does_not_hold_the_log_either`.
+
+That is the whole blocker. C10's implementer was correctly forbidden from
+touching a merged module, so it could not solve it from where it stood, and the
+contract still prescribes the impossible call.
+
+**C21 split the phases.** Use the two-phase form:
+
+```python
+tally = DimensionTally()            # no golden set yet, and that is the point
+for record in records:              # the single streaming pass
+    tally.add(record)
+...                                 # migkit.comparison arrives, golden set resolves
+counts = tally.counts(items, judge=judge)
+```
+
+`dimension_counts` still exists and is still correct — it is this class with both
+phases run back to back, and remains the shape to reach for **whenever the golden
+set is already in hand**. It is simply not the shape `from_evidence` can use.
+
+#### R16.2 — the public surface C10 quotes is stale
+
+C10 states the surface is "exactly" an `__all__` that does not contain
+`DimensionTally`. It does now:
+
+```python
+__all__ = ["DimensionCell", "DimensionCounts", "DimensionTally",
+           "MIN_ITEMS_FOR_A_VERDICT", "MIN_N_FOR_A_VERDICT", "TagCount",
+           "UNTAGGED", "dimension_cell", "dimension_counts"]
+```
+
+Read `dimensions.py` rather than that list — the same instruction C10 already
+gives, which is worth obeying twice over now that the list has been wrong once.
+
+#### R16.3 — C21 did not deliver C10, and left one field for C10 to absorb
+
+C21 delivers raw counts and wires `ReportModel.dimension_counts:
+DimensionCounts`. C10's real work — the matrix: cells, golden-set tag order with
+`UNTAGGED` last, baseline against candidates, both floors, and the six ways to be
+unavailable — is untouched and still C10's.
+
+**Ruling: `dimensions: DimensionMatrix` replaces `dimension_counts` on
+`ReportModel`; it does not sit beside it.** `DimensionCell` carries `tag`,
+`passes`, `n` and `items`, so the matrix subsumes every fact `TagCount` held and
+nothing is lost. Keeping both would put the same facts on the model at two
+fidelities, which is two chances for them to disagree — the identical reasoning
+C10's own contract already gives for never re-wording a decline reason: "three
+copies of a disclosure are three chances for one to go stale."
+
+C21's wiring tests in `test_report.py` section 20 cover the tally being fed and
+the per-run reset. They will need re-pointing at the new field. **Re-point them;
+do not delete them.** They exist because deleting `tally.add(record)` from the
+loop once left the entire suite green.
+
+#### One contingency
+
+C21 is merged and its review is in flight as this is written. Reviews on this
+project have demanded renames three times out of three, so **every name above is
+provisional until that review lands**, and C10 must not be dispatched before it
+does. That is not caution for its own sake: it is the exact sequence that cost
+C2 a rewrite, when C1's review renamed fields after C2 had started typing them.
+
+---
+
+### R17 — C5 and C6 audited before dispatch; C6's correction under-reports
+
+Done while four reviews were in flight, so that these two can go out the moment
+C4's review lands rather than being audited then. Everything below was checked
+against the code, and two of the five were confirmed by running it.
+
+#### R17.1 — C6's `changed` rule is wrong, and C6's own first test does not catch it
+
+> **CORRECTED — read R25.** The ruling, the worked table and the conclusion
+> below are right. The *mechanism* sentence is wrong: `holm_bonferroni` does
+> not return the uncorrected `alpha` for candidates after the stop. The real
+> reason is simpler and stronger, and the error matters because it implies the
+> bug only bites after a step-down stop, when in fact it bites every family.
+
+C6 defines the set that "makes the honesty guard demonstrable" as candidates
+where `p_value < alpha` **and** `p_value >= holm_threshold`.
+
+That is not the Holm procedure. Holm **steps down**: once one test fails to
+reject, nothing larger is rejected either, *regardless of its own threshold*.
+`comparison.holm_bonferroni` implements this correctly and returns
+`(rejected, threshold)` per position. For every candidate after the stop, the
+returned threshold is the uncorrected `alpha` itself — so `p >= threshold` is
+vacuously false and the candidate silently drops out of `changed`.
+
+Run against the real implementation at `alpha=0.05`:
+
+```
+p = [0.03, 0.04, 0.045]
+  p=0.03   rejected=False thr=0.01667   contract: changed   truth: changed
+  p=0.04   rejected=False thr=0.02500   contract: changed   truth: changed
+  p=0.045  rejected=False thr=0.05000   contract: NOT       truth: CHANGED  <-- missed
+```
+
+The rule misses the largest sub-alpha p-value in the family, every time. It fails
+in the direction that **under-reports**: a candidate whose significance the
+correction removed is not named as having changed, in the one set whose entire
+purpose is to make the correction's effect visible. C6's own "Failure mode when
+wrong" is "claiming a guard you did not apply is worse than applying none"; this
+is the quieter cousin — applying the guard and under-stating what it did.
+
+**Worse: C6's named first test passes against the broken rule.** That test uses
+p = 0.03, 0.04, 0.045 and asserts only that *the first* appears in `changed`.
+0.03 appears under both rules. A tester writing exactly the test the contract
+names would see green.
+
+**Ruling.** `changed` is `p_value < alpha and not rejected`, taking `rejected`
+from `holm_bonferroni`'s own return. **Never compare a p-value against the
+returned threshold to decide significance** — the threshold is diagnostic output
+for display, and after the step-down stops it is not a decision boundary at all.
+Both briefs get this verbatim, and the named test gets a second assertion that
+0.045 is in `changed` too, so it can no longer pass while the rule is broken.
+
+#### R17.2 — C5 needs a baseline pass rate, and no such field exists
+
+`Candidate.delta_pp` is "candidate `pass_rate` minus baseline `pass_rate`" and
+`CandidateField.baseline_pass_rate` is a field of its own. **`RunPoint` has no
+baseline rate.** Its `pass_rate` is documented as "Candidate side of the widest
+judge", and the only baseline-side numbers it carries are `judged_baseline` and
+`judge_failures_baseline`.
+
+This is C4's missing-`records` defect again, one chunk over: a contract naming a
+field the producer does not have. Adding one means editing C1/C2 while their
+consumers are in flight, which is forbidden.
+
+**Ruling: derive it, exactly.** `judge_failures_baseline` is documented as the
+gate's own `failures`, which *is* `n - successes`, so
+
+```python
+baseline_pass_rate = (judged_baseline - judge_failures_baseline) / judged_baseline
+```
+
+is not an approximation of the recorded rate — it is the recorded rate,
+reconstructed from the two numbers rigor recorded it from. It is also the same
+denominator convention `pass_rate` uses on the candidate side, so `delta_pp`
+subtracts two quantities measured the same way.
+
+`None` when `judged_baseline == 0`, mirroring `_candidate_rate`, which refuses to
+divide by zero and says why: passing `0.0` up "would plot a point on the floor of
+the chart for a run that measured nothing, which reads as a total collapse rather
+than as an absence". A `delta_pp` of `-100.0` against a baseline that measured
+nothing is the same lie in the same direction.
+
+**The `None` branch is unreachable through `candidate_field`, and that is fine.**
+Both C5 agents found this independently and both said so rather than quietly
+working around it: R18.4 made C4's `_ungraded` exclude any point with
+`judged_baseline <= 0`, so no such point can ever be a kept candidate. The branch
+is still right *at the helper* — a helper that divides by zero because its only
+caller happens not to reach it is a trap for the second caller — but a test
+asserting `baseline_pass_rate is None` for a kept candidate cannot be written.
+The reachable form is the one to test: a log whose every run graded nothing
+yields **no field at all**, rather than a column of `-100.0` deltas. Making the
+branch reachable would mean computing the rate *before* partitioning, which
+contradicts this ruling's own reasoning.
+
+#### R17.3 — C5's `excluded` needs its companion
+
+R14.2 gave `partition_comparable` a third return element and R15 noted C5 would
+need to follow. Making it explicit: **`CandidateField` gains
+`caveats: tuple[Caveat, ...]` beside `excluded`.** A caveat is a kept candidate
+that carries a warning; dropping the caveats on the floor at this layer means the
+warning never reaches the table, and a warning that reaches nobody is the same as
+not having computed it.
+
+**Corrected in place, 2026-08-24.** This paragraph said `flags: tuple[Flag, ...]`
+for an hour after R18.4 renamed `Flag` to `Caveat`, and C5's implementer caught
+it — it had followed C5's banner and C4's merged code instead, and reported the
+discrepancy rather than silently picking one. Recorded because it is the exact
+failure this plan keeps producing: a correction lands in one place a reader might
+look and not in another. The banner convention exists for that reason, and a
+banner does not excuse leaving the revision body wrong, because §R17 is itself a
+section an agent may be pointed at directly.
+
+#### R17.4 — "grouping by `comparability_key` ignoring `candidate_model`" is stale
+
+C5 says to group by `comparability_key` "ignoring `candidate_model`". The key has
+never contained `candidate_model` — C4 ships `goldenset_hash`, `judges_hash`,
+`n_per_item`, `baseline_model`. The phrase predates the key and now reads as an
+instruction to strip a field that is not there, which invites an implementer to
+go looking for it.
+
+Harmless in itself, but worth striking, because the same sentence contains the
+reason it matters: a key that *did* include `candidate_model` makes every group
+a group of one, `candidate_field` returns `None` every time, and the table never
+renders. C4's tester wrote that mutant deliberately; C5's should inherit it.
+
+#### R17.5 — the tie-break must be total, not merely stated
+
+C5 picks the largest group, "ties break on the group containing the newest
+point". Two groups can tie on size *and* contain no dated point at all — every
+`created` is `""` is an edge C5's own table already contemplates elsewhere. Then
+"the newest point" does not exist and the winner falls out of whatever order the
+groups were built in, which is dict insertion order over hashes: stable on one
+machine, not guaranteed across a rebuild.
+
+C5's reviewer note already suspects this ("renders differently on two machines if
+it falls back to dict ordering of hashes"). Do not leave it for the reviewer.
+**Ruling: the tie-break is total** — largest group, then newest point, then the
+group's `ComparabilityKey` in sorted order as the final deterministic tiebreaker.
+A stable arbitrary answer is worth more here than a principled unstable one,
+because the failure is a document that differs between two renders of one log.
+
+---
+
+### R18 — what C4's and C11's reviews changed, including one claim this plan had backwards
+
+Both reviews ran with mutation testing. Between them they killed 43 mutants and
+left 20 alive, and the survivors are the useful part. Two findings change this
+document rather than the code.
+
+#### R18.1 — C11's honesty claim is inverted, in this plan and in the shipped docstring
+
+C11's contract says unstable items are counted as passing because it "makes the
+spot check look *better* than it is, so the tool never inflates its own case."
+
+**The second clause is false**, and the arithmetic that refutes it is the
+chunk's own:
+
+```
+N=96, unstable=3, k=12
+  unstable folded into PASSING (the rule)   F=8    P = 0.3288
+  unstable counted as FAILING               F=11   P = 0.2106
+```
+
+`P` is the chance a spot check sees nothing. **Higher means blinder manual QA,
+which is a stronger argument for this harness.** The rule produces the higher
+number. It is therefore the choice that *strengthens the tool's own case*, not
+the one that restrains it.
+
+The rule stays — it is right on a different ground, which is that the tool does
+not claim regressions it has not established. But that is an honesty claim about
+`F`, and its effect on the quoted probability runs the other way. **Both halves
+must be said.** The shipped docstring currently says neither correctly: it
+asserts within one paragraph both that the rule "raises this probability" and
+that counting-as-failures "would produce a larger, more quotable number", which
+cannot both be true and whose second half is measurably false.
+
+This is the worst kind of defect this project can produce. C11's contract says
+that stating which way the thumb is on the scale "is the whole reason this
+sentence survives scrutiny" — and the statement was pointing the wrong way, in
+the most-quoted sentence of a document whose entire claim is that it does not
+overclaim. A director who checks the direction, which is exactly the reader this
+line is written for, finds it defended by a rationale its own arithmetic refutes.
+
+**Struck from C11's contract: "so the tool never inflates its own case."**
+
+#### R18.2 — §7.4's "order of magnitude in the flattering direction" conflates two errors
+
+C11's **Must not** and §7.4 both say the with-replacement form "understates the
+spot check's blindness by roughly an order of magnitude."
+
+```
+correct (hypergeometric, item rate 88/96):  0.3288
+with replacement, SAME rate (88/96)**12:    0.3520   -> OVERstates, by 7%
+a DIFFERENT rate, 0.75**12:                 0.0317   -> understates, by 10x
+```
+
+The error R14.1 caught this plan actually committing is the first, and it runs
+the **opposite** direction and by **7%**. The order-of-magnitude figure requires
+a completion pass rate of 0.75, which §7.4's own premise forbids: if all n draws
+of an item are identical, the completion rate *equals* the item rate and 0.75
+cannot arise. So the plan's central worked example uses a rate its own
+determinism argument rules out, to state a direction its own corrected number
+reverses.
+
+Both claims are corrected. The reason to keep `math.comb` is unchanged and was
+never in doubt: exact integer arithmetic is free.
+
+#### R18.3 — C11's sentence, amended
+
+Ruled after review, replacing the wording R14.1 corrected:
+
+> A 12-prompt spot check drawn at random from these 96 items, **8 of which
+> failed**, would have shown no failures at all in 33% of **such checks**.
+
+Two fixes. The old wording ate its own tail — a singular subject inside its own
+plural denominator. And it never said how many items failed, so a director's
+first question after "33%" was unanswerable from the line; `SpotCheck.failing`
+carried the number and the sentence dropped it.
+
+**`N == k` now returns `None`.** The contract excluded `N < k` because "the check
+would try every item"; that rationale applies identically at `N == k`. A draw
+taking every item is a **census, not a spot check**, and the sentence's whole
+force is that only a few were looked at. Naming a census a spot check is an
+overclaim in the chunk built to prevent overclaiming.
+
+#### R18.4 — C4's edge table gains three exclusions, and two names change
+
+The review found that the empty-hash hole — the one C4's contract names and
+closes — **is open in three more fields**, and that one of them is worse than the
+failure the chunk exists to prevent.
+
+- **Both sides graded zero.** `_judged_flags` fires on inequality and `0 != 0` is
+  false, so a point with `judged_baseline == judged_candidate == 0` is neither
+  excluded nor flagged: no pass rate, floor unrecorded, and it renders as an
+  ordinary complete row. `_require_comparable` refuses this outright — "neither
+  artifact contains a judged completion, so there is nothing to compare" — on a
+  field grouping *can* see, so C4's bridge claim admits a pair it says it never
+  admits. **Now excluded**, and so is a single zero side, because the flag's own
+  sentence ("the gap may be lost judge replies") is untrue of a side that graded
+  nothing.
+- **`n_per_item == 0`** and **`baseline_model == ""`.** Both are the contract's
+  own **Must not** — "coerce an empty hash to a match" — one and two fields over;
+  `_count` returning 0 for a missing value makes "not recorded" and "recorded as
+  zero" indistinguishable exactly as `""` did. Both **now excluded**. C5 could
+  not have closed them: C5 consumes `Exclusion`, it does not mint the rule, and
+  R15.2 has since added C7 as a second consumer, so deferring would have handed
+  one hole to two chunks.
+- **Self-comparison** (`baseline_model == candidate_model`) is a fourth refusal
+  `_require_comparable` makes and grouping did not. An A/A calibration run is
+  legitimately logged, so it is **a caveat, not an exclusion** — C5 decides
+  whether to render it; C4's job is that it is never silently admitted.
+
+**`Flag` is renamed `Caveat`**, before three chunks type it. It collided with
+`enum.Flag` — and C6 and C7 are rendering chunks where `from enum import Flag`
+would shadow it silently — and it would have shared a namespace with C5's
+`spread_flagged` and `RunPoint.warnings`, three "flag" concepts under one word.
+`Exclusion` names an outcome; `Caveat` names one too, and the pair reads as
+removed versus kept-with-a-note.
+
+**The three-tuple becomes `Partition`, a NamedTuple.** R15.3 named this defect
+class, listed R14.2, R6's `Timeline` and R15.3's `Trend` as its instances, and
+said to check every remaining contract for it. This was the remaining instance.
+The change is free — a NamedTuple compares equal to a plain tuple, satisfies
+`isinstance(x, tuple)`, has `len() == 3` and unpacks positionally — so every
+existing assertion passes unchanged, and a fourth field stops being a breaking
+change for what are now three consumers.
+
+#### R18.5 — one review claim that was wrong, recorded because it was nearly persuasive
+
+C4's reviewer noted that R14 and R15 are not on `chunk/c4-impl` and concluded
+that the implementer and tester "could not have read R14.2 or R14.3", making
+their agreement on the three-tuple, on `judged_*` and on the word *graded*
+"genuinely independent corroboration — the best evidence in this chunk."
+
+It is not. Those three rulings were in both briefs verbatim; the agents read them
+from the brief, not from the plan. The reviewer inferred access from the file and
+missed the channel.
+
+The part that **is** independent is smaller and still worth having: nothing in
+either brief disambiguated per-side from cross-run, so the tester's reading of
+that was genuinely its own. Recorded because a tidy story about independent
+convergence was one inference away from being believed, and the difference
+between "two agents agreed" and "two agents were told the same thing" is the
+whole value of running them blind.
+
+---
+
+### R19 — what the C4 and C11 fix passes changed, and one technique worth stealing
+
+#### R19.1 — the unfix harness, which should be standard from here
+
+C4's fix pass did something no previous role on this project has done, and it is
+the cheapest good idea in the pipeline. Having implemented seven rulings and
+killed eight mutants, it then **reverted each ruling one at a time and confirmed
+the suite went red for each**.
+
+Mutation testing asks "does the suite notice a defect the reviewer invented?"
+The unfix asks the question that actually matters after a fix pass: **"does the
+suite notice if this fix is undone?"** A ruling can be implemented correctly and
+left entirely unguarded — the code is right, the tests pass, and the next editor
+removes it without a single failure. That is how three of C4's eight survivors
+came to exist in the first place.
+
+**Do this in every fix pass.** It is one script, it runs in the time the suite
+takes, and a ruling that survives its own reversal is a ruling that was written
+down rather than enforced.
+
+#### R19.2 — a mutant whose obvious test is green, and a review claim corrected
+
+C4's review said its S3 mutant (checking only one side of the hash-recorded test)
+left "a point *with* a hash measured against a group key *without* one … kept".
+The fix pass built exactly that test, watched it **pass against the mutant**, and
+came back rather than declaring the mutant dead. It was right: the point falls
+through to the *mismatch* branch, `hash != ""` holds, and it is excluded anyway.
+
+What S3 actually costs is the **sentence**. The report prints `golden set
+5fef50364057cad8 against the group's unrecorded … two unrelated numbers` —
+asserting a second golden set that does not exist and sending the reader to
+find it.
+
+And the sting: **the obvious keyword assertion is green against the mutant**,
+because `"unrecorded"` is exactly what the mismatch branch prints for the absent
+side. Only an assertion that classifies *which rule did the excluding* kills it.
+
+Two things to carry forward. A reviewer's stated *mechanism* can be wrong while
+its instinct is right — the mutant was real, the explanation was not. And when a
+test passes against a mutant it was written to kill, that is information, not a
+formality: it means the failure is somewhere other than where it was predicted.
+
+#### R19.3 — `hashes_recorded` became a lie the moment its neighbours grew
+
+`ComparabilityKey.hashes_recorded` was added by C4's implementer, unrequested,
+to make a real hazard actionable: naive dataclass equality merges every hash-less
+run into one confident-looking group, and C5 groups on this object.
+
+R18.4 then added three more grounds for exclusion — both sides graded zero,
+`n_per_item == 0`, unrecorded `baseline_model`. The property's first line said it
+reported "whether this key can establish comparability at all", which was true
+when only hashes could exclude and false immediately afterwards. A key with both
+hashes and `n_per_item == 0` answers `True` and is then excluded: C5 would build
+a group and be told every member was removed.
+
+**Ruled: widen it and rename to `is_identifying`, covering all four fields**,
+using the same emptiness test the exclusion rules use so the two cannot drift.
+The fix pass correctly declined to do this in flight — widening is a contract
+change and C5 and C7 are about to type against it — and flagged it for a ruling
+instead. That is the right instinct and the right moment: it is the same
+argument that made `Flag` → `Caveat` free rather than a three-chunk rewrite.
+
+The guard against it becoming a lie a third time is a test asserting the property
+is `False` for a key `partition_comparable` excludes on each of the four grounds,
+one row per ground — so adding a fifth rule without the property goes red.
+
+#### R19.4 — C11's inversion had a sibling nobody listed
+
+The fix pass for R18.1 found that `test_..._so_the_number_never_flatters_the_
+tool` carried the **same** inversion in its own name and docstring ("drop the
+probability, which reads as a *better* argument for the tool"). It was not in the
+ruling and it was fixed anyway.
+
+The replacement test does something better than assert the corrected wording: it
+measures both probabilities, asserts the rule's is the larger, and requires the
+docstring to quote the drop **interpolated from the measured values**. Prose and
+arithmetic can no longer drift apart, which is the failure that produced this
+entire revision.
+
+Also settled: `N == k` returns `None` (a draw taking every item is a census), the
+rendered sentence now names how many items failed, `_percent` is tested directly
+across thirteen rows because exact halves are what separate rounding rules and
+`comb(N-F,k)/comb(N,k)` cannot be steered onto one — which is why testing only
+through `spot_check` let the always-round-up mutant live.
+
+#### R19.5 — the numbers
+
+| | before fix | after fix | mutants |
+|---|---|---|---|
+| C4 | 138 tests | **191** | 8 introduced, 8 dead, plus 7 unfix reversals all red |
+| C11 | 120 tests | **150** | 12 introduced, 12 dead |
+
+Both green on all seven merge checks. Full suite at C4's branch: 1692 passed.
+
+### R20 — what C5's review found, and the one finding that changes the contract
+
+C5's reviewer ran 39 mutants and 15 survived. The chunk's *code* came out mostly
+right — all four of the implementer's blind decisions were endorsed on the
+reasoning, not merely on the outcome — but the suite underneath it was holding
+much less than its 269 passing tests suggested.
+
+#### R20.1 — the fixture monoculture, which is now a named failure mode
+
+**`delta_pp` computed against the field's summary `baseline_pass_rate` survives
+a fully green suite.** The implementation correctly uses each point's own
+baseline; nothing pins it.
+
+Every C5 fixture hard-codes `judged_baseline=50, judge_failures_baseline=10` on
+*every* point, so all rows share one baseline and per-point versus summary are
+numerically identical. The mutant cannot be seen, because no fixture can tell
+the two apart.
+
+Probed against real drift:
+
+```
+alpha (Aug 10, own baseline 0.80, pass_rate 0.65) -> delta_pp = -15.0  (correct)
+gamma (Aug 20, own baseline 0.60, pass_rate 0.65) -> delta_pp =  +5.0  (correct)
+under the mutant, BOTH rows print +5.0
+```
+
+A candidate that lost fifteen points is published as having gained five, because
+the baseline drifted underneath it. That is C5's own named failure mode, and 269
+tests stayed green.
+
+**This is the third appearance of one shape.** On C4, a hash-prefix mutant
+survived the whole suite because every fixture hash differed at character 0. On
+C7, the tester killed it in advance by choosing two hashes that share sixteen
+characters and differ at the seventeenth, and ids differing *only* in a version
+suffix. The rule those three cases teach:
+
+> **A fixture where the broken and the correct implementation agree is a fixture
+> that tests nothing.** Vary the field the code is supposed to be reading. If
+> every fixture carries the same value for it, the suite cannot see it at all.
+
+The tester was not careless here — it flagged the ambiguity in a section header
+and left it "for the reviewer rather than decided by a test". But that admission
+was about `baseline_pass_rate`'s provenance, and it silently took `delta_pp`'s
+per-point baseline down with it. **An acknowledged ambiguity in one field is not
+an acknowledged ambiguity in its neighbour.**
+
+#### R20.2 — a ruling shipped with its substance unpinned
+
+The sorting ruling (dateless rows sort *oldest*, not last) was upheld on review,
+and I would rule it the same way again. But the `_UNDATED = datetime.max`
+mutant — which inverts the ruling in **all three** places the ruling itself says
+it has work to do — survives 269 green tests. Only one of the three, the spread,
+was asserted.
+
+Two jobs had no test at all: a model with one undated and one dated run (the
+dated run should win the row), and two equally large groups where one holds an
+undated run (the dated group should win the tie-break).
+
+**Ruling a disagreement is not the same as pinning the ruling.** When a blind
+pair disagrees and the orchestrator rules, the ruling needs a test the same day,
+or the next reader finds a contract sentence with nothing enforcing it.
+
+One correction to my own ruling, from the same review: I wrote that the date
+reading was "the only total reading". That is false — "dateless rows last,
+`candidate_model` within each block" is also total. The contract simply does not
+supply that second sentence, so the layout reading is untotal **as written**,
+which is enough under R17.5. The overstatement is worth removing precisely
+because a reader who catches it discounts the two grounds that do carry the
+ruling.
+
+#### R20.3 — CandidateField gains the window it was built with
+
+`stale_after_days` is a parameter of `candidate_field` (correctly — R14 made it
+one rather than a literal). `_STALE_AFTER_DAYS` is private. **`CandidateField`
+carries neither.**
+
+So a renderer holding only the field can say "measured more than 7 days apart"
+about a field built with `stale_after_days=30.0`. Both halves are true and the
+sentence is a lie. This is the hazard C6's `note` discipline exists to prevent —
+the sentence must be written where the number is computed, not in the template,
+so the terminal render and the HTML cannot drift apart.
+
+**Ruling: add `stale_after_days: float` as an eighth field.** The number and the
+window it was measured against travel together, or they eventually disagree. The
+alternative — passing the window to the renderer alongside the field — creates
+exactly the two sources that can contradict each other.
+
+I deferred this at first, on the grounds that it changes a field count a test
+asserts and that C6 was about to be dispatched against the seven-field shape.
+That reasoning does not survive contact: **C6's dispatch is mine to schedule**,
+its brief was still a draft, and it is blocked on C5 in any case. A contract
+defect is cheapest to fix while the file is already open, and the deferral was
+buying nothing.
+
+`CandidateField` is a frozen dataclass rather than a NamedTuple, so field order
+is repr-only and `dataclasses.replace` in C6 is unaffected. The eighth field
+goes last.
+
+#### R20.4 — eight more defects, and how each was ruled
+
+Acted on in the fix pass:
+
+| | Defect | Ruling |
+|---|---|---|
+| D1 | The header baseline is the *newest* row's; each `delta_pp` is against its *own*. When the baseline drifts they are silently inconsistent, and `spread_flagged` — a **time** proxy — is `False` on a one-day drift. | Raise a caveat when the rendered rows' reconstructed baselines are not all equal, and say on the **public** attribute that the header must not be added to the deltas. Do not blank the header. |
+| D2 | A run superseded by a newer run of the same model appears in `candidates`, `excluded` **and** `caveats`: nowhere. It vanishes with no sentence. | Mint a superseded exclusion on the `_unnamed_candidate` precedent. This is the quietly-shrunk table C4 exists to prevent, and it contradicts the implementer's own decision-2 rationale. |
+| D3 | `spread_days == 0.0` from a **single** dated row — the exact "measured in a single sitting" claim its docstring says `None` exists to refuse. | `None` unless at least two rendered rows carry a date. Compatible with all three contract edges. |
+| D4 | `judge_failures_baseline > judged_baseline` yields a negative rate and a `delta_pp` of +85.0, uncaveated. The only rate C5 computes rather than reads, and the only one with no sanity bound. | `None`. C4 minted four exclusions for exactly this "a payload is JSON, not a type" class. |
+| D5 | The deliberate unroundedness is stated only in *private* docstrings, and a round-to-1dp mutant survives because `pytest.approx` swallows it. | Move the sentence to the public attributes; assert one exact float. |
+| D8 | The `dir()` guard on `Candidate` forbids *any* public addition, not just a statistic. | Narrow it to interval/CI/confidence/p-value-shaped names, so `Candidate.model` can be added for C6. |
+
+Documentation-only, and both are cases of a docstring teaching something false:
+
+- **D6 — `is_identifying` is dead at its only call site.** `candidate_field` and
+  `_widest_field` both justify the guard with a scenario that cannot occur:
+  partitioning against a non-identifying key keeps *zero* points, so its rank is
+  `(0, 0, _UNDATED)` and it can never win. Keep the guard, correct the
+  sentences. Cross-chunk consequence: C4 introduced `is_identifying` on the
+  claim that "anything that groups on `ComparabilityKey` needs this", and the
+  only consumer that ever grouped on it does not.
+- **D7 — `CandidateField.baseline_pass_rate` can never be `None`** from
+  `candidate_field`, since every rendered point passed `_ungraded`, which
+  requires `judged_baseline > 0`. Say so, or C6 writes a dead branch.
+  (`Candidate.delta_pp is None` *is* reachable, and that promise stands.)
+
+#### R20.5 — what the review endorsed
+
+Worth recording, because four blind decisions surviving a hostile review is the
+first time that has happened on this plan:
+
+1. **"Largest group" ranks by distinct models, not run count.** Thirteen nightly
+   runs of a single candidate beside a two-model group: the implementation
+   renders the two-model field, run-count-first returns `None`. The docstring's
+   claim — *if any eligible group can render a table, the chosen one does* — is
+   exact, because the rank's first term is literally `len(rendered)`.
+2. **Partition the whole log, not just the group.** Endorsed with a proof rather
+   than an observation: `_incomparable(key(p), K) is None` iff `key(p) == K`
+   **and** `K.is_identifying`, and eligibility guarantees the second — so `kept`
+   is bit-identical either way and only `excluded` differs. Without it,
+   `excluded` names only ungraded runs and C4's exclusion machinery is dead at
+   its only call site.
+3. **A new exclusion for `candidate_model == ""`.** C4 genuinely has no
+   jurisdiction — `candidate_model` is not in the key — and C5 is the only
+   consumer.
+4. **`caveats` filtered to the rendered rows.** Correct in isolation; correct
+   *and complete* once D2 mints the superseded exclusion.
+
+One consequence flagged for the plan rather than for C5: a log of two anonymous
+runs plus one named candidate returns `None`, and every exclusion sentence
+computed along the way dies with it. The report can never say *why* there is no
+table. That is inherent to the contract's `None` return, and it is worth
+revisiting when C14's remaining elements decide what an empty section renders as.
+
+### R21 — six elements have no data path, and `trend`'s lineage has no source
+
+Found while scheduling C14's remaining seven elements, before dispatch. Both
+findings are structural rather than local, and the first blocks every remaining
+visible element in the document.
+
+#### R21.1 — nobody wires the series chunks onto `ReportModel`
+
+`ReportModel` on `main` at `60a3fed` carries **31 fields**. Two are the ones this
+plan added: `series` (C3) and `dimensions` (C10). It carries no `spot_check`, no
+`candidates`, no `excluded`, no `multiplicity`, and no `parameter_strip`.
+
+C14's contract gates its sections like this:
+
+| Element | Present when |
+|---|---|
+| spot-check sentence | `spot_check(...)` is not `None` |
+| candidate table | `candidate_field(...)` is not `None` |
+
+Those are **function calls**, and a Jinja template cannot make them. C14's own
+**Must not** closes the other door in the same breath: *"Introduce a new `{{ }}`
+reference to a field `ReportModel` does not define: `StrictUndefined` will
+raise, which is the designed behaviour and must not be worked around."*
+
+So the template may not call the function and may not name a field that does not
+exist. As written, six of C14's nine elements cannot be built by anyone.
+
+**This is an omission, not a contradiction, and it is easy to see how it
+happened.** Every one of C4, C5, C6, C7 and C11 declares its **Files** as
+`series.py` and `tests/test_series.py` — pure functions, no wiring, which is
+exactly what made them safe to run wide. C14a declares its files as *"**Not**
+`from_evidence`, **not** `ReportModel`"*. C14 declares `_TEMPLATE`,
+`_CHANGES_MACRO`, `render_html_string`, `_environment` and the tests. C10 is the
+**only** chunk in the plan that was told to extend `ReportModel`, and R16.3 had
+to say so explicitly.
+
+Between "compute it" and "render it" there is a step nobody owns. Every chunk
+respected its own boundary correctly and the boundary between them was never
+drawn.
+
+That the pipeline produced this is worth recording: the discipline that keeps
+chunks independent — *touch only your files* — is the same discipline that lets
+an unassigned seam sit undetected across eleven chunks. The rule that would have
+caught it is the one this plan already learned and wrote at the top of RESTART:
+**order the chunks so the artifact moves.** Had C14 been scheduled to render
+C11's sentence when C11 merged, the gap would have surfaced that day instead of
+eight chunks later.
+
+#### R21.2 — `trend`'s lineage is caller-declared and there is no caller
+
+R15 made `trend` take a **caller-declared** `candidate_models` lineage and
+forbade inferring it, because stripping a version suffix is exactly the silent
+wrong answer. Verified on `main`:
+
+```python
+trend(points, *, baseline_model: str, candidate_models: Sequence[str]) -> Trend
+```
+
+That ruling was right, and it is the reason C7's lineage test kills a `rstrip`
+implementation. But **no chunk says where the caller gets the lineage.** Nothing
+on `ReportModel` carries a declared succession, and `RunPoint` deliberately does
+not imply one.
+
+So R15 closed the inference door without opening another. Whoever renders the
+timeline must declare a lineage, and the plan does not say from what. Candidate
+sources, none of them yet chosen: the config, a CLI flag, or an explicit field
+in the `migkit.comparison` payload.
+
+**This must be ruled before C22 is dispatched, not during it.** A wiring chunk
+that quietly infers the lineage would reintroduce precisely the defect R15 was
+written to remove, and it would do it in the one place least likely to be
+reviewed — the plumbing.
+
+#### R21.3 — C22, the view model
+
+**New chunk. It blocks C14's remaining seven elements and must land first.**
+
+**Files.** `report.py` (`ReportModel`, `from_evidence`), `tests/test_report.py`.
+
+**Contract.** `ReportModel` gains the fields C14's table is gated on, each
+computed from what the model already holds, and each populated in
+`from_evidence` on the pattern C10 established for `dimensions`.
+
+The inputs are already present and **no second read of the evidence log is
+permitted** — `test_the_log_is_read_once_for_both_the_headline_and_the_series`
+and `test_rebuilding_the_report_does_not_hold_the_log_either` are merged and may
+not be weakened. Checked, and this is the part that makes C22 small:
+
+- `spot_check(items_passing, items_failing, items_unstable, *, k=12)` takes
+  **three integers**. It needs no records and no golden set.
+- `trend(points, ...)`, `parameter_strip(previous, current)`,
+  `partition_comparable(points, *, against)` and `candidate_field(...)` are all
+  pure over `Sequence[RunPoint]`, and `ReportModel.series` is already
+  `tuple[RunPoint, ...]`, built by C3 in the existing single pass.
+
+So C22 reads nothing. It is arithmetic over fields the model already carries,
+which is why it is a chunk and not a redesign.
+
+**Must not.** Read the evidence log, or any file. Infer the `candidate_models`
+lineage (R21.2 — take it from wherever R15's follow-up ruling says, and if that
+ruling is not yet in this plan, **stop and report**). Recompute anything
+`from_evidence` already computed. Change the meaning of any existing field.
+
+**Failure mode when wrong.** A view model that silently substitutes a default
+when a producer returns `None` publishes an empty table as a measured one. Every
+one of these producers returns `None` or an empty result for a real reason, and
+the reason is the thing the reader needs: C7's first-run marker, C4's
+exclusions and C5's caveats all exist because *an absence rendering as a
+measurement* is this project's recurring defect.
+
+**Reviewer.** Whether `None` from a producer survives to the template as `None`
+rather than as an empty tuple that renders as an empty section. And whether the
+single-pass guarantee actually still holds under a test, rather than by
+inspection.
+
+#### R21.4 — what this changes about scheduling
+
+C14's remaining seven elements were the next visible work and are now behind
+C22. The order is:
+
+1. **Rule R21.2** — where the lineage comes from. Blocking, and mine to answer.
+2. **C22**, the view model.
+3. **C14's remaining elements**, which then have something to render.
+
+C5 and C6 are unaffected and stay on their own track; C22 should take
+`candidate_field` last, or accept that it lands one merge behind the others.
+
+#### R21.5 — ruling: the lineage is declared in config, and assumed out loud otherwise
+
+R21.2 is the blocking question and this closes it.
+
+**Rejected: default the lineage to the headline candidate alone.** It is the
+obvious safe answer and it is wrong — it rebuilds the exact defect R15 was
+written to remove. R15's finding was that `trend` filtering on a single
+`candidate_model` *"is what made the change invisible"*: the moment the model
+changes, which is the event the chart exists to show, the points fall out of the
+filter. A one-model default reproduces that on every log the config does not
+cover, which is every log today.
+
+**Rejected: infer the lineage from the model ids.** Forbidden by R15 and it
+stays forbidden. Stripping a version suffix is the silent wrong answer, and C7's
+lineage test — ids differing *only* in their suffix — exists to kill exactly
+that implementation.
+
+**Ruling, two parts.**
+
+1. **Declared, when the config declares it.** The lineage is a list of candidate
+   models in the config, in succession order. `ReportModel` already carries
+   `config_path`, `thresholds` and `threshold_sources`, so a declaration has a
+   home, a provenance trail and a review path, and it is versioned with the
+   thing it describes. This is the caller-declaration R15 asked for, and where
+   it is present `Trend` raises no caveat about it.
+
+2. **Assumed, and said out loud, when it does not.** Absent a declaration, the
+   lineage is **every distinct candidate model in the series, in
+   first-appearance order**, and `Trend` carries a caveat recording that the
+   succession was *assumed from the log and not declared*.
+
+Part 2 is not inference in R15's sense and the distinction is the whole ruling:
+nothing reads the *shape* of an id. It is a policy — *treat the candidates in
+one log as one succession* — which is a claim that can be wrong (two unrelated
+candidates measured into one log) and is therefore exactly the kind of claim
+this document makes visible rather than silent.
+
+`Trend.caveats` already exists and is the natural home, which is a mild sign the
+shape is right. It also means the assumption reaches the page through machinery
+that is already reviewed, rather than through a new disclosure path.
+
+**Why not simply require the declaration.** Because the failure mode of a hard
+requirement is a report that refuses to draw its timeline until someone edits a
+config, and the reader loses the chart to protect them from a caveat. This
+project has ruled the same way twice already — C7's first-run marker and C4's
+exclusions both chose *render it and name the doubt* over *withhold it* — and
+consistency here is worth more than a marginal safety gain.
+
+**Consequence for C22.** It takes the lineage from config when present and
+otherwise assembles it in first-appearance order, and it must **not** be the
+place the caveat is invented: the caveat belongs to `trend`, beside the other
+things `Trend` already says about its own points. If `trend` as merged cannot
+raise it, that is a C7 follow-up and C22 stops and reports rather than
+compensating in the wiring. **Plumbing that quietly patches a producer's honesty
+is the one shape of this defect nobody would find**, because no reviewer reads
+the wiring for claims about the data.
+
+#### R21.6 — counted, not argued: the report imports three names from `series`
+
+R21.1 is an argument from two contract clauses. This is the measurement, taken
+on `main` at `4ddd07e`, and it settles it.
+
+**Every production caller of C4's, C7's and C11's work, outside `series.py`
+itself:**
+
+```
+$ grep -rn "spot_check|candidate_field|parameter_strip|correct_field|
+            partition_comparable|trend(" src/ --include=*.py
+          | grep -v src/model_migration_kit/series.py
+(no matches)
+```
+
+**Everything `report.py` takes from `series.py`:**
+
+```python
+from .series import RunPoint, SeriesBuilder, parse_created   # report.py:190
+```
+
+Three names, all of them C3's. `SpotCheck`, `Trend`, `Succession`,
+`ParameterChange`, `Partition`, `Exclusion`, `Caveat`, `ComparabilityKey` and
+every function that builds them are exported from `series.py` and **imported by
+nothing**. They are reachable only from `tests/test_series.py`.
+
+So the position is not that six elements are awkward to render. It is that
+**four merged chunks — C4, C7, C11, and C21's counting work before C10 wired
+it — produce values no production code path ever reads.** They are exercised
+exclusively by their own tests, which is why every gate stays green and why the
+rendered document is byte-identical across three of those merges.
+
+This also settles what C22 is worth. It is not plumbing tidy-up: it is the
+single edit that connects roughly two thousand lines of reviewed, tested,
+merged work to the artifact, and until it lands the honest description of those
+chunks is *written and verified, not shipped*.
+
+**And it explains the byte-identical render**, which is worth spelling out
+because that symptom is overloaded on this project: a render that does not move
+is *also* the symptom of the `PYTHONPATH` trap, where a bare `migkit demo`
+silently renders the main checkout's code. Two very different causes, one
+identical observation. The way to tell them apart is to print
+`model_migration_kit.__file__` before believing either — and after C10 the
+correct render genuinely is unchanged, which is the first time on this plan that
+"nothing moved" has been the right answer rather than a mistake.
+
+### R22 — D7 is withdrawn, and two rulings from one review contradicted each other
+
+C5 is merged (`03d979d`, 2052 passing, seven gates green) and has now been
+through all four roles. Its fix pass acted on every ruling but one, and **it was
+right to refuse that one.**
+
+#### R22.1 — the refusal
+
+Ruling 8 told the fix pass to document that
+`CandidateField.baseline_pass_rate` **can never be `None`** from
+`candidate_field`, on the reviewer's D7 reasoning: every rendered point has
+passed `_ungraded`, which requires `judged_baseline > 0`, so the R17.2 zero
+guard is unreachable and C6 would otherwise write a dead branch.
+
+That was true when the reviewer wrote it. **Ruling 4, in the same brief, made it
+false.** D4 added a second refusal ground — `_baseline_pass_rate` returns `None`
+unless `0 <= judge_failures_baseline <= judged_baseline` — and `_ungraded` does
+not screen either bound. Both are reachable, because `_count` passes any JSON
+integer through, which is the whole reason D4 was worth acting on.
+
+So after ruling 4, `None` **is** reachable and C6's branch is **live**.
+
+The fix pass did not pick a reading. It wrote the factual sentence — *"`None`
+when that run's baseline-side counts do not describe a rate"* — left the
+reachability claim unmade, and reported the collision. That is the third time on
+this plan an agent has held a correct argument against the orchestrator, and the
+second time doing so prevented a docstring that would have taught the next
+reader something false.
+
+**Ruling: D7 is withdrawn.** `baseline_pass_rate` is `None` when the baseline
+side's counts do not describe a rate. **C6 must handle `None`; the branch is not
+dead.** The sentence the fix pass wrote stands as shipped and needs no change.
+
+#### R22.2 — the lesson, which is about how rulings are issued
+
+I issued eleven rulings as a numbered list and treated them as independent. They
+were not. Ruling 4 changed the reachability of a value that ruling 8 made a claim
+about, and nothing in the process would have caught it: the reviewer found both
+defects honestly, each finding was correct in isolation, and the brief presented
+them in a table that invites exactly the reading that they can be applied one at
+a time in any order.
+
+**A review's findings are not independent, and a set of rulings has to be
+checked against itself before it is issued.** The specific check that would have
+caught this one: *for every ruling that changes when a value is `None`, empty, or
+absent, re-read every other ruling that makes a claim about that same value's
+range.* D4 and D7 are both about `baseline_pass_rate`; reading them side by side
+takes seconds.
+
+This is the same failure shape as R20.1's fixture monoculture, one level up.
+There, a suite could not see a defect because every fixture agreed. Here, a set
+of rulings could not see its own contradiction because each was judged alone.
+**Correctness in isolation is not correctness in composition** — which is,
+uncomfortably, the exact property this plan's whole chunked structure is built
+on, and R21 is what that assumption cost at the level of the architecture.
+
+#### R22.3 — what C6 now consumes
+
+`CandidateField` as merged, for the brief that dispatches C6:
+
+- **Eight fields**, not seven — `stale_after_days: float` is last (R20.3).
+- **`Candidate.model`** is a property returning `point.candidate_model`. A
+  property rather than a field, so there is no second slot to disagree with the
+  point. C6's `thresholds` mapping is keyed on model strings, so this is the
+  join.
+- **`baseline_pass_rate` can be `None`** (R22.1). It is a header and **not an
+  operand**: the rows' `delta_pp` values are each against their own baseline,
+  and adding the header to a delta is wrong whenever the baseline drifted. The
+  public docstring says so.
+- **`spread_days` is `None` unless at least two rendered rows carry a date**
+  (D3), so a single dated row no longer claims a spread of zero.
+- **A drift caveat** appears on the point supplying the header when the rendered
+  rows' reconstructed baselines are not all equal (D1).
+- **A superseded exclusion** now exists, so a run beaten to its row by a newer
+  run of the same model leaves a sentence behind instead of vanishing (D2).
+- `delta_pp` and `spread_days` are **deliberately unrounded**, now stated on the
+  public attributes rather than only in private docstrings (D5). Assert exact
+  floats, not `pytest.approx`.
+
+### R23 — C22 splits, and `excluded` gets exactly one source
+
+Scoping C22 against what is actually merged. Two findings, one of them a
+design ruling that would otherwise be made badly by whoever implements it.
+
+#### R23.1 — WRONG, superseded by R26. `spot_check`'s inputs are NOT on the model
+
+> **This section is false and is kept only so the error is legible.** Read R26.
+> `ReportModel.item_counts` has no `passing`/`failing`/`unstable` keys; it is
+> `{"unit", "per_judge": {...}}`, keyed by judge and then by side. The claim
+> below that it was "checked rather than assumed" is itself the error.
+
+R21.3 claimed `spot_check` needs no records and no golden set, only three
+integers. Checked rather than assumed:
+
+```python
+def spot_check(items_passing: int, items_failing: int,
+               items_unstable: int, *, k: int = 12) -> SpotCheck | None
+```
+
+and `ReportModel.item_counts` is a mapping whose keys are read by
+`_item_counts` (`report.py:2643`) as exactly **`passing`**, **`failing`** and
+**`unstable`**. The three inputs are already carried, under the names the
+function wants. C22 does arithmetic on fields the model holds and reads nothing,
+as R21.3 says.
+
+One decision left for the implementer and worth naming so the reviewer checks
+it: `ReportModel.item_counts` is the run's own counts, while `JudgeRow` carries
+`items_baseline` and `items_candidate` separately. **Which side the spot check
+speaks about must be stated in the sentence it prints**, not left to the
+reader — the whole point of this number is that a sceptical reader checks it
+first.
+
+#### R23.2 — ruling: `excluded` is `candidate_field`'s, not a second partition
+
+C14's table gives the excluded-runs list its own row, gated on *"any
+exclusion"*. The tempting implementation is a fresh
+`partition_comparable(model.series, against=...)` call at the top level.
+
+**That is wrong, and it is the `dimension_counts` mistake again.** `CandidateField`
+**already carries `excluded`**, produced by the partition that built the
+candidate table. A second top-level partition would put the same facts on the
+model twice, computed by two calls that can drift apart — and R16.3 already
+ruled on exactly this shape when it refused to let `dimension_counts` sit beside
+`dimensions`: *"Keeping both would put the same facts on the model at two
+fidelities, which is two chances for them to disagree."*
+
+Worse here than there, because the two partitions would be against possibly
+*different* keys, so the disagreement would be legitimate on both sides and
+impossible to adjudicate from the model.
+
+**Ruling: the rendered excluded-runs list is the candidate field's own
+`excluded`.** One partition, one source. The list and the table it explains are
+then guaranteed to be about the same set of runs, which is the only way the
+section means anything — an exclusion list that does not match the table above
+it is worse than no list.
+
+**Known consequence, already flagged and accepted.** C5's reviewer found that a
+log of two anonymous runs plus one named candidate returns `None` from
+`candidate_field`, and every exclusion sentence computed along the way dies with
+it: *the report can never say why there is no table.* Binding `excluded` to the
+candidate field inherits that. It is the right trade — a wrong-but-present list
+is worse than an absent one — but it means **C14's empty state for this section
+must say that runs may have been excluded without being able to name them**,
+rather than rendering an empty list that reads as "nothing was excluded".
+
+That is the same distinction C7's first-run marker exists to draw, and C4's
+exclusions, and C10's zero column: *an absence must not render as a
+measurement.* It is now four chunks in a row, and it is fair to call it this
+document's central design rule rather than a recurring coincidence.
+
+#### R23.3 — the split
+
+**C22a — dispatchable now.** `spot_check` and the candidate field
+(`candidates` + `excluded`). Both producers, C11 and C5, are through all four
+roles with no open rulings. This renders **three** of C14's nine elements: the
+spot-check sentence, the candidate table, and the excluded-runs list. It is also
+what finally moves *"spot check"* off zero in the measured render.
+
+**C22b — blocked, and on two different things.**
+
+- `trend` and `parameter_strip` wait on C7's review **and** on a C7 follow-up:
+  R21.5 requires `Trend` to raise a caveat when the lineage was assumed rather
+  than declared, and nothing raises one today. R21.5 forbids C22 from inventing
+  that caveat in the plumbing, so it belongs in C7's fix pass, which is coming
+  anyway.
+- `multiplicity` waits on C6, in flight.
+
+Splitting costs a second pass over `ReportModel` and `from_evidence`, and that
+cost is worth paying: the alternative is that nothing renders until C6 and C7's
+follow-up both land, which is the scheduling mistake this plan has already made
+once and written at the top of its handoff — **order the chunks so the artifact
+moves.**
+
+### R24 — rulings on C7's review, and a run that R15 made invisible
+
+C7's reviewer ran 43 mutants; **11 survived both `tests/test_series.py` and the
+full 1998-test suite**, and all 11 were confirmed non-equivalent by probe. The
+first-run marker ruling came through clean — the mutation I asked for goes red,
+and four variants I did not ask for go red too, so R20.2's failure is not
+repeated here. Everything below is what the review found underneath that.
+
+#### R24.1 — a run in the log, on the same baseline, that the page never mentions
+
+**The finding.** A run whose `candidate_model` is not in the declared lineage
+disappears from `points`, `excluded`, `undated` **and** `caveats`. Probed with
+the 14-night lineage declared one character wrong:
+
+```
+13 points, 0 excluded, 0 undated, 0 caveats, no succession
+the strip reports model_id UNCHANGED, six changed=False rows
+```
+
+The reader gets a clean thirteen-night line stating that nothing moved, and
+night 14 appears nowhere on the page.
+
+**R15 created this**, and said so without noticing: R15.1 replaced suffix
+inference with operator declaration and observed that a wrong split now
+*"requires the operator to declare it wrong… precisely the case where a reader
+most needs to notice."* `Trend` has no field in which to notice it.
+
+**Ruling: `Trend` gains two fields, and the distinction between them matters.**
+
+- **`outside_lineage: tuple[RunPoint, ...]`** — runs sharing the
+  `baseline_model` whose `candidate_model` is not in the declared lineage.
+- **`absent_models: tuple[str, ...]`** — declared models with no run in the log
+  at all. The one-character typo shows up here, which is the case most likely
+  to be an operator error rather than a fact about the data.
+
+**These do not go in `excluded`, and `trend`'s existing docstring is right about
+why:** a differently-*based* run "is simply not selected — putting it in
+`Trend.excluded` would bury the exclusions that matter under every other
+experiment in the log." That reasoning holds for a different `baseline_model`,
+which really is somebody else's experiment. It does **not** hold for a run on
+the same baseline whose candidate is merely undeclared: that run is in this
+comparison family, and its absence from the chart is a claim about the
+declaration, not about the run. Keeping the two apart is the whole point.
+
+This is the fifth chunk turning on *an absence must not render as a
+measurement*, and the second time R15's own correction created the next
+instance of the class it was written to remove.
+
+#### R24.2 — `_anchor` has three rulings in its docstring and no tests
+
+All four `_anchor` mutants survive, all four are genuine divergences, and A1 is
+the worst thing in this review after R24.1:
+
+| | shipped | mutated | what the reader sees |
+|---|---|---|---|
+| **A1** the newest run anchors | 13 nights drawn, night 14 excluded | **1 point, 13 exclusions** | a single dot where a fortnight's line belongs; the newcomer evicts its own history |
+| **A2** the `is_identifying` skip removed | night 1 excluded, 2–4 drawn | **nothing drawn**, 4 exclusions | an empty chart with four refusals where three nights agreed |
+| **A3** undated points rank first | 3 dated drawn | **nothing drawn** | a run with no timestamp silently defines the axis for the whole line |
+| **A4** dates ignored entirely | same | same as A3 | the line changes when `read_series` changes its read order |
+
+A1 inverts `_anchor`'s own stated principle — the established series keeps the
+axis — and nothing tests it. **Each of the four gets a test.**
+
+#### R24.3 — the two absence words, and the marker that could re-fuse them
+
+`_NO_PREVIOUS_RUN = "no previous run recorded"` **survives all 1998 tests.** The
+suite asserts the marker differs from `_UNRECORDED`, but nothing keeps it out of
+the *"recorded"* vocabulary — so a marker satisfying every assertion can still
+print both absences as the same idea, which is exactly what the ruling forbade.
+**One assertion closes it: `"recorded" not in marker.lower()`.**
+
+#### R24.4 — C5 and C7 rank undated runs in opposite directions, and both are right
+
+C5 ruled dateless rows sort **oldest**; C7's `_anchor` ranks undated runs
+**after every dated one**. Neither module's docstring acknowledges the other,
+which reads like a contradiction and is not one:
+
+- C5's question is **display order in a table**, where the reader can see the
+  blank `stale_days` cell and position carries no ranking claim.
+- C7's question is **which run defines the axis**, and A3 shows what happens
+  when an undated run wins it: the whole line vanishes.
+
+*Sort it oldest; never let it anchor.* **No behaviour changes. Both docstrings
+must cross-reference the other**, because the next reader who notices the
+asymmetry will otherwise "fix" one of them.
+
+#### R24.5 — a docstring that invites the tidy that breaks the code
+
+`_Cell` states: *"`value` is `""` exactly when the run recorded nothing… so one
+emptiness test decides for hashes, ids and counts alike."* **False for a
+whitespace-padded field**, where `value` is `"   "` and the run recorded
+nothing. The shipped code is safe because `_parameter_change` guards with
+`_recorded(...)` rather than `== ""` — but the sentence tells the next reader
+the two are interchangeable, and survivor C6 means the suite would not object to
+the swap. Probed: it turns a padded hash against a real one into
+`changed=True, "judges changed"` **from a padding artifact**.
+
+Same root: `ParameterChange.before`'s *"Never `""`"* is true and is the wrong
+guarantee — the failure mode is a *blank* cell, and `"   "` satisfies the
+docstring while failing the intent. Fix both sentences, and fix C6 with them.
+
+Also: `trend`'s caveats paragraph still **leads** with the reason `0b84d52`
+retracted before giving the corrected one. The leading sentence is true and does
+no work, and it is the sentence a tidier keeps.
+
+#### R24.6 — two rulings for C14, taken now because renames get expensive
+
+1. **`_UNRECORDED` and `_NO_PREVIOUS_RUN` become public.** A template that wants
+   to style a first-run cell differently from an unrecorded one currently has
+   only two options: import a private name, or hard-code the literal — which the
+   constant's own docstring forbids. `report.py` already sets the opposite
+   precedent deliberately (`THRESHOLD_SOURCE_UNRECORDED`,
+   `INTERVAL_BAR_NO_RATE`), and R7 ruled the general case: *import the constant,
+   never hard-code its value.* Promote both **before C14 types against them**.
+2. **`ParameterChange.name` for the golden set becomes `goldenset`**, without a
+   space. Five of the six names are identifier-safe and exactly one is not, so a
+   template deriving a CSS class, an anchor id or a dict key from `row.name`
+   breaks on one row in six. The contract fixed these strings, so this is a
+   ruling and not a fix: **the display label is the template's job**, which is
+   where labels belong. `ParameterChange` stays at four fields.
+
+`Succession.created` stays a raw string — `parse_created` is public, so the
+caption parses it. Say so in the field comment, which currently justifies the
+field by *not* indexing back into `points`.
+
+#### R24.7 — the monoculture here is pairwise
+
+R20.1 has been about a single field held constant. C7's fixtures vary nearly
+every field individually; what they never do is **combine** two. No C7 fixture
+has undated *and* a caveat (M4a), undated *and* an exclusion (M5a), an unsorted
+input *and* a succession (C13), a key disagreement *on the oldest or newest*
+point (A1), or a whitespace-only value anywhere in the file (C6).
+
+**So R20.1 needs widening: a fixture set can vary every field one at a time and
+still be a monoculture in pairs.** The survivors here are made of exactly that,
+and the cheapest defence is to ask, for each pair of conditions the code branches
+on, whether any single fixture carries both.
+
+### R25 — R17.1's mechanism was wrong, and both C6 agents caught it independently
+
+C6 is merged (2083 passing, seven gates green) and its blind pair produced
+**zero disagreement** for the third chunk running — all 31 of the tester's tests
+pass against the implementer's code.
+
+Both of them, separately and without seeing each other, reported that R17.1's
+explanation of *why* the contract's `changed` rule fails is factually wrong.
+They are right.
+
+#### R25.1 — what R17.1 claimed, and what actually happens
+
+R17.1 says: *"For every candidate after the stop, the returned threshold is the
+uncorrected `alpha` itself — so `p >= threshold` is vacuously false and the
+candidate silently drops out."*
+
+`holm_bonferroni` does not do that. Every position is overwritten in the loop
+with `alpha / (k - rank)`; the `[(False, alpha)] * k` initializer never
+survives. Measured on the merged implementation:
+
+```
+holm_bonferroni([0.03, 0.04, 0.045], alpha=0.05)
+  -> ((False, 0.01667), (False, 0.025), (False, 0.05))
+holm_bonferroni([0.001, 0.002, 0.049], alpha=0.05)
+  -> ((True,  0.01667), (True,  0.025), (True,  0.05))
+```
+
+The stop in the first family is at rank 0, yet the two candidates "after the
+stop" carry `0.01667` and `0.025`, not `alpha`. The threshold sequence is
+identical in both families and is **independent of whether anything rejected**.
+
+#### R25.2 — the real mechanism, which is stronger
+
+The **largest** p-value in any family is always tested against `alpha / 1`,
+which *is* `alpha`. So for that candidate `p_value >= holm_threshold` is false
+whenever `p_value < alpha` — **in every family, whether or not a step-down stop
+occurred.**
+
+The contract's rule therefore misses the largest sub-alpha p-value *always*,
+not merely after a stop. R17.1's ruling and its worked table were right for a
+reason it did not state, and its stated reason would let the next reader
+conclude the defect is conditional on a stop and stop looking. That is worse
+than an incomplete explanation: it is a wrong one that survives the cases most
+likely to be checked.
+
+**The ruling is unchanged:** `changed` is `p_value < alpha and not rejected`,
+with `rejected` from `holm_bonferroni`'s own return, and a p-value is never
+compared against the returned threshold to decide significance. The threshold
+is diagnostic output for display.
+
+The merged code carries the accurate mechanism in `Multiplicity.changed`'s
+docstring, and the tester pinned it as an invariant in
+`test_the_largest_sub_alpha_p_value_is_named_as_changed_although_its_threshold_
+is_alpha_itself` — `thresholds[largest] == alpha` **and** that model is in
+`changed`, which is exactly the pair the broken rule cannot produce.
+
+#### R25.3 — why two blind agents caught it and I did not
+
+Both derived the thresholds from the merged `holm_bonferroni` rather than from
+this plan: the implementer probed it, the tester computed expected values from
+`alpha / (k - rank)` to write its fixtures. Neither could have taken my sentence
+on trust even if it had wanted to, because both needed the actual numbers to do
+their jobs.
+
+I wrote R17.1 from reading the function and reasoning about the initializer
+without running it. The worked table in R17.1 *is* real output — I ran the
+comparison — but I explained it with a mechanism I had inferred rather than
+measured, and the two agreed on the conclusion, so nothing forced them apart.
+
+**A worked example that confirms the conclusion does not confirm the
+explanation.** The output was right, the reasoning was wrong, and only an agent
+that needed the intermediate values found the gap. That is the same shape as
+R20.1 in a different medium: agreement between two things that were never
+independent is not evidence.
+
+#### R25.4 — five things C6's contract does not say
+
+Both C6 agents flagged the first of these; the tester listed all five and
+deliberately wrote no assertion that picks a reading on any of them. **Nothing
+below blocks the merge** — the implementer chose defensibly and the tester's
+assertions hold either way, which is why the pair still agreed. They need
+ruling before anything consumes `Multiplicity`.
+
+1. **What the returned `CandidateField` differs in.** The contract says
+   `correct_field` returns one and never says what changes. Verdicts, deltas,
+   spread and header are all off-limits or unaffected, leaving `caveats`. The
+   implementer appends one `Caveat` per candidate in `changed`, on that
+   candidate's own point, naming the recorded verdict and the second-correction
+   fact, preserving existing caveats unedited, and returns `field` itself
+   unchanged when the correction changed nothing or was refused. **Ruling: this
+   stands.** C5's own `caveats` docstring says a caveat that reaches nobody is
+   the same as one never computed, and R17.3 ruled that shape. Record it in the
+   contract rather than leaving it as silence.
+2. `Multiplicity.alpha` when refused for *differing* levels — unstated.
+3. Whether candidates with `p_value is None` contribute their alpha to the
+   uniformity check — unstated.
+4. `thresholds` when `applied=False` — unstated.
+5. `family_size` when no candidate was tested at all — unstated.
+
+Items 2 to 5 are open. They are cheap now and expensive once C22b renders this.
+
+#### R25.5 — a sixth refusal the contract does not list
+
+`holm_bonferroni` raises `ValueError` unless `0.0 < alpha < 1.0`, and `RunPoint`
+is a public frozen dataclass anyone may construct, so `alpha=5.0` or `alpha=nan`
+reaches `correct_field` without passing through `_number`. The module's stated
+hard rule is that nothing here raises. The implementer refuses with
+`applied=False` and a note naming the level. **Correct — keep it**, and add it
+to the contract's refusal table so it is not read as an invention.
+
+Related and also right: levels are compared as `repr` strings rather than
+floats, because `nan != nan` would otherwise report a family of two identical
+NaN levels as "tested at different levels: nan, nan".
+
+### R26 — R23.1 was wrong, and I made the same mistake twice in an hour
+
+C22a's implementer delivered `candidates` and **stopped on `spot_check`**,
+reporting that its contract does not hold against the code. It is right, and it
+was right to stop.
+
+#### R26.1 — the error
+
+R23.1 claimed, in those words, *"Checked rather than assumed"*:
+
+> `ReportModel.item_counts` is a mapping whose keys are read by `_item_counts`
+> (`report.py:2643`) as exactly `passing`, `failing` and `unstable`. The three
+> inputs are already carried, under the names the function wants.
+
+**Measured on a freshly generated demo log:**
+
+```python
+item_counts = {"unit": "item",
+               "per_judge": {"accuracy": {"baseline":  {"passing": 11, "failing": 1, "unstable": 0},
+                                          "candidate": {"passing":  9, "failing": 3, "unstable": 0},
+                                          "items": 12}}}
+```
+
+`model.item_counts["passing"]` raises `KeyError`. Three independent
+confirmations: the producer is `comparison._item_counts_by_judge`, which returns
+exactly `{"unit", "per_judge"}`; `report.py:1299` passes it through verbatim; and
+`_item_counts` at `report.py:2643` is **never called with
+`model.item_counts`** — its only call sites are `judge.items_baseline` and
+`judge.items_candidate` (`report.py:2577-2578`) and the `counts` Jinja filter.
+
+What I actually did: I grepped for `item_counts`, found a function reading
+`passing`/`failing`/`unstable`, and concluded it read the model field of the
+same name. I never called the function or printed the field.
+
+#### R26.2 — the same mistake as R25, one hour apart
+
+R25 recorded that R17.1's mechanism was inferred rather than measured, and that
+a worked example confirming the *conclusion* does not confirm the
+*explanation*. R23.1 is the identical failure with the identical signature: a
+real observation (the function does read those keys), an inferred connection
+(therefore the field has them), and a confident sentence claiming verification.
+
+**Twice in one hour, and the second time immediately after writing down the
+lesson from the first.** Writing the lesson down is not the same as applying
+it, and the tell is available in both cases: I described the check in prose
+instead of pasting its output. R20.1's rule for fixtures generalises here.
+
+> **When a revision claims something was checked, it must carry the output that
+> checked it.** A sentence saying "verified" is not evidence; a pasted
+> `KeyError` or a printed dict is. Every claim of the form "X already carries
+> Y" needs the two lines that produced it, or it is an inference wearing a
+> verification's clothes.
+
+Both errors were caught by agents rather than by me, and in both cases for the
+same reason: **the agent needed the actual value to do its job and so could not
+take my sentence on trust.** That is an argument for briefs that require an
+agent to derive a number rather than accept one.
+
+#### R26.3 — ruling: which judge, and which side
+
+The error turned one decision into three, two of which nobody had named.
+
+**Which judge: `judges[0]`, the counting judge, and refuse rather than
+aggregate.** `item_counts["per_judge"]` is keyed by judge name and the panel
+case is real. C10 already chose `counting_judge = judges[0].name`
+(`report.py:1213`) for the tag matrix; **one document must not select its
+judge two different ways**, and a second rule would be a defect waiting for the
+first panel whose judges disagree. Summing across a panel is separately wrong
+for `_per_judge_counts`' own stated reason: two judges grading the same 60
+completions are 120 records and 60 completions.
+
+**Which side: the candidate.** `SpotCheck`'s docstring says the number exists to
+say *what a cheaper method would have missed, which is the argument for having
+run the harness at all.* The failures that argument is about are the ones that
+bear on the decision, and those are the candidate's. The baseline's failing
+items are context for the comparison, not the thing a hand check would have been
+run to catch.
+
+#### R26.4 — ruling: the sentence, and a contradiction that was mine
+
+C22a's brief demanded that the printed sentence name which side it speaks
+about, **and** forbade editing a producer. Those cannot both be satisfied:
+`spot_check` takes no label, and `SpotCheck.sentence` is composed inside
+`series.py` —
+
+> *"A 12-prompt spot check drawn at random from these 96 items, 8 of which
+> failed, would have shown no failures at all in 33% of such checks."*
+
+— with no side, no judge, and no parameter that could carry one. The only ways
+to satisfy the brief were to edit `series.py` (forbidden outright) or to build
+the prose in `report.py`, which is inventing a producer's sentence in the
+plumbing — the exact shape R21.5 refused for the `trend` caveat.
+
+**Ruling: a C11 follow-up, on R21.5's precedent.** `spot_check` gains a
+caller-supplied subject that its sentence names, so the sentence stays written
+where the number is computed. The renderer must **not** caption around it. This
+is the second time a chunk's honesty obligation has had to go back to its
+producer rather than be satisfied downstream, and the consistency is the point:
+if plumbing may compose a producer's prose once, the rule is gone.
+
+`C22a`'s `candidates` half is complete, green and independent of all of this,
+and merges on its own.
+
+#### R26.5 — and R23.3's headline claim was also false
+
+R23.3 said C22a "is what finally moves *spot check* off zero in the measured
+render." **It is not, at the bundled demo's defaults.** The golden set is 12
+items and `k` defaults to 12, so `items <= k` and `spot_check` correctly returns
+`None` on both sides:
+
+```
+spot_check(9, 3, 0)   -> None      # candidate
+spot_check(11, 1, 0)  -> None      # baseline
+spot_check(9, 3, 0, k=6) -> SpotCheck(..., probability=0.0909, '...9% of such checks.')
+```
+
+So after every ruling above is implemented, the demo will **still** render no
+spot-check sentence. That absence is correct behaviour and will read exactly
+like a wiring bug — the third distinct cause on this project of "the number
+didn't appear", after the `.pth` trap and the missing view model.
+
+It also raises a product question this plan has not asked: `k` defaults to 12
+while the bundled golden set is 12 items, so the headline demo can never show
+the number the chunk exists to produce. Flagged, not ruled — but whoever
+schedules C14's spot-check element should know the section will be empty on the
+demo unless `k` or the demo set moves.
+
+### R27 — rulings on C10's review: eighteen survivors, and a test satisfied by prose
+
+C10's reviewer ran ~50 mutants: 25 killed, **18 surviving mutants that change
+behaviour**, 5 equivalent. Every survivor was re-confirmed against the **full
+1998-test suite**, not just C10's 22. The chunk's *code* is right almost
+everywhere; what is missing is anything that would notice if it stopped being.
+
+#### R27.1 — the confidence and floor provenance: right in the code, pinned by nothing
+
+My ruling 1 was met. `report.py:1250-1254` threads
+`confidence=_number(thresholds.get("confidence"))` and
+`floor=_number(thresholds.get("pass_rate_floor"))` through to `dimension_cell`;
+probed cells carry `floor=0.87` and a Wilson interval at **0.99**, and an absent
+confidence stays `None` so the cell discloses rigor's default itself. The double
+application really is avoided.
+
+**Six mutants survive all 1998 tests**, and each publishes a false document:
+
+| Mutant | What the page would say |
+|---|---|
+| `confidence=None` | interval widens to (0.886, 1.0), **and** every cell gains *"No confidence level was given, so rigor's default of 95% was used"* — a printed disclaimer that is false about a run recording 99% |
+| `floor=None` | the floor column empties; a document that refuses a cell can no longer say what it refused against |
+| confidence/floor swapped | `floor=0.99`, interval at 87% → (0.929, 1.0). Both wrong, both plausible, neither flagged |
+| confidence defaulted in `report.py` | the exact double application the ruling forbids |
+| floor from `min_detectable_effect` | cells refuse against **0.13** while the gate used 0.87 — two floors in one document |
+| `_number()` dropped | a string threshold reaches `wilson_interval` unconverted |
+
+**Ruling: tests are owed.** Assert `cell.floor == 0.87`, that `cell.interval` is
+Wilson-at-0.99 and **not** 0.95, and add a no-confidence fixture asserting the
+disclosure sentence appears **exactly once**. The tester was right that it could
+not assert this without inventing a requirement; the requirement now exists.
+
+#### R27.2 — a test satisfied by its own file's prose
+
+`test_the_report_module_names_the_untagged_sentinel_rather_than_typing_it` is
+`"UNTAGGED" in inspect.getsource(report)`. The reviewer replaced **every
+executable use with `""` and deleted the import** — the test still passed, and
+so did all 1998.
+
+It is not "satisfiable by a comment", as I guessed when I ruled. **It is
+currently satisfied by docstrings that would survive the regression untouched.**
+Adopt the reviewer's verified replacement:
+
+```python
+tree = ast.parse(inspect.getsource(_module()))
+reached = any(
+    (isinstance(n, ast.Name) and n.id == "UNTAGGED")
+    or (isinstance(n, ast.Attribute) and n.attr == "UNTAGGED")
+    for n in ast.walk(tree)
+)
+```
+
+Matching only `Name`/`Attribute` excludes the `ImportFrom` alias, which is what
+makes it reject *"import it and type `""` anyway"* while accepting both forms
+the contract allows.
+
+**The general lesson is worth more than the fix.** A test that greps a module's
+source cannot distinguish code from commentary, and this project writes long
+docstrings — so source-text assertions are *systematically* weakest here, in
+proportion to how well the code is documented. Parse, do not grep.
+
+#### R27.3 — sorted order confirmed, and the contract's phrase corrected
+
+Golden-set **file** order is not reachable from any input `report.py` has:
+`GoldenSet.stats()` returns `dict(sorted(...))` (`goldenset.py:165`) and the
+counter's inner mapping is `sorted(index.tags)`. The counter also **zero-fills
+the whole tag universe** — a `ghost` tag carried only by never-judged items
+still gets a `(0,0,0)` cell — so `matrix.tags` is exactly *golden-set tags +
+`UNTAGGED`*.
+
+**The contract's phrase "golden-set tag order" becomes "alphabetical, `UNTAGGED`
+last."** No discriminating fixture is needed for file order, because a
+regression to it is unimplementable.
+
+But **M24 survives**: deleting `_matrix_tags`' own `sorted()` and taking the
+counter's key order is invisible *only because `dimensions.py` happens to sort*.
+Nothing pins that `report.py` orders for itself. A `zeta`/`alpha` fixture closes
+it.
+
+#### R27.4 — three fixture and coverage gaps, all one shape
+
+- **`TagColumn.cell()` is never verified for identity.** Returning the first
+  cell whose tag does *not* match survives all 1998 tests, because every fixture
+  gives both tags identical counts. **This is C5's M01 exactly** — a fixture set
+  that hard-codes one value everywhere cannot tell the correct computation from
+  the broken one. Per-tag-distinct counts close it and two near-equivalent
+  survivors with it.
+- **No 3-model fixture exists anywhere.** `candidates` is a 1-tuple in every
+  test, so its plurality is untested and both "reverse candidate order" and
+  "make the extra models non-deterministic" survive.
+- **`candidates` as a tuple is pinned only incidentally.** Regressing it to
+  `Mapping[str, TagColumn]` survives all 22 of C10's tests — section 21's own
+  helpers branch on `isinstance(..., Mapping)` and reach through it. It dies only
+  in **section 20**, and only because `column()` unpacks a dict to its keys and
+  crashes on `str.model_id`. A crash is not an assertion; refactor `column()` and
+  the hazard reopens silently. Assert the shape directly.
+
+#### R27.5 — the zero column: right note, missing distinction
+
+Three genuinely different situations render **byte-identically** — a judged side
+that produced nothing, a side the payload names that the counter never saw, and
+a golden-set tag no model produced. All give `(0,0,0)`, `rate=None`,
+`verdict_refused=True`, note *"Nothing was measured for X."*
+
+**The note is right** — it says nothing was measured, not a measured zero. That
+trap is cleanly avoided, and it is the one that matters most.
+
+The gap is that cases 1 and 2 have **different fixes** (check the judge
+configuration vs. check whether the run completed at all), the matrix carries
+nothing to separate them, and `available=True` in both, so the table looks
+confident. Case 2 is the implementer's own extension and has **no test at all**:
+M6 — drop the never-seen side entirely, leaving a one-column "comparison" with
+nothing on the page saying where the other side went — survives all 1998 tests.
+
+**Ruling: test case 2, and give the two a distinguishable note.** Not a new
+field: the note is already the place this document says such things.
+
+#### R27.6 — the decline assertion is tautological
+
+`_counter_reason` derives the expected sentence by running **the same production
+code path**, so a re-wording at the source moves both sides together. M40
+re-words `_unjoinable` in `dimensions.py` and survives all 1998 tests;
+`test_dimensions.py` only checks a keyword substring.
+
+The report side *is* pinned against re-wording **in `report.py`**, which is the
+part C10 owns, and that is genuinely worth having. But "byte-identical to their
+source" is only ever "identical to whatever the source now says". Worse, the
+distinctness assertion checks six distinct **strings**, not six distinct
+**diagnoses**: collapsing `_unknown_item` onto `_unjoinable`'s sentence keeps the
+strings unequal, because the interpolated ids differ.
+
+**Ruling: assert the diagnoses, not the strings** — that no two declines share a
+*template* — and leave the wording pinned where the wording lives, in
+`test_dimensions.py`. A cross-module byte-assertion would just move the tautology.
+
+#### R27.7 — two docstrings describing code that is not there
+
+- `_matrix_tags` argues the alternative "would disagree with the columns the
+  moment the two came from different golden sets." In `from_evidence`, the only
+  caller, both come from the same `view.update(...)` of the same `loaded` object
+  (`report.py:1581-1593`). **They cannot.** The first reason the same docstring
+  gives is real and sufficient; delete the second.
+- `_tag_column` claims the published floors and the refused-against floors "are
+  one expression rather than two that agree today." They are **three**, each
+  independently naming the module constants (`1728-1729`, `1767-1768`,
+  `1791-1792`). The docstring describes the design it was meant to produce.
+  Thread them through one local and the sentence becomes true.
+
+Both are the C5-D6 shape: **a docstring reasoning from a state the code cannot
+reach teaches the next reader something false.** Third chunk running.
+
+#### R27.8 — for C14
+
+1. **`matrix.candidates[0]` is the comparison's candidate by construction** and
+   pinned by nothing. **Pin the order** with the 3-model fixture rather than
+   adding a `matrix.candidate` accessor — a second way to name one side is a
+   second thing to disagree.
+2. `cell(tag)` never returns `None` for a tag in `matrix.tags` (the counter
+   zero-fills), so C14 needs no null guard — after R27.4's identity test.
+3. `available=True` guarantees `judge != ""`.
+4. `matrix.tags` is a tuple while `goldenset["tags"]` is a dict — similar names,
+   different shapes. Say so where a template author will look.
+5. **C14 cannot today distinguish a judged-but-silent side from a never-judged
+   one.** If the page is meant to, R27.5's note must carry it.
+
+### R28 — a ruling recorded is not a ruling scheduled
+
+Found by auditing my own revisions against the code rather than against my
+memory of them.
+
+#### R28.1 — R21.5 was ruled and never scheduled
+
+R21.5 ruled that when no config declares `trend`'s lineage, the lineage is
+assembled from the log in first-appearance order and **`Trend` carries a caveat
+saying the succession was assumed rather than declared**. RESTART has listed it
+as blocking C22b ever since.
+
+**It was never implemented, and it was never in any brief.** Verified against
+the merged code:
+
+```
+Trend fields: ('points', 'successions', 'excluded', 'undated',
+               'caveats', 'outside_lineage', 'absent_models')
+trend() source, occurrences of 'assumed': 0
+                              'first-appearance': 0
+                              'config': 0
+```
+
+`outside_lineage` and `absent_models` are R24.1's, from C7's fix pass. C7's fix
+brief covered R24 and nothing else. I ruled R21.5 four hours earlier, wrote it
+into the plan and into the handoff's blocking list, and then wrote a brief that
+did not mention it.
+
+**The failure is a missing step, not a missing thought.** Every ruling on this
+project goes: rule it → write it into the plan → *carry it into a brief*. The
+middle step feels like completion because the plan is where rulings live, and it
+is not: **a ruling in the plan with no brief behind it is a ruling nobody will
+execute.** The handoff even listed it as blocking, which made it look tracked.
+
+The check that catches this is cheap and is now standing: **before dispatching
+any brief, grep the merged code for the ruling it is supposed to implement.** If
+the ruling's own words appear nowhere, it has not been done, whatever the plan
+says. That is the same rule as R26.1 — *a claim that something was checked must
+carry the output that checked it* — applied to my own scheduling instead of to
+my own facts.
+
+Dispatched as a C7 follow-up, on the C11 `SpotCheckSubject` precedent: the
+caller supplies the fact, `series.py` supplies the words.
+
+#### R28.2 — C6's four open contract points, now ruled
+
+R25.4 listed five things C6's contract does not say. Item 1 was ruled there (the
+returned field gains one `Caveat` per changed candidate). **These four were left
+open and are now blocking C22b**, which must render `Multiplicity`.
+
+1. **`Multiplicity.alpha` when the correction is refused for *differing*
+   levels.** Ruling: **`None`.** `alpha` is documented as the *family-wise*
+   level, and where members were tested at different levels there is no such
+   thing — publishing either one names a level the family does not have. The
+   `note` already names both, which is where the detail belongs.
+2. **Whether candidates with `p_value is None` contribute their alpha to the
+   uniformity check.** Ruling: **no.** An untested candidate has no p-value to
+   correct, so it is not in the family; letting it veto the correction would
+   refuse a well-formed family on the strength of a row that contributed
+   nothing. `family_size` already counts only tested candidates, and this is the
+   same principle applied one field over.
+3. **`thresholds` when `applied=False`.** Ruling: **empty.** A threshold is the
+   output of a correction that did not happen, and C6's own reviewer note names
+   the mirror hazard — `applied=True` with empty `thresholds` is the overclaim
+   the chunk exists to prevent. The converse is the same defect facing the other
+   way: numbers on the page implying a correction was applied.
+4. **`family_size` when no candidate was tested at all.** Ruling: **`0`**, with
+   `applied=False`. Zero tested candidates is a family of zero, and the note
+   must say how many were untested — which the contract already requires, and
+   which is the only thing that stops `0` reading as "no candidates existed".
+
+All four follow one principle worth stating once: **a refused correction must
+not leave behind the furniture of an applied one.**
+
+#### R28.3 — the sixth refusal belongs in the contract's table
+
+R25.5 endorsed the implementer's sixth refusal — `holm_bonferroni` raises unless
+`0.0 < alpha < 1.0`, and `RunPoint` is a public frozen dataclass anyone may
+construct, so `alpha=5.0` or `alpha=nan` reaches `correct_field` without passing
+through `_number` — and said it should be added to C6's refusal table "so it is
+not read as an invention". **That edit was not made either**, which is R28.1's
+shape a second time in the same session.
+
+It is recorded here instead, and C6's contract table should be read as having a
+seventh row:
+
+| Input | Required |
+|---|---|
+| `alpha` outside `(0.0, 1.0)`, including NaN | `applied=False`, note names the level. The module's hard rule is that nothing here raises. |
+
+Also endorsed and worth keeping: levels are compared as `repr` strings rather
+than floats, because `nan != nan` would otherwise report a family of two
+identical NaN levels as "tested at different levels: nan, nan".
+
+### R29 — C18's three unimplementable clauses, and a false sentence already shipping
+
+C18's implementer shipped one clause and stopped on three, reporting that each
+needed a reading it was not entitled to choose. It was right on all three, and
+it found a defect nobody had asked about that is live in the rendered document
+today.
+
+Shipped and merged: `render_html_string` replaced the `<title>` outright, so the
+`FAKE MODELS` prefix vanished from a **contracted disclosure surface** — one of
+the five the spec names, "and none of them is a footnote" — while the body band
+stayed. One argument removed it. Now guarded.
+
+#### R29.1 — the defect that is shipping: a headline sentence making a series claim
+
+With a real headline over a scripted history, the methodology paragraph
+(`report.py:2255`) prints, verbatim:
+
+> These numbers describe scripted responses, not a real provider. At least one
+> side of **this comparison** was produced by a Fake adapter
+> (**AnthropicAdapter** for the baseline, **OpenAICompatAdapter** for the
+> candidate).
+
+**Both named adapters are real.** The sentence is *headline*-scoped while
+`is_demo` is *series*-scoped, so it makes a false claim about the comparison in
+front of the reader and never states the true one — that the history behind it
+was scripted. Reproduced against the current build.
+
+This is worse than an absence rendering as a measurement: it is a **disclosure
+that discloses the wrong thing**, and it appears in the paragraph a sceptical
+reader goes to first. **Ruling: the sentence must say what `is_demo` actually
+measured.** When the headline is fake, name the headline's adapters as now. When
+the headline is real and the *history* is scripted, say that, and name no
+adapters as evidence — the evidence is in runs the sentence is not about. The
+two cases are different sentences, not one sentence with a variable in it.
+
+#### R29.2 — clause 1 is unsatisfiable as written; the escape is a third state
+
+C18's contract says the band must not be defeatable "by an empty adapter
+string". Verified by the implementer: blank both sides' adapters in the payload
+**and** delete the run artifacts (the artifact wins at `report.py:1918`), and a
+fully scripted demo renders as a clean report with a verdict and pass rates.
+§5.3's claim is broken.
+
+But `test_a_series_of_real_runs_does_not_band_the_report`, parametrized
+`("", "")`, asserts exactly the opposite for exactly that input, on C3's
+reviewer note. And the two inputs are **byte-identical in the evidence**: a
+scripted run with its adapter blanked and a real run whose adapter was never
+recorded produce the same log. No implementation satisfies both, because the
+distinction the contract demands is not in the data.
+
+**Ruling: a third state — provenance not recorded — which is neither "scripted"
+nor "real".** This is the document's own central rule applied to its most
+important disclosure: an absence must not render as a measurement, and a silent
+report is currently asserting *real* on the strength of nothing. It also
+survives the merged test, which asserts only that the **fake** markers are
+absent, so C3's reviewer note is honoured rather than overridden.
+
+The four things the contract never decided, decided:
+
+1. **Wording** — a band saying the adapters were not recorded, so the report
+   cannot say whether these numbers came from a real provider or a script. It
+   states the gap, and claims nothing on either side.
+2. **The `<title>`: no.** The prefix is reserved for the positive claim *these
+   are fake*, and unrecorded provenance is not that claim. Prefixing it would
+   band every legacy log that predates adapter recording, which trains readers
+   to ignore the prefix — and a disclosure readers learn to skip is worse than
+   one that is merely absent.
+3. **`render_terminal`: yes.** The terminal and the HTML must say the same
+   words; that discipline is why `DetailBudget.sentence` and C6's `note` are
+   written where their numbers are computed.
+4. **One side unrecorded** — if either side is *fake*, the fake band wins,
+   because that is a positive finding and outranks a gap. Otherwise, if either
+   side is unrecorded, the unrecorded band shows and names **which side**.
+
+#### R29.3 — clause 2: detect the asymmetry, or say nothing
+
+The C17 timestamp asymmetry has no trigger in the repo: `build_showcase` does
+not exist, and it is invisible from the series because `series.py:1674`
+`_created` returns the payload's `created` and **discards the envelope `ts`**,
+keeping only a `created_source` label.
+
+**Ruling: take the implementer's recommendation.** Detect it in `report.py` from
+the comparison records' own `record.ts` against `payload["created"]`, with the
+threshold stated as **different UTC calendar dates**, and **say nothing when
+they agree**. Do not touch `series.py` — it is outside C18's declared files, and
+a second report-local accumulation is the cheaper of the two.
+
+Unconditional prose is refused: it is **false on `migkit demo`**, whose
+comparison `created` and envelope `ts` are the same instant. *An asymmetry
+asserted where none was measured is this document's rule inverted* — and it
+would be inverted inside the very chunk whose subject is unsuppressible honesty.
+
+#### R29.4 — clause 3: count comparisons, never runs
+
+`ReportModel.series` is one point per comparison, each naming two adapter
+strings, and `RunPoint` carries no run id or artifact path to dedupe by. In the
+showcase shape a night is 4 runs but 3 points × 2 sides = **6 adapter
+mentions**, so "how many of the runs" would render 84 for a 42-comparison
+document over 56 actual runs.
+
+A true run count is reachable from `migkit.run_started`, which does carry
+`adapter` — but a resumed run writes a second one, and a log produced by
+`compare` from two artifacts has none, so the count would be **absent on exactly
+the logs this clause exists to protect**.
+
+**Ruling: count comparisons, and say "comparisons".** Never publish a run count
+this data cannot dedupe. A precise-looking number that is wrong is worse here
+than a coarser one that is right, because the whole clause is about a disclosure
+a reader must be able to trust.
+
+#### R29.5 — and tell C18's blind tester its first test is already green
+
+C18's named first-failing test is **largely already passing**: clause 4 ("not by
+a real headline run appended to a seeded log") is C3's third `is_demo` disjunct,
+merged, and covered by two existing tests. A tester that reads a passing test as
+a gap will write around it. Say so in the brief.
+
+### R30 — C22b's contract, decided before dispatch
+
+C7's lineage follow-up is merged (2154 passing, seven gates green), which
+unblocks the half of C22 that R23.3 held back. R21.3 wrote C22's contract before
+three of its four producers had been reviewed, so it names the fields and leaves
+the joins open. Deciding them here rather than in the brief-writing is R28.1's
+standing check applied forwards: **every one of these was verified against the
+merged code, and the output is quoted.**
+
+#### R30.1 — the lineage `from_evidence` passes is *assumed*, on every report
+
+R21.5 said C22 "takes the lineage from config when present". Measured on `main`
+after the C7 merge:
+
+```
+$ grep -rn "candidate_models\|lineage" src/model_migration_kit/*.py \
+    | grep -v series.py
+(no output)
+```
+
+**Nothing outside `series.py` mentions a lineage at all.** No config schema
+carries one, `from_evidence` reads no config, and R21.3 forbids it starting.
+"When present" describes a path that does not exist and may not be built here.
+
+**Ruling: `CandidateLineage.assumed_from(...)`, unconditionally, and the caveat
+it raises is correct.** Every report rendered from today carries a note saying
+the succession was assumed rather than declared. That is not a defect to be
+tuned down before it ships and it is not a placeholder — it is the true sentence
+about every log this project can currently read, and R21.5 chose *render it and
+name the doubt* over *withhold it* precisely so this case would have a page.
+
+Stated for whoever meets it next, because the temptation is obvious and the fix
+is a one-liner: **a caveat that appears on every report is not thereby noise.**
+It becomes noise only when a declaration path exists and reports that use it
+still carry it. Suppressing it now would restore the silent default R21.5
+rejected, and would do it in the wiring, which R21.5 names as "the one shape of
+this defect nobody would find".
+
+#### R30.2 — `candidates` must become the *corrected* field
+
+`correct_field` returns `(CandidateField, Multiplicity)`, and the field is not
+the one that went in:
+
+> What the returned field carries instead is one :class:`Caveat` per candidate
+> in :attr:`Multiplicity.changed`, appended to :attr:`CandidateField.caveats`.
+
+**Ruling: `ReportModel.candidates` is `correct_field`'s field, not
+`candidate_field`'s.** Storing the `Multiplicity` while keeping the uncorrected
+field would leave those caveats computed and dropped — which is R21's finding
+exactly, reproduced inside the chunk written to fix R21. The caveat says a
+candidate's significance did not survive correction; there is no second place it
+is recorded, and `Multiplicity.changed` is a tuple of model ids, not prose.
+
+A merged test asserting `model.candidates == candidate_field(model.series)`
+would now be asserting the uncorrected shape. If one exists, it is wrong and
+says so under this ruling — **report it, do not weaken it silently.**
+
+#### R30.3 — the strip is fed from the line, never from the log
+
+`parameter_strip(previous, current)` takes two points and the contract never
+said which. `trend`'s own docstring settles it:
+
+> This used to filter by the field that moves, and that is what hid the change…
+> The strip was always able to show the change and was prevented by its own
+> caller.
+
+**Ruling: both points come from `Trend.points`** — `current = points[-1]`,
+`previous = points[-2]` when there is one and `None` when there is not. Never
+from `ReportModel.series`, whose order is the log's and whose membership is
+every experiment in it.
+
+Two consequences, both accepted:
+
+1. **`Trend.points[-1]` is the line's newest run, which is not always the
+   headline run.** If the headline was excluded from the line, the strip is not
+   about the banner — and that is right: the strip belongs to the timeline
+   section, where `Trend.excluded`, `outside_lineage` and `undated` already say
+   who is missing and why. A strip silently retargeted at the headline would
+   compare two runs the chart above it does not draw as consecutive.
+2. **The strip is gated on the trend, not on itself.** An empty strip tuple
+   means an empty line, and the reason is in `Trend`. A renderer that gates on
+   `parameter_strip` being non-empty publishes "no parameters tracked" over a
+   log that simply has no line yet.
+
+#### R30.4 — the shapes, the defaults, and the one field that mirrors another
+
+> **PARTLY CORRECTED by R32.1.** The `baseline_model` paragraph below is wrong:
+> both of its reasons were measured false. `series` cannot be empty here, and
+> `baseline` is the reader that loses a recorded value. The source is
+> `series[-1].baseline_model`. Everything else in this section stands.
+
+Decided together, because the pattern matters more than any of them:
+
+| Field | Type | Default | `None`/empty means |
+|---|---|---|---|
+| `trend` | `Trend` | empty `Trend` | never `None` — `trend()` has no `None` return |
+| `parameter_strip` | `tuple[ParameterChange, ...]` | `()` | the line is empty; see `trend` |
+| `multiplicity` | `Multiplicity \| None` | `None` | there is no candidate field to correct |
+
+**`baseline_model` comes from `ReportModel.baseline.model_id`, not from
+`series[-1].baseline_model`.** They are the same fact and the rule is R23.2's —
+exactly one source — so the tie is broken on which one is always there:
+`baseline` is read from the records and always present, `series` can be empty,
+and choosing it would need an empty-series special case that exists only to
+answer a question `baseline` already answers.
+
+**`multiplicity` is `None` exactly when `candidates` is `None`, and never
+otherwise.** The two are one fact — the multiplicity is *of* the field — and
+`correct_field` takes a `CandidateField`, not an optional one. A refusal
+`Multiplicity` invented for the no-field case would be this chunk composing a
+producer's prose, which R26.4 refused for `spot_check` and R21.5 refused for the
+lineage caveat. The renderer already has a sentence for `candidates is None`;
+a second one saying "and so nothing was corrected" can only ever agree with it
+or contradict it, and the second outcome is the one that ships.
+
+The defaults exist for `dimensions`' reason and no other: every existing
+`ReportModel` construction predates these fields. **A default is not a
+measurement** — the empty `Trend` default must not carry the assumed-lineage
+caveat, because a `ReportModel` nobody computed a trend for has not assumed
+anything.
+
+#### R30.5 — a point-less caveat is silently dropped one layer over
+
+Flagged by C7's implementer and confirmed. `Caveat.point` is now
+`RunPoint | None`, and `candidate_field` filters the partition's notes at
+`series.py:1231`:
+
+```python
+shown = {id(point) for point in rendered}
+...
+tuple(note for note in partition.caveats if id(note.point) in shown)
+```
+
+`id(None)` is in no `shown` set, so a point-less caveat reaching that filter
+**disappears without a trace**. It cannot reach it today: R21.5's note is minted
+in `trend` and lands on `Trend.caveats`, and `partition_comparable` mints
+nothing point-less. So this is a trap, not a bug.
+
+**Ruling, recorded now so it is not rediscovered from a missing sentence:** that
+filter's intent is *drop notes about points the reader cannot see*. A note about
+no point is not a note about a hidden point — it is a note about the field as a
+whole, and it must be **kept**. The condition is `note.point is None or
+id(note.point) in shown`.
+
+This is C5's code and C22b does not own it, so it is not in C22b's scope. It
+goes to whichever chunk next opens `candidate_field` — and until then, the rule
+that matters downstream is the one `Trend.caveats` already documents: **a
+renderer walking caveats into rows must ask before it indexes.** C14b's brief
+carries it.
+
+### R31 — three rulings landed, and the third mechanism I prescribed without running
+
+C10's fix pass and C18's round two are merged; `main` is at **2174 passing**,
+seven gates green, 20 of 22 chunks. Seventeen of R27's eighteen survivors now
+die and the eighteenth is reported rather than papered over. Four findings came
+back that the rulings did not anticipate, and one of them is about me.
+
+#### R31.1 — R27.3 prescribed a mechanism the code cannot support. That is three.
+
+R27.3 ruled that a `zeta`/`alpha` fixture closes M24 — the mutant that drops
+`report.py`'s own ordering of the matrix tags. C10's fix agent built the fixture
+and **measured that the mutant still survived all 2142 tests.** `dimensions.py`
+keys every column through `sorted(index.tags)` (`dimensions.py:902`), so on
+every input `from_evidence` can build, the counter's key order *is* alphabetical
+order, and no log whatever can distinguish them. R27.3's own preceding paragraph
+is what makes R27.3 unimplementable.
+
+The agent closed the intent another way — replace `_close_the_tally` with one
+returning unsorted keys, the only input no log can produce — kept the fixture
+because it pins the published contract, and reported the discrepancy instead of
+quietly substituting. Correct on every count.
+
+**This is the third ruling of mine whose mechanism was wrong**, and the three
+have one shape:
+
+| | I claimed | Measured |
+|---|---|---|
+| R17.1 | `holm_bonferroni` returns uncorrected `alpha` after a step-down stop | every position is `alpha/(k-rank)` |
+| R23.1 | `ReportModel.item_counts` holds `passing`/`failing`/`unstable` | `{"unit", "per_judge": {judge: {"baseline", "candidate"}}}` |
+| R27.3 | a `zeta`/`alpha` fixture kills M24 | it survives; the sort makes the orders identical |
+
+Each time I reasoned about what the code must do from its name, its docstring or
+a neighbouring function, and each time the reasoning was good and the code was
+different. Each time an agent caught it by running something.
+
+**The rule this yields, and it is narrower than "check everything":** a ruling
+that prescribes an **outcome** — *the note must not claim a measured zero*, *the
+sentence must say what `is_demo` measured* — needs an argument and nothing more,
+because the implementer will discover any obstacle while satisfying it. A ruling
+that prescribes a **mechanism** — *this fixture kills that mutant*, *this field
+holds those keys* — is a claim about code I have not run, and **it must carry
+the output of running it.** That is R26.1 (*a claim that something was checked
+must carry the output that checked it*) applied to the one place I keep
+forgetting it: rulings that helpfully tell the implementer how.
+
+Three of these have now cost roughly an agent-hour each, all recovered by the
+same habit on the agent's side. Prescribe outcomes; prove mechanisms.
+
+#### R31.2 — two more tests that a docstring would satisfy
+
+R27.2's lesson generalises and C10's fix agent went looking rather than waiting
+to be asked. Two more of the same shape, both currently satisfied by executable
+code and both one docstring away from not being:
+
+- `tests/test_report.py::test_render_html_is_the_one_that_validates` — regex-slices
+  `render_html`'s body out of the module source and asserts
+  `"assert_self_contained" in` it. A docstring mentioning the call satisfies it.
+- `tests/test_stranger_path.py:214` — `assert name in source` over
+  `scripts/verify_release.py` for three bundled data filenames. A comment naming
+  a file the wheel no longer ships keeps it green.
+
+Both take R27.2's fix: parse the module and find the `Call`.
+
+**And the asymmetry worth keeping**, which the agent identified and which is
+why `tests/test_cli.py:919` was correctly left alone: `assert name in source` is
+a **positive** claim that prose can satisfy falsely. `assert "API_KEY" not in
+source` is a **negative** claim that prose can only false-alarm. Source-text
+assertions are unsafe in one direction only, and this project writes long
+docstrings, so the unsafe direction is unsafe here in proportion to how well the
+code is documented.
+
+#### R31.3 — a defect that existed in neither branch, only in their sum
+
+Merging C10's fix produced `[FAIL] no shadowed top-level names`:
+
+```
+tests\test_report.py: '_candidates' defined at 8286, 9909 -- the later one wins
+```
+
+C10's fix added `_candidates(matrix)`, returning the matrix's candidate columns
+and carrying R27.4's assertion that they are a `tuple` and never a `Mapping`.
+C22a's tests, merged earlier, define `_candidates(model)` returning
+`model.candidates`. Python resolves module-level names at call time, so the
+later definition won for all four earlier call sites — and **the merge of a fix
+pass silently deleted the assertion that same fix pass had just added.**
+
+The suite stayed green throughout, because the surviving helper returns the
+right object for both callers; only the `isinstance` check was lost. Renamed to
+`_candidate_columns`, with the reason in its docstring.
+
+Worth naming as a class, because the pipeline's whole shape invites it:
+**neither branch was wrong, and no role could have caught it.** The implementer
+and the blind tester share a contract and not a namespace; the reviewer mutates
+one branch; the fix pass works on one branch. A collision between two branches
+is visible only at the merge, which is the orchestrator's stage — and the reason
+it was caught is that `check_merge.py` runs a check whose entire purpose is to
+find name collisions the interpreter accepts. **Run the gate on every merge,
+including the ones where the suite is already green.** The suite was green.
+
+#### R31.4 — C18's open point: the unrecorded state stops at the headline
+
+R29.2 decided the *sides*, in the headline's vocabulary, and said nothing about
+the series. C18's implementer implemented exactly that and reported the gap
+rather than widening the ruling on its own authority: **blanking only the
+history's adapters removes the "the history was scripted" disclosure and puts
+nothing in its place** — R29.2's own defect, one level down.
+
+Not ruled here, because it wants the same care R29.2 got and C18 has already
+shipped its clauses. Recorded as open, with the note that `is_demo` is
+series-scoped and `provenance` is headline-scoped, so the two disclosures now
+have different reach and a reader cannot tell which one is speaking. That
+asymmetry is the thing to rule on, not the missing sentence.
+
+#### R31.5 — C22b measured the render, and it correctly did not move
+
+24,564 bytes before and after, `<svg>` 2, `"dimension"` 0, `"spot check"` 0 — a
+32-line diff of which every line is per-run nondeterminism (the generated
+timestamp, the temp directory, the evidence hash). That is the expected and
+correct result for a view-model chunk, and measuring it is how we know the chunk
+did what it claimed and nothing else.
+
+The consequence to carry forward: **R21.5's assumed-lineage caveat now exists on
+every model and reaches no reader.** It is on `ReportModel.trend.caveats[0]`,
+with `point=None`, and no template renders it. That is C14c's to fix, and it is
+the first item in C14c's brief.
+
+### R32 — C22b is merged, and one of R30's rulings was wrong where it counts
+
+Both halves of C22b are in. `main` is at **2190 passing**, seven gates green.
+The view model is complete: every producer this rebuild wrote now has a field on
+`ReportModel`, and what remains is rendering.
+
+#### R32.1 — CORRECTS R30.4. `baseline_model` comes from `series`, not `baseline`
+
+R30.4 ruled that `trend`'s `baseline_model` should come from
+`ReportModel.baseline.model_id` rather than `series[-1].baseline_model`, and
+gave one reason: they are the same fact, so the tie breaks on which one is
+always there — `baseline` is read from the records and always present, `series`
+can be empty.
+
+**Both halves of that reason are false, and C22b's blind tester measured both.**
+
+*The empty-series case does not exist.* `from_evidence` raises `ArtifactError`
+on a log with no `migkit.comparison` record, so `series` is never empty by the
+time these fields are computed. The special case R30.4 was avoiding is
+unreachable.
+
+*And `baseline` is not the more faithful reader.* The two are the same JSON
+field of the same headline payload — `comparison["baseline"]["model_id"]` — and
+differ only in coercion:
+
+```
+series._text        -> "" if value is None else str(value)
+report._run_summary -> str(side.get("model_id", "") or "")
+```
+
+They part company on exactly one class of value: falsy and not `None`. Measured
+with `model_id: 0` in the payload:
+
+```
+baseline.model_id          == ''
+series[-1].baseline_model  == '0'
+```
+
+Under R30.4's ruling the report then draws **no line at all** — nothing is
+measured against `""` — and `_assumed_lineage(())` prints *"this baseline
+recorded no candidate the log could name"*, which is false: the log recorded
+`model-b-20260101`. **A recorded value renders as an absence, and the absence
+then renders as a finding.** That is this document's central rule inverted
+twice, in the one case where the choice is observable at all.
+
+**Ruling: `series[-1].baseline_model`.** The tie-break is not "which is always
+there" — neither can be missing — but **which preserves what the log
+recorded**, and only one of them does.
+
+Scheduled, not merely recorded (R28.1): this goes to **C22b's fix pass**, one
+line in `from_evidence` plus the tester's expectation, which is currently
+written against the ruling as issued and says so in its own docstring. The
+tester tested the contract as written and flagged the wart rather than quietly
+implementing the better answer — which is right, and is why this is a
+correction rather than a defect.
+
+#### R32.2 — the gate skipped constants, and that cost the second collision
+
+R31.3 named the class: a defect that exists in neither branch, only in their
+sum, visible only at the merge. It recurred within the hour, in the same file,
+and the check written for it said **PASS**.
+
+C10's dimension fixtures define a module-level `THIRD_MODEL`; C22b's blind
+tester, cut from the same commit and forbidden from reading the other branch,
+defined another 2,300 lines later. The later won for every reference in the
+module. It was caught only because one of C10's tests happens to assert
+`FOURTH_MODEL < THIRD_MODEL < CANDIDATE_MODEL` — a guard written for a different
+purpose, which went red on a string comparison.
+
+`check_no_shadowed_top_level_names` skipped `UPPER_CASE` names, commented:
+*"An upper-case rebind is usually a deliberate constant edit."* Measured before
+removing the exclusion:
+
+```
+0 upper-case module-level rebind(s) across the tracked tree
+```
+
+**The premise cost a real catch and bought nothing.** A deliberate constant edit
+rebinds a constant in one branch's working copy; it does not leave two
+module-level assignments standing in one file. Exclusion removed, and
+`ast.AnnAssign` added while there — `NAME: Final = ...` binds exactly as
+`NAME = ...` does and was invisible to the walker. Same measurement, zero new
+reports.
+
+Unfixed to confirm, per this project's own rule for fixes: with the rename
+reverted the check reports `'THIRD_MODEL' defined at 8215, 10539 -- the later
+one wins`, and the file was restored from a byte-verified backup with an
+identical sha256.
+
+**The lesson is about the exclusion, not the check.** Every gate here has one:
+`check_all_is_complete` deliberately skips constants too, and argues for it at
+length — correctly, because flagging them would report eight pre-existing style
+decisions as merge defects. That argument is about *false positives it would
+create*. This one was about *what a rebind usually means*, which is a guess
+about intent rather than a measurement of the tree. **A gate's exclusion needs
+the same evidence as its rule**, and the cheap check is the one run here: count
+what removing it would report.
+
+#### R32.3 — two contract questions C14b's tester raised and correctly did not answer
+
+Recorded now so C14b's merge does not have to invent them:
+
+1. **C14's element order table is already violated by merged code.** The table
+   lists `timeline` before "What was compared"; C14a shipped
+   `verdict, compared, timeline, …`. The tester asserted only the relative order
+   of the three elements its own chunk adds, and said so in the docstring rather
+   than picking a reading. Someone must decide whether the table or the shipped
+   order is authoritative — **it is not C14b's to decide**, and nothing in C14b
+   depends on the answer.
+2. **R23.2's empty state has no anchor.** The section is gated on "any
+   exclusion", and when `candidate_field` returns `None` there are none to gate
+   on — yet R23.2 requires the page to hedge anyway. Where that sentence lives
+   (under `candidates`, as a same-id branch of `excluded`, or unanchored) was
+   never ruled. The tester asserted the *claim* and not the location, which
+   leaves the implementer free. If the merge wants an anchor pinned, that ruling
+   has to be written first.
+
+And one thing the tester flagged about its own tests, which is the kind of
+disclosure that makes a blind pair worth having: its hedge test matches an
+"exclud" stem plus one of a fixed list of hedging words, so a phrasing like
+*"some runs are not shown here"* would go red **for wording rather than for
+substance**. Deliberate, R23.2's own phrasing, and declared — so the merge can
+tell a wording disagreement from a defect finding without re-deriving it.
+
+### R33 — C14c: the last three elements, and where the line's disclosures live
+
+C14b is merged and the artifact moved for the first time in four merges: **24,600
+bytes to 29,716**, the word *"dimension"* from **0 to 6**. Measured on `main` at
+`e655958`, not inferred.
+
+What is still computed and unread, measured the same way — counting `model.<field>`
+inside `_TEMPLATE + _CHANGES_MACRO`:
+
+```
+spot_check         0        candidates      1
+multiplicity       0        dimensions      1
+parameter_strip    0        series          4
+trend              0        provenance      5
+```
+
+Four fields. C14's table names three of them as elements; the fourth, `trend`,
+has no row at all, because when C14's table was written `Trend` did not exist.
+That gap is R33.2.
+
+#### R33.1 — the three elements C14's table already names
+
+| Element | `id` | Present when |
+|---|---|---|
+| spot-check sentence | `counterfactual` | `model.spot_check is not None` |
+| multiplicity note | `multiplicity` | `model.multiplicity is not None` |
+| parameter strip | `parameters` | `model.trend.points` — **not** `len(series) >= 2` |
+
+The ids are the contract's own and are not to be improved on: `counterfactual`
+rather than `spot_check`, because a link that changes its target is a link
+somebody else's document has already got wrong.
+
+**Two gates are corrected against what the producers actually do**, and both
+corrections were already argued in merged docstrings rather than being invented
+here:
+
+*The multiplicity note.* C14 gates it on "candidate table present". R30.4 makes
+`multiplicity` `None` **exactly** when `candidates` is `None`, so the two gates
+are the same gate — but write it against `model.multiplicity`, because a note
+gated on a *different* field is a note that can outlive its subject.
+
+*The parameter strip.* C14 gates it on `len(model.series) >= 2`. That is wrong
+now, and `ReportModel.parameter_strip`'s own docstring says why: the strip is fed
+from `Trend.points`, so a log with four runs and no line yields two runs in
+`series` and an empty strip. Gating on `series` would render a heading over
+nothing. **Gate on `model.trend.points`.** And do not gate on the strip being
+non-empty either: when there is a line the tuple is never empty — one row per
+tracked parameter, including the ones that held — so empty means *no line*, and
+the reason is in `trend`.
+
+#### R33.2 — ruling: the line's disclosures render, and they render below the chart
+
+`Trend` carries seven fields. The timeline that exists renders **none** of them:
+it is `model.series | timeline`, every comparison in the log. So today R21.5's
+assumed-lineage caveat exists on every model and reaches no reader — measured,
+`"assumed"` appears **0** times in the rendered document — along with
+`excluded`, `undated`, `outside_lineage`, `absent_models` and `successions`.
+
+**Ruling: a lineage block inside the existing `timeline` section, below the
+chart.** Not a new top-level section, and the chart is **not** re-pointed at
+`Trend.points`.
+
+Three reasons, in the order they decided it:
+
+1. **The chart is not claiming to be the line, and its heading already says so**
+   — *"Run history — N comparison(s) in this log"*. A chart that draws the log
+   under a heading that says "in this log" is honest. Re-pointing it at the line
+   would silently drop every run the lineage does not name, which is R24.1's
+   defect rebuilt on the rendering side, and it would change merged, reviewed
+   C14a code for no reader benefit.
+2. **`ReportModel.parameter_strip`'s docstring already sited them there**, in
+   merged code: the strip "belongs beside the timeline, where `Trend.excluded`,
+   `outside_lineage` and `undated` already say who is missing and why". That
+   sentence is currently false — those fields say it to nobody. This makes it
+   true rather than deleting it.
+3. **The block's job is the difference between the two sets.** The chart draws
+   the log; the line is a subset of it; and the interesting content is exactly
+   which runs are in one and not the other, and why. That is a paragraph, not a
+   second chart.
+
+What the block must carry, and the failure each entry prevents:
+
+| From `Trend` | Must say | Otherwise |
+|---|---|---|
+| `caveats` | every note, including the **point-less** first one | R21.5's disclosure reaches nobody, which is today |
+| `excluded` | each `Exclusion`'s own sentence, unrewritten | "3 runs excluded" is the count without the reason (R23.2's argument, one section over) |
+| `undated` | the count, and that these are runs no axis can place | a chart quietly missing runs |
+| `outside_lineage` | the runs on this baseline the declaration does not name | R24.1 exactly: night 14 appearing nowhere on the page |
+| `absent_models` | declared ids with no run in the log | a one-character typo in a declaration, invisible |
+| `successions` | where the candidate model changed | the event the chart exists to show |
+
+**A renderer walking `caveats` into rows must ask before it indexes.** `Caveat.point`
+is `RunPoint | None` and the assumed-lineage note is the entry with no point —
+it qualifies the chart, not a night, and rendering it against a run would be an
+absence rendering as a measurement from the rendering side. R30.5 documents a
+live filter one layer over that would drop it silently.
+
+**And every one of these is empty on the bundled demo**, which is one run. An
+empty lineage block must not render as a heading over nothing; it must either be
+absent or say that the line is the whole log. Decide that in the chunk and say
+which was chosen — this is the spec's named failure mode ("an empty chart or a
+crash") and there are three new conditional sections here.
+
+#### R33.3 — closing R32.3's two open questions
+
+**C14's element-order table versus C14a's shipped order.** The table lists
+`timeline` before "What was compared"; C14a shipped it after. **Ruling: the
+shipped order is authoritative for elements already placed, and the table governs
+only the elements not yet placed and their order relative to one another.**
+Moving a merged, reviewed section to satisfy a table changes a document no reader
+has complained about, risks a chunk's worth of test churn, and buys nothing. The
+table is corrected by this ruling rather than the document being corrected by the
+table. C14b was right not to decide it, and right to flag it.
+
+**R23.2's hedge anchor.** C14b shipped it as an `<h2 id="excluded">` in both
+states, arguing that in the state R23.2 is about there is no candidate table
+above it for the hedge to be a sub-section of. **Ruling: ratified as shipped.**
+The same-id discipline that `dimensions` uses is the right one, and it is now
+used twice for the same reason — a link to `#excluded` resolves whichever branch
+rendered.

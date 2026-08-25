@@ -260,12 +260,31 @@ def _inflate(log: Path, target_bytes: int) -> int:
     Shaped like rigor's, deliberately: ``input``, ``output`` and ``raw`` on every
     record, which is what makes the evidence log larger than the artifacts it
     points at and is the reason this file exists.
+
+    **Every record's ``input`` is distinct, and that is load-bearing rather than
+    incidental.** ``dimensions.DimensionTally`` files a verdict under a digest of
+    its input, so repeated draws of one item collapse onto one entry and cost
+    nothing extra -- which means a synthetic log that reused one input string
+    would put the tally on its *bounded* path and measure almost nothing. Distinct
+    inputs are what put it on the unbounded non-joining path, which is the only
+    path where the peak-allocation guard below has anything to catch.
+
+    Hoisting the filler into a single shared ``input`` would therefore look like a
+    tidy-up, weaken no assertion anywhere, and silently delete the guard. The
+    assertion at the end of this function is here to stop that: it is not about
+    the log's contents, it is about this helper still generating the shape the
+    guard needs.
     """
     filler = "w" * 4000
+    inputs: set[bytes] = set()
+    written = 0
     with open(log, "a", encoding="utf-8", newline="\n") as handle:
         index = 0
         while log.stat().st_size < target_bytes:
             for _ in range(50):
+                text = f"input-{index} {filler}"
+                inputs.add(hashlib.blake2b(text.encode("utf-8"), digest_size=16).digest())
+                written += 1
                 handle.write(
                     json.dumps(
                         {
@@ -276,7 +295,7 @@ def _inflate(log: Path, target_bytes: int) -> int:
                                 "judge": "accuracy",
                                 "passed": True,
                                 "score": 5,
-                                "input": f"input-{index} {filler}",
+                                "input": text,
                                 "output": f"output-{index} {filler}",
                                 "raw": f'{{"pass": true, "score": 5, "x": "{filler}"}}',
                             },
@@ -287,6 +306,12 @@ def _inflate(log: Path, target_bytes: int) -> int:
                 )
                 index += 1
             handle.flush()
+    assert len(inputs) == written, (
+        f"{written} records were written carrying {len(inputs)} distinct inputs. "
+        f"One input per record is what puts the dimension tally on its unbounded "
+        f"non-joining path; sharing them collapses every record onto one entry and "
+        f"leaves the peak-allocation guard below measuring nothing"
+    )
     return log.stat().st_size
 
 
