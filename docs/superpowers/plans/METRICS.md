@@ -25,6 +25,60 @@ the gap. Use the smaller.
 
 **A full chunk through all five stages costs roughly 600–650k tokens.**
 
+### Seven more agents, and a constant nobody expected
+
+Added 2026-08-24, second batch. Every figure is from the agent's own reported
+`subagent_tokens` and `duration_ms`, not estimated.
+
+| Agent | Role | Tokens | Tools | Wall-clock | s per 1k tokens |
+|---|---|---|---|---|---|
+| C7 lineage | follow-up impl | 157k | 64 | 20.3 min | 7.8 |
+| C10 fix | fix pass | 275k | 188 | 44.7 min | 9.7 |
+| C18 round two | implementer | 189k | 73 | 34.5 min | 11.0 |
+| C22b impl | implementer | 123k | 63 | 18.1 min | 8.8 |
+| C22b test | blind tester | 204k | 62 | 26.6 min | 7.8 |
+| C14b impl | implementer | 153k | 79 | 26.7 min | 10.4 |
+| C14b test | blind tester | 200k | 63 | 23.9 min | 7.2 |
+
+**1.30M tokens across seven agents**, all running 2–4 at a time on 16 logical
+CPUs.
+
+**The right-hand column is the finding.** Seconds per 1,000 tokens: 7.2, 7.8,
+7.8, 8.8, 9.7, 10.4, 11.0. Median **8.8**, and every one inside ±25% of it —
+across four different roles, three different chunks, and a 2.2× spread in raw
+token count.
+
+So the estimate that actually works is:
+
+> **wall-clock ≈ 9 seconds per 1,000 tokens, at 2–4 concurrent agents.**
+
+Combined with §1's role costs, that answers "how long will this take" without
+guessing: an implementer at ~110–150k tokens is **17–23 minutes**; a blind
+tester at ~170–200k is **25–30**; a fix pass at ~200–275k is **30–41**.
+
+**This does not contradict "predict with tokens, not wall-clock" — it explains
+it.** Tokens are the work; the constant is the exchange rate; and the rate is
+stable *only while the machine is not oversubscribed*. §1's 4.4× wall-clock
+spread came from a batch that included stalls and a five-agent pile-up. Hold
+concurrency at 2–4 and the rate holds. Push to six and it is the first thing to
+go — which is measurable, and is the cheapest early warning that the board is
+too wide.
+
+**What it is not.** It is not a per-machine constant to be quoted elsewhere: it
+is this laptop (12-core i7-1260P), this model, this shape of work. What
+transfers is the *method* — divide reported tokens by reported duration, watch
+the spread, and treat a widening spread as a concurrency signal rather than a
+code signal.
+
+### Tool calls do not predict anything
+
+Worth recording as a negative result, because it is the number a dashboard would
+reach for first. Tokens per tool call across the same seven: 1.5k (C10 fix, 188
+calls) to 3.3k (C22b test, 62 calls) — a **2.2× spread with no pattern by role**.
+C10's fix pass made three times as many calls as C22b's tester for 35% more
+tokens, because mutation testing is many cheap calls and fixture design is few
+expensive ones. Count tokens. Ignore call counts.
+
 ### Predict with tokens, not wall-clock
 
 The four implementers spent 105k, 109k, 111k and 114k tokens — a **9% spread**
