@@ -59,15 +59,42 @@ forty lines below it.
 
 | Branch | Contains | State |
 |---|---|---|
-| `main` | C1-C17, C19-C21, C22a, C7's lineage follow-up, R1-R30 | all seven gates green, **2154 passed** |
-| `chunk/c10-fix` | R27's eighteen survivors | in flight (stage 5/5) |
-| `chunk/c18-impl` | the synthetic band, R29's four rulings | in flight (stage 1/5, round two) |
-| `chunk/c22b-impl` | `trend`, `parameter_strip`, `multiplicity` on the model | in flight (stage 1/5) |
-| `chunk/c22b-test` | blind tests for the same | in flight (stage 2/5) |
+| `main` | C1-C22, R1-R34 | all seven gates green, **2206 passed** |
+| `chunk/c14c-impl` | spot-check, multiplicity, strip, lineage block | in flight (stage 1/5) |
+| `chunk/c14c-test` | blind tests for the same | in flight (stage 2/5) |
+| *(detached)* `mk-c14b-review` | mutation-testing the template | in flight (stage 4/5) |
+| *(detached)* `mk-c22b-review` | mutation-testing the view model | in flight (stage 4/5) |
+| `chunk/c5-caveat-filter` | R30.5's point-less caveat drop | in flight (follow-up) |
+| `chunk/c18-fix` | R34.1 and R34.2, model half only | in flight (stage 5/5) |
+| `review/2026-08-24` | pushed to GitHub for a second machine | audit in progress |
 
-Updated 2026-08-24, main at `0b26845`. **18 of 22 chunks merged.** Remaining:
-C10's fix, C14's remaining elements (C14b's briefs are written), C18, C22b.
-`chunk/c10-impl` and `chunk/c10-test` (no `2`) are **dead**; ignore them.
+Updated 2026-08-24 evening, main at `45d6448`. **All 22 chunks have landed at
+least once.** `chunk/c10-impl` and `chunk/c10-test` (no `2`) are **dead**;
+ignore them.
+
+**The artifact moves now.** Measured on `main`, not inferred:
+
+| | three merges ago | now |
+|---|---|---|
+| bytes | 24,600 | **29,716** |
+| `"dimension"` | **0** | **6** |
+| `"exclud"` | 1 | 5 |
+| `"assumed"` | 0 | 0 — C14c's |
+| `"spot check"` | 0 | 0 — C14c's |
+
+**A second machine is running an independent audit.** A MacBook Pro cloned
+`review/2026-08-24` and is reading the *rendered document* as a hostile reader,
+against `MACBOOK-AUDIT.md` which lives on that branch. It is the one perspective
+this pipeline structurally lacks: every role in it reads the contract, and until
+now nobody read the finished document. It reports by pushing
+`audit/macbook-2026-08-24`.
+
+Worth recording why a second machine was **not** the throughput fix it looked
+like. Measured with four agents running: CPU 30-37% of a 12-core i7-1260P, 5.2GB
+of 15.7GB RAM free. Wall-clock here is model inference, not compute, so a second
+box buys almost no parallelism on the same work. What it buys is a *different
+reader*. Give a second operator a different perspective, not more of the same
+throughput.
 
 **The C22a process debt is paid.** Part one was merged without its blind tests
 because several targeted a `spot_check` that did not exist yet; all 15 landed
@@ -126,38 +153,35 @@ than none.
 
 ## Do these next, in this order
 
-Rewritten 2026-08-24 after the C7 lineage merge. `main` is at **2154 passing**,
-seven gates green, and **18 of 22 chunks are merged**.
+Rewritten 2026-08-24 evening. Six agents in flight; nothing below is dispatchable
+until they return, and that is the correct state rather than a stall.
 
-1. **Land the three in flight** -- C10's fix pass (R27's 18 survivors), C18
-   round two (R29's four rulings), and C22b's blind pair, dispatched together
-   from `0b26845`.
-2. **C14b** -- the four template elements: candidate table, excluded list,
-   dimension matrix, unavailability note. **Briefs are already written**
-   (`scratchpad/c14b_impl_brief.md` and `c14b_test_brief.md`) and it is blocked
-   only on C10's fix, because R27.5 changes the zero-column note and typing a
-   renderer against a note that is about to move is producer-beside-consumer.
-   **This is the chunk that finally moves the artifact** -- the render has been
-   24,564 bytes and the word "dimension" has appeared **0** times across three
-   merges.
-3. **C14c** -- the trend chart, the parameter strip and the multiplicity note,
-   once C22b puts them on the model. Read **R30** first: it decides all five of
-   C22b's open joins, and R30.5 carries the rule the renderer needs --
-   `Caveat.point` is now `RunPoint | None`, and a renderer walking caveats into
-   rows must ask before it indexes.
-4. **`candidate_field`'s point-less caveat filter** (R30.5). One line, in C5's
-   code, currently unreachable and a trap. Goes to whichever chunk next opens
-   that function.
-5. **The deferred repo-wide `ruff format` drift** -- tree at 88,
-   `pyproject.toml` says 100, ~26 files. Its own chunk, when the tree is quiet.
-   It is the last thing, not the next thing: it touches every file and would
-   conflict with every branch in flight.
+1. **Land the six in flight**, in arrival order. Two are reviews and will each
+   produce a fix pass; budget for it — seven of seven reviews on this project
+   have found defects both other roles missed.
+2. **C14c's merge.** Both halves together. This is the last chunk that moves the
+   artifact: it renders `spot_check`, `multiplicity`, `parameter_strip` and
+   `trend`, and it is what finally puts R21.5's assumed-lineage caveat in front
+   of a reader. `"assumed"` is **0** in the rendered document today and exists on
+   every model.
+3. **R34.3's rendering** — the series-scope provenance claim, in the timeline
+   section. Deliberately deferred out of C18's fix pass because C14c is editing
+   that exact section. C18's fix reports what a renderer needs from it; read that
+   report before writing this brief.
+4. **The two fix passes** from C14b's and C22b's reviews, plus **R32.1**
+   (`baseline_model` from `series[-1]`, not `baseline.model_id`) which is already
+   ruled and already assigned to C22b's fix.
+5. **The MacBook audit's findings**, when `audit/macbook-2026-08-24` lands. Rule
+   on them before scheduling; an audit finding is not yet a chunk.
+6. **The deferred repo-wide `ruff format` drift** — tree at 88,
+   `pyproject.toml` says 100, ~26 files. **Last, not next.** It touches every
+   file and would conflict with every branch in flight simultaneously.
 
 **Before dispatching any brief, grep the merged code for the ruling it is
 supposed to implement** (R28.1). A ruling in the plan with no brief behind it is
-a ruling nobody will execute, and this project shipped that failure twice in one
-session -- R21.5 sat in the plan and in this file's blocking list for four hours
-with no brief, and R25.5's contract-table edit was never made either.
+a ruling nobody will execute. This has now happened four times in two days —
+R21.5, R25.5's table edit, R30.5's filter and R31.4's asymmetry — and each was
+caught by looking rather than remembering.
 
 ### Two errors of mine, both caught by agents, both the same shape
 
