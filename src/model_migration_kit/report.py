@@ -198,6 +198,27 @@ from .evidence import resolve_evidence, stream_records
 from .goldenset import GoldenSet
 from .judging import JudgedArtifact
 from .runner import RunArtifact
+
+# `_text` is imported rather than re-spelled, and that is the whole of R36.4's
+# fix. This module used to coerce shared payload fields with `str(x or "")`
+# while `series` read the *same JSON fields* through `_text`, which is
+# `"" if value is None else str(value)`. The two agree on every value a log this
+# tool writes carries and part company on exactly one class: falsy and not
+# `None`. `0` arrived as `""` here and as `"0"` there, so one page printed a
+# recorded value as an absence while another printed it as a value.
+#
+# R36.4 rules the *split* is the defect and not any one of its five sites --
+# `baseline.model_id`, `candidate.model_id` and three fields of `judges[0]` --
+# because fixing five call sites one at a time guarantees a sixth. Sharing the
+# function, rather than copying its expression, is what makes a sixth
+# impossible: there is no second coercion left to drift. The direction was
+# ruled on R32.1's tie-break generalised -- **which reading preserves what the
+# log recorded** -- and only `_text` does.
+#
+# It is private to `series` and imported anyway: this is one package, and a
+# public alias would advertise a coercion nobody outside should be choosing
+# between. `RunSummary.adapter` is deliberately *not* converted; see
+# `_run_summary`.
 from .series import (
     CandidateField,
     CandidateLineage,
@@ -208,6 +229,7 @@ from .series import (
     SpotCheck,
     SpotCheckSubject,
     Trend,
+    _text,
     candidate_field,
     correct_field,
     parameter_strip,
@@ -1849,8 +1871,20 @@ class ReportModel:
         # words are the producer's; all this passes is the fact of how the
         # succession was come by, which only the caller knows.
         #
-        # `baseline.model_id` and not `series[-1].baseline_model` (R30.4): one
-        # fact, one source, and this is the source that survives an empty series.
+        # `baseline.model_id`, and since R36.4 that is no longer a choice
+        # between two readings. R30.4 picked this source over
+        # `series[-1].baseline_model` on the argument that it "survives an empty
+        # series"; R32.1 corrected the ruling, because `from_evidence` raises
+        # `ArtifactError` on a log with no comparison record, so an empty series
+        # never reaches this line and the case being guarded does not exist.
+        # What was left was a real difference in *coercion* on falsy ids, and
+        # R36.4 closed that at the source: `RunSummary.model_id` and
+        # `RunPoint.baseline_model` are now one JSON field read through one
+        # function, so the two expressions are equal on every log. R32.1's
+        # scheduled one-liner is subsumed and was deliberately not also made --
+        # swapping the expression now would change nothing and would re-open the
+        # question of which reader is authoritative.
+        #
         # Assembly is `CandidateLineage.assumed_from`'s and deliberately not
         # rebuilt here -- it restricts the assumption to `trend`'s own selection,
         # and a copy of the loop here could not see that rule.
@@ -2632,6 +2666,13 @@ def _run_summary(
     """
     n_per_item = int(side.get("n_per_item", 0) or 0)
     adapters = [str(one) for one in side.get("adapters", ()) or ()]
+    # **Not** `_text`, and R36.4 says so explicitly. `RunSummary.adapter` also
+    # disagrees with `RunPoint.adapter_baseline`/`adapter_candidate`, but for a
+    # *second, unrelated* reason: the lines below prefer `run.header.adapter`
+    # over the payload, and join a multi-adapter run into one comma-joined
+    # cell. Converting the coercion here would fold two different disagreements
+    # into one edit and leave the larger one still standing while looking
+    # closed. Reported, left.
     adapter = str(side.get("adapter", "") or "")
     if run is not None:
         adapters = list(run.adapters) or adapters
@@ -2661,7 +2702,14 @@ def _run_summary(
     if len(adapters) > 1:
         adapter = ", ".join(adapters)
     return RunSummary(
-        model_id=str(side.get("model_id", "") or ""),
+        # R36.4: `_text`, so this side's id is the same string `RunPoint` reads
+        # off the same JSON field. It was `str(side.get("model_id", "") or "")`,
+        # and on a falsy-but-recorded id the two readers disagreed -- which on
+        # the baseline side left the run in *none* of `Trend`'s seven fields,
+        # since `trend` selects on `point.baseline_model == baseline_model` and
+        # `""` matches nothing. A run in the log and on no part of the page is
+        # R24.1, and it was live here.
+        model_id=_text(side.get("model_id")),
         adapter=adapter,
         n_per_item=n_per_item,
         items=items,
@@ -2702,9 +2750,12 @@ def _judge_row(raw: Mapping[str, Any]) -> JudgeRow:
     imputed = raw.get("imputed") or {}
     parse_failures = raw.get("parse_failures") or {}
     return JudgeRow(
-        name=str(raw.get("name", "") or ""),
-        model_id=str(raw.get("model_id", "") or ""),
-        rubric_hash=str(raw.get("rubric_hash", "") or ""),
+        # R36.4's other three shared sites. `RunPoint` reads `judges[0]`'s name,
+        # model id and rubric hash through `_text`; these three read the same
+        # keys of the same mapping, so they coerce through the same function.
+        name=_text(raw.get("name")),
+        model_id=_text(raw.get("model_id")),
+        rubric_hash=_text(raw.get("rubric_hash")),
         baseline=RateStat.from_gate(raw.get("baseline") or {}),
         candidate=RateStat.from_gate(raw.get("candidate") or {}),
         p_value=_number(raw.get("p_value")),
