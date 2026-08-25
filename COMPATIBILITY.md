@@ -170,6 +170,7 @@ table — so the completeness claim is checkable rather than asserted.
 
 | Module | Imported from `opik_rigor` |
 |---|---|
+| `scripts/audit/v1_v3_repro.py` | `EvidenceLog`, `FakeAdapter` |
 | `scripts/showcase.py` | `FakeAdapter` |
 | `src/model_migration_kit/cli.py` | `Adapter`, `AdapterError`, `AnthropicAdapter`, `EvidenceLog`, `FakeAdapter`, `OpenAICompatAdapter`, `RigorError`, `SampleTimeout`, `__version__` |
 | `src/model_migration_kit/comparison.py` | `EvidenceLog`, `PassRateError`, `RegressionError`, `SCORE_MAX`, `SCORE_MIN`, `assert_no_regression`, `assert_pass_rate`, `wilson_interval` |
