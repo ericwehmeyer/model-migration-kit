@@ -1032,3 +1032,157 @@ programs this project trusts to print `PASS` are the four CI does not lint.**
 **Configurations run, all 2206 passed:** py3.12 and py3.10; `-n 4` and serial; netguard on, off
 and disarmed; shuffled at seeds 11 and 99; a case-sensitive volume; and with real-looking
 provider keys set.
+
+---
+
+# What "all gates green" is actually worth
+
+The question a maintainer has. Sibling sections audit each gate alone; this one composes them.
+
+**One diff. One file. 18 insertions, 67 deletions. Fourteen independent lies in the rendered
+document. Every gate green.**
+
+I verified this myself, in a fresh detached worktree at branch head, rather than taking it:
+
+```
+$ git apply --stat COMPOSED.diff
+ src/model_migration_kit/report.py | 85 +++++-------------------
+ 1 file changed, 18 insertions(+), 67 deletions(-)
+
+$ python scripts/check_merge.py
+[PASS] no conflict markers          [PASS] every python file parses
+[PASS] no shadowed top-level names  [PASS] __all__ lists every public name
+[PASS] ruff                         [PASS] dependency surface
+[PASS] pytest
+Merge is green on all seven checks.
+
+$ migkit demo --out b2.html
+  exit code: 1        (the CI demo job asserts -eq 1)   PASS
+  test -f             PASS
+  airgap grep         clean                             PASS
+```
+
+And what that tree's demo prints:
+
+```
+╭─────────────────── VERDICT ────────────────────╮
+│ NO-GO  (exit 0)                                │
+...
+│ model      │ fake-baseline-v1 │ fake-candidate-v1 │      <- under headers reading
+                                                             "candidate | baseline"
+```
+
+`NO-GO (exit 0)`. Baseline and candidate transposed. **No FAKE MODELS band anywhere in the
+terminal.** 2206 passed.
+
+Gone without trace: the scripted-models band, the twelve-row facts strip (golden-set path, hash
+and size; judges hash; config path and hash; n per item; all six thresholds and their sources),
+and the underpowered warning. And the HTML appendix now holds two adjacent self-contradicting
+sentences about one comparison whose sides are both `FakeAdapter` — **R29.1's defect returning,
+worse than the version it removed**, because inverting the branch picks the wrong opening in
+*both* directions.
+
+On an absence-rich fixture the central rule breaks on **both** surfaces:
+
+| row | pristine | composed |
+|---|---|---|
+| `adapter` | `-` / `-` | `0` / `0` |
+| `latency median / p90` | `- / -` | `0.000 / 0.000` |
+| `pass rate` | `-` / `-` | `0.0%` / `0.0%` |
+| `Wilson lower bound (the gate)` | `-` | `0.0000` |
+| `regressed / floor cleared / underpowered` | `- / - / no` | `no / no / no` |
+| `items passing / failing / unstable` | `9/1/2` / `-` | `9/1/2` / `0 / 0 / 0` |
+
+The evidence file holds `"regressed": null, "pass_rate": null, "latency": {}` and no `adapter`
+key at all.
+
+## G42. The gates are not weak in general — the suite is blind in one specific place
+
+**Five of six controls die.** Same kind of mutation, one layer over:
+
+| control | result | caught by |
+|---|---|---|
+| HTML band deleted | **RED** | `test_the_fake_band_sits_above_the_verdict_banner` + 2 |
+| `_num` zeros everywhere | **RED** | `test_zero_observed_completions_render_as_an_em_dash` |
+| `ReportModel.exit_code` → 0 | **RED** | 9 failed |
+| `<title>` FAKE prefix dropped | **RED** | 7 failed + ruff `SIM222` |
+| `_pct` zeros everywhere | **RED** | same em-dash test |
+| **HTML compared rows swapped** | **GREEN** | **nothing** |
+
+> **The boundary is not "the terminal", and that last row is what proves it.** A *value* the
+> suite reads out of a rendered surface is pinned. A value's **label, position, presence or
+> completeness** is not. All fourteen defects move a label, a position, a presence or a row
+> count — and **nothing in 2,206 tests reads a whole rendered surface as a whole.**
+
+**Coverage does not see it:** `render_terminal` is **64/64 lines executed, 100%**, and hosts
+twelve of the fourteen. The missing signal is assertion, not execution.
+
+**The sharpest artifact** is `tests/test_report.py:2430`, whose docstring cites §5.3 *"the
+terminal rendering carries the same band above its verdict panel"*:
+
+```python
+scenario = _scenario(..., baseline_adapter="FakeAdapter", candidate_adapter="FakeAdapter")
+assert "FAKE" in buffer.getvalue().upper()
+```
+
+`FakeAdapter` prints in the `adapter` row of "What was compared". **The assertion is satisfied by
+the fixture and cannot fail while the fixture is what it is** — a textbook monoculture in the
+sense CLAUDE.md names.
+
+## G43. The honest list — what green genuinely guarantees
+
+Short and specific, which is the point:
+
+1. The tree parses; ruff's rules are live.
+2. No unresolved conflict markers in tracked text files.
+3. No shadowed module-level name; `__all__` complete for `src/` modules that write one.
+4. `COMPATIBILITY.md`'s rigor-import table equals the tree.
+5. **The verdict decision and the process exit code are right** — the `VERDICT:` footer and
+   `migkit demo`'s exit 1 cannot lie. *(The **panel** copy can, and does.)*
+6. **The FAKE MODELS band exists in the HTML body and `<title>`** on every scripted shape.
+7. **A numeric absence renders as an em dash in the HTML** — for the two cells one test reads.
+8. The HTML is self-contained.
+9. No evidence-derived string reaches rich as markup or with control characters.
+10. The demo runs keyless and offline and writes a file.
+
+**That is a guarantee about the decision and about the HTML's headline disclosure — not about
+the document.** Each of these is wrongly believed and now false: that the disclosure is
+unsuppressible; that the document cannot claim what the evidence does not say; that an absence
+cannot render as a measurement; that whole sections cannot vanish; that a truncated list says
+so; and **that baseline and candidate cannot be transposed** — they can, on *both* surfaces,
+which is the one defect here that flips a migration decision by itself.
+
+## G44. Where the leverage is — an observation about coverage, not a patch
+
+| one added check | catches | of 14 |
+|---|---|---|
+| byte-exact snapshot of `render_terminal` **on an absence-rich fixture** | 12 | **12** |
+| byte-exact snapshot of `migkit demo`'s terminal | 6 | 6 |
+| snapshot of the demo's HTML | 2 | 2 |
+
+**One approval snapshot of the terminal against a log where every field is an absence catches
+twelve of fourteen.** Two snapshots of that one fixture, on both surfaces, cover all fourteen.
+
+**The fixture does as much work as the snapshot.** The demo-terminal snapshot catches only 6/14
+because `migkit demo` *has no absences in it* — its `0.000` latency is genuinely measured, its
+rates recorded, its flags real booleans. **The suite's terminal fixtures and the shipped demo
+are the same shape, and that shape has no holes** — the monoculture rule reappearing at the level
+of the test corpus rather than a single fixture.
+
+## G45. One at a time versus together
+
+**Zero of fourteen caught, either way.** Fifteen mutations applied singly: fifteen greens, 2206
+passed each time. Composed: green, 2206 passed. **No interaction effect in either direction** —
+which is itself the finding, because a masked defect would mean something was watching and lost
+the race. Nothing was watching.
+
+> **Adversarial pass, and one prediction of my own was wrong.** *"The gates are broken"* is
+> **REFUTED** — 5 of 6 controls die and `check_merge.py` is honest when it prints `[PASS]
+> pytest`. *"The exit code is unchecked"* is **WEAKENED** — only the panel copy. *"Hashes are
+> unverified"* is **REFUTED as stated** — the HTML and the model check them; only the terminal
+> display was deleted. And the HTML row-swap was built as a **control predicting RED**; it came
+> back green and is reported as a finding rather than quietly promoted.
+>
+> **Scope honesty:** the CI demo job was reproduced *locally* — no `python -m build`, no
+> fresh-venv install, no 120-second cold-start clock. No defect here touches packaging or import
+> time, but those were not run and this report should not imply otherwise.
