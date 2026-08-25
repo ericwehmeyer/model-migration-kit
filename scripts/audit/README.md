@@ -51,6 +51,100 @@ turns all three on.
 
 ---
 
+## Read this second: a field can reach the page without being visible
+
+**`TRIVIAL` means "the field never reaches the page at all", and for one day it
+was not true.**
+
+On 2026-08-24 `page_text.py` correctly stopped flattening SVG `<title>`/`<desc>`
+into the page text — an SVG `<title>` is a tooltip and an accessible name, not
+rendered prose (see the section at the bottom of this file). Windows then verified
+the sweep across **one unchanged source tree**, differing only in which revision of
+`page_text.py` was loaded, and found it moved **exactly one leaf**:
+`judges[0].candidate.min_rate`, the judge's floor.
+
+That field's sentence
+
+```
+candidate accuracy: pass rate 53.5%, interval 29.3% to 74.7%, floor 87.0%
+```
+
+lives **only** inside the banner interval bar's `<svg><title>`. The same SVG has
+zero `<text>` elements. So the fix was right about the flattening and left the
+classifier saying the opposite of the truth: the one field whose disclosure is
+entirely screen-reader-only was filed under a verdict that says the page does not
+carry it. And two of this project's confirmed findings are *about* `<title>`-only
+disclosures — the banner bar's "floor not recorded" and the timeline's zero-span
+note. A classifier that calls those "never reaches the page" hides exactly the
+class of defect these audits exist to find.
+
+**The sweep therefore compares two channels, not one:**
+
+| channel | function | the question it answers |
+|---|---|---|
+| flattened text | `page_text.html_to_text` | what does a sighted reader see? |
+| accessible names | `page_text.accessible_names` | what is a screen reader told? |
+
+`accessible_names` is a deliberate parse of the **raw HTML**: `<title>`/`<desc>`
+inside an `<svg>`, plus `title=`, `alt=` and the text-bearing `aria-*` attributes
+anywhere. The document's `<head><title>` is deliberately **excluded** — it is not
+an accessible name, it is the browser tab and the link preview, and
+`html_to_text` already returns it as the visible text it is.
+
+### `A11Y-NAME-ONLY`
+
+Assigned when **both** hold:
+
+1. `A` and `B` render **byte-identical visible text** — changing the field
+   changes no prose; and
+2. some pair of variants that are byte-identical in the prose **differ in the
+   accessible names**.
+
+Clause 1 is what keeps the verdict honest. A value printed in a table *and*
+repeated in a chart's title appears in both channels, and without clause 1 it
+would be reported as screen-reader-only. **A wrong bucket is worse than a missing
+one**, which is the whole reason this verdict was added rather than the counts
+being left to drift.
+
+A field in neither channel produces no splitting pair and stays `TRIVIAL`.
+
+**It does not stop at naming the channel.** The question the sweep exists to ask
+is still open for an announced field, so the COLLISION/REVERSE test is re-run
+*inside* the name channel and printed alongside:
+
+```
+A11Y-NAME-ONLY judges[0].candidate.min_rate | identical prose: A==B,B==C1,B==C2 | REVERSE-IN-NAME (name A==C1,C2)
+```
+
+Read that as: the prose cannot tell the recorded floor from a measured zero at
+all, and the announced text *can* — but announces the recorded value when the
+floor was never recorded. Confirmed with `probe`, which is what a REVERSE always
+needs:
+
+```
+$ differential_render.py probe single/comparison --grep "candidate accuracy: pass rate" \
+      --del 'judges[0].candidate.min_rate' --set 'thresholds.pass_rate_floor=0.11'
+(untouched)                         : []
+      announced only: ['… interval 29.3% to 74.7%, floor 87.0%']
+del judges[0].candidate.min_rate    : []
+      announced only: ['… interval 29.3% to 74.7%, floor 87.0%']   <- floor deleted, floor announced
+set thresholds.pass_rate_floor=0.11 : []
+      announced only: ['… interval 29.3% to 74.7%, floor 87.0%']
+all of the above                    : []
+      announced only: ['… interval 29.3% to 74.7%, floor 11.0%']   <- the page follows the fallback
+```
+
+Note the empty `[]` on every line: **before this change `probe` printed those four
+empty lists and nothing else**, because the sentence it was asked to grep is not
+in the visible text. The tool for confirming a REVERSE was blind to the only
+REVERSE that mattered here. `quote` prints the accessible names unconditionally
+for the same reason.
+
+`_gated(candidate_gate.get("min_rate"), thresholds.get("pass_rate_floor"))` in
+`series.py:215` is the fallback the probe follows.
+
+---
+
 ## The tools
 
 ### `differential_render.py` — the sweep
@@ -71,10 +165,12 @@ between B and any C is the rule failing: *an absence rendering as a measurement.
 ```
 
 Five fixtures, 513 leaf paths, **2,391 renders**; a few minutes. `--json` saves
-the raw result so follow-up analysis need not re-run it.
+the raw result so follow-up analysis need not re-run it — with two hash tables per
+leaf now, `hashes` (the flattened text) and `name_hashes` (the accessible names).
+An older `--json` reader still finds `hashes` meaning exactly what it meant before.
 
 * `sweep` classifies every leaf as COLLISION / REVERSE / TRIVIAL /
-  ZERO-AND-ABSENCE-BOTH-INVISIBLE / clean.
+  ZERO-AND-ABSENCE-BOTH-INVISIBLE / **A11Y-NAME-ONLY** / clean.
 * `quote` prints the page region for one path, A against B, and names which
   absence variants are byte-identical to the measured zero. This is what turns a
   hash comparison into a quotable finding.
@@ -102,6 +198,14 @@ and stays readable, which is what half the findings in this project turn on.
 
 It **drops attributes**, so the SVG numbers (`data-value`, `data-created`) are
 gone. A finding about a chart has to be made against the raw HTML.
+
+`accessible_names(source)` is the companion, and the two are separate functions on
+purpose: one answers "what does the reader see?", the other "what is announced?",
+and a tool that merges them cannot tell an unrendered field from a tooltip-only
+one. It returns the `<svg>` `<title>`/`<desc>` text plus `title=`, `alt=` and the
+text-bearing `aria-*` attributes, one per line in document order. Presence there is
+not by itself a finding — it is the *difference* between the two channels that
+carries one.
 
 ### `fixtures.py` — evidence logs to render against
 
@@ -271,8 +375,14 @@ sweep that found them would have reported them as present. A measurement tool th
 tooltip as text reports a screen-reader-only disclosure as a rendered one, which is exactly the
 class of defect these audits exist to find.
 
-`<title>` and `<desc>` are now dropped alongside `<script>` and `<style>`. Verified afterwards
-that real prose is untouched (`FAKE MODELS`, `Methodology appendix`, `Flips`, `Provenance`,
-`roughly 140` all still found). **If you want the accessible names, parse the raw HTML for them
-deliberately** — do not get them by accident from a function whose contract is "what the reader
-sees".
+`<title>` and `<desc>` are now dropped alongside `<script>` and `<style>`, **inside an `<svg>`
+only** — the first version of the fix dropped `<head><title>` too, which is not a tooltip at
+all, and that cost a round trip. Verified afterwards that real prose is untouched
+(`FAKE MODELS`, `Methodology appendix`, `Flips`, `Provenance`, `roughly 140` all still found).
+
+**If you want the accessible names, parse the raw HTML for them deliberately** — do not get them
+by accident from a function whose contract is "what the reader sees". `accessible_names()` is
+that deliberate parse, and it is the other half of this fix: dropping the tooltips from
+`html_to_text` was necessary and, on its own, told the sweep that a tooltip-only disclosure was
+no disclosure. See *"a field can reach the page without being visible"* near the top of this
+file.

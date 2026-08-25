@@ -41,6 +41,13 @@ the old behaviour both would have been invisible to the sweep that found them.
 
 If you want the accessible names, parse the raw HTML for them deliberately. Do
 not get them by accident from a function whose contract is "what the reader sees".
+:func:`accessible_names` is that deliberate parse, and it exists because dropping
+the tooltips from :func:`html_to_text` was only half the fix. A field that reaches
+the page **only** through an accessible name is not unrendered -- it is rendered
+to one audience and withheld from another -- and a sweep that has no name for that
+state files it under "never rendered", which is the opposite of what is true. The
+two channels are separate functions on purpose: each answers one question, and
+neither can quietly answer the other's.
 """
 
 from __future__ import annotations
@@ -62,6 +69,20 @@ _BLOCK_CLOSE = re.compile(
     r"(?i)</(p|div|h[1-6]|li|tr|section|table|thead|tbody|details|summary|pre|dd|dt)>"
 )
 
+#: Attributes that carry an accessible name or description on *any* element.
+#: ``title=`` is here because it is the tooltip and the fallback accessible name;
+#: ``alt`` because it is the name of an image. ``aria-labelledby`` and
+#: ``aria-describedby`` are deliberately absent -- they hold id references, not
+#: text, and resolving them would mean building a DOM. This renderer emits none
+#: of these today (only ``<svg role="img"><title>``); they are matched anyway so
+#: that a future disclosure moved into an ``aria-label`` does not silently become
+#: invisible to the sweep, which is the exact failure this module already made
+#: once in the other direction.
+_A11Y_ATTR = re.compile(
+    r"""(?is)(?<![-\w])(aria-label|aria-description|aria-roledescription"""
+    r"""|aria-valuetext|alt|title)\s*=\s*("|')(.*?)\2"""
+)
+
 
 def html_to_text(source: str) -> str:
     """Return the readable text of a rendered report page."""
@@ -74,6 +95,45 @@ def html_to_text(source: str) -> str:
     text = htmllib.unescape(text)
     text = re.sub(r"[ \t]+\n", "\n", text)
     return re.sub(r"\n{3,}", "\n\n", text)
+
+
+def accessible_names(source: str) -> str:
+    """Return the text a screen reader gets and a sighted reader does not, one per line.
+
+    The complement of :func:`html_to_text`, and the reason the two are separate:
+    that function answers "what does the reader see?", this one answers "what is
+    announced?", and a tool that conflates them will report a tooltip-only
+    disclosure as a rendered sentence -- or, once the tooltips are correctly
+    dropped, as no disclosure at all.
+
+    What is collected, in document order:
+
+    * ``<title>`` and ``<desc>`` **inside an ``<svg>``** -- the accessible name
+      and description of the picture. The document's ``<head><title>`` is
+      excluded: it is not an accessible name, it is the browser tab and the link
+      preview, and :func:`html_to_text` already returns it as the visible text it
+      is.
+    * ``title=``, ``alt=`` and the text-bearing ``aria-*`` attributes on any
+      element, wherever they appear.
+
+    What this deliberately does **not** claim: that everything here is
+    screen-reader-*only*. An ``alt`` whose text is also printed beside the image
+    appears in both channels, and the caller is expected to compare the two --
+    presence here is not by itself evidence of a hidden disclosure. It is the
+    *difference* between this and :func:`html_to_text` that carries the finding.
+
+    ``<script>`` and ``<style>`` are removed first, so a CSS string containing
+    ``title="..."`` cannot manufacture a name that no element has.
+    """
+    source = re.sub(r"(?s)<(script|style).*?</\1>", "", source)
+    found: list[tuple[int, str]] = []
+    for match in _A11Y_ATTR.finditer(source):
+        found.append((match.start(), htmllib.unescape(match.group(3))))
+    for block in _SVG_BLOCK.finditer(source):
+        for label in _SVG_LABEL.finditer(block.group(0)):
+            text = re.sub(r"<[^>]+>", "", label.group(0))
+            found.append((block.start() + label.start(), htmllib.unescape(text)))
+    return "\n".join(text for _, text in sorted(found, key=lambda item: item[0]))
 
 
 def html_file_to_text(path) -> str:

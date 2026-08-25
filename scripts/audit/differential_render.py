@@ -26,11 +26,18 @@ and in nothing else:
         held under a string key)
 ======  =====================================================================
 
-Flatten each to text and compare whole pages. Because the only difference between
-two renders is that one field, any byte difference is attributable to that field,
-and byte-identity means the field's region on the page is identical. No selector,
-no guess about where the field is supposed to appear, and no way for a finding to
+Compare whole pages in **two channels**: the flattened text (what a sighted
+reader sees) and the accessible names parsed deliberately out of the raw HTML
+(what a screen reader is told). Because the only difference between two renders
+is that one field, any byte difference is attributable to that field, and
+byte-identity means the field's region on the page is identical. No selector, no
+guess about where the field is supposed to appear, and no way for a finding to
 hide in a part of the page nobody thought to look at.
+
+The second channel is not decoration. One channel alone cannot tell "the field
+never reaches the page" apart from "the field reaches the page only as a
+tooltip", and those are opposite answers to the question this sweep exists to
+ask. See ``A11Y-NAME-ONLY`` below.
 
 The verdicts:
 
@@ -47,11 +54,41 @@ The verdicts:
     then change the *suspected* fallback source, and watch the page follow it.
 
 ``TRIVIAL``
-    All five renders identical: the field never reaches the page at all.
+    All five renders identical **in both channels** -- the visible text and the
+    accessible names. The field never reaches the page at all, for any reader.
 
 ``ZERO-AND-ABSENCE-BOTH-INVISIBLE``
-    ``A == B`` and absence also matches. The field reaches the page only through
-    something derived from it.
+    ``A == B`` in the visible text and absence also matches, with nothing in the
+    accessible names to separate them either. The field reaches the page only
+    through something derived from it.
+
+``A11Y-NAME-ONLY``
+    The field is invisible in the flattened text and *visible in the accessible
+    names*: two variants that render byte-identical prose carry different
+    ``<svg><title>``/``aria-*``/``alt`` text. The field reaches the page for a
+    screen reader and not for a sighted reader.
+
+    This verdict exists because without it the sweep said the opposite of what is
+    true. ``page_text.py`` correctly stopped flattening SVG ``<title>`` into the
+    page text on 2026-08-24 -- an SVG ``<title>`` is a tooltip and an accessible
+    name, not prose -- and exactly one leaf moved as a result:
+    ``judges[0].candidate.min_rate``, the judge's floor, went from ``REVERSE`` to
+    ``ZERO-AND-ABSENCE-BOTH-INVISIBLE``. Its sentence
+
+    ::
+
+        candidate accuracy: pass rate 53.5%, interval 29.3% to 74.7%, floor 87.0%
+
+    lives only inside the banner interval bar's ``<svg><title>``. So the one
+    field whose disclosure is *entirely* screen-reader-only was filed under a
+    verdict that says the page does not carry it. Two of this project's confirmed
+    findings are about ``<title>``-only disclosures; a classifier that calls those
+    "not rendered" hides precisely the class of defect these audits exist to find.
+
+    What it does **not** claim: that the accessible name is *correct*, or that it
+    distinguishes a measured zero from an absence. It claims only that the two
+    channels disagree about whether this field reaches the page. Read the name
+    with ``quote``, which prints it, before making a finding out of it.
 
 THE MASKING TRAP -- read this before changing anything here
 -----------------------------------------------------------
@@ -94,6 +131,7 @@ import json
 import sys
 import tempfile
 from pathlib import Path
+from typing import NamedTuple
 
 from model_migration_kit.contracts import EVENT_COMPARISON, EVENT_VERDICT
 from model_migration_kit.report import ReportModel, render_html_string
@@ -103,7 +141,7 @@ if str(_HERE) not in sys.path:  # importable as a module, runnable as a script
     sys.path.insert(0, str(_HERE))
 
 from masking import mask_page  # noqa: E402
-from page_text import html_to_text  # noqa: E402
+from page_text import accessible_names, html_to_text  # noqa: E402
 
 import fixtures  # noqa: E402
 
@@ -113,6 +151,20 @@ import fixtures  # noqa: E402
 PINNED_NOW = "2026-08-24T00:00:00+00:00"
 
 RENDER_ERROR = "!!RENDER-ERROR!!"
+
+
+class Page(NamedTuple):
+    """One render, in the two channels a reader can receive it through.
+
+    ``text`` is what a sighted reader sees; ``names`` is what a screen reader is
+    announced. They are carried together and never merged: a tool that has only
+    the first cannot tell an unrendered field from a tooltip-only one, and a tool
+    that merges them re-creates the bug that dropping SVG ``<title>`` from
+    ``html_to_text`` fixed.
+    """
+
+    text: str
+    names: str
 
 #: Paths whose "plausible recorded value" has to be a well-formed structure
 #: rather than the generic sentinel, or the render simply fails and the leaf is
@@ -320,8 +372,12 @@ class Fixture:
                 return copy.deepcopy(one["payload"])
         raise KeyError(self.target_kind)
 
-    def render(self, mutate) -> str:
-        """Apply ``mutate`` to every targeted payload and return the masked page text.
+    def render(self, mutate) -> Page:
+        """Apply ``mutate`` to every targeted payload and return the masked page.
+
+        Both channels come off the *same* HTML string, so they cannot disagree
+        about which render they describe -- which matters, because the whole
+        ``A11Y-NAME-ONLY`` verdict is a disagreement between them.
 
         A render that raises is not a collision, but it *is* a fact about the
         field, so it comes back as a ``!!RENDER-ERROR!!`` string rather than
@@ -338,11 +394,18 @@ class Fixture:
         )
         try:
             model = ReportModel.from_evidence(self.evidence)
-            text = html_to_text(render_html_string(model, now=PINNED_NOW))
+            html = render_html_string(model, now=PINNED_NOW)
         except Exception as exc:  # noqa: BLE001 -- a crash is data, not a failure
-            return f"{RENDER_ERROR} {type(exc).__name__}: {str(exc)[:300]}"
-        # Without this line the sweep finds nothing. See the module docstring.
-        return mask_page(text, evidence_path=self.evidence)
+            failed = f"{RENDER_ERROR} {type(exc).__name__}: {str(exc)[:300]}"
+            return Page(failed, failed)
+        # Without this masking the sweep finds nothing. See the module docstring.
+        # The names are masked too: the evidence hash is not in one today, but a
+        # channel that is compared byte-for-byte and *not* masked is exactly the
+        # trap masking.py exists to describe, and it costs one file read here.
+        return Page(
+            mask_page(html_to_text(html), evidence_path=self.evidence),
+            mask_page(accessible_names(html), evidence_path=self.evidence),
+        )
 
 
 def build_fixture(name: str, work: Path) -> Fixture:
@@ -390,6 +453,14 @@ FIXTURE_NAMES = (
 # --------------------------------------------------------------------------- #
 # the sweep
 # --------------------------------------------------------------------------- #
+def _digests(channel: dict) -> dict:
+    """Hash one channel's five variants. ``None`` (no C3 for this path) stays ``None``."""
+    return {
+        key: None if value is None else hashlib.sha256(value.encode()).hexdigest()[:16]
+        for key, value in channel.items()
+    }
+
+
 def sweep(fixture: Fixture, progress=True) -> list[dict]:
     """Render all five variants for every leaf of the fixture's payload."""
     base = fixture.base_payload()
@@ -403,7 +474,7 @@ def sweep(fixture: Fixture, progress=True) -> list[dict]:
         def setter(value, path=path):
             return lambda payload: set_at(payload, list(path), copy.deepcopy(value))
 
-        texts = {
+        pages = {
             "A": fixture.render(setter(value_a)),
             "B": fixture.render(setter(value_b)),
             "C1": fixture.render(lambda payload, path=path: del_at(payload, list(path))),
@@ -412,11 +483,13 @@ def sweep(fixture: Fixture, progress=True) -> list[dict]:
         # C3 only makes sense where the parent is a dict held under a string key:
         # otherwise "remove the parent" means removing a list element or the root.
         if len(path) >= 2 and isinstance(path[-2], str):
-            texts["C3"] = fixture.render(
+            pages["C3"] = fixture.render(
                 lambda payload, path=path: del_at(payload, list(path[:-1]))
             )
         else:
-            texts["C3"] = None
+            pages["C3"] = None
+        texts = {key: None if page is None else page.text for key, page in pages.items()}
+        names = {key: None if page is None else page.names for key, page in pages.items()}
 
         results.append(
             {
@@ -425,10 +498,11 @@ def sweep(fixture: Fixture, progress=True) -> list[dict]:
                 "base": recorded,
                 "A": value_a,
                 "B": value_b,
-                "hashes": {
-                    key: None if text is None else hashlib.sha256(text.encode()).hexdigest()[:16]
-                    for key, text in texts.items()
-                },
+                "hashes": _digests(texts),
+                #: The accessible-name channel, hashed the same way and kept in a
+                #: separate key so an older ``--json`` reader still finds
+                #: ``hashes`` meaning exactly what it meant before.
+                "name_hashes": _digests(names),
                 "diffs": {
                     "A|" + key: None
                     if texts[key] is None
@@ -449,9 +523,94 @@ def sweep(fixture: Fixture, progress=True) -> list[dict]:
     return results
 
 
+VARIANTS = ("A", "B", "C1", "C2", "C3")
+
+
+def a11y_only(result) -> list[str]:
+    """The variant pairs this field separates **only** in the accessible names.
+
+    Empty means the verdict does not apply. Non-empty is the ``A11Y-NAME-ONLY``
+    finding, and each entry is a pair of variants whose *prose is byte-identical*
+    and whose announced text is not -- which is the evidence, not a summary of it.
+
+    Two conditions, and the first is what keeps the verdict honest:
+
+    1. ``A`` and ``B`` must render identical **visible text**. If changing the
+       field changes the prose, the field reaches a sighted reader and this is
+       not an accessible-name-only disclosure, whatever the tooltips also do.
+       Without this clause every field that happens to appear in both channels --
+       a value printed in a table *and* repeated in the chart's title -- would be
+       reported as screen-reader-only, which is a wrong bucket, and a wrong bucket
+       is worse than a missing one.
+    2. Some pair of variants must agree in the visible text and differ in the
+       names. That is the whole claim: the page distinguishes these two states
+       for one audience and not for the other.
+
+    A field absent from both channels produces no such pair and stays ``TRIVIAL``.
+    """
+    text = result["hashes"]
+    names = result.get("name_hashes") or {}
+    if not names or text["A"] != text["B"]:
+        return []
+    keys = [key for key in VARIANTS if text.get(key) is not None]
+    return [
+        f"{left}=={right}"
+        for index, left in enumerate(keys)
+        for right in keys[index + 1:]
+        if text[left] == text[right] and names.get(left) != names.get(right)
+    ]
+
+
+def name_channel_verdict(result) -> str:
+    """Re-run the COLLISION / REVERSE test inside the accessible-name channel.
+
+    An ``A11Y-NAME-ONLY`` field is still a field, and the question the sweep
+    exists to ask is still open for it: does the *announced* text tell a measured
+    zero apart from a value that was never recorded? Naming only the channel and
+    stopping there would replace one silent answer with another.
+
+    This is what keeps the new bucket from losing a finding it inherited.
+    ``judges[0].candidate.min_rate`` was a ``REVERSE`` before SVG ``<title>``
+    stopped being flattened into the page text, and it still is one -- in the
+    accessible name, which is the only place that field reaches any reader:
+
+    ::
+
+        A  (0.87 recorded)    floor 87.0%
+        B  (measured zero)    floor 0.0%
+        C1 (key removed)      floor 87.0%     <- identical to the recorded value
+        C2 (key null)         floor 87.0%     <- identical to the recorded value
+
+    So the verdict is ``REVERSE-IN-NAME``: delete the floor and the page still
+    announces one. Confirm it the same way any REVERSE is confirmed, with
+    ``probe``.
+    """
+    names = result.get("name_hashes") or {}
+    if not names or names.get("A") is None:
+        return "no-name-channel"
+    like_a = [k for k in ("C1", "C2", "C3")
+              if names.get(k) is not None and names[k] == names["A"]]
+    like_b = [k for k in ("C1", "C2", "C3")
+              if names.get(k) is not None and names[k] == names["B"]]
+    if names["A"] == names["B"]:
+        return "zero-not-announced-apart" + (f" (name B=={','.join(like_b)})" if like_b else "")
+    if like_b:
+        return f"COLLISION-IN-NAME (name B=={','.join(like_b)})"
+    if like_a:
+        return f"REVERSE-IN-NAME (name A=={','.join(like_a)})"
+    return "name distinguishes every variant"
+
+
 def classify(results):
-    """Bucket sweep results. See the module docstring for what each verdict means."""
+    """Bucket sweep results. See the module docstring for what each verdict means.
+
+    Returns six buckets and the error list. ``a11y`` is checked **before**
+    ``TRIVIAL`` and before the both-invisible test, because those two are the
+    verdicts it corrects: each of them asserts that the field does not reach the
+    reader, and for a tooltip-only disclosure that assertion is false.
+    """
     collisions, reverse, trivial, both_invisible, errors, clean = [], [], [], [], [], []
+    a11y = []
     for result in results:
         digests = result["hashes"]
         present = [value for value in digests.values() if value is not None]
@@ -460,6 +619,10 @@ def classify(results):
             for key in ("B", "C1", "C2", "C3")
         ):
             errors.append(result)
+        pairs = a11y_only(result)
+        if pairs:
+            a11y.append((result, pairs))
+            continue
         if len(set(present)) == 1:
             trivial.append(result)
             continue
@@ -480,7 +643,7 @@ def classify(results):
             both_invisible.append((result, like_b))
         else:
             clean.append(result)
-    return collisions, reverse, trivial, both_invisible, errors, clean
+    return collisions, reverse, trivial, both_invisible, a11y, errors, clean
 
 
 # --------------------------------------------------------------------------- #
@@ -502,18 +665,27 @@ def quote(fixture: Fixture, dotted: str, context: int = 6) -> None:
     def setter(value):
         return lambda payload: set_at(payload, list(path), copy.deepcopy(value))
 
-    texts = {
+    pages = {
         "A": fixture.render(setter(value_a)),
         "B": fixture.render(setter(value_b)),
         "C1": fixture.render(lambda payload: del_at(payload, list(path))),
         "C2": fixture.render(setter(None)),
     }
     if len(path) >= 2 and isinstance(path[-2], str):
-        texts["C3"] = fixture.render(lambda payload: del_at(payload, list(path[:-1])))
+        pages["C3"] = fixture.render(lambda payload: del_at(payload, list(path[:-1])))
+    texts = {key: page.text for key, page in pages.items()}
+    names = {key: page.names for key, page in pages.items()}
 
     same_as_zero = [key for key in ("C1", "C2", "C3") if texts.get(key) == texts["B"]]
     print(f"# {fixture.name}  {dotted}   base={recorded!r} A={value_a!r} B={value_b!r}")
     print("# absence variants byte-identical to the measured zero:", same_as_zero or "none")
+
+    # The accessible-name channel, printed unconditionally rather than only when
+    # it differs. An A11Y-NAME-ONLY verdict is a claim about a sentence no sighted
+    # reader can see, and a verdict whose evidence cannot be read is not usable;
+    # printing it always also lets a reader confirm a *silent* name, which is its
+    # own finding.
+    _quote_names(names, context)
 
     lines_a = texts["A"].splitlines()
     lines_b = texts["B"].splitlines()
@@ -534,6 +706,28 @@ def quote(fixture: Fixture, dotted: str, context: int = 6) -> None:
         print()
 
 
+def _quote_names(names: dict, context: int) -> None:
+    """Print the accessible names of A and B, and the diff between them."""
+    if names["A"] == names["B"]:
+        print("# accessible names: identical for A and B")
+        for line in names["A"].splitlines():
+            print("    (name)", line)
+        print()
+        return
+    print("# accessible names DIFFER between A and B "
+          "-- this field is announced, whether or not it is printed")
+    for label in ("A", "B"):
+        print(f"--- accessible names, variant {label} ---")
+        for line in names[label].splitlines():
+            print("   ", line)
+    for key in ("C1", "C2", "C3"):
+        if key in names and names[key] not in (names["A"], names["B"]):
+            print(f"--- accessible names, variant {key} (a third state) ---")
+            for line in names[key].splitlines():
+                print("   ", line)
+    print()
+
+
 def probe(fixture: Fixture, cases, needle: str) -> None:
     """Render a named set of hand-built payload mutations and grep one line out of each.
 
@@ -547,9 +741,15 @@ def probe(fixture: Fixture, cases, needle: str) -> None:
     """
     width = max(len(label) for label in cases)
     for label, mutate in cases.items():
-        text = fixture.render(mutate)
-        hits = [line.strip() for line in text.splitlines() if needle in line]
+        page = fixture.render(mutate)
+        hits = [line.strip() for line in page.text.splitlines() if needle in line]
+        announced = [line.strip() for line in page.names.splitlines() if needle in line]
         print(f"{label:{width}s} : {hits}")
+        # Printed only when the two channels disagree, so an ordinary probe reads
+        # exactly as it did before -- and a line that vanished from the prose but
+        # survives in a tooltip cannot be mistaken for a line that vanished.
+        if announced and not hits:
+            print(f"{'':{width}s}   announced only: {announced}")
 
 
 def _mutation_cases(sets, deletes):
@@ -615,17 +815,22 @@ def main(argv: list[str] | None = None) -> int:
             print("===", name)
             results = sweep(build_fixture(name, work))
             out[name] = results
-            collisions, reverse, trivial, invisible, errors, clean = classify(results)
+            collisions, reverse, trivial, invisible, a11y, errors, clean = classify(results)
             print(
                 f"{name}: {len(results)} paths | collisions {len(collisions)} | "
                 f"reverse {len(reverse)} | trivial-unrendered {len(trivial)} | "
                 f"zero-and-absence-both-invisible {len(invisible)} | "
+                f"a11y-name-only {len(a11y)} | "
                 f"render-errors {len(errors)} | clean {len(clean)}"
             )
             for result, keys in collisions:
                 print("   COLLISION", result["path"], "B==" + ",".join(keys))
             for result, keys in reverse:
                 print("   REVERSE  ", result["path"], "A==" + ",".join(keys))
+            for result, pairs in a11y:
+                print("   A11Y-NAME-ONLY", result["path"],
+                      "| identical prose:", ",".join(pairs),
+                      "|", name_channel_verdict(result))
         if args.json:
             Path(args.json).write_text(json.dumps(out, default=str))
             print("wrote", args.json)
