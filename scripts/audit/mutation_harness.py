@@ -367,6 +367,48 @@ def render_pair(mutation: Mutation, worktree: Path, backup: Path, digests, out: 
     )
 
 
+def green_baseline(worktree: Path, workers: int) -> str:
+    """Run the suite with **no mutation applied** and refuse to continue if it is red.
+
+    Without this the harness reports a lie in the most reassuring possible
+    direction. ``run_mutation`` calls a mutant *killed* when pytest exits
+    non-zero, so on a tree that is already failing every mutant is killed and the
+    catalogue comes back with a perfect score -- from the one state in which it
+    has measured nothing at all.
+
+    That is not hypothetical. On 2026-08-25 this harness reported **29 killed, 0
+    survived** against ``main`` at ``f887b31``. The same tree, unmutated, was
+    ``7 failed, 2287 passed``: the schema-guard tests call
+    ``Path.read_text(newline=...)``, which is Python 3.13 only, and this venv is
+    3.12. Re-run once those seven were deselected, the real answer was **17
+    killed, 12 survived** -- twelve gaps in the suite that the red tree had
+    hidden behind a perfect score.
+
+    A green baseline is the only thing that makes a "killed" mean anything, so it
+    is enforced here rather than advised, like every other safety rule in this
+    module. ``PYTEST_ADDOPTS`` is inherited by :func:`_env`, so a tree that is red
+    for a reason you have already diagnosed can be deselected into green
+    deliberately -- which is a decision the operator makes and the output records,
+    not one the harness makes silently.
+    """
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-n", str(workers), "--tb=no"],
+        cwd=str(worktree), env=_env(worktree), capture_output=True, text=True,
+    )
+    output = proc.stdout + proc.stderr
+    tail = " | ".join([line for line in output.splitlines() if line.strip()][-1:])
+    if proc.returncode != 0:
+        raise SystemExit(
+            "REFUSING TO RUN: the suite is red before any mutation is applied.\n"
+            f"    {tail}\n"
+            "Every mutant would be reported 'killed' by a suite that fails on its "
+            "own, which is a perfect score from a measurement that did not "
+            "happen. Fix the tree, or deselect the known failures explicitly with "
+            "PYTEST_ADDOPTS and re-run so the deselection is on the record."
+        )
+    return tail
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--worktree", help="a DETACHED worktree of your own -- not the checkout")
@@ -397,6 +439,11 @@ def main(argv: list[str] | None = None) -> int:
     names = [m.name for m in CATALOGUE] if args.all else (args.run or [])
     if not names:
         parser.error("nothing to do: pass --list, --run, --all or --render")
+    baseline = green_baseline(worktree, args.workers)
+    print(f"baseline (no mutation applied): {baseline}")
+    if os.environ.get("PYTEST_ADDOPTS"):
+        print(f"PYTEST_ADDOPTS in force: {os.environ['PYTEST_ADDOPTS']}")
+
     survived = killed = skipped = 0
     for name in names:
         result, tail = run_mutation(BY_NAME[name], worktree, backup, digests, args.workers)

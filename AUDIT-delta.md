@@ -290,3 +290,166 @@ It documents the masking policy and the within-run mitigation; it does not say t
 comparison is `#4`. Not a contradiction of the README, an unstated consequence.
 
 ---
+
+## D3 — `main` is RED on Python 3.12, and it is a regression. **CONFIRMED. Filed as [#11](../../issues/11)**
+
+Found by accident, while trying to establish a mutation baseline. It is the
+largest finding in this job.
+
+```
+$ cd <worktree at e50a842> && PYTHONPATH=$PWD/src .venv/bin/python -m pytest -q -n 8
+2261 passed, 1 xfailed in 13.52s
+
+$ cd <worktree at f887b31> && PYTHONPATH=$PWD/src .venv/bin/python -m pytest -q -n 8
+7 failed, 2287 passed, 1 xfailed in 9.29s
+```
+
+One machine, one interpreter, one difference: the schema-guard merge. All seven
+failures go through one helper and one keyword argument:
+
+```
+tests/test_report.py:15874
+    lines = scenario.evidence.read_text(encoding="utf-8", newline="\n").splitlines()
+E   TypeError: Path.read_text() got an unexpected keyword argument 'newline'
+```
+
+`newline=` reached `Path.read_text`/`write_text` in **Python 3.13**. This venv is
+**3.12.5**. `pyproject.toml` declares `requires-python = ">=3.10"` and classifiers
+for 3.10, 3.11, 3.12 and 3.13.
+
+**So the newest gate in the project — the one whose entire purpose is to disclose
+an evidence log this build cannot read — is untested on three of the four Pythons
+the package claims to support, and on those three it does not skip, it fails.**
+
+`FROZEN.md` records `13b4d7a` as *"clean, seven gates green, 2283 passed."*
+`f887b31` adds only `FROZEN.md` on top of it. That green is a green on one
+interpreter, and no gate in the set can say so, because `check_merge.py` runs the
+suite on whatever Python is in front of it. Same shape as everything in
+`AUDIT-gates.md`.
+
+Three further latent call sites, not failing today because the green baseline
+never reaches them:
+
+```
+tests/test_cli.py:247            destination.write_text(..., newline="\n")
+tests/test_cli.py:259            destination.write_text(..., newline="\n")
+tests/test_evidence_scale.py:199 bad.write_text(..., newline="\n")
+```
+
+Deselecting exactly the seven turns the tree green, which confirms there is no
+second cause behind them:
+
+```
+$ PYTEST_ADDOPTS="--deselect ...x7" pytest -q -n 8
+2287 passed, 1 xfailed in 7.87s
+```
+
+`src/` never calls `newline=`. The product is not implicated; the test helper is.
+**Not fixed here — `tests/` is Windows-owned.**
+
+---
+
+## D4 — the mutation harness had no green-baseline control, and reported a perfect score from a tree that was never green. **CONFIRMED, and FIXED, because this tool is ours**
+
+This is the audit's own headline turned back on the auditor, so it is stated
+without hedging: **a check printing `killed` over a suite it never looked at.**
+
+`run_mutation` calls a mutant *killed* when pytest exits non-zero. On a red tree
+every mutant is therefore killed. The first run against current `main`:
+
+```
+$ mutation_harness.py --worktree <f887b31> --all --workers 8
+29 killed, 0 survived, 1 did not apply
+```
+
+A perfect score — from the one state in which the harness has measured nothing at
+all. The failure counts even varied per mutation (7, 7, 9 …), which is exactly the
+kind of detail that makes a void result look alive.
+
+Re-run with D3's seven deselected, so the tree is genuinely green:
+
+```
+17 killed, 12 survived, 1 did not apply
+```
+
+**Twelve gaps in the suite were hidden behind a perfect score.** The direction
+matters: this failure mode does not make the harness look broken, it makes the
+*suite* look flawless.
+
+### The fix
+
+`green_baseline()` now runs the suite unmutated before the catalogue and refuses
+to continue if it is red:
+
+```
+$ mutation_harness.py --worktree <f887b31 red tree> --run M1
+[audit] imports resolve to /Users/ericw/mk-mutation-new/src/model_migration_kit/__init__.py
+REFUSING TO RUN: the suite is red before any mutation is applied.
+    7 failed, 2287 passed, 1 xfailed in 11.21s
+Every mutant would be reported 'killed' by a suite that fails on its own, which is
+a perfect score from a measurement that did not happen. Fix the tree, or deselect
+the known failures explicitly with PYTEST_ADDOPTS and re-run so the deselection is
+on the record.
+```
+
+Enforced rather than advised, like the module's other safety rules — it already
+refused the repository root and already restored from byte-verified backups; it
+just never checked the one precondition that makes a verdict mean anything.
+`PYTEST_ADDOPTS` is inherited by `_env`, so a knowingly-red tree can still be
+deselected into green **by the operator, on the record**, and the harness now
+prints both the baseline line and the `PYTEST_ADDOPTS` in force above the results.
+
+*Adversarial:* attempted refutation — *"the operator would notice a red tree."*
+**Fails, and this is the evidence:** I did not. I ran it, read `29 killed, 0
+survived`, and was one paragraph from reporting the schema merge as a large
+improvement in suite strength. What caught it was the number being *too good*, not
+any signal from the tool.
+
+---
+
+## D5 — the mutation delta itself: zero, per mutation, both trees green
+
+With both trees green and the same catalogue:
+
+```
+e50a842: 17 killed, 12 survived, 1 did not apply
+f887b31: 17 killed, 12 survived, 1 did not apply
+```
+
+and joined per mutation, **all 30 agree** — M1–M11, M16, M18, M19, M21, M22, M27,
+M32 killed on both; M2, M13, M14, M20, M23, M24, M25, M26, M29, M30, M31, M33
+survived on both; M12 did not apply on either (`pattern matched 0 times, expected
+1`). Not one verdict moved.
+
+### The recorded baseline in `scripts/audit/README.md` is stale, and should be re-pinned
+
+That file says *"30 mutations are catalogued; the recorded run was **17 survived,
+13 killed**"* — thirty applied, none skipped. Measured now at `e50a842` it is
+**12 survived, 17 killed, 1 did not apply**. The README's figure was written in
+`a4b3c7f` against an earlier tree, so it is not comparable to either commit in
+this delta.
+
+**This matters beyond bookkeeping.** JOB-5 asks for a delta, and a delta needs two
+numbers taken the same way. Had I compared `f887b31` against the *README's*
+figure, I would have reported *"survivors 17 → 12, a five-mutation improvement
+from the schema merge"* — a clean, plausible, entirely false result. The real
+answer required re-running the baseline, and it is zero.
+
+The pinned line to carry forward, both commits, both green, this catalogue:
+**17 killed, 12 survived, 1 did not apply.**
+
+---
+
+## What this job changes for whoever runs it next
+
+1. **Re-pin baselines with the run, never from a document.** Two of the three
+   numbers this job started from were stale or void: the README's mutation figure
+   (D5) and the harness's own output (D4). The sweep's bucket table (D0) was the
+   only one that reproduced, and it reproduced because V19 recorded the commit it
+   was taken at.
+2. **A zero delta is a claim about the swept region, not about the release.** D0b
+   and D5 are both zero. D1 and D3 are both real, and neither is inside anything
+   either instrument measures.
+3. **`main` is red below 3.13.** Until [#11](../../issues/11) is fixed, every
+   measurement taken on `main` from a non-3.13 interpreter since the schema merge
+   is void — including any this branch takes.

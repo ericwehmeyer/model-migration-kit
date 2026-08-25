@@ -270,8 +270,27 @@ Two deliberate choices:
 ### `mutation_harness.py` — does the suite notice?
 
 Change one line of shipped source so the document says something false, run the
-whole suite, and see whether it still passes. 30 mutations are catalogued; the
-recorded run was **17 survived, 13 killed**.
+whole suite, and see whether it still passes. 30 mutations are catalogued.
+
+**Re-pinned 2026-08-25 (JOB-5), and the old number was stale:** at both
+`e50a842` and `f887b31`, both trees verified green first, the answer is
+**17 killed, 12 survived, 1 did not apply** — identical on all thirty, not one
+verdict moved between the two commits. The figure previously recorded here,
+*"17 survived, 13 killed"*, was taken in `a4b3c7f` against an earlier tree and is
+comparable to neither. Comparing a fresh run against it would have produced a
+clean, plausible, entirely false five-mutation improvement. **Re-pin from a run,
+with its commit, or do not pin.**
+
+**The harness refuses a red tree** (`green_baseline`), and that guard exists
+because the absence of it produced a lie in the most reassuring possible
+direction. `run_mutation` calls a mutant *killed* when pytest exits non-zero, so
+on a tree that is already failing every mutant is killed: the first run against
+`main` at `f887b31` reported **29 killed, 0 survived**, a perfect score, from a
+tree whose unmutated suite was `7 failed, 2287 passed` (Python 3.13-only
+`Path.read_text(newline=...)` in a test helper — issue #11). Twelve real gaps were
+hidden behind that perfect score. `PYTEST_ADDOPTS` is inherited, so a
+knowingly-red tree can be deselected into green **by the operator, on the record**;
+the harness prints the baseline line and any `PYTEST_ADDOPTS` above the results.
 
 ```bash
 git worktree add --detach /tmp/mk-mutation HEAD
