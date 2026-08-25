@@ -1772,3 +1772,238 @@ them; a third throwaway venv for the wheel install. `git status` clean in
 Where I took a finding on the audit's evidence rather than my own I have said so
 inline — G18's `pytestmark` form, and G26–G32. A verification that does not name
 its own coverage is worth what an audit that does not name its own is worth.
+
+---
+
+## Cycle 6 — 2026-08-24, on `10e5d8b`…`8f39878` (JOB-3 complete), verified against `main` at `f50680f`
+
+The workflows/`conftest.py` section and the composed finding landed, and JOB-3
+closed. Three verdicts, one of which is about **this machine's own `CLAUDE.md`**
+and is worse than the audit could see.
+
+---
+
+### V16 — G34/G35: netguard's four routes out reproduce on Windows, and the "armed" line prints while they are open. **CONFIRMED.**
+
+`netguard.pytest_configure` called exactly as pytest calls it, then each route
+tried against real hosts:
+
+```
+[audit] network guard armed (loopback still permitted)
+guard armed via netguard.pytest_configure(); routes:
+  BLOCKED   socket.create_connection           outbound connection attempted to ('1.1.1.1', 443)
+  BLOCKED   socket.socket().connect            outbound connection attempted to ('1.1.1.1', 443)
+  THROUGH   _socket.socket().connect           connected
+  THROUGH   socket.gethostbyname               resolved -> 151.101.128.223
+  THROUGH   UDP sendto 8.8.8.8:53              DNS reply, 90 bytes
+  THROUGH   subprocess child                   child stdout: 'CHILD CONNECTED'
+```
+
+Four of six through, including a real A record for `pypi.org` and a full DNS
+reply over UDP. **G35 is the first line of that output**: the guard announces
+itself as armed in the same run in which four routes are open, because the
+`print` is unconditional and the guard fires zero times in a healthy run. There
+is no positive control, so *working* and *disarmed* produce identical logs.
+
+The subprocess route is the one that matters here, and its exposure is confirmed
+on this tree:
+
+```
+$ grep -rl "subprocess" tests/*.py
+tests/test_cli.py  tests/test_import_purity.py  tests/test_release_checks.py
+tests/test_series.py  tests/test_stranger_path.py          (5 modules)
+```
+
+**A child process inherits none of the monkeypatches.** `README.md:595` and
+`PROGRESS.md:27` publish "Offline" as proved; `ci.yml:67` says "network
+physically blocked". It is neither physical nor a syscall seam — it is four
+attribute rebinds in one module's namespace, in one process.
+
+---
+
+### V17 — G38 is real and understated: **`CLAUDE.md`'s escape hatch does not work on this machine, for `pytest` *or* for bare `python`.** New, Windows-only, and it explains the Mac/Windows divergence.
+
+`CLAUDE.md`, the file every agent on this box reads first:
+
+> *"Setting `PYTHONPATH` explicitly still works and still wins."*
+
+The audit reported that as **true for bare `python` and false only under
+`pytest`**. On this machine it is false in both cases. From a worktree, with
+`PYTHONPATH` pointing at a decoy checkout carrying a marker:
+
+```
+$ cd C:\Users\ewehm\repos\mk-watch2
+$ PYTHONPATH=<decoy>/src python -c "…"
+PYTHONPATH env  : …/statictree/src
+sys.path[0:4]   :
+    (empty)
+    C:\Users\ewehm\repos\mk-watch2\src        <- inserted by the hook
+    …/statictree/src                          <- PYTHONPATH, one place too late
+    …python314.zip
+imported        : C:\Users\ewehm\repos\mk-watch2\src\model_migration_kit\__init__.py
+DECOY_MARKER    : <absent>
+```
+
+And from a directory that is **not** a checkout, where `CLAUDE.md` promises
+"exactly the old behaviour":
+
+```
+imported        : C:\Users\ewehm\repos\migration-kit\src\model_migration_kit\__init__.py
+DECOY_MARKER    : <absent>
+```
+
+**PYTHONPATH loses to the hook inside a checkout and loses to the main-checkout
+fallback outside one. There is no cwd from which it wins.**
+
+**Why the two machines disagree, and it is not a contradiction.** The audit's own
+G15 prints, from the MacBook:
+
+```
+original saved: no
+hook module present: no
+```
+
+and the same command here prints:
+
+```
+site-packages: C:\Users\ewehm\repos\migration-kit\.venv\Lib\site-packages
+_editable_impl_model_migration_kit.pth: 'import worktree_path'
+original saved: yes
+hook module present: yes
+this cwd would resolve to: C:\Users\ewehm\repos\mk-watch2\src
+```
+
+**The hook is installed on the machine `CLAUDE.md` is written for and not
+installed on the machine that tested the sentence.** The audit measured the
+uninstalled behaviour honestly and generalised it one step too far; the
+installed behaviour is the one every agent here actually gets.
+
+**Why this ranks high.** `CLAUDE.md` frames `PYTHONPATH` as the manual override
+for exactly the failure it says has been the most expensive recurring hazard on
+this project — *"a green test run may have tested nothing… It caught the
+orchestrator and six agents."* The documented way to force the answer when a
+result surprises you **does not force it**, and it fails silently, in the same
+direction as the original defect. An agent that sets `PYTHONPATH`, sees a
+plausible result, and moves on has been told by the project's own onboarding
+document that it verified something it did not.
+
+For `pytest` specifically the mechanism is one line of `conftest.py`:
+
+```
+83:    if sys.path[:1] != [_src]:
+84:        sys.path.insert(0, _src)
+```
+
+`insert(0, …)` is ahead of every `PYTHONPATH` entry by construction. I confirmed
+the bare-`python` half by measurement above and am taking the `pytest` half from
+that line plus the audit's construction rather than re-running it — my own
+`pytest` probe errored during collection for an unrelated reason (a test file
+outside the rootdir) and I did not spend another suite run on it. **Stated so the
+coverage is visible.**
+
+---
+
+### V18 — G41's headline is **not reproducible from the branch as pushed.** No verdict on its content, and that is the point.
+
+The composed finding — *"One diff. One file. 18 insertions, 67 deletions.
+Fourteen independent lies in the rendered document. Every gate green."* — is the
+most valuable thing in JOB-3 and the hardest to check. Its evidence block opens:
+
+```
+$ git apply --stat COMPOSED.diff
+```
+
+`COMPOSED.diff` is not on the branch:
+
+```
+$ git ls-tree -r --name-only HEAD | grep -iE "composed|\.diff|\.patch"
+                (no output)
+```
+
+**So the one artifact that would let anyone else reproduce fourteen simultaneous
+defects is the one artifact that did not get committed.** Rule 4 on this branch
+is *every claim carries the command and the output that produced it*; this claim
+carries a command that names a file only one machine has.
+
+**This is not a doubt about the content.** The section is the most carefully
+adversarial writing on the branch — it reports a control that came back green as
+a finding rather than promoting it, it refutes two of its own priors by name, and
+it scopes its CI reproduction honestly. G42's control table, G44's leverage
+arithmetic and G45's fifteen-singly-then-composed runs all read as measured. I am
+recording that **I could not verify any of it**, which is a different sentence
+from "I verified it".
+
+**What would close this, and it is one command:** `git add COMPOSED.diff` and the
+fifteen single mutations alongside it. On this machine the composed tree could
+then be rebuilt in a throwaway clone in about four minutes, which is what cycle 5
+did for `check_merge.py` and `verify_release.py`. Until then G41–G45 are a report
+from one machine rather than a finding two machines hold.
+
+---
+
+## Standing summary — what Windows has verified, and what it has not
+
+**Verified here, with constructed trees and quoted output:** the `<title>` fix
+and its regression and its repair (V1, V2, V8); the harness's zero-byte encoding
+failure (V4); the sweep contamination and the missing `ACCESSIBLE-NAME-ONLY`
+verdict (V5); `check_contract.py` G1–G6 and G8, with G3's Windows blast radius
+measured and G4 rebuilt against a live target; `check_merge.py` G18–G22;
+`verify_release.py` G25 end to end including the install; `dependency_surface.py`
+G11; `netguard`'s four open routes (G34/G35); and `judges[0].item_counts.items`
+pinned to its introducing commit.
+
+**Taken on the audit's evidence, said so inline:** G7, G9, G10, G12–G17,
+G23–G24, G26–G33, G36, G37, G39, G40.
+
+**Could not verify:** G41–G45, for want of `COMPOSED.diff`.
+
+**Refuted:** nothing. **Corrected:** two — G6's mechanism is narrower than
+stated, and G38's is wider.
+
+---
+
+### Method note, cycle 6
+
+The netguard probe made real outbound connections, deliberately, because a guard
+can only be tested against the thing it guards; it resolved one hostname, opened
+one TCP connection to `1.1.1.1:443`, sent one DNS query, and spawned one child
+that did the same. Nothing was fetched and nothing was written. The decoy
+checkout for V17 was a `git clone --local` under the session scratchpad and was
+left with its marker in place for re-checking; `mk-main` and `mk-watch2` are
+clean apart from this file.
+
+---
+
+### Addendum — `main` moved again while this was being written, and it lands on G41
+
+`main` is now `e50a842` *"Merge chunk 0: the gate stops being green on an
+inverted disclosure"* (`386f3a4` + merge), the first `src/`+`tests/` change since
+`630912d`:
+
+```
+$ git diff --stat f50680f e50a842
+ src/model_migration_kit/report.py |  47 ++++-
+ tests/test_report.py              | 371 +++++++++++++++++++++++++++++++++++++
+```
+
+It is Windows' own answer to R39.4 and it overlaps G41 directly. By its own
+measurement it reproduced **six** mutations of the disclosure paragraph that the
+full suite passed — *"the sentence that says whether these numbers came from a
+real provider could be turned inside out without one of 2,241 tests noticing"* —
+and the three tests it adds assert **pairing rather than membership**, so all six
+now fail.
+
+**What that means for JOB-3, stated carefully because I cannot test it:** part of
+G41's class is now covered on `main` and part is not. Chunk 0 pins *which
+sentence a document gets given what its evidence says*; it says nothing about row
+order, section presence, list truncation or the terminal band — which is where
+G41's other defects live, including the row-swap control that came back green.
+
+**Two consequences.** First, this is a second independent confirmation of the
+class, arrived at from the pipeline side without seeing `AUDIT-gates.md` — which
+is the same shape as the `item_counts.items` convergence and is worth as much.
+Second, **whoever re-runs the composed diff must re-run it against `e50a842` or
+later**, because some of its fourteen may now be red and the headline count would
+be wrong. That is another reason `COMPOSED.diff` needs to be on the branch: the
+number in it has a shelf life measured in hours, and only the machine holding the
+file can say what it is now.
