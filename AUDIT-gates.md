@@ -217,3 +217,213 @@ cited target is a directory named `ghost.py`, non-UTF-8 cited file, and the advi
 case (exit 0, documented at `:25-29` as a design decision). **There is no "prints a failure and
 exits 0."** The gap here is a false-negative gap, not an exit-code gap.
 
+
+---
+
+# `scripts/dependency_surface.py`
+
+**The claim.** The gate's docstring (`:22-24`): *"Deliberately AST-based rather than a grep:
+`from opik_rigor.judge import X` and `from opik_rigor import X` are the same dependency for this
+purpose and must land in one row."* `COMPATIBILITY.md:167` publishes the result as: *"Every
+`.py` file under `src/`, `tests/` and `scripts/` that names `opik_rigor` is on this list;
+**anything not on it is not relied on and a rigor release may move it freely.**"* CI's step is
+named *"Dependency surface matches the tree"*.
+
+## G11. `import opik_rigor.judge` is invisible — the one spelling the gate was built to fold
+
+`dependency_surface.py:60`:
+
+```python
+imports_module |= any(alias.name == "opik_rigor" for alias in node.names)
+```
+
+For `import opik_rigor.judge`, `alias.name` is `"opik_rigor.judge"`. The folding the docstring
+promises is implemented for `ast.ImportFrom` only; the plain-`import` submodule form falls
+through both branches. Verified by calling the gate's own `rigor_imports()`:
+
+```
+SEEN       import opik_rigor
+INVISIBLE  import opik_rigor.judge
+INVISIBLE  import opik_rigor.judge as J
+SEEN       from opik_rigor import X
+SEEN       from opik_rigor.judge import X
+INVISIBLE  import scipy.stats
+```
+
+With those two lines added to shipped `src/model_migration_kit/report.py` in a worktree:
+
+```
+$ .venv/bin/python scripts/dependency_surface.py --check
+dependency-surface table agrees with the tree (25 modules)
+EXIT=0
+$ .venv/bin/ruff check src tests
+All checks passed!
+$ .venv/bin/python -m pytest tests/test_import_purity.py -q
+13 passed
+```
+
+**The defect the docstring cites as the reason the gate exists** — *"`comparison.py` had been
+reaching into `opik_rigor.judge` in shipped code the whole time and appeared on no list"* — is
+reproducible today, in the spelling a developer uses when they want the module object.
+
+> **SURVIVES.** `grep -rEn "^\s*import opik_rigor\." src tests scripts` → **0**, so this is a
+> live hole rather than a live bug, and I say so. Nothing else covers it: ruff is green, and
+> `test_import_purity.py` checks a **fixed forbidden set** (`jinja2, rich, anthropic, openai,
+> opik`) — it answers *"did these five leak?"*, not *"what did we take on?"*.
+
+## G12. The gate named "dependency surface" sees no dependency except `opik_rigor`
+
+`import scipy.stats` in shipped `report.py` — a third-party package **not declared in
+`pyproject.toml`** — passes `--check` at exit 0 and passes `test_import_purity.py`.
+
+> **SURVIVES, with its partial cover named.** The docstring scopes itself to rigor honestly in
+> the body; the **name, the output string and the CI step name** all read wider, and this job
+> ranks by what a maintainer would wrongly believe. `ci.yml`'s `demo` job is a real partial
+> backstop — it installs the wheel into a clean venv and runs `migkit demo`, which imports
+> `report.py`, so an *undeclared and uninstalled* package would fail there. It does not cover a
+> dependency that is present **transitively** (which `scipy` is, via rigor), nor a dev-only one,
+> nor anything in `tests/` or `scripts/`.
+
+## G13. The gate audits the checkout the *script* lives in, not the one you are in
+
+`REPO = Path(__file__).resolve().parent.parent`. The cwd is never consulted. Same cwd, two
+answers, with the violating file present only in the worktree:
+
+```
+$ .venv/bin/python scripts/dependency_surface.py --check                       # relative
+COMPATIBILITY.md's dependency-surface table disagrees with the tree.  EXIT=1
+$ .venv/bin/python /Users/.../model-migration-kit/scripts/dependency_surface.py --check
+dependency-surface table agrees with the tree (25 modules)            EXIT=0
+```
+
+Neither line names which `COMPATIBILITY.md` or which `src/` was read.
+
+> **SURVIVES, scoped.** Weaker than G1–G4: it needs the operator to type the other checkout's
+> path, whereas `check_contract.py` escapes on data inside the repo. But this project runs *one
+> agent, one worktree* with up to ten live at once, and CLAUDE.md teaches agents to invoke tools
+> by absolute path — for the interpreter. CI does not hit it.
+
+## G14. An unreadable `scripts/*.py` is invisible to both CI steps
+
+`except (SyntaxError, UnicodeDecodeError): return [], False`. The load-bearing detail is an
+**asymmetry between two spellings of the same lint**: `ci.yml:41` runs `ruff check src tests`,
+while `check_merge.py` runs `ruff check .`.
+
+```
+src/...   unparseable, imports rigor  -> ruff check src tests: Found 2 errors   (CI RED)
+scripts/  unparseable, imports rigor  -> ruff check src tests: All checks passed  (CI GREEN)
+                                      -> dependency_surface --check: agrees (25)  EXIT=0
+```
+
+`scripts/` is inside the gate's search path and outside CI's lint, and `check_merge.py` — the
+only thing that would catch it — **is run by no workflow**.
+
+> **SURVIVES for `scripts/`; WEAKENED for `src/` and `tests/`,** where ruff in CI covers it.
+
+## G15. `worktree_path.py --status` prints a counterfactual in the shape of a measurement
+
+Not a gate — reported because it is the diagnostic every agent brief points at, and because the
+failure is this project's own named defect class.
+
+```
+$ .venv/bin/python scripts/worktree_path.py --status
+original saved: no
+hook module present: no
+this cwd would resolve to: .../gate-dep/wt/src
+
+$ .venv/bin/python -c "import model_migration_kit as m; print(m.__file__)"
+/Users/ericw/IdeaProjects/model-migration-kit/src/model_migration_kit/__init__.py
+```
+
+The last status line is what the hook **would** choose if installed, printed identically whether
+it is active or absent — beside three lines that are live facts. A reader running `--status` to
+answer *"am I importing the right tree?"* — the only reason to run it — reads that line as the
+answer and gets the opposite of the truth.
+
+> **SURVIVES as a diagnostic defect, not a gate bypass** (it exits 0 either way). CLAUDE.md
+> states as fact that *"the `.pth` trap is fixed; you no longer need `PYTHONPATH`"* — true of
+> the Windows venv it describes, **false on this machine**. Two agents in this audit hit it and
+> had to pin `PYTHONPATH` explicitly.
+
+## G16. Smaller, confirmed
+
+- **The gate does not verify which table it read.** The first line matching `TABLE_HEADER`
+  anywhere in a 1,644-line document wins — an HTML comment included. As an *attack* this is
+  contrived and **WEAKENED**; as an **anchoring defect it SURVIVES**, because §1 already carries
+  prose about the generator directly above the table, and the day any worked example of the
+  output format appears earlier, the gate silently starts checking that one with the same
+  `[PASS]` either way.
+- **`from .opik_rigor import X` — a *relative* import — is recorded as a rigor dependency**
+  (`node.level` is never read), failing loudly and demanding a row for a module with no rigor
+  dependency. Consequence is inverted from everything else here: it pushes the table toward
+  **overstatement**, which nobody reading for the known failure mode will notice.
+- **A bogus search path reports success.** With `SEARCHED` pointing at a directory that does not
+  exist, `rglob` returns `[]`, `table_rows()` returns 0 rows, and `--check` prints
+  `agrees with the tree (0 modules)`. **The gate cannot distinguish "the doc is complete" from
+  "the gate found nothing."**
+- **`make_showcase_goldenset.py --check` is a gate nobody invokes** — not CI, not
+  `check_merge.py`, not the suite; the only references are a comment and an assertion that the
+  *file exists*. Editing the data is caught by a pinned content hash; editing the **generator**
+  without regenerating is caught by nothing. Same shape: `clean_venv_check.ps1` is referenced
+  only by a CI comment.
+
+## G17. Exclusions, measured — and this one is evidenced
+
+| exclusion | measured cost today |
+|---|---|
+| `SEARCHED = ("src","tests","scripts")`, repo root excluded | **1** tracked `.py` outside them (`conftest.py`), naming `opik_rigor` **0** times |
+| `.pyi` stubs | **0** in the tree (confirmed a `.pyi` with a rigor import leaves `--check` green) |
+| `except (SyntaxError, UnicodeDecodeError)` | **0** tracked `.py` currently fail `ast.parse` |
+| `rglob` sweeps untracked files (inverse of `check_merge.py`'s `git ls-files`) | **0** untracked `.py` in those dirs — but the two gates disagree about what "the tree" is |
+
+> **Credit where it is due, and it is the counter-example to the brief's `UPPER_CASE`
+> precedent.** The `SEARCHED` docstring records the *exact past cost* of its own omission —
+> `scripts/showcase.py` invisible, the doc incomplete by one row while `--check` passed — and
+> states its premise. That is a **reason, not a guess**, which is what the brief asks an
+> exclusion to carry. It measures zero today only because the one excluded file happens not to
+> import rigor; `conftest.py` already manipulates `sys.path` for the package, so that is
+> contingent rather than structural.
+
+**Exit codes sound.** Mismatch → 1. Missing `COMPATIBILITY.md` → uncaught `FileNotFoundError`,
+traceback, exit 1. No failure path exits 0.
+
+---
+
+# `contracts.hash_bytes` / `hash_file` — SOUND
+
+**REFUTED as a finding, and this is the negative result this job most needed**, because every
+provenance claim in every report rests on it.
+
+```
+20,000 random byte strings over CR/LF/CRLF/ascii/utf8/NUL vs an independent
+stdlib oracle .......................................... 0 mismatches
+16,000 (payload, chunk-size) pairs, every chunk size 1..40 ... 0 mismatches
+```
+
+The chunk sweep is the part that matters: `hash_file` holds back a trailing `\r` and prepends it
+to the next chunk, so CRLF pairs straddling a read boundary are the hazard. Zero disagreements,
+including a file whose final byte is a lone `\r`.
+
+**Every hashing site in `src/` and `scripts/` was enumerated and each uses the convention.**
+`goldenset.parse` hashes `raw` *before* `.decode("utf-8-sig")`, so a BOM is part of `file_hash`
+and not part of `hash` — the one place a bytes/decode confusion could have hidden, and it is
+correct and documented. `dimensions._digest` uses blake2b on decoded text, but it is a tally key
+that is never rendered or compared to a file digest. **Nothing hashes a path.**
+
+**The strongest single piece of evidence is cross-platform and did not need constructing:**
+hashes pasted into `README.md` on the **Windows** machine reproduce exactly here.
+
+```
+README.md:531  5fef50364057cad869f16698df32d927b650778c34382f6f68d9fd53ba4e9a04
+measured here  5fef50364057cad869f16698df32d927b650778c34382f6f68d9fd53ba4e9a04
+```
+
+> **One suspicion chased and dropped.** The report prints `evidence hash` with no statement of
+> the convention, so a reviewer running `sha256sum` on a CRLF file would get a different number
+> and could not tell line endings from tampering. **Dropped twice over:** rigor writes the
+> evidence log with `os.write` of `(line + "\n").encode()` — raw bytes, LF on every platform, so
+> plain `sha256sum` agrees; and `.gitattributes` sets `* text=auto eol=lf` with a comment naming
+> this exact hazard.
+>
+> **Not covered:** symlinked paths into `hash_file`, TOCTOU between chunked reads, and any
+> Windows-only filesystem behaviour this machine cannot exercise.
