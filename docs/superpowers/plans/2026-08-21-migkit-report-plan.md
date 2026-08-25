@@ -6042,3 +6042,157 @@ And the standing rule the three instances yield: **a producer that returns `None
 must be asked what it knew at the moment it decided to.** If the answer is
 "which of several reasons", that reason is a fact the reader is entitled to, and
 `None` is the one return type that cannot carry it.
+
+### R36 — C22b's review: 24 mutants, four survivors, and R32.1 is wider than R32.1 said
+
+The blind pair agreed on everything and the review found four live gaps, which is
+the fifth time that pattern has held. Every survivor below was proved
+non-equivalent by rendering the difference, not by arguing it.
+
+#### R36.1 — the strip's `current` is pinned to `series[-1]`, not to the line
+
+**The mutant.** `parameter_strip(line.points[-2], series[-1])` — the strip
+retargeted at the headline run. This is the exact thing R30.3 consequence 1 says
+must not happen, and it survives all 1,356 tests, because **in every fixture in
+the suite `line.points[-1] is series[-1]`.**
+
+Built the case R30.3 says is real — two sibling runs anchor the line, the headline
+edits its golden-set hash and `partition_comparable` excludes it:
+
+```
+series      = ['model-c-...', 'model-e-...', 'model-b-...']
+line.points = ['model-c-...', 'model-e-...']
+line.points[-1] is series[-1]: False
+
+  model_id   shipped c -> e  changed=True   || mutant c -> b       changed=True
+  items      shipped 3 -> 3  changed=False  || mutant 3 -> 96      changed=True
+  goldenset  shipped 3f51 -> 3f51 False     || mutant 3f51 -> eee  changed=True
+```
+
+Three of six rows differ and two flip `changed` False to True. **The strip would
+assert that the golden set changed and the item count went 3 to 96 between the
+line's last two runs**, when one of those runs is not on the line and the chart
+never draws it as consecutive. That is the false attribution the strip exists to
+license against, and it is the wiring a future refactor reaches for first —
+*"surely the strip should be about the run in the banner"*.
+
+**Ruling: pin it.** The fix pass adds the fixture and the assertion; the code is
+already right.
+
+#### R36.2 — `previous = points[-2]` is unpinned on every line of three or more
+
+`previous = points[0]` and `previous = points[1]` both survive everything. The
+only test that pins the pair uses a line with exactly **two** points, where
+`points[0] == points[-2]` and the mutation is invisible. Measured on
+`_family_log`, which already draws a three-point line:
+
+```
+line.points = ['model-c', 'model-d', 'model-b']
+  model_id: shipped before='model-d' | mutant before='model-c'
+```
+
+**On any line of three or more the "before" column names the wrong night**, so
+the strip skips a whole run's worth of changes and attributes them to the wrong
+transition — c→d→b prints as c→b, silently absorbing everything `d` changed.
+
+**This is R24.7's pairwise monoculture, and it is worth reading twice.** The
+fixture set varies line length. It also varies strip content. It never varies
+them *in combination*: the long line is never asserted on its strip, and the
+asserted strip is never long. Every field is exercised and the defect lives in
+the pair. That rule has now caught shipped defects three times, and this is the
+cleanest example of it the project has produced.
+
+#### R36.3 — the single-pass guarantee holds for the paths a slip would take, and not in general
+
+A second full read via `os.open` + `os.read` in 64 KB chunks **survives all
+1,356 tests**, including both merged tests R21.3 names by title — they
+monkeypatch `builtins.open` and `io.open` and count text-mode opens.
+
+The more interesting datum is the reviewer's M20: a whole-file
+`open(path, "rb").read()` is invisible to all three open-counting tests, whose
+docstrings *deliberately* exclude binary mode because the provenance hash reads
+the log in binary. It is caught only by
+`test_rebuilding_the_report_does_not_hold_the_log_either` — a **peak-allocation
+slope** test, not a read-count test. So the binary hole is closed **by accident,
+and only for reads that buffer the whole file.**
+
+R21.3's reviewer clause asked whether the single-pass guarantee holds "under a
+test rather than by inspection". **The honest answer: yes for the paths a real
+slip would take, no as a general guarantee** — and that answer is worth more than
+a wider test would be. Do not chase `os.read`: a test that patches every syscall
+is a test nobody can read, and the realistic regressions (`read_series`,
+`Path.read_text`) both die today. **Record the limit rather than closing it.**
+
+#### R36.4 — R32.1 is wider than R32.1 said, in two directions
+
+R32.1 corrected `baseline_model` to `series[-1].baseline_model` and named two
+costs of the old reading. The reviewer measured two more.
+
+**First: the run lands in none of `Trend`'s seven fields.** On the tester's own
+falsy-baseline log:
+
+```
+points=0, successions=0, excluded=0, undated=0, outside_lineage=0, absent_models=0
+0 of the 1 run in the log accounted for anywhere
+```
+
+`trend` filters `point.baseline_model != baseline_model: continue`, so the run is
+not even a stranger. **That is R24.1 exactly — a run in the log and on no part of
+the page — live in merged code today**, and it is `outside_lineage`, the field
+whose entire purpose is to say that an absence is a claim about the declaration,
+that fails to catch it.
+
+**Second, and this is the part R32.1 does not fix: the same coercion split exists
+on four more shared fields.** `str(x or "")` in `report.py` against `_text` in
+`series.py`, measured one falsy value at a time:
+
+```
+candidate.model_id     SPLIT  RunSummary.model_id=''   RunPoint.candidate_model='0'
+judges[0].name         SPLIT  JudgeRow.name=''         RunPoint.judge_name='0'
+judges[0].model_id     SPLIT  JudgeRow.model_id=''     RunPoint.judge_model_id='0'
+judges[0].rubric_hash  SPLIT  JudgeRow.rubric_hash=''  RunPoint.rubric_hashes=('0',)
+```
+
+The candidate-side one is R32.1 mirrored and it runs straight through C22b's new
+fields: on that log the banner prints the candidate model as an absence while the
+strip's `model_id` row reads `after='0'` and `Trend.caveats` prints *"so 0 — the
+one candidate this baseline recorded — was assumed from the log to be the whole
+succession."* **R32.1's scheduled one-line fix touches `baseline_model` only, so
+this survives it.**
+
+**Ruling: the split is the defect, not any one of its five sites.** Two readers
+of one JSON field disagreeing on falsy-not-`None` is a class, and fixing five
+call sites one at a time guarantees a sixth. The fix pass makes the two coercions
+agree — **`report.py`'s `str(x or "")` adopts `series.py`'s `"" if value is None
+else str(value)`**, because that is the one that preserves what the log recorded,
+which is R32.1's own tie-break generalised.
+
+`RunSummary.adapter` is **excluded** from that change: it disagrees for a second,
+unrelated reason — `_run_summary` prefers `run.header.adapter` over the payload —
+and folding two different disagreements into one edit is how a fix pass ships a
+defect. Report it, leave it.
+
+#### R36.5 — two things confirmed rather than found, both worth keeping
+
+**R30.5's trap is still unreachable, and C22b did not bring it within reach.**
+Applying R30.5's fix leaves the suite entirely unchanged (the branch is never
+taken); removing the filter altogether goes red. So the filter is live and doing
+real work on superseded-run notes, and only its point-less branch is dead. The
+mechanism is now traced: the only `Caveat(point=None)` in the package is minted
+inside `trend` and lands on `Trend.caveats`, and `_multiplicity_caveats` always
+attaches to a row's own point **and appends after `candidate_field`'s filter has
+already run**. Merged anyway, as R30.5 ruled.
+
+**The import/field name collision holds under every path**, checked by AST rather
+than by argument: zero class-body-level reads of `trend`/`parameter_strip`/
+`multiplicity`, and exactly one function calling either name. The latent trap is
+worth stating for whoever touches this next: **a future class-body expression or
+a `field(default_factory=...)` naming `trend` would silently get `_NO_TREND`
+instead of the function** — no error, just the default. A local shadow inside a
+method fails loudly with `UnboundLocalError`; the class-body one does not.
+
+And a wording note for C14b's template, reaching no reader today because the
+demo has no candidate field: it heads `candidate_field.caveats` with *"Rows that
+are in the table above under protest"*, and since C22b that tuple also carries
+`correct_field`'s multiplicity notes — which are not protests about a row's
+inclusion but withdrawals of its significance.
