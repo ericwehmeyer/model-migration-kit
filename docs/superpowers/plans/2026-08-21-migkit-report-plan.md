@@ -6668,11 +6668,23 @@ incidentally — if a chunk closes one, the merge says so and strikes it here.
 
 #### R40.2 — found, proved, and never scheduled
 
-**`report._environment()` recompiles the jinja2 template on every render.**
+~~**`report._environment()` recompiles the jinja2 template on every render.**
 Measured: **100 ms of each 109 ms render**, against an actual render cost of
 ~3 ms — 1.304 s of a 1.320 s five-render sample was compilation. A production
 performance defect, found while building the absence sweep and correctly not
-fixed there. One `functools.lru_cache` away.
+fixed there. One `functools.lru_cache` away.~~
+**Struck — dispatched and fixed on `chunk/render-cost`.** Reproduced on this
+machine before being touched, and interleaved A/B in one process so both sides
+carried the same load: median **89.4 ms** per render with a fresh environment
+against **0.9 ms** with a shared one (a 97x median; a second run under a heavier
+board read 106.7 ms against 1.5 ms, 71x). The fix is the `functools.lru_cache`
+the entry named. Output neutrality is not argued but measured: eight documents —
+the demo through `run_demo`, and seven `_scenario` fixtures spanning GO / NO_GO /
+REVIEW, two judges, hostile output, multi-part runs and no verdict — render
+**byte-for-byte identical** before and after under `test_absence_sweep`'s own
+mask. `test_the_jinja_environment_is_built_once_however_many_documents_are_rendered`
+keeps it fixed by asserting the **construction count**, not a wall-clock number,
+which on this machine would be flaky by construction.
 
 **A raw Python `None` reaches the page.**
 `judges[0].item_counts.baseline.passing = null` renders `None / 1 / 2`. Not a
