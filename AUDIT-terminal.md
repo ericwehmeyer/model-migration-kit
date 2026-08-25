@@ -875,3 +875,126 @@ HTML em-dash count). **Killed by an assertion whose subject is the terminal's co
 > but `RunSummary.failures` derives from the run artifact rather than the payload keys that were
 > patched, so no fixture demonstrated a changed row. **No claim is made that a reader would be
 > misled by it.**
+
+---
+
+# The terminal at scale
+
+**There is no row cap anywhere in the terminal path** — verified by grepping the source of
+`render_terminal`, `_print_changes`, `_item_counts` and `_cell`:
+
+```
+\[:\s*\d+\s*\]  -> ['[:16]', '[:16]', '[:16]']   (the hash slices, T35)
+\bislice\b  \bmax_rows\b  \bhead\b  \bMAX_[A-Z_]+   -> all empty
+```
+
+So what the terminal loses at scale, it loses either by **never having a section at all** or by
+handing the value to `rich` and letting the column width decide. Never by capping.
+
+## T33. At the width a CI log gets, 400 distinct changed items render as 400 byte-identical rows
+
+Fixture: 400 flips whose ids are 65-character paths differing only in the last four characters —
+`goldenset/section-alpha/subsection-beta/regression-suite/item-0001` … `item-0400`. Reproduced
+directly:
+
+```
+COLUMNS=200 : 400 rows, 400 DISTINCT item cells
+COLUMNS=80  : 400 rows,   1 DISTINCT item cell
+```
+
+```
+                        Flips (passing -> failing): 400
+┃ item                                                 ┃ margin     ┃ judges   ┃
+│ goldenset/section-alpha/subsection-beta/regression-… │ 5/5 -> 0/5 │ accuracy │
+│ goldenset/section-alpha/subsection-beta/regression-… │ 5/5 -> 0/5 │ accuracy │
+                                        (398 more, byte-identical)
+```
+
+The HTML from the same model holds 400 distinct ids.
+
+**This is the worst scale case precisely because nothing is capped.** The count is right, the
+table is complete, 400 claimed and 400 printed. What failed is not *how many* but **which**. The
+ellipsis discloses that a cell was cut; it cannot disclose that two rows are different items —
+and 400 identical lines read as a rendering bug rather than as 400 findings.
+
+> **Adversarial verdict: SURVIVES, with the condition stated properly.** 80 is the measured
+> default when stdout is redirected and `COLUMNS` is unset, and a CI log cannot be re-widened by
+> its reader. But the dangerous condition is not "width 80" — it is **"the distinguishing
+> characters fall past the column width"**, which 80 merely makes common. Path-shaped ids are the
+> usual convention. The collision was shown at one id length and one width; the boundary was not
+> swept, and a fix pass should not read "80 is the dangerous width".
+
+## T34. A 220-run log renders as 78 lines that mention exactly one run
+
+`render_terminal` never reads **20 of the model's 37 fields**, including `series`, `candidates`,
+`dimensions`, `evidence_hash`, `generated`, `tool_version` and `command`.
+
+| | HTML | terminal |
+|---|---|---|
+| candidate table (40 comparable candidates) | 40 rows | **0** |
+| excluded runs | 180 list items | **0** |
+| run history (220 comparisons) | 221 list items | **0** |
+| tag matrix (60 tags) | 61 rows | **0** |
+
+The 78-line render ends with the closing pointer — which names *"the flip list"*, printed in
+full two lines earlier, and names **none** of the four sections above.
+
+## T35. Sixteen characters of every 64-character hash, with no ellipsis and no note
+
+`report.py:3373/3376/3379` slice `[:16]`. The terminal prints
+`judges hash  bbbbbbbbbbbbbbbb` under the same bare label the HTML uses for all 64 characters,
+with no ellipsis, no "(first 16)", and no occurrence of "prefix" or "truncat" anywhere in the
+render. **The evidence hash is never printed at all.** A reviewer diffing a CI log against a
+recorded hash gets a renderer-manufactured mismatch.
+
+> **WEAKENED:** a 16-hex prefix is a fine discriminator, so the harm is modest. The finding
+> narrows to *one label meaning two different things on the two surfaces*.
+
+## T36. Where the terminal gets it right at scale — including the one cap that is disclosed
+
+- **Change tables never cap and the count always matches the rows**: 400+400+400 and 5,000
+  flips, at widths 200/120/80/40, claimed == printed every time. An empty table prints an
+  explicit `none` row, so a measured zero stays distinguishable from a missing table — the
+  project's own standing rule, kept.
+- **24 of 24 judges and 6 of 6 thresholds print at every width.** No cap, no "and 19 more".
+- **The one cap that exists is disclosed on the terminal.** At `max_report_chars` of 20,000
+  against 1,200 changed items the terminal says: *"…was reached: 74 of 1200 changed item(s)
+  carry their outputs (flips 25 of 400, gains 25 of 400, unstable 24 of 400). The other 1126 are
+  listed in full with their ids, tags, judges and margins… No row was dropped."* **This is the
+  model the rest of the terminal does not follow.**
+- **No column is ever dropped at any realistic width** — the three-column structure survives to
+  18 columns. Below 14 cells go blank with no marker, but 12 columns is not a terminal.
+- **A 1 MB model output never reaches the terminal at all**, so there is no output truncation to
+  disclose.
+
+## T37. Cost, and why output size is not an argument for capping
+
+Timings are **upper bounds under contention** (other agents were live; 1-minute load ranged
+2.7–15.4, captured either side of each measurement), min-of-3 where cheap.
+
+| fixture | build model | render 80 | HTML | peak RSS |
+|---|---|---|---|---|
+| 220 comparisons | 0.026 s | 0.006 s | 0.030 s | 45 MB |
+| 1,200 changed items | 0.756 s | 0.135 s | 0.049 s | 56 MB |
+| 63 MB run artifact | 0.104 s | 0.012 s | 0.030 s | **298 MB** |
+| 5,000 golden items, 40 changed | 0.527 s | 0.010 s | 0.030 s | 121 MB |
+| 5,000 flips | **12.2 s** | 0.533 s | 0.114 s | 157 MB |
+
+The last two share an identical golden set and artifacts and differ only in changed items, so:
+**model building scales with changed items, not golden-set size, and is 96% of the cost.**
+Terminal rendering is 0.53 s of a 12.8 s run at 5,000 flips and under 10 ms everywhere else.
+**Nothing about the terminal's output size is a performance argument for capping it.** Peak RSS
+tracks the largest artifact at 4.7×, consistent with the 5.0–5.8× `dimensions.py:474` documents.
+
+At scale the flags matter more, not less: 5,000 flips is 5,076 lines at width 80, and `--quiet`
+reduces both that and a clean run to **the same one-line CI log**.
+
+## T38. What this pass did not exercise
+
+Named so the negative results are bounded. Not covered: colour and style loss (everything ran
+`no_color=True`); the legacy Windows console ASCII box fallback; East-Asian wide characters,
+combining marks and emoji in ids — `rich` measures cell width, so T33's cut point could differ;
+`parts > 1` at scale; `--goldenset` / `--artifact-dir` overrides at scale; and the *content* of
+multiplicity, spot check, trend and parameter strip — `render_terminal` provably never reads
+those fields, but no fixture made each one *say* something, so their loss is not quantified the
+way the candidate table's and the exclusions' are.
