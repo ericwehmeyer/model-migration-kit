@@ -15361,3 +15361,385 @@ def test_the_band_agrees_with_itself_about_number_at_every_boundary(
     html_text, terminal_text = _band_text(model)
     for surface, text in (("the HTML band", html_text), ("the terminal band", terminal_text)):
         assert sentence in text, f"{surface} does not carry the band's own words: {text!r}"
+
+
+# --------------------------------------------------------------------------- #
+# 41. The series-scope claim renders, in the timeline section, on both surfaces.
+# R34.3.
+#
+# R34.1 gave `Provenance` the count and R34.2 spent it inside the band's own
+# sentence. The band is headline-scoped, and R34.3 refuses to widen it: a claim
+# about last month's runs sitting on top of this comparison's verdict is R29.1's
+# defect chosen deliberately. So the series claim renders where the runs it
+# counts are drawn -- the timeline section, beside R33.2's lineage block -- and
+# **every provenance sentence names its own scope**, the band saying "in this
+# document" and this one "in this run history", so no reader has to work out
+# which is speaking.
+#
+# The document that makes this worth building is the one with *no band at all*: a
+# real headline over a history whose payloads recorded nothing leaves `state` at
+# `PROVENANCE_RECORDED`, the band never renders, `_counted` never runs, and
+# `unrecorded_comparisons` was computed and shown to nobody.
+# --------------------------------------------------------------------------- #
+
+
+def _timeline_sentence(model: Any) -> str:
+    """The producer's own words for the run history, whitespace collapsed."""
+    return _flat(_get(_provenance(model), "timeline_sentence"))
+
+
+def _both_surfaces(model: Any) -> tuple[str, str]:
+    """The whole document as each renderer prints it.
+
+    ``_band_text`` already renders both surfaces and returns their whole text;
+    only its name is about the band. Aliased rather than copied, because a second
+    copy of the terminal-console setup is a second thing to keep in step with
+    ``rich``.
+    """
+    return _band_text(model)
+
+
+def _history_recording(root: Path, slug: str, *, named: int, unnamed: int) -> Any:
+    """A log holding ``named`` comparisons that record both adapters and ``unnamed``
+    that record neither.
+
+    The headline is one of them, which is what makes the shape reachable at all:
+    ``named`` of zero has to blank the headline's payload, and the run artifacts
+    on disk still name real adapters, so the *headline* is recorded, no band
+    renders, and the only place the gap can reach a reader is the sentence under
+    the chart. That is the fixture the whole section is about, and the broken and
+    the correct implementation agree on every other log in this file.
+    """
+    scenario = _scenario(root / slug)
+    silent = [
+        _earlier_run(
+            scenario, tag=f"silent-{index}", baseline_adapter="", candidate_adapter=""
+        )
+        for index in range(unnamed if named else unnamed - 1)
+    ]
+    if named:
+        earlier = [
+            _earlier_run(scenario, tag=f"named-{index}") for index in range(named - 1)
+        ] + silent
+        return _model_from(_log_with_history(scenario, f"evidence-{slug}.jsonl", *earlier))
+    return _model_from(
+        _log_whose_headline_records_no_adapters(scenario, f"evidence-{slug}.jsonl", *silent)
+    )
+
+
+def test_the_run_history_discloses_what_it_cannot_vouch_for_where_no_band_does(
+    tmp_path: Path,
+) -> None:
+    """The gap R34.1 found, on the document where nothing else can close it.
+
+    Four comparisons, two of whose payloads record no adapter, under a headline
+    whose artifacts do. ``state`` stays ``recorded`` -- R34.3 keeps the band
+    pinned to the headline -- so before this sentence existed the document
+    rendered a chart of four runs and said nothing at all about the two it could
+    not speak for. That is the whole finding: not a wrong number on the page, but
+    a computed one that reached no reader.
+    """
+    model = _history_recording(tmp_path, "unbanded", named=2, unnamed=2)
+    provenance = _provenance(model)
+
+    assert _get(provenance, "state") == _get(_module(), "PROVENANCE_RECORDED"), (
+        "the headline's artifacts name real adapters, so this document is unbanded "
+        "and the series has no other surface to speak from"
+    )
+    assert not _get(provenance, "banded"), "R34.3 refuses to widen the band's reach"
+    assert (_get(provenance, "comparisons"), _get(provenance, "unrecorded_comparisons")) == (
+        4,
+        2,
+    ), "the fixture did not build two recorded comparisons and two silent ones"
+
+    sentence = _timeline_sentence(model)
+    assert sentence == (
+        "2 of the 4 comparisons in this run history record an adapter on both "
+        "sides, and none of them names a Fake adapter; the other 2 record no "
+        "adapter on at least one side, and this run history cannot say whether "
+        "they were scripted."
+    ), sentence
+
+    html_text, terminal_text = _both_surfaces(model)
+    for surface, text in (("the HTML", html_text), ("the terminal", terminal_text)):
+        assert sentence in text, (
+            f"{surface} does not carry the run history's own words: {text!r}"
+        )
+
+
+def test_the_run_history_sentence_renders_inside_the_timeline_section(
+    tmp_path: Path,
+) -> None:
+    """R34.3 sites it under the chart, beside R33.2's lineage block, and not on the band.
+
+    The siting is the ruling, not a detail of it: statements about which runs are
+    on this page and what is known about them belong under the chart that draws
+    them. A sentence that rendered in the banner would be the widened band R34.3
+    refused, and one below the appendix would be a series claim the reader meets
+    four screens after the chart it is about.
+    """
+    model = _history_recording(tmp_path, "sited", named=1, unnamed=2)
+    html = _html(model)
+    sentence = _timeline_sentence(model)
+
+    assert sentence in html, html[:200]
+    heading = html.find('<h2 id="timeline">')
+    lineage = html.find("<h3>The candidate line")
+    assert heading != -1 and lineage != -1, "the timeline section did not render"
+    assert heading < html.find(sentence) < lineage, (
+        "the run history's sentence must sit between the chart and the lineage "
+        "block, which is where R34.3 put it"
+    )
+
+
+def test_the_run_history_denominator_is_never_the_scripted_complement(
+    tmp_path: Path,
+) -> None:
+    """The trap C18's fix pass wrote down: the two counts overlap.
+
+    A ``Fake*`` baseline beside a candidate that recorded nothing is counted in
+    ``scripted_comparisons`` *and* in ``unrecorded_comparisons``, so the two are
+    not a partition. Three comparisons here: one that records both sides, one that
+    records a ``Fake*`` and a blank, and one that records neither.
+    ``comparisons - unrecorded_comparisons`` is 1 and is exactly the comparisons
+    that recorded both sides; ``comparisons - scripted_comparisons`` is 2 and
+    counts a comparison that recorded nothing as one this document examined.
+    """
+    scenario = _scenario(tmp_path / "overlap")
+    model = _model_from(
+        _log_with_history(
+            scenario,
+            "evidence-overlap.jsonl",
+            _earlier_run(
+                scenario,
+                tag="fakeblank",
+                baseline_adapter="FakeScriptedAdapter",
+                candidate_adapter="",
+            ),
+            _earlier_run(
+                scenario, tag="silent", baseline_adapter="", candidate_adapter=""
+            ),
+        )
+    )
+    provenance = _provenance(model)
+    assert (
+        _get(provenance, "comparisons"),
+        _get(provenance, "scripted_comparisons"),
+        _get(provenance, "unrecorded_comparisons"),
+    ) == (3, 1, 2), (
+        "the fixture must overlap the two counts on one comparison, or a "
+        "subtraction of either count reads the same"
+    )
+
+    sentence = _timeline_sentence(model)
+    assert sentence == (
+        "1 of the 3 comparisons in this run history records an adapter on both "
+        "sides; the other 2 record no adapter on at least one side, and this run "
+        "history cannot say whether they were scripted."
+    ), sentence
+    assert "2 of the 3" not in sentence, (
+        "a denominator of comparisons minus scripted comparisons calls a "
+        "comparison that recorded no adapter one this document could check"
+    )
+
+
+def test_the_run_history_makes_no_cleanliness_claim_over_a_scripted_comparison(
+    tmp_path: Path,
+) -> None:
+    """The numerator half of the same trap, on the fixture that makes it false.
+
+    Two comparisons: the headline, which records a ``Fake*`` on both sides, and an
+    earlier run that records neither. The sound denominator is 1 -- and that one
+    comparison is the scripted one, so "names no Fake adapter" about it is not an
+    implicature a careless reader might draw but a flatly false sentence. Nothing
+    here carries a count of scripted-among-named to say how many of the recorded
+    ones are clean (R37.6 rules on that counter), so the honest sentence claims
+    nothing about them.
+    """
+    scenario = _scripted_scenario(tmp_path / "scripted-among-named")
+    model = _model_from(
+        _log_with_history(
+            scenario,
+            "evidence-scripted.jsonl",
+            _earlier_run(
+                scenario, tag="silent", baseline_adapter="", candidate_adapter=""
+            ),
+        )
+    )
+    provenance = _provenance(model)
+    assert (
+        _get(provenance, "comparisons"),
+        _get(provenance, "scripted_comparisons"),
+        _get(provenance, "unrecorded_comparisons"),
+    ) == (2, 1, 1), "the only comparison recording both sides must be the scripted one"
+
+    sentence = _timeline_sentence(model)
+    assert sentence == (
+        "1 of the 2 comparisons in this run history records an adapter on both "
+        "sides; the other one records no adapter on at least one side, and this "
+        "run history cannot say whether it was scripted."
+    ), sentence
+    assert "Fake" not in sentence, (
+        "the one comparison that recorded both sides names two Fake adapters; any "
+        "claim of cleanliness over this denominator is false, not merely misleading"
+    )
+
+
+@pytest.mark.parametrize(
+    ("named", "unnamed", "expected"),
+    [
+        (
+            1,
+            0,
+            "The one comparison in this run history records an adapter on both "
+            "sides, and it names no Fake adapter.",
+        ),
+        (
+            2,
+            0,
+            "All 2 comparisons in this run history record an adapter on both sides, "
+            "and none of them names a Fake adapter.",
+        ),
+        (
+            0,
+            1,
+            "The one comparison in this run history records no adapter on at least "
+            "one side, so this run history cannot say whether it was scripted.",
+        ),
+        (
+            0,
+            2,
+            "None of the 2 comparisons in this run history records an adapter on "
+            "both sides, so this run history cannot say whether any of them was "
+            "scripted.",
+        ),
+        (
+            1,
+            1,
+            "1 of the 2 comparisons in this run history records an adapter on both "
+            "sides, and it names no Fake adapter; the other one records no adapter "
+            "on at least one side, and this run history cannot say whether it was "
+            "scripted.",
+        ),
+        (
+            2,
+            1,
+            "2 of the 3 comparisons in this run history record an adapter on both "
+            "sides, and none of them names a Fake adapter; the other one records no "
+            "adapter on at least one side, and this run history cannot say whether "
+            "it was scripted.",
+        ),
+        (
+            1,
+            2,
+            "1 of the 3 comparisons in this run history records an adapter on both "
+            "sides, and it names no Fake adapter; the other 2 record no adapter on "
+            "at least one side, and this run history cannot say whether they were "
+            "scripted.",
+        ),
+    ],
+)
+def test_the_run_history_agrees_with_itself_about_number_at_every_boundary(
+    tmp_path: Path, named: int, unnamed: int, expected: str
+) -> None:
+    """Every singular spelling, driven through both renderers rather than trusted.
+
+    C18's implementer found three verb-agreement slips this way and no other way:
+    "all 1 comparison name a Fake adapter" is what a pluralising helper produces,
+    and a document whose disclosures are ungrammatical is one a reader trusts less
+    than a document that says nothing. Each shape is a real log, and both surfaces
+    are read, because a sentence is only written once here and must arrive whole
+    on each of them.
+    """
+    model = _history_recording(
+        tmp_path, f"boundary-{named}-{unnamed}", named=named, unnamed=unnamed
+    )
+    provenance = _provenance(model)
+    assert (_get(provenance, "comparisons"), _get(provenance, "unrecorded_comparisons")) == (
+        named + unnamed,
+        unnamed,
+    ), "the fixture did not build the shape this case is about"
+
+    sentence = _timeline_sentence(model)
+    assert sentence == expected, sentence
+    for ungrammatical in (
+        "the other 1 ",
+        "1 comparisons",
+        "the 1 comparisons",
+        "All 1 comparison",
+        "None of the 1 ",
+        "The one comparison in this run history record ",
+    ):
+        assert ungrammatical not in sentence, (
+            f"{ungrammatical!r} is a number and a verb chosen independently: {sentence!r}"
+        )
+
+    html_text, terminal_text = _both_surfaces(model)
+    for surface, text in (("the HTML", html_text), ("the terminal", terminal_text)):
+        assert sentence in text, (
+            f"{surface} does not carry the run history's own words: {text!r}"
+        )
+
+
+def test_the_run_history_never_publishes_a_denominator_of_nothing(
+    tmp_path: Path,
+) -> None:
+    """``0 of 0``, refused twice: no series at all, and a series that recorded nothing.
+
+    The precedent is ``_counted``'s, which says nothing for a model with no series
+    because that is a model built by hand rather than a history measured to hold
+    no scripted runs. A page that answered "0 of 0 comparisons are clean" would be
+    this project's own rule broken in the sentence written to keep it.
+    """
+    silent = _history_recording(tmp_path, "all-silent", named=0, unnamed=3)
+    sentence = _timeline_sentence(silent)
+    for refused in ("0 of", "0 comparisons", "names no Fake adapter"):
+        assert refused not in sentence, (
+            f"{refused!r} is a claim made about comparisons nothing could check: "
+            f"{sentence!r}"
+        )
+    assert "cannot say whether any of them was scripted" in sentence, sentence
+
+    empty = dataclasses.replace(silent, series=())
+    assert _get(_provenance(empty), "timeline_sentence") == "", (
+        "a model with no series has no run history to speak about; a count here "
+        "would be a measurement of a document that never drew one"
+    )
+    html_text, terminal_text = _both_surfaces(empty)
+    for surface, text in (("the HTML", html_text), ("the terminal", terminal_text)):
+        assert "run history" not in text.lower(), (
+            f"{surface} speaks about a run history this document does not have: {text!r}"
+        )
+
+
+def test_each_provenance_sentence_names_the_scope_it_speaks_for(
+    tmp_path: Path,
+) -> None:
+    """R34.3's ruling in one assertion: two sentences, two scopes, both labelled.
+
+    The band and the run history render on the same document and count different
+    things -- the band speaks for the headline comparison, the sentence under the
+    chart for every comparison drawn. Neither borrows the other's scope word, so a
+    reader never has to work out which one is talking; that is what closes R31.4,
+    rather than a third state or a wider band.
+    """
+    scenario = _scripted_scenario(tmp_path / "two-scopes")
+    model = _model_from(
+        _log_with_history(
+            scenario,
+            "evidence-two-scopes.jsonl",
+            _earlier_run(scenario, tag="named"),
+        )
+    )
+    band = _flat(_get(_provenance(model), "sentence"))
+    history = _timeline_sentence(model)
+
+    assert band, "the artifacts are scripted, so this document carries a band"
+    assert history, "the log holds comparisons, so the run history has something to say"
+    assert "in this document" in band and "in this run history" not in band, band
+    assert "in this run history" in history and "in this document" not in history, history
+
+    html_text, terminal_text = _both_surfaces(model)
+    for surface, text in (("the HTML", html_text), ("the terminal", terminal_text)):
+        for scope, words in (("band", band), ("run history", history)):
+            assert words in text, f"{surface} dropped the {scope}'s sentence: {text!r}"
