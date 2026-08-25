@@ -1151,3 +1151,304 @@ attributable to the tool.
 
 All harness invocations ran under `PYTHONIOENCODING=utf-8`, for the reason in V4.
 No fix was made to the project.
+
+---
+
+## Cycle 4 — 2026-08-24, on `71ae353` (`AUDIT-gates.md`, `check_contract.py`), verified against `main` at `b2c0005`
+
+The first of seven gate agents landed. **Every finding below was re-run here as a
+constructed tree, not read** — the brief for this job says an argument is not a
+finding, and that cuts both ways. Contracts were written into the scratchpad and
+the gate was run from `mk-watch2`, so `REPO = C:\Users\ewehm\repos\mk-watch2` and
+`REPO.parent = C:\Users\ewehm\repos` are the real thing. No tracked file was
+touched.
+
+**Headline: seven of eight findings reproduce on Windows. Three are worse here
+than the audit could see from macOS, and one has its mechanism stated too
+broadly.** Nothing is refuted.
+
+---
+
+### G1 — the out-of-tree guard is disabled by a slash. **CONFIRMED on Windows, both directions.**
+
+```
+$ check_contract.py g1_bare.md         # `judge.py:315`
+[FAIL] 1 citation(s) name a file that does not exist
+  line 3: judge.py:315 -- resolves only in opik-rigor\src\opik_rigor\judge.py;
+          write the path out so it is not read as this package
+exit=1
+
+$ check_contract.py g1_dir.md          # `src/opik_rigor/judge.py:315`
+[PASS] every cited file exists
+[PASS] every cited line is in range
+Contract citations check out.
+exit=0
+```
+
+Following the gate's own remediation string turns the gate off. `src/opik_rigor/`
+reads as this package's `src/`, resolves into a different distribution, exit 0,
+no diagnostic. **SURVIVES, unchanged.**
+
+---
+
+### G2 — `resolve()` returns wheels that `_is_a_copy()` calls copies. **CONFIRMED, and worse on Windows.**
+
+```
+$ check_contract.py g2_wheel.md
+  # `migration-kit/.venv/Lib/site-packages/opik_rigor/judge.py:315`
+[PASS] every cited file exists
+[PASS] every cited line is in range
+exit=0
+
+resolve() returned : C:\Users\ewehm\repos\migration-kit\.venv\Lib\site-packages\opik_rigor\judge.py
+_is_a_copy(that)   : True
+```
+
+**Worse here for a reason the Mac cannot see.** On macOS the wheel is inside the
+checkout's own `.venv`. On Windows `CLAUDE.md` opens with *"There is no venv
+inside the worktrees. The only interpreter is
+`C:\Users\ewehm\repos\migration-kit\.venv`"* — so the vendored wheel sits under
+`REPO.parent`, one relative path away from every worktree on the box, and it is
+the interpreter **every agent on this project runs**. `pip install -U` moves
+those line numbers and the gate keeps certifying them. **SURVIVES.**
+
+---
+
+### G3 — the third root is the containing directory. **CONFIRMED, and the Windows blast radius the audit could only predict is now measured.**
+
+The audit stated this honestly as *"small blast radius here; large on Windows,
+by this project's own convention"* and could not measure it. Here is the
+measurement — one constructed pair, same module, same line, one prefix:
+
+```
+$ check_contract.py control.md
+  # `src/model_migration_kit/report.py:5700`
+[FAIL] 2 citation(s) point past the end of the file
+  line 3: src/model_migration_kit/report.py:5700 -- file has 5328 lines
+exit=1
+
+$ check_contract.py sibling_worktree.md
+  # `mk-main/src/model_migration_kit/report.py:5700`
+[PASS] every cited file exists
+[PASS] every cited line is in range
+exit=0
+```
+
+`mk-watch2/src/.../report.py` is 5,328 lines; `mk-main`'s is 5,724. **The gate
+range-checked line 5700 against another agent's worktree at another commit and
+called the contract clean.** `REPO.parent` here holds **70+ checkouts of this
+same repository** at 70+ different commits — `git worktree list` names them, and
+`CLAUDE.md:80-88` mandates that shape.
+
+**Adversarial note, against myself: I looked for a live instance and found
+none.** No tracked `.md` in the repo carries a `mk-*/…py:NN` citation today. The
+mechanism is real and measured; the exposure is latent. That distinction belongs
+in the ranking and I am making it rather than letting the constructed tree imply
+more than it shows. **SURVIVES, exposure latent.** See G4 for the form that is
+*not* latent.
+
+---
+
+### G4 — the pasted absolute path. **CONFIRMED, and upgraded: the repo's live example fails today only because that worktree was deleted.**
+
+`docs/release-evidence.md:104` is the live paste the brief names. Its current
+behaviour:
+
+```
+$ check_contract.py docs/release-evidence.md
+[FAIL] 1 citation(s) name a file that does not exist
+  line 104: \Users\ewehm\repos\mk-wt-checklist\.venv\Lib\site-packages\_pytest\threadexception.py:58
+            -- no such file in either tree
+exit=1
+```
+
+That is a red gate, not a green one — because `mk-wt-checklist` no longer exists.
+The mechanism is intact and visible in what the regex captured:
+
+```
+captured citation : '\\Users\\ewehm\\repos\\mk-wt-checklist\\.venv\\...\\threadexception.py'
+REPO / captured   :  C:\Users\ewehm\repos\mk-wt-checklist\.venv\...\threadexception.py
+```
+
+**The drive letter is supplied silently by `REPO`'s drive, and the checkout name
+in the path is whatever was pasted.** So I rebuilt the identical form with a
+target that is still alive:
+
+```
+    C:\Users\ewehm\repos\mk-main\src\model_migration_kit\report.py:5700
+
+$ check_contract.py g4_pasted_abs.md
+[PASS] every cited file exists
+[PASS] every cited line is in range
+Contract citations check out.
+exit=0
+
+resolve() returned: C:\Users\ewehm\repos\mk-main\src\model_migration_kit\report.py
+REPO in parents   : False
+```
+
+`REPO in target.parents` is **False** — the out-of-tree defence would have caught
+this — and it never runs, because the citation has a directory component. G1, G3
+and G4 are one defect wearing three shapes, and this is the shape that is already
+in the repo. **SURVIVES; this is the one to schedule.**
+
+---
+
+### G5 — "no such file in **either tree**". **CONFIRMED from the opposite side, and stronger than the audit stated it.**
+
+The audit reported the plan as **exit 1, 4 unverifiable citations**, on a machine
+with no `opik-rigor` sibling. This machine has one. Same commit, same file
+(`git diff --stat bce49c9 HEAD -- <plan>` is empty), same gate:
+
+```
+$ check_contract.py docs/superpowers/plans/2026-08-21-migkit-report-plan.md
+[PASS] every cited file exists
+[PASS] every cited line is in range
+[note] 58 symbol(s) resolve nowhere in src/ or tests/.
+exit=0
+```
+
+against the audit's exit 1 and 65 symbols. Citation counts agree exactly — **102
+occurrences, 19 distinct** — and the probe names where they land:
+
+```
+distinct .py citations: 19
+  this repo: 16
+  opik-rigor sibling: 3
+     opik-rigor/src/opik_rigor/evidence.py
+     opik-rigor/src/opik_rigor/adapters/fake.py
+     opik-rigor/src/opik_rigor/judge.py
+```
+
+**The gate's exit code and its advisory note are both functions of what happens
+to be sitting next to the checkout.** Not of the contract, not of the commit. An
+operator following `RESTART.md:590` gets a red gate on one machine and a green
+gate on the other for the same dispatch, and neither output says a root was
+absent or which roots were consulted. **SURVIVES, and I would rank it above where
+the audit put it** — it is the only finding here that changes the gate's *verdict*
+across machines rather than its coverage.
+
+---
+
+### G6 — `--from 0` checks zero lines and prints `[PASS]`. **SURVIVES, mechanism stated too broadly. Corrected.**
+
+The finding is real:
+
+```
+$ check_contract.py g6_long.md --from 1 --to 3
+Checked lines 1-3 of g6_long.md
+[FAIL] 2 citation(s) point past the end of the file
+exit=1
+
+$ check_contract.py g6_long.md --from 0 --to 3
+Checked lines 0-3 of g6_long.md
+[PASS] every cited file exists
+[PASS] every cited line is in range
+exit=0
+```
+
+Same file, same citation, one flag, and the header claims a range it did not
+inspect. `--from 5000 --to 4000` and `--from 99999` reproduce too.
+
+**But `lines[-1:3]` does not always inspect zero lines**, and the audit states it
+as though it does. It is `lines[N-1:end]` for a file of `N` lines: **empty when
+`N > end`, and the file's *last* line when `N <= end`.** On my first attempt the
+contract was 3 lines with `--to 3`, so it inspected line 3 — and found the
+citation:
+
+```
+$ check_contract.py g6.md --from 0 --to 3        # a 3-line contract
+[FAIL] 2 citation(s) point past the end of the file
+  line 0: src/model_migration_kit/report.py:99999 -- file has 5328 lines
+exit=1
+```
+
+Note `line 0` in that diagnostic, which is its own small tell. Real plans are
+thousands of lines, so the zero-inspection case is the one that will occur — the
+finding stands and the ranking does not move. **The sentence should say "inspects
+zero lines whenever the document is longer than `--to`", not "inspects zero
+lines".** A reader who tests it on a short file will conclude the finding is
+wrong.
+
+---
+
+### G8 — nothing runs it, nothing tests it. **CONFIRMED on Windows.**
+
+```
+$ grep -rn "check_contract" .github/          -> no output
+$ ls .pre-commit-config.yaml                  -> no .pre-commit-config.yaml
+$ ls tests/ | grep -i contract                -> test_thresholds_confidence_contract.py   (unrelated)
+$ ls tests/test_release_checks.py             -> tests/test_release_checks.py             (exists, for the other gate)
+```
+
+**SURVIVES.**
+
+---
+
+### W1 — new, Windows-only: the gate takes **7.4 seconds** for one unresolvable citation, against a docstring that promises a second.
+
+`resolve()` falls through to `rglob` over all three roots, and the third is
+`C:\Users\ewehm\repos` — 70+ checkouts of this repository plus the shared venv.
+
+```
+$ time check_contract.py bare_miss.md     # one citation: `zzz_nonexistent_module.py:12`
+[FAIL] 1 citation(s) name a file that does not exist
+real    0m7.432s
+
+$ time check_contract.py docs/superpowers/plans/2026-08-21-migkit-report-plan.md
+real    0m5.239s
+```
+
+The docstring's closing claim is *"None needed judgement to catch. **This finds
+them in a second.**"* That is a claim about the gate's fitness for the workflow
+it sits in — `RESTART.md:590` puts it in front of every dispatch — and on the
+machine that runs the pipeline it is off by 5-7x, scaling with how many worktrees
+happen to exist. It is not a correctness defect and I am not ranking it above
+any of G1-G8; it belongs in the file because it is invisible from macOS and it
+gets worse every time an agent adds a worktree.
+
+---
+
+### Ranking of the gate findings, from this side
+
+`check_contract.py` is a gate whose verdict depends on the contents of the
+directory above the checkout. Ranked by what a maintainer would wrongly believe:
+
+1. **G4** — a pasted traceback resolves into another checkout and is certified.
+   The intake path is real, the form is already in the repo, and only the
+   deletion of one worktree is keeping it red today.
+2. **G5** — the same contract at the same commit is exit 1 on one machine and
+   exit 0 on the other. A gate that disagrees with itself across machines is
+   worse than a gate that is uniformly wrong, because the disagreement teaches
+   operators to ignore it.
+3. **G1** — the remediation string instructs you to disable the check.
+4. **G2** — pinned line numbers inside the wheel that every agent's interpreter
+   loads.
+5. **G6** — real, one flag wide, mechanism needs the correction above.
+6. **G3** — mechanism measured, exposure latent; it is G4's engine.
+7. **G8**, **W1** — coverage and fitness, not correctness.
+
+**Agreed and not re-verified:** G7 (the gate checks range, not citation) and G9's
+exclusion table — the audit measured those against the real tree exactly as the
+brief asked, including reporting one exclusion as **REFUTED and dropped**, which
+is the pass doing its job. **G10 (exit codes REFUTED)** I did not re-run; eight
+constructed failure paths all non-zero is a negative result that names its
+coverage, which is what the brief asked for.
+
+**Nothing in this file is refuted. One sentence needs correcting (G6) and three
+findings are worse on this machine than the audit could state (G2, G3→G4, G5).**
+
+---
+
+### Method note, cycle 4
+
+Every contract was written into the session scratchpad and passed to the gate as
+an argument; the gate itself was run from `mk-watch2` so that `REPO` and
+`REPO.parent` were the real Windows layout rather than a synthetic one. Nothing
+was created inside `C:\Users\ewehm\repos` — in particular I did **not** recreate
+`mk-wt-checklist` to make `docs/release-evidence.md:104` resolve, because that
+directory is in the namespace other agents' worktrees live in. The equivalent
+construction with `mk-main` as the target proves the same mechanism without
+writing there.
+
+`git status` clean in `mk-main` and in `mk-watch2` apart from this file.
