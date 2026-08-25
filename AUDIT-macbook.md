@@ -1068,61 +1068,189 @@ literally would skip them.
 
 ---
 
+---
+
+# Mutation testing — where the suite would not have noticed
+
+The reviewer method this project prescribes, run in a detached worktree with every restore made
+from a byte-verified copy (never `git checkout --`). Baseline `2206 passed`; final `2206 passed`;
+all four touched files restored sha1-identical; worktree removed.
+
+**30 mutations, 17 survived.** Each survivor was also shown to change the *rendered document*,
+so none is dead code. The suite is not weak overall — 13 mutants were killed, several by 20+
+tests — but it is blind in exactly the places this audit found defects.
+
+| Mutation | Result | What the document then says |
+|---|---|---|
+| Invert `if provenance.headline_scripted` | **SURVIVED** | the all-fake demo claims *"neither of its sides names a Fake adapter"* |
+| Delete `_MACHINERY_IS_REAL` | **SURVIVED** | two disclosure sentences vanish |
+| `_warned_title` prefix check -> substring check | **SURVIVED** | a title containing "FAKE MODELS" suppresses the real prefix |
+| HTML judge table renders only `judges[0]` | **SURVIVED** | judge 2's whole table vanishes under prose saying "2 judge(s) graded both sides" |
+| `RateStat.from_gate`: `passes` -> `0` | **SURVIVED** | `0 / 60` beside `pass rate 42.4%` |
+| `mw_powered` lift dropped | **SURVIVED** | a **measured** "not powered" renders as the em dash reserved for "never recorded" |
+| `underpowered` never read | **SURVIVED** | flag row flips rule 3 (REVIEW) into rule 2 (NO-GO), two screens above the printed rules |
+| `imputed`, `parse_failures`, `holm_threshold`, `runs_needed`, `items` lifts dropped | **SURVIVED** (5) | rows silently zero or disappear |
+| failed completion -> empty string | **SURVIVED** | timed-out draws become blank blocks under "carries its full outputs" |
+| `n_per_item` hard-coded to 5 | **SURVIVED** | a log saying 7 renders "5 draws per item" |
+| unrecorded-adapter fallback deleted | **SURVIVED** | `( for the baseline, ...)` |
+| `warnings: null` crash fixed | **SURVIVED** | *no test noticed the crash existed* |
+| `_baseline_pass_rate` -> `1.0` | killed by 21 tests | |
+| `_change_sections` -> `()` | killed by 38 tests | |
+| `exit_code` -> `0` | killed by 9 tests | |
+| dimensions: first tag only | killed by 11 tests | the plan's named test **does** exist and fail (`tests/test_dimensions.py:185`) |
+| `_draws` always-identical, latency both ways, `_banner_bar` judges[0], candidate table `[:1]`, dimension candidate columns, `from_gate` interval, truncation flag | killed | |
+
+**The single most consequential line:** *R29.1's fix — the exemplar defect this audit brief is
+built around — has zero coverage.* It can be inverted and the suite stays green.
+
+## Fixture pairs that never vary together
+
+The second half of this project's own standing rule ("vary it *in pairs*"). Uncovered
+combinations, each naming the defect it would hide:
+
+* **two judges x the rendered judge table** — hides the judges[0]-only render above.
+* **two judges x a multi-tagged golden set** — vacuous, because `tests/test_report.py` has **no
+  multi-tagged fixture at all**: every tag map assigns 0 or 1 tag. This is why finding 9(a)
+  shipped in the demo.
+* **a failed completion x a truncated output** — vacuous, because **no fixture in any of the 17
+  test files ever writes a `null` output.** `_write_run` is typed `Sequence[str | None]` and has
+  a live `SampleTimeout` branch **no caller reaches**. This is why finding 15 shipped.
+* unrecorded adapter x scripted headline; `is_demo` x a caller-supplied title; judge-level
+  `underpowered` x a missed floor.
+
+**Cleared:** adapters vary, judge names vary, `tests/test_series.py` carries five distinct judge
+shapes and is well pinned. And a suspicion of mine was **wrong**: the suite *does* render a
+document containing a candidate table (`_every_element_model` builds 2 candidates and 3
+exclusions, and mutations to both were killed). Finding 12 stands regardless — that helper
+touches none of `spot_check`, `trend`, `multiplicity` or `parameter_strip`.
+
+---
+
+# The project's own gates, run on this machine
+
+| Gate | Exit | Verdict |
+|---|---|---|
+| `check_merge.py` | 0 | **PASS**, 7/7 |
+| `check_contract.py` (main plan) | 1 | **FAIL** — 4 citations into a sibling `opik-rigor` *source* checkout that does not exist here (it is installed as a wheel) |
+| `check_contract.py docs/release-evidence.md` | 1 | **FAIL** — a real portability defect *in the gate*, see below |
+| `check_contract.py` (8 other docs) | 0 | PASS each |
+| `verify_release.py` | **2** | **SKIP — NOT A PASS.** 2 passed, 0 failed, **13 skipped** of 15 |
+| `dependency_surface.py` (and `--check`) | 0 | PASS, 25 modules |
+| `ruff check src tests` | 0 | PASS |
+| suite, six configurations incl. two shuffled seeds and CI's netguard form | 0 | **2206 passed** in all six |
+
+**A portability defect only a non-Windows operator can find.** `check_contract.py`'s citation
+regex accepts `\` separators and drops the drive letter, so `root / candidate` yields a path
+that **exists on Windows and is one nonsense filename component on macOS**. Proven on a scratch
+file: a `\`-separated citation of a real, present file passes there and fails here. The Windows
+box cannot find this, by construction.
+
+**`verify_release.py` is the dangerous one, and it fails the project's own central rule.** The
+wrong interpreter does not turn it red — it turns it *quieter*: bare `python` yields **14** skips
+at the **same exit code 2**. An operator watching exit codes cannot see a check degrade from
+PASS to SKIPPED. That is "an absence must not render as a measurement", occurring inside the
+release gate rather than the report. Its remediation string is also hardcoded Windows
+(`.\.venv\Scripts\python.exe ...`) and prints immediately after `platform : darwin`.
+
+**Two gates CLAUDE.md names are in no CI workflow at all.** `check_merge.py` — called "the merge
+gate" — is honour-system only: four of its seven checks (conflict markers, every file parses, no
+shadowed top-level names, `__all__` completeness) run **nowhere** in CI. `check_contract.py` is
+in no workflow either. Conversely CI runs two gates CLAUDE.md never mentions: a network-blocked
+pytest (`-p netguard`) and a cold-venv 120-second `migkit demo` check.
+
+**Two CLAUDE.md facts are stale, with corrected numbers:**
+
+* "repo-wide format drift ... ~26 files" — it is **33** tracked Python files (37 including
+  Markdown, since ruff 0.16 formats fenced code blocks). Every gate script itself drifts.
+* "`ruff format --check tests/test_report.py` fails with ~50 hunks" — **confirmed** it fails and
+  has never passed, but it is **60** hunks / 229 changed lines, and that file is one of 33 rather
+  than a special case.
+
+**And a correction to my own method.** I opened this audit with `pytest -q -p no:randomly`.
+`pytest-randomly` is **not installed**, so that flag was a no-op and proved nothing about
+ordering. Order-independence was established separately with this repo's own
+`scripts/audit/shuffle_order.py` across two seeds — verified to actually shuffle (tests torn out
+of file and class groupings, not merely permuted) — plus xdist and netguard forms: **2206 passed
+in all six configurations.** The count was never in doubt; my flag was.
+
 # Which machine to develop on
 
-Asked for alongside the audit, and answerable with numbers rather than impressions. Every
-figure below for this Mac was measured here; every figure for the Windows box is **quoted from
-CLAUDE.md**, not measured by me.
+Asked for alongside the audit. Every figure for this Mac was measured here; every figure for
+the Windows box is **quoted from CLAUDE.md**, not measured by me.
 
-| | This Mac (measured) | Windows box (CLAUDE.md:36-43, 111-112) |
-|---|---|---|
-| CPU | Apple M1 Max — 8 performance + 2 efficiency = 10 logical | "16 cores" |
-| RAM | 64 GB | not stated |
-| OS | macOS 26.5.1, arm64 | Windows |
-| Full suite, serial | **34.02 s** | "~4 minutes"; "~136 s" |
-| Full suite, `-n 8` | see `scratchpad/audit/bench/SYSTEM.md` | "~97 s" |
-| `tests/test_report.py` | see bench report | "~30 seconds (371 tests)" |
+| Workload | Windows (repo) | This Mac (measured) | Speedup |
+|---|---|---|---|
+| Full suite, serial | ~136 s (CLAUDE.md:36) | **19.28 s** | 7.1x |
+| Full suite, `-n 8` | ~97 s (CLAUDE.md:36) | **13.07 s** | 7.4x |
+| `tests/test_report.py` | ~30 s / 371 tests (CLAUDE.md:111) | **5.64 s / 435 tests** | 6.2x per test |
+| ...under agent contention | **365 s** (CLAUDE.md:40) | worst observed **5.99 s** | 61x |
 
-**This Mac runs the entire suite serially faster than the Windows box runs it with 8 workers**
-— roughly 4× on serial and 2.9× against its parallel best.
+Spec: **Apple M1 Max, 10 cores (8P+2E), 64 GB, macOS 26.5.1, arm64**, APFS SSD, 610 GiB free,
+1,738 MB/s sustained write. Timings are min-of-3 (serial and `-n 8` min-of-6 across two
+brackets ~15 min apart), **all taken under live contention** (load 4.4 -> 9.7, with another
+agent running `pytest -n 4` against this repo).
 
-**RAM is not the constraint; CPU is.** Measured with a dozen agents running:
+**Read the multiplier as a range, not a point.** The Windows baseline is internally
+inconsistent: CLAUDE.md:36 says ~136 s serial while CLAUDE.md:111-112 says ~4 minutes;
+CLAUDE.md:111 says `test_report.py` has 371 tests and it has **435**; README.md:600 records a
+Windows run of **"1101 passed in 38.34s"** against today's **2206**. Honest range **4x-12x,
+most likely ~7x**. The direction is not in doubt; the multiplier is.
 
+**RAM is ample; cores are the constraint.** Real application memory is **26 GB of 64 GB**,
+**swap total 0.00 MB** (macOS has never created a swap file this boot), compressor 14 MB. The
+"63G used" in `top` is 37 GB of evictable file cache. One `pytest -n 8` tree peaks at 2,045 MB;
+a full agent is ~2.9 GB. RAM supports ~12 concurrent testing agents; **10 cores support 3-4.**
+Default to `-n 4`. Note serial is already 19 s here and `-n 8` buys only ~6 s, because ~5.6 s of
+it is per-worker `import scipy.stats` (0.632 s x 8) - xdist has little left to win on this
+hardware.
+
+**The Anaconda shadowing here is worse than the Windows `.pth` trap, because it fails green.**
+`python`, `python3` and `pytest` all resolve to Anaconda 3.9.13 (pytest 7.1.2), below
+`requires-python = ">=3.10"`. Measured: **bare `pytest` collects 247 of 2206 tests with 16
+collection errors** - an agent that ran it would see a small green run and believe the suite
+passed. Anaconda has no xdist, so every `-n N` fails, and `ruff` is not on PATH at all, so
+HANDOFF.md:302's bare `ruff check src tests` errors.
+
+**What keeps the Windows box alive:**
+
+* It holds the **only Python 3.14 coverage in existence** (COMPATIBILITY.md:20, README.md:52).
+  CI covers 3.10-3.13 on ubuntu + windows, with **no macOS runner anywhere** - so this box's
+  green suite is evidence CI never collects.
+* Every published transcript in README.md is a Windows transcript, including a literal
+  `WindowsPath('rubric.md')` at README.md:465.
+* One genuine code asymmetry: **`report.py:_contained` (2048-2059) uses `os.sep` and
+  `os.path.abspath`/`normcase` - the *reading* platform's semantics - while every neighbouring
+  function in that block deliberately parses both separators textually** because the writing
+  platform may differ. It behaves differently on the two boxes and no test distinguishes them.
+* `gh` is not installed here, so there is no PR workflow until `brew install gh`.
+
+**A claim I made earlier and am withdrawing.** I wrote that numeric results are not
+bit-identical across the two boxes, citing `power_at_runs_needed`. That was imprecise.
+COMPATIBILITY.md:853-863's one-ULP discussion is about **rigor 0.1.1 vs 0.2.0 on the same
+machine**, cause given as expression rearrangement - it is not a platform claim, and it says so.
+`power_at_runs_needed` appears only in COMPATIBILITY.md, is new in rigor 0.2.0 (so has no prior
+value to have moved from), and **no test in `src/`, `tests/` or `scripts/` reads it at any
+tolerance**. The repo's cross-platform value guarantees are about **hashes**, not floats
+(`contracts.py:11`, COMPATIBILITY.md:1063), and the one full-precision float assertion uses
+`pytest.approx(rel=1e-9)` - six orders of magnitude of headroom over a 1-ULP move. Float
+reproducibility is **not** a reason to prefer either box.
+
+**Recommendation: develop on the Mac, verify releases on Windows** - but fix CLAUDE.md first.
+Its interpreter section, worktree paths, core count, test counts and ".pth trap is fixed" claim
+are all wrong here, and a bare `python scripts/check_merge.py` reports a **false red** on a
+green tree while a bare `pytest` reports a **false green** on 11% of the suite.
+
+**To close the comparison**, run this on the Windows laptop. The collection count matters most:
+if Windows collects 2206 the 136 s figure is comparable and the speedup is ~7x; if it collects
+~1101 those figures describe a suite half this size and the real speedup is **larger**.
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q --collect-only | Select-Object -Last 1
+.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m pytest -q -n 8
+.\.venv\Scripts\python.exe -m pytest -q tests\test_report.py
+.\.venv\Scripts\python.exe scripts\worktree_path.py --status
 ```
-System-wide memory free percentage: 96%
-Swapins: 0   Swapouts: 0   Pages occupied by compressor: 873 (~3.4 MB)
-load average: 8.80        logical cores: 10
-```
 
-The `62G used` that `top` reports is file cache, not pressure. So parallel *agents* (blocked on
-I/O) scale freely here; parallel `pytest -n 8` runs do not — 10 cores is the ceiling, and that
-is exactly the contention CLAUDE.md documents ("365 s with five agents running and 27 s minutes
-later on identical code").
-
-**What argues for the Windows box**, honestly:
-
-* It is where the pipeline runs and where the gates were written to run.
-* `scripts/worktree_path.py` is installed in *that* venv and **is not installed here** —
-  `--status` reports `hook module present: no`. Harmless while this checkout has one worktree; a
-  live hazard the moment it has two. CLAUDE.md tells every agent the trap is "fixed", which is
-  false on this machine and fails silently rather than loudly.
-* Numeric results are not bit-identical across the two: COMPATIBILITY.md documents
-  `power_at_runs_needed` as `…606558` there against `…606604` here.
-
-**What argues for staying here:** ~4× faster iteration, 64 GB with no memory pressure, and a
-working `.venv` in a checkout whose CLAUDE.md asserts none exists.
-
-**Recommendation: develop here, release from Windows** — but fix CLAUDE.md first. Its interpreter
-section, its worktree paths, its core count and its ".pth trap is fixed" claim are all wrong on
-this machine, and a bare `python scripts/check_merge.py` here resolves to Anaconda 3.9.13 and
-reports a **false red** on a green tree.
-
-**To complete the comparison**, run this on the Windows laptop and compare against the table
-above:
-
-```
-.venv\Scripts\python.exe -m pytest -q                      # serial
-.venv\Scripts\python.exe -m pytest -q -n 8                 # parallel
-.venv\Scripts\python.exe -m pytest -q tests\test_report.py  # the slow file
-.venv\Scripts\python.exe scripts\worktree_path.py --status
-```
+A portable single-core reference is left at `scratchpad/audit/bench/cpubench.py` (this Mac:
+0.154 s) to run unchanged on both boxes.
