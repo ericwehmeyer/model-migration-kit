@@ -27,6 +27,16 @@ out-of-range line is a fact. A backticked identifier that resolves nowhere may
 be a type from the standard library, a name from a dependency, or something the
 chunk is about to create -- so those are reported as unverified rather than
 wrong, and the exit code ignores them.
+
+**A citation is a promise about one tree, and only that tree may answer it.**
+This machine carries eighty-odd checkouts of this project side by side, every
+one of them holding a ``src/model_migration_kit/report.py`` at a different
+length and a different state of done. Resolving a citation against whichever of
+them happens to answer first does not check the contract -- it checks a
+stranger, and reports the result as if it were about the tree the agent is
+about to open. So a path that lands outside the trees below is not a passing
+citation; it is an unresolvable one, and it is reported as such however it was
+spelled.
 """
 
 from __future__ import annotations
@@ -34,18 +44,27 @@ from __future__ import annotations
 import argparse
 import ast
 import re
+from collections.abc import Iterator
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 
-#: Sibling checkouts a contract may legitimately cite. ``opik_rigor`` is the
-#: dependency this package is built on, and half the interesting citations point
-#: into it -- so a bare ``judge.py`` must be resolved against both trees before
-#: it can be called missing.
-#: ``REPO.parent`` is included so a citation may be written the way a human
-#: would read it -- ``opik-rigor/src/opik_rigor/judge.py`` -- rather than
-#: relative to a root the reader has to infer.
-SIBLINGS = (REPO, REPO.parent / "opik-rigor", REPO.parent)
+#: The trees a citation may land in. ``opik_rigor`` is the dependency this
+#: package is built on, and half the interesting citations point into it -- so a
+#: bare ``judge.py`` must be resolved against both trees before it can be called
+#: missing. Nothing else may answer: a neighbouring checkout of *this* project
+#: is the most dangerous file a citation can find, because it has the right
+#: name, the right path, and the wrong contents.
+CITABLE_TREES = (REPO, REPO.parent / "opik-rigor")
+
+#: Kept under its old name because ``index_symbols`` reads it, and narrowed to
+#: the trees above. It used to end in ``REPO.parent``, which made every sibling
+#: directory a citation surface -- eighty-one of them here. The one thing that entry
+#: bought is preserved by name in ``_written_relative_to``: a citation may still
+#: be written the way a human reads it, ``opik-rigor/src/opik_rigor/judge.py``,
+#: rooted at the project's own directory rather than at a root the reader has to
+#: infer.
+SIBLINGS = CITABLE_TREES
 
 #: Directories that hold copies of a tree rather than the tree. Matched by
 #: shape because a virtualenv is not always called ``.venv`` -- the sibling
@@ -79,26 +98,96 @@ NOT_OURS = frozenset({
 })
 
 
-def resolve(name: str) -> Path | None:
-    """Where a citation's file actually lives, or ``None``."""
-    candidate = Path(name)
-    for root in SIBLINGS:
-        if not root.exists():
+def _governed(path: Path) -> Path | None:
+    """``path``, normalised, if it lies in a tree a contract here may cite.
+
+    Normalised first, because containment cannot be decided on the spelling. A
+    citation may reach out of the tree with ``..``, arrive as an absolute path,
+    or -- the way it actually happened -- lose its drive letter to the citation
+    regex, which excludes ``:``, and be re-anchored onto this drive as
+    ``\\Users\\...\\some-other-checkout\\...``. All three name a real file and
+    none of them names ours.
+    """
+    try:
+        found = path.resolve()
+    except OSError:  # pragma: no cover - a path the OS will not even normalise
+        return None
+    if _is_a_copy(found):
+        # A copy of the tree is not the tree. ``.claude/worktrees`` and a
+        # vendored ``.venv`` both sit *inside* a citable root and both hold
+        # whole duplicates of it, right down to the file names.
+        return None
+    return found if any(found == t or t in found.parents for t in CITABLE_TREES) else None
+
+
+def _written_relative_to(candidate: Path) -> Iterator[Path]:
+    """Every place a citation is allowed to be spelled from.
+
+    Each citable tree, and -- only when the citation leads with that tree's own
+    directory name -- the tree's parent. The second is the human spelling,
+    ``opik-rigor/src/opik_rigor/judge.py``, and it is a key rather than a
+    doorway: the parent is never searched for anything but the tree named in the
+    citation itself, so ``mk-some-other-checkout/src/...`` finds nothing there.
+    """
+    for tree in CITABLE_TREES:
+        if not tree.exists():
             continue
-        direct = root / candidate
-        if direct.is_file():
-            return direct
-        matches = [
-            p for p in root.rglob(candidate.name)
-            if not _is_a_copy(p)
-        ]
-        # A bare filename is only resolved if it is unambiguous in that tree.
-        # ``.claude/worktrees`` lives *inside* this repo and holds whole copies
-        # of it, so without that filter every real file looks ambiguous and the
-        # checker reports the entire contract as broken -- which is how this
-        # line was found.
-        if len(matches) == 1 and candidate.parent in (Path("."), Path("")):
-            return matches[0]
+        yield tree / candidate
+        if candidate.parts[:1] == (tree.name,):
+            yield tree.parent / candidate
+
+
+def resolve(name: str) -> Path | None:
+    """Where a citation's file actually lives *in a tree we govern*, or ``None``."""
+    candidate = Path(name)
+    for direct in _written_relative_to(candidate):
+        if direct.is_file() and (found := _governed(direct)) is not None:
+            return found
+    # A bare filename is only resolved if it is unambiguous in that tree.
+    # ``.claude/worktrees`` lives *inside* this repo and holds whole copies of
+    # it, so without that filter every real file looks ambiguous and the checker
+    # reports the entire contract as broken -- which is how this line was found.
+    if candidate.parent not in (Path("."), Path("")):
+        return None
+    for tree in CITABLE_TREES:
+        if not tree.exists():
+            continue
+        matches = [p for p in tree.rglob(candidate.name) if not _is_a_copy(p)]
+        if len(matches) == 1 and (found := _governed(matches[0])) is not None:
+            return found
+    return None
+
+
+def _relative(target: Path) -> Path:
+    """``target`` spelled the way the citation ought to have been written.
+
+    Rooted at the parent of the citable trees, so a sibling project reads as
+    ``opik-rigor/src/opik_rigor/judge.py`` -- which is exactly the spelling the
+    message is asking for. The old form counted backwards through ``parents``
+    with a fixed index and produced a suffix whose meaning depended on how deep
+    the file happened to sit.
+    """
+    try:
+        return target.relative_to(REPO.parent)
+    except ValueError:
+        return target
+
+
+def elsewhere(name: str) -> Path | None:
+    """A real file this citation names that no contract here may cite.
+
+    Only ever used to say *why* something did not resolve. "No such file" and
+    "that file is in somebody else's checkout" are different facts, and the
+    second is the one a reader needs in order to fix the citation.
+    """
+    candidate = Path(name)
+    for root in (REPO, REPO.parent):
+        probe = root / candidate
+        if probe.is_file() and _governed(probe) is None:
+            try:
+                return probe.resolve()
+            except OSError:  # pragma: no cover - see _governed
+                return None
     return None
 
 
@@ -145,16 +234,27 @@ def main() -> int:
         for name, first, last in CITATION.findall(line):
             target = resolve(name)
             if target is None:
-                bad_files.append(f"  line {number}: {name}:{first} -- no such file in either tree")
+                stranger = elsewhere(name)
+                because = (
+                    f"no such file in either tree; {stranger} is not in one of them"
+                    if stranger is not None
+                    else "no such file in either tree"
+                )
+                bad_files.append(f"  line {number}: {name}:{first} -- {because}")
                 continue
             # A bare filename that only resolves in the *sibling* tree is the
             # judge.py error: it reads as a file in this package, an agent looks
             # for it here, and it is in a different distribution. Resolvable is
             # not the same as unambiguous, so it must be written out in full.
+            # This is the *ambiguity* rule, not the containment one -- containment
+            # is decided in ``resolve`` for every spelling, which is where it
+            # belongs. It used to live here, conjoined to "the citation has no
+            # directory component", so a citation that carried one was never
+            # checked for containment at all.
             if Path(name).parent in (Path("."), Path("")) and REPO not in target.parents:
                 bad_files.append(
                     f"  line {number}: {name}:{first} -- resolves only in "
-                    f"{target.relative_to(target.parents[len(target.parents) - 4])}"
+                    f"{_relative(target)}"
                     f"; write the path out so it is not read as this package"
                 )
                 continue
