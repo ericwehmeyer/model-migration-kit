@@ -29,9 +29,22 @@ this reached the orchestrator test-green and CI-red.
 **Ruff's import rules apply to the merged block**, which neither pair can see
 from its own side.
 
+**A green pytest check can mean no test ran at all.** This one was found in the
+gate rather than in a merge. The three command checks below decided pass/fail on
+the child's exit status and nothing else, and ``subprocess.run`` hands the child
+``os.environ`` -- so a ``PYTEST_ADDOPTS="--co -q"`` left in a shell, a variable
+this project's own docs recommend setting for ``-n 8``, made pytest collect the
+suite, run none of it, and exit 0. Measured on a tree carrying a committed
+``assert 1 == 2``: seven of seven ``[PASS]``, exit 0, in 16.4 seconds against an
+honest 4m36s. A gate that cannot tell "everything passed" from "nothing ran" is
+not a gate, so the pytest check now reads pytest's own JUnit report and holds the
+count against a floor, and no command check inherits a variable that redefines
+what it is running.
+
 Run after resolving a merge and before committing it:
 
-    python scripts/check_merge.py
+    python scripts/check_merge.py          # honest, serial, ~4 minutes
+    python scripts/check_merge.py -n 8     # the same run under pytest-xdist
 
 Exit 0 only if every check passed. A check that could not run is a failure, not
 a pass -- the same rule ``verify_release.py`` holds for a SKIPPED release check,
@@ -41,13 +54,53 @@ than no gate.
 
 from __future__ import annotations
 
+import argparse
 import ast
+import os
 import subprocess
 import sys
+import tempfile
+import xml.etree.ElementTree as ET
 from collections import defaultdict
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+
+#: The fewest tests a run of the suite may report and still be believed. This is
+#: a floor, not a census: it is deliberately well under the true count (2330
+#: executed at the commit that set it) so that adding and removing tests never
+#: touches it, and well over the handful any narrowed selection would leave, so
+#: that a run reporting three tests cannot be mistaken for a run of the suite. It
+#: is checked against the number pytest itself reports, so moving it is a visible
+#: edit to a tracked file rather than an invisible variable in somebody's shell.
+MINIMUM_TESTS = 2000
+
+#: Environment variables that change what a child command *is* before it reads a
+#: single argument of ours. ``PYTEST_ADDOPTS`` is prepended to pytest's command
+#: line, so it can add ``--co`` (collect, run nothing, exit 0), narrow the
+#: selection with ``-k``, cut the run short with ``--maxfail``, or point
+#: ``--junitxml`` somewhere we will not look. ``PYTEST_PLUGINS`` and
+#: ``PYTEST_DISABLE_PLUGIN_AUTOLOAD`` change which code is loaded at startup.
+#: None of them may reach a gate's child: what the gate runs must be a function
+#: of this repository, not of the shell the gate was launched from.
+#:
+#: ``PYTHONPATH`` is deliberately **not** in this list. It is load-bearing here --
+#: ``conftest.py`` sets it so that child processes import the checkout under test
+#: rather than the editable install's -- and stripping it would make the gate
+#: measure a different worktree's code, which is the exact failure this repository
+#: has paid for most often.
+ENV_ESCAPES = frozenset({
+    "PYTEST_ADDOPTS",
+    "PYTEST_PLUGINS",
+    "PYTEST_DISABLE_PLUGIN_AUTOLOAD",
+    "PYTEST_CURRENT_TEST",
+})
+
+
+def child_env() -> dict[str, str]:
+    """The environment a gate's child gets: this one, minus the escapes."""
+    return {k: v for k, v in os.environ.items() if k not in ENV_ESCAPES}
+
 
 def tracked_python_files() -> list[Path]:
     out = subprocess.run(
@@ -231,11 +284,26 @@ def check_all_is_complete() -> list[str]:
     return bad
 
 
-def run(label: str, cmd: list[str]) -> tuple[bool, str]:
+def run(label: str, cmd: list[str], cwd: Path | str | None = None) -> tuple[bool, str]:
+    """Run one command in a sanitised environment; exit status decides pass/fail.
+
+    Exit status is a *necessary* condition and, for pytest, not a sufficient one --
+    see ``check_pytest``. It is all there is for ``ruff`` and ``dependency_surface``:
+    the four environment variables ruff reads (``RUFF_OUTPUT_FORMAT``,
+    ``RUFF_OUTPUT_FILE``, ``RUFF_NO_CACHE``, ``RUFF_CACHE_DIR``) change where and how
+    findings are printed and none of them changes whether ruff exits non-zero, and
+    ``dependency_surface.py`` reads no environment at all. Both were checked rather
+    than assumed, and both go through this function so that if either grows an
+    ``ADDOPTS``-shaped variable later, the refusal is already in place.
+
+    ``cwd`` defaults to this repository, which is the only value the gate itself ever
+    passes; it is a parameter so that the gate's own tests can point a check at a
+    synthetic tree without that tree inheriting this one's pytest configuration.
+    """
     try:
         proc = subprocess.run(
-            cmd, cwd=str(REPO), capture_output=True, text=True,
-            encoding="utf-8", errors="replace",
+            cmd, cwd=str(cwd or REPO), capture_output=True, text=True,
+            encoding="utf-8", errors="replace", env=child_env(),
         )
     except OSError as exc:
         return False, f"{label} could not run ({exc}) -- treated as failure"
@@ -245,7 +313,106 @@ def run(label: str, cmd: list[str]) -> tuple[bool, str]:
     return True, ""
 
 
-def main() -> int:
+def junit_totals(report: Path) -> dict[str, int] | None:
+    """Pytest's own counts from its JUnit report, or ``None`` if there are none.
+
+    ``None`` means the report was not written, could not be parsed, or contained no
+    ``testsuite`` element -- three different absences, all of which mean the same
+    thing here: this run cannot say how many tests it ran. It is never a zero. A
+    count of zero is a measurement (pytest ran and reported that nothing executed);
+    an unwritten report is not, and the two must not arrive at the caller wearing
+    the same face.
+
+    Parsing the report rather than pytest's ``-q`` summary line is the point. That
+    line is prose -- it changes shape between "2330 passed", "1 failed, 2329 passed"
+    and "no tests ran", and disappears entirely at ``-q -q`` -- whereas the report
+    is a channel pytest maintains for machines and fills in even when the run
+    collected nothing.
+    """
+    try:
+        root = ET.parse(report).getroot()
+    except (OSError, ET.ParseError):
+        return None
+    totals = {"tests": 0, "failures": 0, "errors": 0, "skipped": 0}
+    found = False
+    for suite in root.iter("testsuite"):
+        found = True
+        for key in totals:
+            totals[key] += int(suite.get(key) or 0)
+    return totals if found else None
+
+
+def check_pytest(
+    py: str,
+    target: str = "tests",
+    minimum: int = MINIMUM_TESTS,
+    jobs: str | None = None,
+    cwd: Path | str | None = None,
+) -> tuple[bool, str, int | None]:
+    """Run the suite and refuse to call it green unless it can say what it ran.
+
+    Three things must hold, and the second and third are the new ones: pytest exits
+    zero, pytest's report says at least ``minimum`` tests actually executed, and
+    that report records no failure or error. The last is redundant with the exit
+    status today and costs nothing; it is there because the whole defect was a gate
+    that had exactly one source of truth.
+
+    Returns the count as well, because "how many" is what the caller is being asked
+    to believe -- and ``None`` when the run could not say, so that main() can print
+    an absence as an absence.
+    """
+    with tempfile.TemporaryDirectory(prefix="merge-gate-") as tmp:
+        report = Path(tmp) / "pytest.xml"
+        # ``--junitxml`` is given on the command line, which pytest applies *after*
+        # both its config's ``addopts`` and the environment's, so a decoy path in
+        # either loses to this one. Verified against a config carrying
+        # ``addopts = --junitxml=decoy.xml``: the gate still read its own report.
+        cmd = [py, "-m", "pytest", target, "-q", f"--junitxml={report}"]
+        if jobs:
+            # The only route a worker count has now that PYTEST_ADDOPTS is refused.
+            cmd += ["-n", jobs]
+        ok, detail = run("pytest", cmd, cwd=cwd)
+        totals = junit_totals(report)
+
+    if totals is None:
+        note = (
+            "    pytest wrote no readable report, so this run cannot say how many\n"
+            "    tests it ran -- which is a failure, not a pass."
+        )
+        return False, "\n".join(part for part in (detail, note) if part), None
+
+    ran = totals["tests"] - totals["skipped"]
+    problems = []
+    if ran < minimum:
+        problems.append(
+            f"    {ran} test(s) executed; at least {minimum} were expected. A run\n"
+            f"    that skipped the suite is not a run of the suite."
+        )
+    if totals["failures"] or totals["errors"]:
+        problems.append(
+            f"    pytest recorded {totals['failures']} failure(s) and "
+            f"{totals['errors']} error(s)."
+        )
+    if not ok and not problems:
+        problems.append("    pytest exited non-zero.")
+    if problems:
+        return False, "\n".join(part for part in (detail, *problems) if part), ran
+    return ok, detail, ran
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Refuse a merge that looks green and is not.",
+    )
+    parser.add_argument(
+        "-n", "--jobs", metavar="N", default=None,
+        help=(
+            "pytest-xdist worker count (4, 8, auto). The gate refuses to inherit "
+            "PYTEST_ADDOPTS, so this is how a worker count reaches the suite."
+        ),
+    )
+    args = parser.parse_args(argv)
+
     py = sys.executable
     static = [
         ("no conflict markers", check_no_conflict_markers),
@@ -256,7 +423,6 @@ def main() -> int:
     commands = [
         ("ruff", [py, "-m", "ruff", "check", "."]),
         ("dependency surface", [py, "scripts/dependency_surface.py", "--check"]),
-        ("pytest", [py, "-m", "pytest", "tests", "-q"]),
     ]
 
     failed = 0
@@ -279,11 +445,20 @@ def main() -> int:
             failed += 1
             print(detail)
 
+    ok, detail, ran = check_pytest(py, jobs=args.jobs)
+    # An absence must not render as a measurement: a run that could not say how
+    # many tests it ran says so, rather than printing a zero it did not measure.
+    counted = f"{ran} tests ran" if ran is not None else "test count unavailable"
+    print(f"[{'PASS' if ok else 'FAIL'}] pytest -- {counted}")
+    if not ok:
+        failed += 1
+        print(detail)
+
     print()
     if failed:
         print(f"{failed} check(s) failed. This merge is not green.")
         return 1
-    print("Merge is green on all seven checks.")
+    print(f"Merge is green on all seven checks ({counted}).")
     return 0
 
 
