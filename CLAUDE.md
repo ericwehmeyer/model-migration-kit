@@ -146,3 +146,41 @@ rule of this document, not a recurring coincidence.
 Report it and **stop** — do not pick a reading and proceed. Four agents have done
 exactly that and all four were right; one refused a ruling that a second ruling
 in the same brief had falsified.
+
+## The status line
+
+`scripts/statusline.py`. Wire it up in your own untracked `.claude/settings.json`:
+
+```json
+{"statusLine": {"type": "command", "command": "python scripts/statusline.py"}}
+```
+
+`python3` on macOS if `python` is not on PATH. The path is relative to the repo
+root, so it resolves in every worktree without editing.
+
+It answers the two questions that have actually cost time here: **which of the
+seventy-odd worktrees am I in**, and **how far behind `main` is this branch**.
+Sample, from a reviewer sitting detached:
+
+```
+mk-c14b-review | on detached@e2b0614 | clean | 24 behind main
+```
+
+Behind-count is measured against the **local** `main`, not a remote: `main` lives
+in a sibling worktree and moves several times an hour while the remote is pushed
+rarely, so the local number is the one that predicts a painful merge. It is
+printed only when non-zero — a field that says `0 behind` every render is a field
+the eye learns to skip.
+
+**ASCII only, and stdout forced to UTF-8.** The first version used a branch glyph
+and died with `UnicodeEncodeError` on a Windows console under `cp1252` — the same
+class of defect a terminal audit had just found in this project's own renderer. A
+status line that raises on one machine's code page takes the whole render down
+with it.
+
+There is an optional `.claude/last-gate.json` field (`{"ok": true, "tests": N,
+"at": "<sha>"}`). Nothing writes it today and the line simply omits it — an
+absence must not render as a measurement, including in our own tooling. When the
+recorded sha does not match `HEAD` it renders as `(stale)` rather than as
+current, because a cached result with no commit attached cannot be told from a
+fresh one.
