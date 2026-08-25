@@ -1452,3 +1452,323 @@ construction with `mk-main` as the target proves the same mechanism without
 writing there.
 
 `git status` clean in `mk-main` and in `mk-watch2` apart from this file.
+
+---
+
+## Cycle 5 — 2026-08-24, on `adc3ac1`…`579a92d`, verified against `main` at `981514e`
+
+Five commits landed: three more gate agents (`dependency_surface.py`,
+`check_merge.py`, `verify_release.py`), the status line, and `096f5f2` —
+the Mac's fix for cycle 3's V2, which arrived before I had finished writing
+cycle 4. `main` moved to `981514e`; `git diff --stat b2c0005 981514e -- src
+tests` is empty, so cycle 3's numbers still stand.
+
+**Everything below was reconstructed here.** Two throwaway `git clone --local`
+checkouts under the session scratchpad — `mergetree` and `statictree` — so the
+constructions could be committed and `git ls-files` would see them. Nothing was
+created inside `C:\Users\ewehm\repos`; no worktree was added; `mk-main` clean
+throughout.
+
+---
+
+### V8 — `096f5f2` fixes V2 cleanly. **CONFIRMED, and it closes V6 as well.**
+
+The whole delta from `a842065` to `096f5f2`, on the same demo page, is now the
+two SVG `<title>` lines and nothing else:
+
+```
+$ diff text_old.txt text_fixed.txt
+11,12d10
+<   candidate accuracy: pass rate 75.0%, interval 62.8% to 84.2%, floor 90.0%
+228,229d225
+< Candidate pass rate over 1 run(s); the horizontal axis is time.
+```
+
+Counted rather than tested for presence, which was the point:
+
+```
+FAKE MODELS                        a842065=2  broken=1  fixed=2
+candidate accuracy: pass rate      a842065=1  broken=0  fixed=0
+Candidate pass rate over 1 run     a842065=1  broken=0  fixed=0
+Methodology appendix               a842065=2  broken=2  fixed=2
+Provenance                         a842065=2  broken=2  fixed=2
+```
+
+`_SVG_LABEL` uses `<(title|desc)\b`, so **V6's missing word boundary is fixed
+too** — a `<description>` element can no longer be swallowed. The commit message
+names the methodology error itself without being asked, which is the right
+disposal of V3.
+
+**V4 is untouched and still live.** The fixed module, same construction as cycle
+3:
+
+```
+$ python page_text_FIXED.py cjkreal/real.html > /dev/null
+exit=1
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 9249-9250
+```
+
+That is JOB-6 item 5 and it stays open.
+
+---
+
+## `check_merge.py` — four findings reconstructed, four confirmed
+
+### V9 — G18: the merge gate is green over `assert 1 == 2`, with zero tests executed. **CONFIRMED. This is the most serious thing on the branch.**
+
+A clone of `main` with one committed failing test:
+
+```
+$ git log --oneline -1
+9dbbdab constructed: a failing test
+
+$ PYTEST_ADDOPTS="--co -q" python scripts/check_merge.py
+[PASS] no conflict markers
+[PASS] every python file parses
+[PASS] no shadowed top-level names
+[PASS] __all__ lists every public name
+[PASS] ruff
+[PASS] dependency surface
+[PASS] pytest
+
+Merge is green on all seven checks.
+EXIT=0                                            real 0m13.8s
+```
+
+The control, same tree, same commit, run honestly:
+
+```
+$ python -m pytest tests -q -n 4
+FAILED tests/test_x2.py::test_x2 - assert 1 == 2
+1 failed, 2252 passed, 1 xfailed in 222.22s
+```
+
+**13.8 seconds versus 3m42s is itself the tell** — the gate's own wall clock says
+it did not run a suite, and nothing in its output does. `run()` checks
+`returncode == 0` and never prints, parses or compares a count. `PYTEST_ADDOPTS`
+is not exotic: it is the standard pytest environment variable, and this project
+sets pytest options in `pyproject.toml`.
+
+The audit's second form (`pytestmark = pytest.mark.skip` in `tests/test_report.py`,
+no environment variable needed) I did **not** re-run — one full honest suite run
+was the affordable control and I spent it on the stronger claim. The mechanism is
+the same one and is visible in `run()`; I am recording that I took it on the
+audit's evidence rather than mine.
+
+### V10 — G20: the project's own C22b defect passes when written as tuple unpacking. **CONFIRMED, control and all.**
+
+One tracked module, two spellings of one collision, identical runtime outcome:
+
+```
+##### tuple_rebind:  THIRD_MODEL, FOURTH_MODEL = "zeta-9", "alpha-1"
+check 3 (shadowed names): PASS
+   THIRD_MODEL at runtime: zeta-9          <- C99a's value is gone
+
+##### name_rebind:   THIRD_MODEL = "zeta-9"
+check 3 (shadowed names): ["src\model_migration_kit\c99.py: 'THIRD_MODEL' defined at 8, 12 -- the later one wins",
+                           "src\model_migration_kit\c99.py: 'FOURTH_MODEL' defined at 9, 13 -- the later one wins"]
+   THIRD_MODEL at runtime: zeta-9
+```
+
+**Same defect, same names, same lost value: one spelling fails the gate and the
+other passes it.** And ruff is not a backstop for either — `ruff check` reports
+`All checks passed!` on **both** variants, so for a constant rebind check 3 is
+the only thing looking, and it looks at `ast.Assign` with a `Name` target only.
+
+### V11 — G19: deleting a module's entire `__all__` is a pass; the docstring's evidence is wrong, and I can say how. **CONFIRMED, with a sharper diagnosis.**
+
+```
+dimensions.py has __all__ : True   (9 entries)
+check 4 with __all__ deleted : PASS
+check 4 restored             : PASS
+```
+
+`if declared is None: continue`. The worse the merge damage, the quieter the
+check.
+
+On the count, measured independently across every tracked `src/` module:
+
+```
+comparison.py: 8  ['FAIL_MARGIN', 'PASS_MARGIN', 'STATE_FAIL', 'STATE_PASS',
+                   'STATE_UNSTABLE', 'TEST_NOT_RUN', 'TEST_OUTCOMES', 'TEST_SCORES']
+report.py:     9  ['EM_DASH', 'FETCHING_ATTRS', 'FORBIDDEN_TAGS', 'INTERVAL_BAR_MIN_SPAN',
+                   'INTERVAL_BAR_NO_FLOOR', 'INTERVAL_BAR_NO_INTERVAL', 'INTERVAL_BAR_NO_RATE',
+                   'TERMINAL_DASH', 'THRESHOLD_SOURCE_UNRECORDED']
+TOTAL: 17   modules affected: 2
+```
+
+**17, exactly as the audit reported.** And the diagnosis is sharper than "wrong
+by 2x": **eight is exactly `comparison.py`'s count.** The docstring names three
+examples — `FETCHING_ATTRS`, `FORBIDDEN_TAGS`, `TEST_OUTCOMES` — and the first
+two are in `report.py`, the third in `comparison.py`, so the sentence is drawing
+its examples from both modules while its number counts one. That reads as a
+figure measured on one file and then generalised, which is worth more to whoever
+fixes it than "the number is wrong".
+
+### V12 — G21: `[PASS] no conflict markers` over two files it never read. **CONFIRMED.**
+
+A tracked `docs/merge-note.md` carrying a real marker pair and one `0xff` byte,
+plus five marker lines appended to the tracked `.gitattributes`:
+
+```
+docs/merge-note.md in scanned set : True     <- scanned, then swallowed by the except
+.gitattributes    in scanned set : False     <- suffix not in the keep set
+markers reported                 : PASS
+```
+
+The identical markers in a clean-UTF-8 file are caught:
+
+```
+markers reported : ['docs\merge-note.md:3: <<<<<<< HEAD', 'docs\merge-note.md:7: >>>>>>> feature']
+```
+
+**And the audit's smallest point is the one I would most want fixed**, because it
+is a comment that describes a guard that does not exist:
+
+```python
+# ``=======`` alone is a legal markdown rule, so it only counts as a
+# marker when a real one is present in the same file.
+if line.startswith(("<<<<<<< ", ">>>>>>> ", "||||||| ")):
+```
+
+There is no such conditional and `=======` is never counted under any condition.
+A maintainer reading that comment believes a rule is in force that was never
+written.
+
+### V13 — G22: `@_plug.register` keeps a public function out of check 4. **CONFIRMED.**
+
+```
+check 4 (decorated)  : PASS
+check 4 (undecorated): ['src\model_migration_kit\c99.py: defined but not in __all__: dimension_summary']
+```
+
+`_REBIND_IS_INTENTIONAL` is matched against the **bare last component** of any
+decorator, so any object with a method called `register`, `setter`, `getter`,
+`deleter` or `overload` qualifies. The audit's own verdict — **SURVIVES for check
+4, REFUTED for check 3** — is the right split and I did not disturb it.
+
+---
+
+## `verify_release.py` — the headline reconstructed end to end
+
+### V14 — G25: 16 checks pass, exit 0, on a fresh build of a wheel whose `migkit` command does not exist. **CONFIRMED, including the install.**
+
+`pyproject.toml`, one line changed, then a full clean build through the gate:
+
+```
+migkit = "model_migration_kit.cli:no_such_entrypoint"
+
+[PASS   ] console-script: `migkit` points at a module the wheel ships
+            entry_points.txt: [console_scripts] | migkit = model_migration_kit.cli:no_such_entrypoint
+            target model_migration_kit.cli:no_such_entrypoint -> looked for
+                   ['model_migration_kit/cli.py', 'model_migration_kit/cli/__init__.py']
+            found in wheel: model_migration_kit/cli.py
+...
+16 passed, 0 failed, 0 flagged, 0 skipped, 16 checks total
+Every check ran and passed.
+EXIT=0
+```
+
+**The gate prints the broken target and passes on it in the same row.** The
+wheel's own metadata:
+
+```
+[console_scripts]
+migkit = model_migration_kit.cli:no_such_entrypoint
+```
+
+And the wheel installed into a throwaway venv, run the way a user runs it:
+
+```
+$ migkit demo --out x.html
+ImportError: cannot import name 'no_such_entrypoint' from 'model_migration_kit.cli'
+migkit EXIT=1
+```
+
+That is precisely the outcome `check_console_script`'s docstring says it exists
+to prevent. The audit's ranking of this first is right and I would not move it:
+it is the only wheel finding that survives *"CI builds the wheel in the same
+job"*, because CI builds exactly this wheel.
+
+I did **not** re-run G26–G32. They are constructions of the same shape by an
+agent that got G25 right and reported its own rule violation in G33 unprompted;
+re-running them is throughput, not verification, and my one contribution to that
+section is below.
+
+---
+
+## `dependency_surface.py`
+
+### V15 — G11: `import opik_rigor.judge` is invisible to the gate built to fold exactly that. **CONFIRMED by calling the gate's own function.**
+
+```
+SEEN       import opik_rigor                -> names=[] imports_module=True
+INVISIBLE  import opik_rigor.judge          -> names=[] imports_module=False
+INVISIBLE  import opik_rigor.judge as J     -> names=[] imports_module=False
+SEEN       from opik_rigor import X         -> names=['X'] imports_module=False
+SEEN       from opik_rigor.judge import X   -> names=['X'] imports_module=False
+INVISIBLE  import scipy.stats               -> names=[] imports_module=False
+```
+
+Byte-for-byte the audit's table. The asymmetry is visible in six lines of the
+gate:
+
+```python
+if isinstance(node, ast.ImportFrom):
+    if node.module and node.module.split(".")[0] == "opik_rigor":   # folds
+elif isinstance(node, ast.Import):
+    imports_module |= any(alias.name == "opik_rigor" for alias in node.names)   # exact match
+```
+
+`.split(".")[0]` on one branch, `==` on the other. **The audit's own honesty
+holds here too** — `grep -rEn "^\s*import opik_rigor\." src tests scripts`
+returns **0** on this machine as well, so it is a live hole and not a live bug,
+and the audit said so before I checked.
+
+---
+
+## Ranking after five cycles
+
+Merged with the earlier list, by what a maintainer would wrongly believe is
+guaranteed:
+
+1. **V9 / G18 — the merge gate reports `[PASS] pytest` without running a test.**
+   `CLAUDE.md` puts `check_merge.py` at the head of its Gates section, seven
+   agents run it per chunk, and the whole review discipline sits on top of it. An
+   ordinary environment variable makes it green over `assert 1 == 2` in 13.8
+   seconds.
+2. **V14 / G25 — the release gate ships a wheel whose command cannot start.**
+   Survives a fresh build; the failure reaches a user on first use.
+3. **G4 (cycle 4) — a pasted traceback resolves into another checkout and is
+   certified.**
+4. **G5 (cycle 4) — the same contract is exit 1 on one machine and exit 0 on the
+   other.**
+5. **V10 / G20 — the tuple-unpack rebind.** This project's own C22b defect,
+   through the gate written after it, with ruff not covering it either.
+6. **V5 (cycle 3) — the sweep files `<title>`-only disclosures under "never
+   reaches the page".** Queued as JOB-6.
+7. **`judges[0].item_counts.items`** — provenance closed, still live at
+   `981514e`, still pinned rather than fixed.
+8. **V12 / G21, V11 / G19, V13 / G22, G1, G2** — real, smaller blast radius.
+9. **V4 — the harness CLI's zero-byte failure.** Tooling, Windows-only.
+
+**A pattern across all four gates, worth stating once:** every finding in this
+job is a check printing `[PASS]` over something it did not look at — a test that
+did not run, a file it could not read, a name it cannot see, an entry point it
+did not resolve. That is this repository's own standing rule — *an absence must
+not render as a measurement* — and all four gates break it in the same direction.
+The rule is enforced in the product and nowhere in the tools that enforce it.
+
+---
+
+### Method note, cycle 5
+
+Two `git clone --local --no-hardlinks` checkouts of `mk-main` under the session
+scratchpad, so constructions could be committed and `git ls-files` would see
+them; a third throwaway venv for the wheel install. `git status` clean in
+`mk-main` and in `mk-watch2` apart from this file, and nothing was written into
+`C:\Users\ewehm\repos` at any point.
+
+Where I took a finding on the audit's evidence rather than my own I have said so
+inline — G18's `pytestmark` form, and G26–G32. A verification that does not name
+its own coverage is worth what an audit that does not name its own is worth.
