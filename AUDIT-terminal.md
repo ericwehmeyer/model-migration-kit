@@ -777,3 +777,101 @@ rich substitutes box characters on a legacy Windows console — but it is also t
 > On the brief's own validation case: `judges[0].baseline.failures` is **not** a collision in
 > the terminal — it is *invisible*, because the terminal has no candidate table. The harness was
 > not blind: it caught the `underpowered` and `warnings: null` cases without being told to.
+
+---
+
+# Mutation testing: is `render_terminal` tested at all?
+
+The brief's premise — *"the HTML has had a blind pair, a 52-mutant review and your audit; the
+terminal has had none of it"* — is **true**, established with numbers and then proved by
+mutation in a detached worktree with byte-verified restores.
+
+## The census
+
+| | test fns | reach `render_terminal` | reach `render_html*` |
+|---|---:|---:|---:|
+| `test_report.py` | 271 | **3** | 89 |
+| `test_report_scale.py` | 23 | 1 | 19 |
+| `test_report_untrusted_input.py` | 36 | 5 | 4 |
+| the other 16 files | 1074 | **0** | 0 |
+| **total** | **1404** | **9** | **112** |
+
+One of the nine never renders (it only inspects a signature). **So 8 test functions in the
+entire repository call `render_terminal`, against 112 that render HTML — 1 : 14.** In
+`test_report.py`, the file the blind pair and the 52-mutant review ran against, it is
+**3 in 271**.
+
+**Three positive content assertions exist in the whole suite**: the verdict line, the substring
+`FAKE`, and one sentence. Nothing asserts a number, rate, interval, flag, count, hash,
+threshold, warning or disclosure, and there is no golden file for the terminal anywhere. Of the
+thirteen terminal-side helpers, **twelve have no test of their own** — the `_cell` and
+`_item_counts` hits in `tests/` are different local helpers of the same name.
+
+## 22 of 30 mutants survive a green 2206-test suite
+
+### The one that matters most: the FAKE MODELS band can be deleted and its own test still passes
+
+```python
+-    if provenance.banded:
++    if False and provenance.banded:
+M2-drop-fake-band: SURVIVED   (2206 passed)
+```
+
+The test asserts:
+
+```python
+assert "FAKE" in buffer.getvalue().upper()
+```
+
+and the render — **with the band deleted** — still contains:
+
+```
+│ adapter    │ FakeAdapter      │ FakeAdapter      │
+          judge: accuracy (fake-judge-v1)
+```
+
+`FakeAdapter` and `fake-judge-v1` both uppercase to contain `FAKE`. **The assertion has never
+tested the band.**
+
+The project owns exactly the right constant —
+`FAKE_BAND_MARKERS = ("FAKE MODELS", "scripted responses")`, whose comment reads *"Both halves
+are asserted so a band that dropped the explanation still fails"* — and I checked all four of
+its uses: **every one is `_parse(_html(...))`, HTML-side. The terminal was never wired to it.**
+
+This is the mechanism behind T3: you do not need `--quiet` to get a clean-looking report out of
+scripted models. A one-line regression does it, and CI stays green.
+
+### The central-rule mutants, all surviving
+
+| mutation | result | what the terminal then prints |
+|---|---|---|
+| `_cell` renders the absence marker as `0` | **SURVIVED** | `adapter │ 0 │ 0` where no adapter was recorded |
+| `_num` / `_pct` / `_interval`, terminal branch only | **SURVIVED** ×3 | `pass rate │ 0.0%`, `lower bound │ 0`, `interval │ [0.0000, 0.0000]` for a judge that measured nothing |
+| `_latency_cell` → `0.000` | **SURVIVED** | the exact row the HTML says it omits — and nothing can tell it from a real one |
+| `_flag`: "not recorded" → `no` | **SURVIVED** | `- / - / no` becomes `no / no / no` |
+| `_item_counts` invents `0 / 0 / 0`; swaps passing↔failing | **SURVIVED** ×2 | `0 / 0 / 0`, and `1 / 9 / 2` for `9 / 1 / 2` |
+| verdict **panel** always says `exit 0` | **SURVIVED** | `NO-GO  (exit 0)` at the top of the scrollback |
+| baseline/candidate columns swapped | **SURVIVED** | the one row saying which model is which, transposed |
+| verdict reason deleted; warnings loop skipped; Completeness strip deleted; facts table deleted; closing pointer deleted | **SURVIVED** ×5 | every attestation the terminal carries |
+| `_print_changes` prints only the first row | **SURVIVED** | `Flips: 2` above one row |
+
+### The borrowed-coverage experiment
+
+The unguarded shared-formatter mutants *were* killed — each by exactly one test,
+`test_zero_observed_completions_render_as_an_em_dash`, which does
+`_parse(_html(...))` and counts `—` (`EM_DASH`). The terminal uses `TERMINAL_DASH = "-"` and is
+never rendered by that test. **The kill is entirely HTML-side.** The control is the row above:
+the same three defects confined to the terminal branch all **survived**.
+
+> **So the terminal's coverage of this project's central design rule is borrowed in full.**
+> Delete the HTML renderer from the suite and the absence rule is untested for the terminal in
+> all six of its formatters.
+
+**Killed: 8 of 30** — and of those, six were killed by tests whose subject is something else
+(five control-character security tests that happen to need the table present, and three an
+HTML em-dash count). **Killed by an assertion whose subject is the terminal's content: two.**
+
+> **One mutant reported at reduced strength, deliberately.** `M23-failures-always-zero` survived,
+> but `RunSummary.failures` derives from the run artifact rather than the payload keys that were
+> patched, so no fixture demonstrated a changed row. **No claim is made that a reader would be
+> misled by it.**

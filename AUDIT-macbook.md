@@ -208,7 +208,7 @@ decision in front of them is a fabrication.
 
 ## 4. `<title>` shouts FAKE MODELS over two real production model ids
 
-> **WEAKENED — the plan already records it open.** R31.4: *"Recorded as open, with the note that `is_demo` is series-scoped and `provenance` is headline-scoped, so the two disclosures now have different reach and a reader cannot tell which one is speaking. That asymmetry is the thing to rule on."* That is this finding, named and deferred. I should have cited it.
+> **WEAKENED — and this note is itself now stale, corrected by the Windows operator.** I wrote that the plan records this open, citing R31.4. **`main` has since moved seventeen commits: R34 closed R31.4 and C18's fix merged, so that citation is no longer true.** But R34.3 *explicitly refuses to equalise the two scopes*, and `_warned_title` still keys on series-scoped `is_demo`, so **the title is a genuine unruled second site** — the finding is stronger than my note made it, not weaker. Original note, for the record: R31.4 said: *"Recorded as open, with the note that `is_demo` is series-scoped and `provenance` is headline-scoped, so the two disclosures now have different reach and a reader cannot tell which one is speaking. That asymmetry is the thing to rule on."* That is this finding, named and deferred. I should have cited it.
 
 > `FAKE MODELS — NO-GO — claude-sonnet-4-5-20250929 to claude-opus-4-5-20251101 — model-migration-kit`
 
@@ -569,7 +569,7 @@ must be masked. The first sweep did exactly that and came back empty.)*
 
 ## 17. An unrecorded gate floor is silently replaced by the configured one
 
-> **WEAKENED.** Reproduces (`floor 42.0%` for a gate that recorded nothing; `floor not recorded` when both are gone). But rigor writes `"min_rate": threshold` on **both** branches (distribution.py:794, 817) and `comparison.py:1229` hardcodes it at `n == 0`, so the trigger is unproducible — and the plan (~:432) explicitly *permits* the fallback.
+> **WEAKENED.** Reproduces (`floor 42.0%` for a gate that recorded nothing; `floor not recorded` when both are gone). But rigor writes `"min_rate": threshold` — **one unconditional write, not the two branches I cited; corrected by the Windows operator** — and `comparison.py:1229` hardcodes it at `n == 0`, so the trigger is unproducible — and the plan (~:432) explicitly *permits* the fallback.
 
 When the gate recorded no `min_rate` — key removed **or** null — the banner substitutes
 `thresholds.pass_rate_floor`. Proven by varying the config floor: the banner prints
@@ -672,7 +672,7 @@ rate" is the reader's only statement about the denominator.
 
 ## 21. And the mirror: a *recorded* zero rendered as an absence
 
-> **WEAKENED but worth keeping.** Byte-identical to key-removed, and unproducible (`runner.py:327-328` raises on `n < 1`). Kept because the plan (~:3898) calls this class *"the contract's own **Must not**"* and closed it **in series.py only** — `report.py:2519`'s `RunSummary` path was never covered, so this is a genuine second site.
+> **WEAKENED, and my line citation is stale.** The Windows operator reports `report.py:2519` no longer exists; the live sites are **`:1966` and `:2667`**, and C22b's own commit message says it left this family open — so the finding stands and is scheduled nowhere. Byte-identical to key-removed, and unproducible (`runner.py:327-328` raises on `n < 1`). Kept because the plan (~:3898) calls this class *"the contract's own **Must not**"* and closed it **in series.py only** — `report.py:2519`'s `RunSummary` path was never covered, so this is a genuine second site.
 
 `n_per_item: 0` recorded on a side renders as *"baseline run does not record how many
 completions were expected"* — a statement that is false about the payload, inside the
