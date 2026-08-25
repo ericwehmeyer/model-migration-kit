@@ -355,7 +355,20 @@ reader reading `0.8385 < 0.90` with "underpowered: no" concludes **rule 2** fire
 where rigor's record says **rule 3**'s condition holds (REVIEW). Rule 1 fires first, so the
 verdict stands and the reasoning does not.
 
-## 12. Five computed disclosure surfaces are wired to nothing
+## 12. Five computed disclosure surfaces are wired to nothing — ALREADY KNOWN, SCHEDULED AS C14c
+
+> **CORRECTION, and it demotes this finding.** I ranked this as a headline discovery. It is not
+> a discovery: this project already knows it, counted it the same way I did, and has scheduled
+> the fix. `e2b0614` ("R33: C14c's contract, and where the line's disclosures live"), committed
+> the day before this audit, states: *"Four fields are still computed and unread, **counted
+> inside the template rather than assumed**: spot_check, multiplicity, parameter_strip and
+> trend, all 0."* And `c04bf15` ("C14b: fifteen tests for four elements that render as nothing
+> today") says *"Six merged, reviewed, fully tested chunks are invisible to a reader, and every
+> one of them is a value sitting on `ReportModel` that no `{{ }}` reaches."* The plan schedules
+> it at line 5623-5624 and 5750. **Read this section as independent confirmation from a second
+> operator, not as a new defect.** What follows is still worth keeping because it measures the
+> *reader-facing consequence*, which the rulings record as a fix to schedule rather than as a
+> document that currently lies.
 
 ```
 $ .venv/bin/python -c "
@@ -417,7 +430,14 @@ wiring, which R21.5 names as the one shape of this defect nobody would find". Th
 is why nobody found it: a test that reads `model.trend.caveats` passes whether or not the
 template ever mentions `model.trend`.
 
-## 13. The chart draws incomparable runs as one rising series, with no candidate identity
+## 13. The chart draws incomparable runs as one rising series — ALSO ALREADY RULED ON (R33.2)
+
+> **CORRECTION.** R33.2 in `e2b0614` is the ruling on exactly this: *"Trend carries seven fields
+> and the timeline renders none of them -- it is model.series, every comparison in the log. So
+> R21.5's assumed-lineage caveat exists on every model and reaches no reader: 'assumed' appears
+> 0 times in the rendered document."* Known, ruled, scheduled. The one thing below that I have
+> not found stated anywhere in the plan is the **measured** consequence: on my ten-run fixture,
+> **3 of the 10 plotted markers are runs the same page's own exclusions section names.**
 
 `{% set timeline = model.series | timeline %}` — the chart is fed **every comparison in the
 log**, not `model.trend.points`. Fixture: two runs identical but for depth (`n_per_item=1`
@@ -801,8 +821,11 @@ Three counts, one run, nothing saying they are the same run — and the third as
 that does not exist, because undated points are dropped before `_floor_groups` runs. Separately,
 `Timeline` returns `runs_without_floor` / `runs_without_rate` and **not** `undated`, so the
 enumerating paragraph cannot count an undated run at all; the only mention is an SVG `<text>`
-inside `role="img"`, invisible to the accessible name — which reads `Candidate pass rate over
-4 run(s)` under a heading saying `5 comparison(s)`.
+inside `role="img"`, invisible to the accessible name.
+
+> **Withdrawn:** I originally added that the accessible name reads "over 4 run(s)" under a
+> heading saying "5 comparison(s)". A browser render could not reproduce it — across four
+> documents (1/1, 10/10, 201/201, 10/10) the two numbers agreed every time. Dropped.
 
 ## 41. Smaller, confirmed
 
@@ -1067,6 +1090,70 @@ in exactly those two sections. Findings 9 and 27 are both there. An auditor foll
 literally would skip them.
 
 ---
+
+---
+
+# Rendered in a browser — what a source-reading auditor cannot see
+
+Google Chrome 151.0.7922.174, `--headless=new`. Everything below was actually rasterised.
+
+## 44. A bidi override in the judge name flips a regression into a gain, with no visible corruption
+
+The prediction from static analysis was half right, and the half that failed is worth recording.
+
+With `U+202E` at the end of a **tag**, the summary displays as
+`▼ item-03 · #arithmetic5/0 <- 5/5 ycarucca ·` — reversal real, arrow mirrored — but
+`accuracy` → `ycarucca` makes it read as **garbage, not as a gain**. That form is loud.
+
+Move the same character one field over, into the **judge name**, and it is silent. One document,
+two sections, side by side:
+
+```
+Flips  — items that STOPPED working:   ▼ item-03 · accuracy5/0 <- 5/5
+Gains  — items that STARTED working:   ▶ item-11 · accuracy5/5 <- 5/0
+```
+
+**No visible corruption at all.** The two sections' margins display exactly backwards from each
+other. `report.py:3260` scrubs `[\x00-\x1f\x7f]` only — no `dir`, no `<bdi>`, no isolation
+anywhere — and the HTML path is exempt from even that.
+
+## 45. Two disclosures exist only on hover, and one only in colour
+
+* **The banner bar's `interval not recorded, floor not recorded` lives in `<svg><title>`** —
+  hover and screen-reader only. On screen it is a bare unlabelled tick; **in print it does not
+  exist.** A direct hit on this project's central rule: the absence marker is invisible to the
+  audience reading the page.
+* **The verdict is hue-only.** GO vs REVIEW is a **1.148:1** contrast ratio; a greyscale render
+  shows nine identical grey squares, and there is no legend anywhere.
+* **"A cell is shaded where the sample cannot support a verdict" is 1.0719:1** — sampled
+  `#f6f7f9` against `#ffffff`. The sentence is written as a discriminator; at that ratio it
+  discriminates nothing on screen. (Needed a custom mixed fixture to measure: the demo is 8
+  refused / 0 plain, the multi-candidate log 0 / 43.)
+* **Under user-forced dark mode** the rate line inverts to `#fbffff` while its interval box stays
+  `#cfd4da`: 11.83:1 collapses to **1.48:1**.
+
+## 46. Print drops the gains evidence, and the page scrolls sideways on a phone
+
+* **11 pages default vs 12 with `<details>` forced open.** The PDF's entire Gains section is one
+  collapsed line while all three flips print in full — so a report printed for a decision meeting
+  silently omits the improvements, in a document whose own prose says gains are "shown because
+  their absence would make this report an argument rather than a measurement".
+* **No `overflow-wrap`.** One hostile token takes the page to `docScrollW=2646` at
+  `clientW=1280`, and **the shipped demo already scrolls sideways at a phone width** (755 vs 500,
+  36 elements).
+* **No `<h1>` in either document**, and `h2 → h4` twice.
+
+## 47. The chart's collisions are worse rasterised than predicted, and uncounted
+
+201 comparisons render at **2 distinct x coordinates** — worse than the 0.003px spacing predicted
+from the SVG source. Ten runs sharing one timestamp render as **ten evenly-spaced markers that
+look like a ten-week trend**, while the visible caption asserts in bold *"The axis is time, not
+run number"*; the correction is tooltip-only. The "gaps are counted rather than hidden" list does
+not cover collisions at all.
+
+**Checked clean on screen:** focus indicators (no `:focus` rule, so the UA default survives —
+rendered proof captured), tab order, and the nine-markers-under-"10 comparison(s)" case, which
+*is* correctly disclosed in visible prose.
 
 ---
 
