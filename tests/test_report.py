@@ -12315,3 +12315,1024 @@ def test_a_document_carrying_every_new_section_is_still_self_contained(
             f"one of this chunk's sections"
         )
     assert "@font-face" not in html, "a web font reached the document"
+
+
+# --------------------------------------------------------------------------- #
+# 25. C14c -- the last four unread fields. R33, and where R33 corrects C14.
+#
+# Counted inside `_TEMPLATE + _CHANGES_MACRO` on the commit this file was branched
+# from: `spot_check` 0, `multiplicity` 0, `parameter_strip` 0, `trend` 0. Four
+# fields computed on every report, reviewed, fully tested, and read by nobody --
+# most conspicuously R21.5's assumed-lineage caveat, which exists on every model
+# this project can build and whose sentence appears **0** times in the rendered
+# document. Measured here, not assumed: `_the_assumed_note_is_missing_today` is
+# not a test, but `test_the_assumed_lineage_note_reaches_a_reader_on_a_one_run_report`
+# is the same reading turned into a red one.
+#
+# Written blind against R33 and against the *producers'* docstrings in
+# `series.py`, which are merged, reviewed and not this chunk. `_TEMPLATE`'s new
+# content was not read.
+#
+# Where R33 and C14's table differ, R33 wins and says why. Two gates move:
+#
+# * the multiplicity note is gated on `model.multiplicity`, not on "candidate
+#   table present" -- R30.4 makes those the same gate, and a note gated on a
+#   different field is a note that can outlive its subject;
+# * the parameter strip is gated on `model.trend.points`, **not** on
+#   `len(model.series) >= 2`. `_no_line_model` is the fixture that separates
+#   them: two runs in `series`, no line, and an empty strip. Gated on `series`
+#   that is a heading over nothing.
+#
+# One finding, reported rather than worked around: **`Trend.absent_models` cannot
+# be reached through `ReportModel.from_evidence` at all.** R30.1 makes the lineage
+# `CandidateLineage.assumed_from` unconditionally, `assumed_from` assembles the ids
+# *out of the log's own points*, and `absent_models` is the declared ids with no
+# run in the log -- so it is empty by construction on every model this entry point
+# can build. The sixth disclosure therefore reaches its test through a lineage
+# **the producer itself** built (`CandidateLineage.declared`, one id mistyped --
+# R24.1's own scenario), substituted onto the model with `dataclasses.replace`.
+# Nothing about that Trend is hand-written; it is `series.trend`'s own return.
+# --------------------------------------------------------------------------- #
+
+
+#: A sentence no arithmetic on this model produces, carrying markup that must
+#: arrive escaped. C14b's `NOTE_MARK` reached the cell notes this way and it is
+#: the highest-value technique in this file: a renderer that composes its own
+#: prose from the same numbers is *identical* on an honest fixture and goes stale
+#: the moment either number moves. R21.5 refused that shape for the lineage
+#: caveat, R26.4 refused it again for the spot check's sentence, and R23.2
+#: refused it a third time for an exclusion's -- so all four producers get one.
+PROSE_MARK = 'PROSE-MARK[{where}] <img src="https://tracker.example/{where}.png"> & so on.'
+
+#: The point-less caveat's marker for the one test that needs to find it in the
+#: *markup* rather than in the visible text, so it carries no `<` and no `&`:
+#: those are escaped on the way out and the raw string would not be there to
+#: locate. Deliberately not a word this document could produce by accident.
+LINE_CAVEAT_MARK = "LINE-CAVEAT-MARK-9F3C"
+
+#: A declared candidate id with no run anywhere in the log -- R24.1's
+#: one-character typo, which is the only way `Trend.absent_models` is non-empty.
+#: Sorts nowhere near the others so a row printed under the wrong heading is
+#: legible.
+PHANTOM_MODEL = "model-typo-20260101"
+
+#: The unnamed run: on this baseline, `candidate_model` unrecorded, so
+#: `assumed_from` refuses it (C4's rule that an absence never matches) and it
+#: comes back in `Trend.outside_lineage` rather than in `excluded`. R24.1 is
+#: exactly the difference between those two tuples.
+UNNAMED_RUN_CREATED = "2026-08-11T12:00:00.000000+00:00"
+
+#: The incomparable run: three draws an item against the group's five, so
+#: `partition_comparable` refuses it and it carries its own sentence out through
+#: `Trend.excluded`. Dated *after* the anchor on purpose -- `_anchor` takes the
+#: earliest identifying point, so an earlier off-key run would anchor the line
+#: and exclude everything else instead.
+OFF_KEY_CREATED = "2026-08-12T12:00:00.000000+00:00"
+
+#: The undated run: comparable, kept, and on no axis. Written into both clocks --
+#: `series._created` falls back to the envelope `ts`, so a payload-only edit
+#: leaves the point perfectly dated by the envelope and `Trend.undated` at zero.
+UNDATED_CREATED = "the fourteenth"
+
+#: The config hash of the run before the one that moved. Distinct from
+#: `CONFIG_HASH` in every character, so the strip's `before` and `after` cells are
+#: two strings a reader can tell apart at the 16 characters that are printed.
+MOVED_CONFIG_HASH = "d" * 64
+
+#: `Trend`'s six disclosure fields and what each looks like carrying nothing.
+#: Every one has a named defect behind it: R24.1 is `outside_lineage` -- a
+#: fourteen-night log rendering as a clean thirteen-night line stating that
+#: nothing moved, with night 14 mentioned nowhere on the page.
+LINE_DISCLOSURES: tuple[tuple[str, Any], ...] = (
+    ("caveats", ()),
+    ("excluded", ()),
+    ("undated", 0),
+    ("outside_lineage", ()),
+    ("absent_models", ()),
+    ("successions", ()),
+)
+
+
+# -- fixtures ---------------------------------------------------------------- #
+
+
+def _uneven_judged(payload: dict[str, Any]) -> dict[str, Any]:
+    """The same run with its two sides graded different numbers of times.
+
+    `series._uneven_coverage`'s case, and the only way a *kept* point earns a
+    `Caveat` on a log this file can write: the alternative is the A/A run, whose
+    two sides are the same model, and that would also collapse the candidate
+    field this fixture needs three rows of.
+    """
+    judge = payload["judges"][0]
+    judge["candidate"]["n"] = judge["candidate"]["n"] - 3
+    return payload
+
+
+def _off_key(payload: dict[str, Any]) -> dict[str, Any]:
+    """The same run at a depth the group did not draw at."""
+    payload["n_per_item"] = 3
+    return payload
+
+
+def _undated(payload: dict[str, Any]) -> dict[str, Any]:
+    """The same run with a `created` no parser can place."""
+    payload["created"] = UNDATED_CREATED
+    return payload
+
+
+def _disclosing_log(scenario: Scenario, name: str = "evidence-c14c.jsonl") -> Path:
+    """One log on which five of `Trend`'s six disclosures are non-empty at once.
+
+    `_family_log`'s three candidates -- `Multiplicity.changed`'s own worked
+    example at `[0.03, 0.04, 0.045]` against `alpha=0.05`, where Holm rejects
+    none of the three and the note therefore has something to say -- with three
+    more runs in front of them, each of which lands in a different field:
+
+    0. ``SIBLING_MODEL`` at `SIBLING_CREATED_NARROW`: the line's anchor;
+    1. ``FAMILY_THIRD_MODEL`` at `THIRD_CREATED`, graded unevenly: on the line,
+       and carrying a `Caveat` **with** a point;
+    2. a run with no ``candidate_model`` at all: `Trend.outside_lineage`;
+    3. ``SIBLING_MODEL`` at three draws an item: `Trend.excluded`;
+    4. ``SIBLING_MODEL`` with an unplaceable ``created``: `Trend.undated`;
+    5. the headline run, ``CANDIDATE_MODEL``: the line's newest point.
+
+    So the line runs sibling -> third -> candidate, which is **two successions**,
+    and the fixture is a monoculture in none of the six pairs R20.1 is about: a
+    renderer that prints `excluded` under `outside_lineage`'s heading, or the
+    caveats twice, is a wrong *page* here rather than the right one by
+    coincidence. `absent_models` is the sixth and is unreachable from here; see
+    `_all_six_model`.
+    """
+    records = [
+        _record(
+            EVENT_COMPARISON,
+            _priced_sibling(
+                scenario,
+                candidate_model=SIBLING_MODEL,
+                created=SIBLING_CREATED_NARROW,
+                p_value=FAMILY_P_VALUES[SIBLING_MODEL],
+            ),
+            EARLIER_TS_COMPARISON,
+        ),
+        _record(
+            EVENT_COMPARISON,
+            _uneven_judged(
+                _priced_sibling(
+                    scenario,
+                    candidate_model=FAMILY_THIRD_MODEL,
+                    created=THIRD_CREATED,
+                    p_value=FAMILY_P_VALUES[FAMILY_THIRD_MODEL],
+                )
+            ),
+            EARLIER_TS_COMPARISON,
+        ),
+        _record(
+            EVENT_COMPARISON,
+            _sibling_comparison(scenario, candidate_model="", created=UNNAMED_RUN_CREATED),
+            EARLIER_TS_COMPARISON,
+        ),
+        _record(
+            EVENT_COMPARISON,
+            _off_key(
+                _sibling_comparison(
+                    scenario, candidate_model=SIBLING_MODEL, created=OFF_KEY_CREATED
+                )
+            ),
+            EARLIER_TS_COMPARISON,
+        ),
+        _record(
+            EVENT_COMPARISON,
+            _undated(
+                _sibling_comparison(
+                    scenario, candidate_model=SIBLING_MODEL, created=UNDATED_CREATED
+                )
+            ),
+            UNDATED_CREATED,
+        ),
+        _record(EVENT_COMPARISON, scenario.comparison, TS_COMPARISON),
+    ]
+    if scenario.verdict is not None:
+        records.append(_record(EVENT_VERDICT, scenario.verdict, TS_VERDICT))
+    return _write_evidence(scenario.root / name, records)
+
+
+def _disclosing_model(root: Path) -> Any:
+    """The model that log builds, with every expectation these tests rest on.
+
+    Asserted here rather than in each test, for `_every_element_model`'s reason: a
+    fixture that quietly stopped producing three candidates, or an empty
+    `Trend.excluded`, would turn a dozen assertions below into assertions about
+    nothing and they would all keep passing.
+    """
+    scenario = _family_scenario(root)
+    model = _model_from(_disclosing_log(scenario))
+    line = _trend_of(model)
+
+    assert [one.candidate_model for one in line.points] == [
+        SIBLING_MODEL,
+        FAMILY_THIRD_MODEL,
+        CANDIDATE_MODEL,
+    ], (
+        f"the line is {[one.candidate_model for one in line.points]}; this fixture "
+        f"is built for three runs of one lineage, ascending, so that the successions "
+        f"and the strip's last two points are known answers"
+    )
+    for field, empty in LINE_DISCLOSURES:
+        if field == "absent_models":
+            continue
+        assert getattr(line, field) != empty, (
+            f"`Trend.{field}` is empty on the fixture built to make all six "
+            f"disclosures non-empty at once; every assertion about it below would "
+            f"be satisfied by a renderer that never mentions it"
+        )
+    assert [one.point is None for one in line.caveats] == [True, False], (
+        f"the caveats are {[one.point is None for one in line.caveats]}; this "
+        f"fixture needs R21.5's point-less note **and** a note about a run, because "
+        f"a suite that only ever sees one of the two cannot tell a renderer that "
+        f"asks `if caveat.point` from one that indexes it"
+    )
+    assert _spot_check(model) is not None, (
+        "the headline run's counts cannot support a spot check, so the "
+        "`counterfactual` element would be absent and every assertion about it "
+        "vacuous"
+    )
+    record = _multiplicity_of(model)
+    assert record is not None and record.applied and len(record.changed) == 3, (
+        f"the multiplicity is {record}; `Multiplicity.changed`'s worked example "
+        f"needs three candidates under one alpha, none of them rejected, or the "
+        f"note has nothing to say and a renderer that drops it is invisible"
+    )
+    return model
+
+
+def _all_six_model(root: Path) -> Any:
+    """`_disclosing_model` with a lineage the operator declared one id wrong.
+
+    The sixth disclosure, and the only route to it. `absent_models` is
+    unreachable through `ReportModel.from_evidence` -- see this section's header
+    -- so the `Trend` here is built by **the producer**, from the model's own
+    series, against `CandidateLineage.declared` naming every id `assumed_from`
+    found plus one that never ran. That is R24.1's scenario exactly, and it is the
+    one shape in which all six of `Trend`'s disclosure fields are non-empty at the
+    same time.
+
+    `points` is unchanged by the substitution -- the declared ids are a superset
+    of the assumed ones -- so `parameter_strip` stays the strip of *these* points
+    and the model does not become internally inconsistent to make a test pass.
+    """
+    from model_migration_kit.series import CandidateLineage
+    from model_migration_kit.series import trend as _line_producer
+
+    model = _disclosing_model(root)
+    series = _series(model)
+    baseline_model = _get(_get(model, "baseline"), "model_id")
+    assumed = CandidateLineage.assumed_from(series, baseline_model=baseline_model)
+    declared = _line_producer(
+        series,
+        baseline_model=baseline_model,
+        lineage=CandidateLineage.declared((*assumed.models, PHANTOM_MODEL)),
+    )
+
+    assert declared.points == _trend_of(model).points, (
+        "declaring the assumed ids plus one that never ran changed which runs are "
+        "on the line; the substituted model would then carry a strip built from "
+        "points its own trend does not hold"
+    )
+    for field, empty in LINE_DISCLOSURES:
+        assert getattr(declared, field) != empty, (
+            f"`Trend.{field}` is empty on the one fixture whose whole job is to "
+            f"carry all six at once"
+        )
+    assert declared.absent_models == (PHANTOM_MODEL,), (
+        f"the declared id that never ran is reported as {declared.absent_models}; "
+        f"R24.1 puts it in `absent_models` and nowhere else"
+    )
+    return dataclasses.replace(model, trend=declared)
+
+
+def _no_line_model(root: Path) -> Any:
+    """Two runs in the log, no line, and therefore no strip -- R33.1's gate.
+
+    Both runs record no ``candidate_model``, so `CandidateLineage.assumed_from`
+    refuses both (``""`` is an absence and an absence never matches, not even
+    another one), the assumed lineage is empty, `trend` returns through its early
+    exit and `parameter_strip` is ``()``.
+
+    **This is the fixture C14's gate and R33.1's gate disagree on**, and the only
+    kind that can be: on every log where the line is the whole log
+    ``len(series) >= 2`` and ``trend.points`` are the same answer. Here they are
+    ``True`` and empty, and a strip gated on the log renders a heading over
+    nothing.
+
+    The spot check survives -- the headline run's item counts are the counted
+    scenario's -- so this fixture also pairs `counterfactual` (present) against
+    `multiplicity` (absent, because there is no candidate field): a renderer that
+    hung the spot check off the candidate table is a missing section here.
+    """
+    scenario = _counted_scenario(root)
+    payload = json.loads(json.dumps(scenario.comparison))
+    payload["candidate"]["model_id"] = ""
+    records = [
+        _record(
+            EVENT_COMPARISON,
+            _sibling_comparison(scenario, candidate_model="", created=SIBLING_CREATED_NARROW),
+            EARLIER_TS_COMPARISON,
+        ),
+        _record(EVENT_COMPARISON, payload, TS_COMPARISON),
+    ]
+    if scenario.verdict is not None:
+        records.append(_record(EVENT_VERDICT, scenario.verdict, TS_VERDICT))
+    model = _model_from(_write_evidence(scenario.root / "evidence-c14c-noline.jsonl", records))
+
+    assert len(_series(model)) >= 2, (
+        f"this log yields {len(_series(model))} run(s); the gate C14 wrote and the "
+        f"gate R33.1 corrects it to are only distinguishable at two or more"
+    )
+    assert _trend_of(model).points == (), (
+        "the line is not empty, so this fixture cannot separate a strip gated on "
+        "`trend.points` from one gated on `len(series) >= 2`"
+    )
+    assert _strip_of(model) == (), (
+        "the strip is not empty over an empty line, which `ReportModel."
+        "parameter_strip` documents as impossible; the fixture is wrong"
+    )
+    assert _candidates(model) is None and _multiplicity_of(model) is None
+    assert _spot_check(model) is not None
+    return model
+
+
+def _one_row_moved_model(root: Path) -> Any:
+    """A line of two runs on which **exactly one** tracked parameter moved.
+
+    Two readings of the same run a day apart, differing in ``config_hash`` and in
+    nothing else the strip tracks -- and ``config_hash`` is the only tracked field
+    that is not part of the comparability key, so it is the only one that can move
+    without the second run leaving the line altogether.
+
+    That is the whole claim the strip exists to make, in
+    `series.parameter_strip`'s own words: "when one row moved and everything else
+    held, the drop beneath it is *attributable* rather than merely observed". **A
+    strip where everything moved cannot show it**, and neither can a strip that
+    renders only the rows that changed -- the absence of a row is
+    indistinguishable from the absence of a record, and the reader supplies the
+    more flattering reading.
+
+    Both runs name the same candidate, so no candidate field can be tabled and
+    `multiplicity` is ``None``: a second pairing, in which the strip must render
+    while the two elements C14's table puts nearest it must not.
+    """
+    scenario = _counted_scenario(root)
+    before = json.loads(json.dumps(scenario.comparison))
+    before["created"] = SIBLING_CREATED_NARROW
+    before["config_hash"] = MOVED_CONFIG_HASH
+    records = [
+        _record(EVENT_COMPARISON, before, EARLIER_TS_COMPARISON),
+        _record(EVENT_COMPARISON, scenario.comparison, TS_COMPARISON),
+    ]
+    if scenario.verdict is not None:
+        records.append(_record(EVENT_VERDICT, scenario.verdict, TS_VERDICT))
+    model = _model_from(_write_evidence(scenario.root / "evidence-c14c-moved.jsonl", records))
+
+    strip = _strip_of(model)
+    moved = [one.name for one in strip if one.changed]
+    assert moved == ["config"], (
+        f"{moved} moved between these two runs; this fixture is built so that "
+        f"exactly one row changed and the other five held, which is the only shape "
+        f"in which a strip that prints only its changes is visibly wrong"
+    )
+    assert len(strip) == 6, (
+        f"the strip has {len(strip)} row(s); `parameter_strip` emits one per tracked "
+        f"parameter including the ones that held"
+    )
+    assert _candidates(model) is None, (
+        "both runs name one candidate, so there is no field to table; a field here "
+        "would mean the fixture stopped separating the strip from the table"
+    )
+    return model
+
+
+def _demo_shape_model(root: Path) -> Any:
+    """The bundled demo's shape: one run, no candidate field, no spot check.
+
+    Twelve items at ``k = 12`` is a census and `spot_check` correctly declines it,
+    so `counterfactual` and -- because there is no candidate field -- `multiplicity`
+    are both absent. `parameters` is **not**: the line is one point long, which is
+    a line, and `ReportModel.parameter_strip` is six rows of `NO_PREVIOUS_RUN`.
+    See `test_the_demo_shape_stands_no_heading_over_a_field_it_does_not_carry`.
+    """
+    model = _from_evidence(_scenario(root))
+    assert _spot_check(model) is None and _candidates(model) is None, (
+        "the demo shape is the one where these are `None`; if a spot check or a "
+        "candidate field is built here the empty states below are not being tested"
+    )
+    assert _multiplicity_of(model) is None
+    assert len(_trend_of(model).points) == 1 and len(_strip_of(model)) == 6
+    return model
+
+
+# -- readings ---------------------------------------------------------------- #
+
+
+def _marked_prose(model: Any) -> tuple[Any, dict[str, str]]:
+    """The model with all four producers' sentences replaced by markers.
+
+    `SpotCheck.sentence`, `Multiplicity.note`, every `Exclusion.reason` and every
+    `Caveat.reason` the line carries. Each record is frozen, so this is
+    `dataclasses.replace` through a `NamedTuple`'s `_replace` and nothing about
+    the model's shape changes; every number stays exactly where it was.
+    """
+    marks: dict[str, str] = {}
+
+    def mark(where: str) -> str:
+        marks[where] = PROSE_MARK.format(where=where)
+        return marks[where]
+
+    line = _trend_of(model)
+    assert hasattr(line, "_replace"), (
+        f"`Trend` is {type(line).__name__}; its own docstring declares a NamedTuple, "
+        f"appended to last so prefix unpacking keeps reading"
+    )
+    swapped = dataclasses.replace(
+        model,
+        spot_check=dataclasses.replace(_spot_check(model), sentence=mark("spot-check")),
+        multiplicity=dataclasses.replace(_multiplicity_of(model), note=mark("multiplicity")),
+        trend=line._replace(
+            excluded=tuple(
+                dataclasses.replace(one, reason=mark(f"exclusion-{index}"))
+                for index, one in enumerate(line.excluded)
+            ),
+            caveats=tuple(
+                dataclasses.replace(one, reason=mark(f"caveat-{index}"))
+                for index, one in enumerate(line.caveats)
+            ),
+        ),
+    )
+    return swapped, marks
+
+
+def _rendered_or_red(model: Any, what: str) -> str:
+    """The document, or an assertion naming the section that could not be built.
+
+    The spec's named failure for every one of these elements is "an empty chart or
+    a crash", and a crash out of a mutated fixture is otherwise reported as an
+    error with a traceback into `jinja2` and no statement of what was being asked.
+    """
+    try:
+        return _html(model)
+    except Exception as exc:  # noqa: BLE001 - the failure *is* the finding
+        raise AssertionError(
+            f"rendering {what} raised {type(exc).__name__}: {exc}. Every field in "
+            f"this chunk is optional on some real log, and a template that indexes "
+            f"one instead of asking crashes on the report that needed it most"
+        ) from exc
+
+
+def _row_around(html: str, needle: str) -> str | None:
+    """The text of the innermost ``tr`` or ``li`` holding ``needle``, or ``None``.
+
+    ``None`` means the string is not in a row of anything -- which is where a note
+    about the *line* belongs, per `Caveat`'s own docstring: "print a ``point``-less
+    note where the line is described rather than where a night is". Nothing about
+    the enclosing element is otherwise asserted; the contract fixes the element's
+    ``id`` and fixes nothing about its markup.
+    """
+    position = html.find(needle)
+    assert position != -1, f"{needle!r} is not in the document"
+    holding = []
+    for tag in ("tr", "li"):
+        start = html.rfind(f"<{tag}", 0, position)
+        end = html.find(f"</{tag}>", position)
+        # The element holds the needle only if its own close comes after it; a
+        # sibling row that ended earlier is not an enclosure.
+        if start != -1 and end != -1 and html.find(f"</{tag}>", start) >= position:
+            holding.append((start, end + len(tag) + 3))
+    if not holding:
+        return None
+    start, end = max(holding)  # innermost: the one that opened last
+    return _squeeze(_visible(html[start:end]))
+
+
+# -- the three anchors, and their order --------------------------------------- #
+
+
+def test_the_last_three_elements_carry_the_anchors_r33_names(tmp_path: Path) -> None:
+    """R33.1's table, as three ``id``s on one document.
+
+    The reason the chunk exists: `spot_check`, `multiplicity` and
+    `parameter_strip` are computed on every report and named nowhere in the
+    template. An anchor is the cheapest possible statement that a section reached
+    the page, and R33.1 fixes all three by name -- `counterfactual` and not
+    `spot_check`, because "a link that changes its target is a link somebody
+    else's document has already got wrong".
+    """
+    model = _disclosing_model(tmp_path / "anchors")
+    ids = _parse(_rendered_or_red(model, "the fixture carrying all three")).ids
+
+    for anchor, what, value in (
+        ("counterfactual", "the spot-check sentence", _spot_check(model)),
+        ("multiplicity", "the multiplicity note", _multiplicity_of(model)),
+        ("parameters", "the parameter strip", _strip_of(model)),
+    ):
+        assert value, f"the fixture carries no {what}, so this assertion is vacuous"
+        assert anchor in ids, (
+            f"{what} does not render: this model carries the data for it and the "
+            f"document's ids are {ids}. R33.1 gives it id={anchor!r}"
+        )
+
+
+def test_the_three_new_elements_keep_the_relative_order_c14s_table_gives_them(
+    tmp_path: Path,
+) -> None:
+    """The spot check, then the multiplicity note, then the strip.
+
+    R33.3 rules what C14b correctly declined to decide: **the shipped order is
+    authoritative for elements already placed, and C14's table governs only the
+    elements not yet placed and their order relative to one another.** These three
+    are the elements not yet placed, so what is asserted is their order among
+    themselves and nothing about where they sit relative to `candidates`,
+    `excluded` or `timeline` -- asserting that would fail a merged, reviewed
+    document for a decision this chunk did not make.
+    """
+    model = _disclosing_model(tmp_path / "order")
+    ids = _parse(_rendered_or_red(model, "the fixture carrying all three")).ids
+    wanted = ("counterfactual", "multiplicity", "parameters")
+    ordered = [one for one in ids if one in wanted]
+
+    assert ordered == list(wanted), (
+        f"the three elements this chunk places render in the order {ordered}; C14's "
+        f"table lists the spot-check sentence, then the multiplicity note, then the "
+        f"parameter strip, and R33.3 leaves their order relative to one another the "
+        f"one thing the table still governs"
+    )
+
+
+# -- the producers' prose ----------------------------------------------------- #
+
+
+def test_the_four_producers_sentences_reach_the_page_unrewritten(tmp_path: Path) -> None:
+    """The highest-value test here: every sentence is the producer's, byte for byte.
+
+    `SpotCheck.sentence`, `Multiplicity.note`, `Exclusion.reason` and
+    `Caveat.reason` are each written where their numbers are computed, and each
+    was put there by a ruling: R26.4 for the spot check ("the caller supplies
+    facts and this producer supplies the words"), R21.5 for the lineage caveat
+    ("plumbing that quietly patches a producer's honesty is the one shape of this
+    defect nobody would find"), R23.2 for an exclusion's reason ("3 runs excluded"
+    is the count without the reason), and `Multiplicity.note`'s own docstring for
+    the fourth ("a sentence assembled where the numbers are not is a sentence that
+    goes stale against them").
+
+    A renderer that composes its own from the same record looks **identical** on
+    every honest fixture in this file -- the sentences are derived from those very
+    numbers -- and silently drops every distinction the producer drew. So each
+    sentence is replaced by a string no arithmetic on this model can produce, and
+    the page must carry every one.
+
+    The markers also carry an ``<img src>``: all four are model-adjacent text and
+    a ``| safe`` on any of these paths turns an escaped tag in a log into a real
+    fetch, so `external_urls` is asserted in the same breath.
+    """
+    model, marks = _marked_prose(_disclosing_model(tmp_path / "prose"))
+    assert len(marks) == 5, (
+        f"this fixture marks {sorted(marks)}; it is built for five sentences -- the "
+        f"spot check, the multiplicity note, one exclusion and two caveats"
+    )
+
+    html = _rendered_or_red(model, "the fixture with every producer's prose marked")
+    text = _squeeze(_visible(html))
+    for where, mark in sorted(marks.items()):
+        assert _squeeze(mark) in text, (
+            f"the {where} sentence its producer wrote is not on the page:\n  {mark!r}\n"
+            f"Every sentence in this fixture was replaced with a string the record's "
+            f"own numbers cannot produce, so a sentence composed at render time "
+            f"cannot satisfy this"
+        )
+    assert _urls(html) == (), (
+        f"a producer's sentence reached the document unescaped: {_urls(html)}. These "
+        f"are model-adjacent text and the only expressions this document may mark "
+        f"safe are the two hand-rolled SVGs"
+    )
+
+
+def test_the_lines_disclosures_render_inside_the_timeline_section(tmp_path: Path) -> None:
+    """R33.2: a lineage block **inside the existing ``timeline`` section**.
+
+    Not a new top-level section, and the chart is not re-pointed at
+    `Trend.points`: its heading already says "in this log" and a chart that draws
+    the log under that heading is honest, while re-pointing it would silently drop
+    every run the lineage does not name -- R24.1's defect rebuilt on the rendering
+    side.
+
+    Asserted through the markers rather than through wording, so this is a claim
+    about *where* the line's own sentences are and not about how they are phrased.
+    """
+    model, marks = _marked_prose(_disclosing_model(tmp_path / "placement"))
+    html = _rendered_or_red(model, "the fixture with every producer's prose marked")
+    section = _anchor_text(html, "timeline")
+
+    page = _squeeze(_visible(html))
+    for where in sorted(one for one in marks if one.startswith(("exclusion", "caveat"))):
+        mark = _squeeze(marks[where])
+        assert mark in section, (
+            f"the {where} sentence is not in the `timeline` section; it is "
+            f"{'elsewhere in the document' if mark in page else 'nowhere in the document'}. "
+            f"R33.2 rules the lineage block sits below the chart, inside the section "
+            f"that already exists, because that is where `ReportModel."
+            f"parameter_strip`'s docstring already sited these fields in merged code"
+        )
+
+
+def test_every_field_the_line_discloses_changes_the_page_when_it_is_emptied(
+    tmp_path: Path,
+) -> None:
+    """All six of `Trend`'s disclosure fields, one mutation each.
+
+    The presence of a sentence proves a field is read; nothing proves the *other*
+    five are, because a renderer that walks `caveats` and ignores `undated` looks
+    identical to one that reads both until the day a run cannot be dated. So each
+    field is emptied in turn on a model carrying all six, and the rendered text
+    must change. A field whose emptying changes nothing is a field no reader sees.
+
+    Each one has a named defect behind it, and `outside_lineage` is R24.1 itself:
+    a fourteen-night log rendering as a clean thirteen-night line stating that
+    nothing moved, with night 14 mentioned nowhere on the page.
+    """
+    model = _all_six_model(tmp_path / "six")
+    line = _trend_of(model)
+    full = _squeeze(_visible(_rendered_or_red(model, "the fixture carrying all six")))
+
+    for field, empty in LINE_DISCLOSURES:
+        assert getattr(line, field) != empty, f"`Trend.{field}` is already empty"
+        without = _squeeze(
+            _visible(
+                _rendered_or_red(
+                    dataclasses.replace(model, trend=line._replace(**{field: empty})),
+                    f"the same model with `Trend.{field}` emptied",
+                )
+            )
+        )
+        assert without != full, (
+            f"emptying `Trend.{field}` does not change one character of the "
+            f"document, so nothing the reader is shown comes from it. R33.2's table "
+            f"gives every one of the six a sentence it owes and a failure it "
+            f"prevents; this one reaches nobody"
+        )
+
+
+# -- the point-less caveat ---------------------------------------------------- #
+
+
+def test_the_point_less_caveat_reaches_the_page_and_is_not_a_night(tmp_path: Path) -> None:
+    """R21.5's note: on the page, once, and not against a run.
+
+    `Caveat.point` is ``RunPoint | None`` and the assumed-lineage note is the one
+    entry with no point -- it qualifies the chart, not a night. Two failures to
+    separate, and only one of them is loud:
+
+    * a renderer that indexes `caveat.point` raises, which `StrictUndefined`
+      makes unmissable and which is a perfectly good outcome for a test suite;
+    * a renderer that **filters point-less caveats out** drops R21.5's whole
+      disclosure in silence -- and that is today's behaviour one layer over
+      (R30.5 documents the live filter), so it is the implementation this test
+      exists to refuse.
+
+    So the note must be on the page, exactly once -- printed against every run
+    would be the same absence rendered as a measurement, three times -- and where
+    it lands in a row of anything, that row must not name a night. A note in
+    prose satisfies this trivially, which is the point: `Caveat`'s docstring asks
+    for it "where the line is described rather than where a night is".
+    """
+    model = _disclosing_model(tmp_path / "pointless")
+    line = _trend_of(model)
+    assert line.caveats[0].point is None, (
+        "the first caveat carries a point; R21.5's note goes first and is the one "
+        "entry with none, so this fixture is not testing what it says"
+    )
+    marked = dataclasses.replace(
+        model,
+        trend=line._replace(
+            caveats=(dataclasses.replace(line.caveats[0], reason=LINE_CAVEAT_MARK),)
+            + line.caveats[1:]
+        ),
+    )
+
+    html = _rendered_or_red(marked, "a model whose line-level caveat is marked")
+    assert html.count(LINE_CAVEAT_MARK) == 1, (
+        f"the note about the whole line appears {html.count(LINE_CAVEAT_MARK)} time(s) "
+        f"in the document. Zero means a renderer filtering on `caveat.point` dropped "
+        f"the one disclosure every report this project can build carries; more than "
+        f"one means it was printed against each run, which is a claim about those "
+        f"runs that nobody made"
+    )
+
+    row = _row_around(html, LINE_CAVEAT_MARK)
+    if row is not None:
+        nights = [one.created for one in line.points] + [
+            one.candidate_model for one in line.points
+        ]
+        named = [one for one in nights if one in row]
+        assert not named, (
+            f"the line-level note renders in a row that also names {named}. It is "
+            f"about how the chart was assembled, and a reader would take a statement "
+            f"about the whole line for a measurement of that run -- which is this "
+            f"document's central rule reached from the rendering side"
+        )
+
+
+def test_the_assumed_lineage_note_reaches_a_reader_on_a_one_run_report(
+    tmp_path: Path,
+) -> None:
+    """The measurement R33.2 is built on, as a red test.
+
+    R30.1: the lineage is `CandidateLineage.assumed_from` on **every** report,
+    because nothing outside `series.py` mentions a lineage -- no config schema
+    carries one and `from_evidence` reads no config. So `trend` raises R21.5's
+    caveat on every model this project can build, and the sentence appears zero
+    times in the rendered document. Measured on this branch, not assumed.
+
+    Asserted on the demo shape rather than on a rich fixture on purpose: this is
+    the commonest report there is, one run and nothing else to read, and it is
+    exactly where `trend`'s docstring says the note must survive -- "a log with
+    nothing in it and a log nobody declared a succession for are two different
+    pages, and the second is the commoner one".
+
+    Verbatim, for the reason C10's tests assert the dimension refusal verbatim:
+    `series._assumed_lineage` writes it, R21.5 forbids anything else composing
+    it, and a re-worded copy on the page is one that goes stale with nobody
+    noticing.
+    """
+    model = _demo_shape_model(tmp_path / "assumed")
+    caveats = _trend_of(model).caveats
+    assert len(caveats) == 1 and caveats[0].point is None, (
+        f"the demo shape carries {len(caveats)} caveat(s); R30.1 makes the assumed "
+        f"lineage note the one every report carries, and this fixture is meant to "
+        f"hold it alone"
+    )
+    sentence = _squeeze(caveats[0].reason)
+
+    html = _rendered_or_red(model, "the demo shape")
+    assert sentence in _squeeze(_visible(html)), (
+        f"the assumed-lineage disclosure is not on the page:\n  {sentence!r}\nIt is "
+        f"on every model this project can build and it reaches no reader; that is "
+        f"the finding R33.2 is a ruling about"
+    )
+    assert sentence in _anchor_text(html, "timeline"), (
+        "the disclosure is on the page but not in the `timeline` section, which is "
+        "where R33.2 puts the lineage block"
+    )
+
+
+# -- the strip, and the gate it hangs on -------------------------------------- #
+
+
+def test_the_parameter_strip_is_gated_on_the_line_and_not_on_the_log(
+    tmp_path: Path,
+) -> None:
+    """R33.1's correction to C14, on the one fixture that can see it.
+
+    C14's table gates the strip on ``len(model.series) >= 2``. That is wrong now
+    and `ReportModel.parameter_strip`'s own docstring says why: the strip is fed
+    from `Trend.points`, so a log with several runs and no line yields runs in
+    `series` and an empty strip. **Gate on `model.trend.points`.**
+
+    Both halves are asserted, because either alone is satisfied by an
+    implementation that is wrong the other way: the strip renders where there is a
+    line, and renders nothing at all -- no heading, no empty table -- where there
+    are two runs and no line. The second is the spec's named failure, "an empty
+    chart", and C14's gate produces it on a real log.
+    """
+    drawn = _disclosing_model(tmp_path / "gate-drawn")
+    assert _strip_of(drawn), "the fixture with a line carries no strip"
+    assert "parameters" in _parse(_rendered_or_red(drawn, "a log with a line")).ids, (
+        "the strip does not render on a log whose line has three runs on it"
+    )
+
+    empty = _no_line_model(tmp_path / "gate-empty")
+    html = _rendered_or_red(empty, "a log with two runs and no line")
+    assert "parameters" not in _parse(html).ids, (
+        f"a log of {len(_series(empty))} runs with **no line** renders the "
+        f"`parameters` element anyway, over a strip of {_strip_of(empty)!r}. R33.1 "
+        f"gates it on `model.trend.points`; `len(model.series) >= 2` is true here "
+        f"and there is nothing to put under the heading"
+    )
+
+
+def test_the_strip_prints_the_rows_that_held_beside_the_one_that_moved(
+    tmp_path: Path,
+) -> None:
+    """One row moved, five held, and all six on the page.
+
+    `parameter_strip`'s whole argument: "when one row moved and everything else
+    held, the drop beneath it is *attributable* rather than merely observed. A
+    strip listing only what changed cannot make that claim, because the absence of
+    a row is indistinguishable from the absence of a record -- and the reader
+    supplies the more flattering of the two readings."
+
+    Two readings. The moved row's own two values must be in the section, which no
+    other fixture in this file can supply, since ``config_hash`` is the only
+    tracked field that is not part of the comparability key and so the only one
+    that can move without the run leaving the line. And dropping the five rows
+    that held must change the section -- a markup-agnostic way of asking whether
+    they were ever rendered, since R24.6 makes the display label the template's
+    job and a row's *name* is therefore not a string this test may look for.
+    """
+    model = _one_row_moved_model(tmp_path / "held")
+    html = _rendered_or_red(model, "a strip with exactly one row moved")
+    section = _anchor_text(html, "parameters")
+
+    moved = next(one for one in _strip_of(model) if one.changed)
+    for label, value in (("before", moved.before), ("after", moved.after)):
+        assert value in section, (
+            f"the row that moved does not show what it moved {label}: {value!r} is "
+            f"not in the `parameters` section. A strip that names a change without "
+            f"both of its values is `Exclusion`'s refusal one section over -- the "
+            f"verdict without the evidence"
+        )
+
+    only_changed = dataclasses.replace(
+        model, parameter_strip=tuple(one for one in _strip_of(model) if one.changed)
+    )
+    without = _anchor_text(
+        _rendered_or_red(only_changed, "the same strip with the five held rows removed"),
+        "parameters",
+    )
+    assert without != section, (
+        "removing the five rows that held changes nothing on the page, so the strip "
+        "renders only its changes. That is the shape `parameter_strip` was written "
+        "against: a reader cannot tell a parameter that held from one nobody recorded"
+    )
+
+
+# -- the two gated sentences, and the empty states ---------------------------- #
+
+
+def test_the_multiplicity_note_renders_exactly_where_the_field_it_is_of_does(
+    tmp_path: Path,
+) -> None:
+    """R33.1's second correction, and R30.4's rule underneath it.
+
+    C14 gates the note on "candidate table present". R30.4 makes `multiplicity`
+    ``None`` **exactly** when `candidates` is ``None``, so the two gates select the
+    same reports -- but the gate is written against `model.multiplicity`, because
+    a note gated on a different field is a note that can outlive its subject.
+
+    And the empty state is *absence*, not a second sentence:
+    `ReportModel.multiplicity`'s docstring rules that "the renderer already owes a
+    sentence for ``candidates is None``; a second one saying 'and so nothing was
+    corrected' can only agree with it or contradict it, and the second is the
+    outcome that ships".
+    """
+    present = _disclosing_model(tmp_path / "mult-present")
+    record = _multiplicity_of(present)
+    html = _rendered_or_red(present, "a log with a three-candidate field")
+    assert "multiplicity" in _parse(html).ids, (
+        "the correction ran across three candidates and took significance from all "
+        "three, and the document does not mention it"
+    )
+    assert _squeeze(record.note) in _anchor_text(html, "multiplicity"), (
+        f"the section does not carry the note the record wrote:\n  {record.note!r}"
+    )
+
+    absent = _one_row_moved_model(tmp_path / "mult-absent")
+    assert _multiplicity_of(absent) is None, "the fixture built to carry no field has one"
+    assert "multiplicity" not in _parse(_rendered_or_red(absent, "a log with no field")).ids, (
+        "a report with no candidate field renders the `multiplicity` element anyway. "
+        "There is no record to print there, and a sentence composed to fill it is "
+        "the renderer writing a producer's prose -- refused for this one by name"
+    )
+
+
+def test_the_spot_check_section_carries_the_producers_sentence_and_captions_nothing(
+    tmp_path: Path,
+) -> None:
+    """The sentence, and no second naming of its subject beside it.
+
+    `SpotCheck` carries `subject` as a field *and* states it in the sentence, and
+    `ReportModel.spot_check` rules which of the two the page gets: "the sentence is
+    the copy that matters: a renderer must not caption around this record to supply
+    a subject the sentence already carries. Two renderings deriving one fact two
+    ways is how they come to disagree."
+
+    So the sentence must be in the `counterfactual` section, and once it is
+    removed the judge's name must not still be there. A heading naming the judge,
+    or a caption reading "judge accuracy, candidate side", is the shape the ruling
+    refuses -- and it is the one that goes wrong quietly, on the day a report is
+    built from a panel whose first judge is not the one the section says.
+    """
+    model = _disclosing_model(tmp_path / "spot")
+    sentence = _squeeze(_spot_check(model).sentence)
+    html = _rendered_or_red(model, "a log a spot check can be asked of")
+    section = _anchor_text(html, "counterfactual")
+    assert sentence in section, (
+        f"the `counterfactual` section does not carry the producer's sentence:\n"
+        f"  {sentence!r}\n  section: {section!r}"
+    )
+    assert J not in section.replace(sentence, ""), (
+        f"the section names the judge {J!r} somewhere other than inside the sentence "
+        f"that already names it. `SpotCheckSubject` exists so that one place turns "
+        f"those facts into words, and a caption around the record is the second"
+    )
+
+
+def test_the_demo_shape_stands_no_heading_over_a_field_it_does_not_carry(
+    tmp_path: Path,
+) -> None:
+    """The empty states, on the report this tool actually produces most often.
+
+    One run, twelve items, ``k = 12``: a census, which `spot_check` declines, and
+    one candidate, which `candidate_field` cannot table. So `counterfactual` and
+    `multiplicity` are absent -- R33.1's table says "present when", and a heading
+    over an absent record is the spec's named failure, "an empty chart".
+
+    `parameters` is the exception and it is not an oversight. The line is one
+    point long, which is a line, so R33.1's gate is satisfied and the strip is six
+    rows of `NO_PREVIOUS_RUN` -- "a word, not a blank, so a genuine first run
+    cannot be read as a run that changed nothing". A strip suppressed here would
+    be a strip gated on the line having *two* points, which no ruling asks for and
+    which makes a first run and a run that changed nothing the same page.
+
+    The empty state of the lineage block is deliberately **not** asserted: R33.2
+    leaves the choice between absent and "the line is the whole log" to the
+    implementer, and it is not a blind test's business to pick one. What is
+    asserted there is that the caveat the model *does* carry arrives -- one test
+    up.
+    """
+    from model_migration_kit.series import NO_PREVIOUS_RUN
+
+    model = _demo_shape_model(tmp_path / "demo")
+    html = _rendered_or_red(model, "the demo shape")
+    ids = _parse(html).ids
+
+    for anchor, why in (
+        ("counterfactual", "`spot_check` is `None`: twelve items at k=12 is a census"),
+        ("multiplicity", "`multiplicity` is `None`, because there is no field it is of"),
+    ):
+        assert anchor not in ids, (
+            f"the document carries id={anchor!r} on a report where {why}. There is no "
+            f"record behind it, and R33.1's table gives the element a `present when`"
+        )
+
+    assert "parameters" in ids, (
+        f"the strip does not render on a one-run report. R33.1 gates it on "
+        f"`model.trend.points`, which holds one point here, and the strip holds "
+        f"{len(_strip_of(model))} rows; the ids are {ids}"
+    )
+    assert NO_PREVIOUS_RUN in _anchor_text(html, "parameters"), (
+        f"the first run of a line renders without the word {NO_PREVIOUS_RUN!r}. A "
+        f"blank `before` cell reads as 'held', and a strip whose job is to license "
+        f"an attribution licenses a false one"
+    )
+
+
+def test_the_last_three_sections_leave_the_document_self_contained(
+    tmp_path: Path,
+) -> None:
+    """C14's "Then" clause, re-taken against a document that has these sections.
+
+    `test_the_rendered_report_has_no_external_url` and
+    `test_the_rendered_report_has_zero_script_and_zero_link_elements` must pass
+    unchanged, and they render `_scenario` -- which carries no multiplicity note,
+    no spot check and no line worth drawing. Passing them proves nothing about
+    markup that exists only when those do.
+
+    The `| safe` set is re-read here as well rather than left to
+    `test_the_document_marks_exactly_one_expression_safe_per_hand_rolled_svg_and_no_others`:
+    that test asserts set **equality** against the known injection points, and
+    this chunk adds three sections whose every value is model output. A `| safe`
+    on any of them turns an escaped `<img src="https://tracker/x.png">` in a
+    config path or a model id into a real fetch.
+    """
+    model = _disclosing_model(tmp_path / "selfcontained")
+    html = _rendered_or_red(model, "a document carrying every element this chunk adds")
+    ids = _parse(html).ids
+    for anchor in ("counterfactual", "multiplicity", "parameters"):
+        assert anchor in ids, (
+            f"this document does not carry the {anchor!r} section, so it does not "
+            f"exercise what it is here to check; ids are {ids}"
+        )
+
+    assert _urls(html) == (), f"a document carrying every new section fetches {_urls(html)}"
+    document = _parse(html)
+    for tag in FORBIDDEN_ELEMENTS:
+        assert document.count(tag) == 0, (
+            f"the document contains {document.count(tag)} <{tag}>, which arrived with "
+            f"one of this chunk's sections"
+        )
+    assert "@font-face" not in html, "a web font reached the document"
+    assert set(_safes_in_template()) == SAFE_INJECTION_POINTS, (
+        f"the template now marks {sorted(set(_safes_in_template()))} safe; the only "
+        f"expressions that may be are {sorted(SAFE_INJECTION_POINTS)}"
+    )
+
+    targets = {
+        value[1:]
+        for _tag, attrs in document.tags
+        for key, value in attrs.items()
+        if key == "href" and value and value.startswith("#") and len(value) > 1
+    }
+    dangling = sorted(targets - set(ids))
+    assert not dangling, (
+        f"the document links to {dangling}, which no element carries. Its ids are "
+        f"{sorted(set(ids))}"
+    )
