@@ -5746,3 +5746,124 @@ disclosure that makes a blind pair worth having: its hedge test matches an
 *"some runs are not shown here"* would go red **for wording rather than for
 substance**. Deliberate, R23.2's own phrasing, and declared — so the merge can
 tell a wording disagreement from a defect finding without re-deriving it.
+
+### R33 — C14c: the last three elements, and where the line's disclosures live
+
+C14b is merged and the artifact moved for the first time in four merges: **24,600
+bytes to 29,716**, the word *"dimension"* from **0 to 6**. Measured on `main` at
+`e655958`, not inferred.
+
+What is still computed and unread, measured the same way — counting `model.<field>`
+inside `_TEMPLATE + _CHANGES_MACRO`:
+
+```
+spot_check         0        candidates      1
+multiplicity       0        dimensions      1
+parameter_strip    0        series          4
+trend              0        provenance      5
+```
+
+Four fields. C14's table names three of them as elements; the fourth, `trend`,
+has no row at all, because when C14's table was written `Trend` did not exist.
+That gap is R33.2.
+
+#### R33.1 — the three elements C14's table already names
+
+| Element | `id` | Present when |
+|---|---|---|
+| spot-check sentence | `counterfactual` | `model.spot_check is not None` |
+| multiplicity note | `multiplicity` | `model.multiplicity is not None` |
+| parameter strip | `parameters` | `model.trend.points` — **not** `len(series) >= 2` |
+
+The ids are the contract's own and are not to be improved on: `counterfactual`
+rather than `spot_check`, because a link that changes its target is a link
+somebody else's document has already got wrong.
+
+**Two gates are corrected against what the producers actually do**, and both
+corrections were already argued in merged docstrings rather than being invented
+here:
+
+*The multiplicity note.* C14 gates it on "candidate table present". R30.4 makes
+`multiplicity` `None` **exactly** when `candidates` is `None`, so the two gates
+are the same gate — but write it against `model.multiplicity`, because a note
+gated on a *different* field is a note that can outlive its subject.
+
+*The parameter strip.* C14 gates it on `len(model.series) >= 2`. That is wrong
+now, and `ReportModel.parameter_strip`'s own docstring says why: the strip is fed
+from `Trend.points`, so a log with four runs and no line yields two runs in
+`series` and an empty strip. Gating on `series` would render a heading over
+nothing. **Gate on `model.trend.points`.** And do not gate on the strip being
+non-empty either: when there is a line the tuple is never empty — one row per
+tracked parameter, including the ones that held — so empty means *no line*, and
+the reason is in `trend`.
+
+#### R33.2 — ruling: the line's disclosures render, and they render below the chart
+
+`Trend` carries seven fields. The timeline that exists renders **none** of them:
+it is `model.series | timeline`, every comparison in the log. So today R21.5's
+assumed-lineage caveat exists on every model and reaches no reader — measured,
+`"assumed"` appears **0** times in the rendered document — along with
+`excluded`, `undated`, `outside_lineage`, `absent_models` and `successions`.
+
+**Ruling: a lineage block inside the existing `timeline` section, below the
+chart.** Not a new top-level section, and the chart is **not** re-pointed at
+`Trend.points`.
+
+Three reasons, in the order they decided it:
+
+1. **The chart is not claiming to be the line, and its heading already says so**
+   — *"Run history — N comparison(s) in this log"*. A chart that draws the log
+   under a heading that says "in this log" is honest. Re-pointing it at the line
+   would silently drop every run the lineage does not name, which is R24.1's
+   defect rebuilt on the rendering side, and it would change merged, reviewed
+   C14a code for no reader benefit.
+2. **`ReportModel.parameter_strip`'s docstring already sited them there**, in
+   merged code: the strip "belongs beside the timeline, where `Trend.excluded`,
+   `outside_lineage` and `undated` already say who is missing and why". That
+   sentence is currently false — those fields say it to nobody. This makes it
+   true rather than deleting it.
+3. **The block's job is the difference between the two sets.** The chart draws
+   the log; the line is a subset of it; and the interesting content is exactly
+   which runs are in one and not the other, and why. That is a paragraph, not a
+   second chart.
+
+What the block must carry, and the failure each entry prevents:
+
+| From `Trend` | Must say | Otherwise |
+|---|---|---|
+| `caveats` | every note, including the **point-less** first one | R21.5's disclosure reaches nobody, which is today |
+| `excluded` | each `Exclusion`'s own sentence, unrewritten | "3 runs excluded" is the count without the reason (R23.2's argument, one section over) |
+| `undated` | the count, and that these are runs no axis can place | a chart quietly missing runs |
+| `outside_lineage` | the runs on this baseline the declaration does not name | R24.1 exactly: night 14 appearing nowhere on the page |
+| `absent_models` | declared ids with no run in the log | a one-character typo in a declaration, invisible |
+| `successions` | where the candidate model changed | the event the chart exists to show |
+
+**A renderer walking `caveats` into rows must ask before it indexes.** `Caveat.point`
+is `RunPoint | None` and the assumed-lineage note is the entry with no point —
+it qualifies the chart, not a night, and rendering it against a run would be an
+absence rendering as a measurement from the rendering side. R30.5 documents a
+live filter one layer over that would drop it silently.
+
+**And every one of these is empty on the bundled demo**, which is one run. An
+empty lineage block must not render as a heading over nothing; it must either be
+absent or say that the line is the whole log. Decide that in the chunk and say
+which was chosen — this is the spec's named failure mode ("an empty chart or a
+crash") and there are three new conditional sections here.
+
+#### R33.3 — closing R32.3's two open questions
+
+**C14's element-order table versus C14a's shipped order.** The table lists
+`timeline` before "What was compared"; C14a shipped it after. **Ruling: the
+shipped order is authoritative for elements already placed, and the table governs
+only the elements not yet placed and their order relative to one another.**
+Moving a merged, reviewed section to satisfy a table changes a document no reader
+has complained about, risks a chunk's worth of test churn, and buys nothing. The
+table is corrected by this ruling rather than the document being corrected by the
+table. C14b was right not to decide it, and right to flag it.
+
+**R23.2's hedge anchor.** C14b shipped it as an `<h2 id="excluded">` in both
+states, arguing that in the state R23.2 is about there is no candidate table
+above it for the hedge to be a sub-section of. **Ruling: ratified as shipped.**
+The same-id discipline that `dimensions` uses is the right one, and it is now
+used twice for the same reason — a link to `#excluded` resolves whichever branch
+rendered.
