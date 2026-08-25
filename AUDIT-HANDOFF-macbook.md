@@ -137,6 +137,30 @@ A fair reading of this branch needs them:
   exist. **Finding 35 (no schema guard on the evidence log) is the prerequisite** that would make
   the rest reachable, and should be read as Tier 1.
 
+## 7a. Hibernation, 2026-08-25 ~03:15Z — what was lost and what survived
+
+The session was paused at the token limit. **Eleven running agents were stopped.** Ten had not
+yet written `FINDINGS.md` and **their work is gone** — do not try to reconstruct it; re-run from
+the briefs below if the work is still wanted.
+
+**Lost (re-runnable from these briefs):** JOB-11 verdict fuzzing for non-monotonicity · JOB-12
+`report.py`'s reconstruction path · JOB-15 the suite as a corpus (single-assertion invariants) ·
+**JOB-16 the statistics themselves** — the highest-value one, whose first check is confirming the
+Mann-Whitney operands are not transposed · JOB-17 the Windows checklist · JOB-18 accessibility as
+a disclosure matrix · JOB-19 assumptions about `opik-rigor` · JOB-20 cross-audit consistency ·
+JOB-21 `dimensions.py` as logic.
+
+**Survived and landed:** JOB-14, the hostile-evidence-log security review, now
+`AUDIT-security.md`. Its headline is that **a hostile log turns off the golden-set identity gate
+by blanking one field, and the page says nothing** — and that path confinement is *textual*, so a
+symlink shipped beside a log reads a file outside the tree while the page names the symlink.
+Confinement is also measured against the **process CWD** rather than the log's directory, and
+*"the triggering shape is exactly what this project's Windows box writes."* Output safety beyond
+the known `cli.py:437` and `verify_release.py`'s archive extraction were both **REFUTED** with
+their coverage named.
+
+**Also landed at the limit:** `AUDIT-verdict.md` (JOB-7 and JOB-8, JOB-7-upstream, JOB-9).
+
 ## 8. If you do only one thing next
 
 **Take JOB-5 (#4)** — re-run `scripts/audit/differential_render.py` and the mutation harness
