@@ -427,3 +427,210 @@ measured here  5fef50364057cad869f16698df32d927b650778c34382f6f68d9fd53ba4e9a04
 >
 > **Not covered:** symlinked paths into `hash_file`, TOCTOU between chunked reads, and any
 > Windows-only filesystem behaviour this machine cannot exercise.
+
+---
+
+# `scripts/check_merge.py` — the merge gate
+
+**The claim.** *"Refuse a merge that looks green and is not"*; *"Exit 0 only if every check
+passed"*; and, in its own words, *"a gate that mistakes absence for success is worth less than
+no gate."*
+
+**The summary, before the detail.** The four static checks are honest about *what they find* and
+silent about *what they did not look at*. Nothing below needs the gate to be wrong about a file
+it read — **every finding is `[PASS]` printed over a file, a name, or a test it never looked
+at**, with no line of output distinguishing that from a measurement. This repository's own
+standing rule, applied to the tool that enforces it.
+
+## G18. `[PASS] pytest` is not a claim that the test suite ran
+
+`run()` builds `[sys.executable, "-m", "pytest", "tests", "-q"]` with **no `env=`**, and success
+is `returncode == 0` and nothing else. The gate never prints, parses or compares a test count.
+
+**With an environment variable this project's own `pyproject.toml` recommends setting:**
+
+```
+$ PYTEST_ADDOPTS="--co -q" python scripts/check_merge.py     # tree contains assert 1 == 2
+... all seven [PASS] ...
+Merge is green on all seven checks.      EXIT=0
+
+$ python -m pytest tests -q | tail -2                        # what it would have found
+FAILED tests/test_x2.py::test_x2 - assert 1 == 2
+1 failed, 2206 passed
+```
+
+**Zero tests executed. Exit 0. Green over `assert 1 == 2`.**
+
+**And no environment variable is required — the tree can do it.** One line after the imports of
+`tests/test_report.py`:
+
+```python
+pytestmark = pytest.mark.skip(reason="chunk C99b left this in")
+```
+```
+1771 passed, 435 skipped     # this tree, gate green
+2208 passed                  # untouched tree, zero skips
+```
+
+**435 tests stopped running and the gate said green.** The clean tree has *no* skips at all, so
+that is a number the gate could trivially have refused — it never looks.
+
+> **SURVIVES.** Not every filtering form gets through, and I say which: `-k nosuchtest`
+> deselects everything and pytest exits **5**, which the gate correctly reports as a failure.
+> The two that do get through are shown above, and the `pytestmark` form needs no environment.
+
+## G19. `[PASS] __all__ lists every public name` is false on `main`, and gets *quieter* as the defect worsens
+
+**The printed claim is already false on the tree the gate passes.** Measured across all 49
+tracked files: **17 public module-level assignments absent from `__all__`, across 2 modules**
+(`comparison.py` 8, `report.py` 9). The docstring justifies the exclusion with a number —
+*"Flagging those would report **eight** pre-existing style decisions as merge defects"* — and
+the real figure is 17. The exclusion may still be right; **its stated evidence is wrong by more
+than 2×.**
+
+**Worse, the check is monotonically more permissive the worse the merge was:**
+
+```
+one public function missing from a present __all__  ->  [FAIL] ... EXIT=1
+the entire nine-name __all__ block deleted          ->  all seven [PASS], EXIT=0
+```
+
+`if declared is None: continue` — a module with **no `__all__` at all** is skipped. That is the
+code saying "could not run" while `main()` prints PASS over it, contradicting the docstring's
+own rule that *"a check that could not run is a failure, not a pass."*
+
+> **SURVIVES.** `tests/test_stranger_path.py` pins `model_migration_kit.__all__`, so doing this
+> to `__init__.py` goes red — but nothing pins `dimensions.__all__`, and ruff's `F822` covers
+> only the opposite direction (an entry naming nothing). Nothing backstops an absent one.
+
+## G20. `[PASS] no shadowed top-level names` sees four binding forms; the tree has at least eight
+
+`_top_level_names()` records `FunctionDef`, `ClassDef`, `Assign` with a `Name` target, and
+`AnnAssign`. Invisible: tuple/list unpacking, `for` targets, `with…as`, `except…as`, `import`,
+augmented assignment, walrus, and anything nested under `if`/`try`.
+
+**The construction is this project's own C22b defect, written as a tuple assignment** — two
+blind halves of a chunk appended into one file:
+
+```python
+THIRD_MODEL, FOURTH_MODEL = "claude-3-opus", "claude-3-haiku"   # C99a
+...
+THIRD_MODEL, FOURTH_MODEL = "zeta-9", "alpha-1"                 # C99b
+```
+```
+all seven [PASS], EXIT=0        # and THIRD_MODEL is "zeta-9"
+```
+
+Control — the identical collision with plain `Name` targets — **fails**. *Same defect, same
+names: `THIRD_MODEL = …` twice fails the gate; `THIRD_MODEL, FOURTH_MODEL = …` twice passes it.*
+The source comment says C22b *"was caught only because one of C10's tests happened to assert an
+ordering over the constant it had lost"*; this tree removes the luck.
+
+> **SURVIVES, with coverage named honestly.** I probed five rebind forms against **both** check 3
+> and ruff, because ruff is check 5 of the same gate. Ruff's `F811` catches the import/def
+> collision and all three decorated-def forms. **Tuple-unpack rebinding and a module-level `for`
+> target are missed by both.** The gate as a whole is stronger than check 3 alone, and I say so.
+
+## G21. `[PASS] no conflict markers` prints PASS over files it could not read
+
+The docstring: *"An unresolved marker **anywhere** is the cheapest failure to catch."* The read
+is wrapped in `except (OSError, UnicodeDecodeError): continue`.
+
+A tracked `docs/merge-note.md` with a real marker pair **and one `0xff` byte**, plus five marker
+lines appended to the tracked `.gitattributes`:
+
+```
+all seven [PASS], EXIT=0
+
+docs/merge-note.md in the scanned set: True      # scanned, then swallowed by the except
+.gitattributes    in the scanned set: False      # suffix not in the keep set
+markers reported: []
+```
+
+The same six lines in a clean-UTF-8 file are reported correctly. `chmod 000` triggers the same
+`continue`. **Two files were not read, `[PASS]` was printed, and nothing said so** — the
+docstring's own rule, broken by its own code.
+
+The suffix whitelist, measured: **6 of 100 tracked files excluded** — `.gitattributes`,
+`.gitignore`, `LICENSE`, `NOTICE`, `clean_venv_check.ps1`, `py.typed`. Not zero; two are files a
+merge genuinely conflicts in and one is executable code. The exclusion carries no comment.
+
+**And a comment describes a rule the code does not contain:** *"`=======` alone is a legal
+markdown rule, so it only counts as a marker when a real one is present in the same file."*
+There is no such conditional — `=======` is never counted under any condition. Low blast radius,
+reported because a maintainer reading it will believe a guard exists.
+
+## G22. `_REBIND_IS_INTENTIONAL` excludes zero things — and is a live bypass of check 4
+
+`frozenset({"overload","register","setter","getter","deleter"})`, matched against the **bare last
+component** of any decorator, so `@anything.register` qualifies.
+
+```
+top-level defs in the tree carrying ANY of them: 0
+names it actually suppresses from the report:    0
+```
+
+**Zero across all 49 tracked files** — the same shape as the `UPPER_CASE` premise the brief
+cites, removed three lines above it in the same function. But it is not merely dead:
+
+```python
+@_plug.register            # a class whose method is literally named "register"
+def dimension_summary(cells: list) -> int: ...     # public, not in __all__
+```
+```
+all seven [PASS], EXIT=0
+```
+
+The identical undecorated function **fails** check 4.
+
+> **SURVIVES for check 4; REFUTED for check 3** — every decorated collision I built was caught
+> by ruff `F811`, so the exclusion costs check 3 nothing *today, because another check happens
+> to cover it*. Ruff has no `__all__`-completeness rule, so nothing backstops check 4.
+
+## G23. Smaller, confirmed
+
+- **`check_all_is_complete` skips everything outside `src/`** (undocumented). Measured: **0**
+  modules with `__all__` outside `src/` today — free to remove, never justified, and real the
+  moment anyone writes one. A constructed `scripts/merge_helper.py` with an incomplete `__all__`
+  passes all seven.
+- **Checks 1–4 read `git ls-files` (the index); check 5 runs `ruff check .` (the filesystem,
+  honouring `.gitignore`).** They disagree about what "the tree" is, in both directions. Ranked
+  low because `git merge` stages its own output — it matters for the hand-resolution the
+  docstring is aimed at.
+- **A tracked `.py` that is not valid UTF-8 kills the gate before it prints anything.**
+  `read_text` raises `UnicodeDecodeError`, a `ValueError`, which neither `except` catches.
+  **WEAKENED deliberately — this is not a false green**; the traceback propagates and the exit is
+  non-zero. What is wrong is the reporting: a raw traceback with **no `[FAIL]` line and no check
+  results**, while the same byte in a `.md` produces a silent `[PASS]`. Two checks twenty lines
+  apart, opposite failure discipline.
+
+## G24. Negative results — sound, with coverage named
+
+**Exit codes: sound.** All seven checks made to fail **independently**, each a real gate run,
+each `EXIT=1`, including `run()`'s `except OSError` for an unspawnable command. **No failure path
+exits 0.** Every finding above is a check *reporting* success, never a reported failure exiting 0.
+
+**The `.pth` cross-checkout suspicion on check 7: REFUTED, and it was my strongest prior.**
+CLAUDE.md's own story says the editable `.pth` names the main checkout, so a naive worktree run
+should test somebody else's code. Broken constant in a worktree's own `src`, gate run there with
+`env -u PYTHONPATH`:
+
+```
+[FAIL] pytest
+    FAILED tests/test_dimensions.py::test_the_completions_floor_is_still_twenty_...
+    11 failed, 2195 passed
+```
+
+**The worktree's own `src` was tested.** `conftest.py` earns its docstring — it prepends `_SRC`
+to `sys.path` *and* to `PYTHONPATH` for children, derived from `__file__` rather than the cwd.
+Check 7 cannot be satisfied by another checkout's source.
+
+**Ruff's incremental cache: dropped.** I suspected `ruff check .` could return a stale `[PASS]`
+from `.ruff_cache`, which lives outside the tracked tree. Warmed the cache, rewrote a source file
+with a **byte-identical-length** real violation and restored the mtime with `os.utime` (same
+size, same mtime confirmed). Ruff reported the error both with and without the cache. **Does not
+reproduce.**
+
+**Stale `__all__` entries: covered.** Invisible to check 4 but caught by ruff `F822`; measured 0
+in the real tree.
+
