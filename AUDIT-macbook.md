@@ -90,6 +90,8 @@ identical golden-set, config and judges hashes, differing only in timestamps and
 
 ## 1. The demo's NO-GO is manufactured by counting each of 12 answers five times
 
+> **WEAKENED.** The arithmetic is all correct — the array, both p-values, the payload match and the 48% interval ratio were re-derived independently and confirmed. Three things cut it down: (a) *the 12 independent observations* is one of at least three defensible units, not **the** honest one — the items are **paired**, so an unpaired MWU is itself wrong there (unpaired MWU 0.1525, Wilcoxon signed-rank 0.1875, McNemar exact 0.3125). The conclusion is robust — rule 1 fires under none of the three — but "p = 0.153" is not *the* figure. (b) It is a property of the demo's deliberate determinism, which `demo.py`'s docstring defends: *"Nothing is random… a demo that returned REVIEW on one machine and NO-GO on another would destroy the only claim it makes."* (c) It is `comparison.py`'s choice of unit — **a code finding in a document finding's clothes**, and the only Tier-1 entry that is. What survives is one sentence: the page prints a general argument for why n>1 draws matter, on a page that says eight times the draws carried none. **Demote to Tier 4.**
+
 The document every new user reads reports a statistically significant regression. At the
 unit the data actually has, there isn't one.
 
@@ -178,6 +180,8 @@ measurement" is exactly inverted here, where it would be a real measurement that
 
 ## 3. The appendix tells a *real* comparison that its quality difference "was written into the script"
 
+> **WEAKENED.** Reproduces, and the code quotes are accurate — but the disclosure I said was missing is **one clause earlier in the same paragraph**: *"1 of the 2 comparisons drawn in this document names a Fake adapter on at least one side; the other one does not."* And "they" binds at least as naturally to *the sampling, the judging, the statistics and the decision rules*. This is a self-contradicting paragraph, not a false belief. **Not Tier 1.**
+
 The brief's own exemplar defect, alive one sentence past its fix, in the paragraph the fix
 was written for.
 
@@ -204,6 +208,8 @@ decision in front of them is a fabrication.
 
 ## 4. `<title>` shouts FAKE MODELS over two real production model ids
 
+> **WEAKENED — the plan already records it open.** R31.4: *"Recorded as open, with the note that `is_demo` is series-scoped and `provenance` is headline-scoped, so the two disclosures now have different reach and a reader cannot tell which one is speaking. That asymmetry is the thing to rule on."* That is this finding, named and deferred. I should have cited it.
+
 > `FAKE MODELS — NO-GO — claude-sonnet-4-5-20250929 to claude-opus-4-5-20251101 — model-migration-kit`
 
 `_warned_title` (report.py:4901) keys on series-scoped `is_demo` and prefixes a
@@ -214,6 +220,8 @@ preview", so the document asserts to everyone who does *not* open it that two re
 production models are fake.
 
 ## 5. The recorded `exit_code` is discarded and silently recomputed
+
+> **WEAKENED — unreachable, and I did not concede it.** `comparison.py:327-333` and `:746` write `exit_code` from `Verdict.exit_code(self.verdict)`, so `{"verdict": "NO-GO", "exit_code": 0}` is hand-edited JSON. The finding's whole force — *"a NO-GO that exited 0 is exactly the mis-wiring a gate exists to catch"* — is a state migkit cannot reach. **Demote.**
 
 **Rendered:** "Exit code a CI system would have received: **1** — decided by rule 9".
 **Evidence:** `{"verdict": "NO-GO", "exit_code": 0, "decided_by": "rule 9"}`.
@@ -302,6 +310,8 @@ the document makes an **affirmative false statement about candidate stability** 
 at the foot of the row; the determinism claim above it is not qualified.
 
 ## 7. Every path in the demo's provenance block points inside a directory the demo has already deleted
+
+> **WEAKENED.** All paths are indeed missing and `cli.py:599-601` is confirmed, but three trims: it is **five** unique paths, not six; the deletion is documented with a flag against it (`--work-dir … default: a temporary directory, removed at exit` / `--keep`); and *"shown once, whole, and where it can be checked"* reads at least as naturally as a claim about **where in this document** to look. **Not Tier 1.**
 
 > "A source that is a file is named by its filename here; its full path is shown once,
 > whole, **and where it can be checked** — under `config` in 'What was compared', above."
@@ -503,6 +513,8 @@ render — under body text reading *"The axis is time, not run number"*.
 
 ## 14. "Nothing changed" and "no flip analysis exists" render byte-identically
 
+> **WEAKENED — unconceded fixture artifact.** It reproduces exactly, but `comparison.py:727-729` writes all three keys unconditionally, so a log missing them is hand-edited or foreign — which is finding 35's subject, not a state this tool reaches. **Demote and concede.**
+
 Two logs: one with `"flips": [], "gains": [], "unstable": []` recorded and empty; one with
 those keys **absent**. Diffing the rendered documents yields **one differing line — the
 evidence hash.** Both print:
@@ -525,6 +537,8 @@ characters, of which **230 are report.py's own placeholder text** — so a candi
 times out on every draw makes the completeness figure go *up*.
 
 ## 16. `--quiet` silences the FAKE MODELS disclosure entirely
+
+> **WEAKENED — its headline sentence is false.** The terminal behaviour reproduces exactly, but *the report is the HTML*, and the HTML still bands twice: `grep -c "FAKE MODELS" q2.html` -> **2**, including the `<title>`. So *"`--quiet` produces a clean-looking report"* is wrong. What remains is "the terminal render is all-or-nothing", which is **finding 22**. **Merge into 22.**
 
 ```
 $ .venv/bin/python -m model_migration_kit.cli --quiet demo --out q2.html
@@ -555,6 +569,8 @@ must be masked. The first sweep did exactly that and came back empty.)*
 
 ## 17. An unrecorded gate floor is silently replaced by the configured one
 
+> **WEAKENED.** Reproduces (`floor 42.0%` for a gate that recorded nothing; `floor not recorded` when both are gone). But rigor writes `"min_rate": threshold` on **both** branches (distribution.py:794, 817) and `comparison.py:1229` hardcodes it at `n == 0`, so the trigger is unproducible — and the plan (~:432) explicitly *permits* the fallback.
+
 When the gate recorded no `min_rate` — key removed **or** null — the banner substitutes
 `thresholds.pass_rate_floor`. Proven by varying the config floor: the banner prints
 `… floor 42.0%` for a gate that recorded nothing. With **both** gone it prints
@@ -576,6 +592,8 @@ Set `judges[0].regression.alpha = 0.09`, remove `judges[0].alpha`, and the page 
 the same absence, two different answers.
 
 ## 19. The rows that tell a reader what the pass rate excluded cannot say they were never recorded
+
+> **WEAKENED.** The byte-identical diff is real, but `comparison.py:647-662` and `_item_counts` `:1508-1516` always write all three keys, so **both** sides of the comparison are unreachable through this tool's own writer.
 
 Rendering a log with `imputed`, `parse_failures` and `item_counts` **removed entirely**,
 against one with all three recorded as explicit zeros, the two documents differ in **one
@@ -654,6 +672,8 @@ rate" is the reader's only statement about the denominator.
 
 ## 21. And the mirror: a *recorded* zero rendered as an absence
 
+> **WEAKENED but worth keeping.** Byte-identical to key-removed, and unproducible (`runner.py:327-328` raises on `n < 1`). Kept because the plan (~:3898) calls this class *"the contract's own **Must not**"* and closed it **in series.py only** — `report.py:2519`'s `RunSummary` path was never covered, so this is a genuine second site.
+
 `n_per_item: 0` recorded on a side renders as *"baseline run does not record how many
 completions were expected"* — a statement that is false about the payload, inside the
 completeness strip. Same for the demo's latency (finding 2). The rule cuts both ways and is
@@ -704,6 +724,8 @@ is byte-identical in structure across all three verdicts, and the actionable cal
 
 ## 25. An exclusion the reader cannot check, and one that can be self-refuting
 
+> **WEAKENED.** The mechanism is accurate but the second half overreaches: the truncated prefixes **visibly differ** (`golden set dddddddddddddddd against the group's 3f519e187067bcfb`) and the *group's* full 64-char hash **is** on the page. Narrow the claim to: the **excluded run's** own hash cannot be checked against its artifact.
+
 `_incomparable` compares the **full** 64-character hash; `_hash()` prints the first 16:
 
 ```
@@ -728,6 +750,8 @@ reassuring — says nothing at all. The two absences are inverted.
 
 ## 27. "Read this as not known" on a log where it is known [SHIPPED DEMO]
 
+> **WEAKENED.** Reproduces in the shipped demo, but the wording is a **ruling**: R23.2 (:4560-4562) mandates it and R33 (:5864-5868) ratified the anchor as shipped. The one-comparison sub-case was never ruled, so it is not dead — but it argues with a ratified sentence, and the finding already concedes the error is in the conservative direction.
+
 > "…**Runs in this log may have been excluded** from a comparison without this page being
 > able to name them. **Read this as not known**, and never as 'nothing was excluded'."
 
@@ -738,6 +762,8 @@ false whenever the log holds one comparison. The brief's own named shape, with t
 the conservative direction, which is why it has survived: it reads as caution.
 
 ## 28. The methodology appendix denies the two sections this whole plan added
+
+> **WEAKENED.** Both strings are in one document, but the run-history caption already refuses to be a trend (*"Nothing is interpolated: no line joins the markers"*) and R33.2 argues that heading is honest. The tension with *"…once"* is real but narrower than stated.
 
 Every render says:
 
@@ -764,6 +790,8 @@ recorded. The inverse (gate `0.95`, thresholds `0.87`) prints 95.0% once and 87.
 with nothing reconciling them; the same family applies to `confidence`.
 
 ## 30. A log written out of time order: the banner and the chart disagree
+
+> **WEAKENED.** It renders as quoted, but the caption's *preceding* clause discloses the failure in both directions — *"whenever the clock agrees with the file, **and is not when it does not**"* — and I quoted only the trailing illustration. The "age in this field" sub-claim did not reproduce.
 
 Three runs written 08-01, 08-20, 08-10. Banner: **GO, 95.0%, exit 0**. Rightmost marker:
 `data-created="2026-08-20…" data-rate="0.4" data-verdict="NO-GO"`. The chart, the "age in this
@@ -808,6 +836,8 @@ discriminator and discriminates nothing.
 
 ## 34. A renderer constant printed among evidence-derived facts
 
+> **WEAKENED — already adjudicated, and I misread the scope.** Plan R20 (:669-674, :751-753) created `stale_after_days` for exactly this and told the reviewer to check *"it is a parameter rather than a literal"*. And the Thresholds half is wrong: the sentence is *"Every threshold **above** is echoed…"*, scoped to that table's six rows, not to the whole page.
+
 > "14.0 days between the oldest and the newest row, against a **window of 7.0 days** —
 > **wider than the window**…"
 
@@ -850,12 +880,16 @@ run-artifact records, the gate's `n` (completions minus parse failures), and thi
 
 ## 38. The thresholds `source` column asserts a file it cannot know
 
+> **WEAKENED — fixture artifact, unconceded.** `Thresholds.to_dict()` emits exactly six keys, so the unknown-key row is unproducible, and `comparison.py:725`/`:750` write both records from one object. The second half also fights a documented design: `verdict_payload()`'s copy is *"a second time, deliberately"*.
+
 Every row prints `migkit.toml` — including an unknown key (`warp_factor | 9.5 | migkit.toml`)
 — while the paragraph directly below says that provenance is not in the payload. And when the
 verdict record's thresholds disagree with the comparison's, the comparison's win silently,
 despite the sentence *"echoed from the evidence record that produced the verdict"*.
 
 ## 39. The degraded render still states missing data as zero
+
+> **WEAKENED.** With only the four artifacts removed the quoted text does **not** appear — the golden set must also be unresolvable. Plan **R5** records the same three strings and says *"Neither is part of this plan … recorded here so they are not lost"* — known and explicitly **not** scheduled. My plan citation was also wrong: it is :2101-2102, not :2095. The novel half — the clarifier landing only on the demo path — stands.
 
 The plan (line 2095): *"Missing data stated as zero is worse than missing data stated as
 missing."* With artifacts unresolvable, the page prints *"Every one of the 3 changed item(s)
