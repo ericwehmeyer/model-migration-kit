@@ -5,6 +5,51 @@
 **Method:** read the *rendered document*, not the code. Every finding carries the rendered
 text verbatim, a reproducible fixture, and what the evidence file actually held.
 
+## Adversarial review — read this before the findings
+
+An agent was tasked solely with **refuting** everything below, defaulting to REFUTED when
+uncertain. It is the most useful thing in this audit, and it cost me a lot. Verdicts:
+
+| | Findings |
+|---|---|
+| **REFUTED / already scheduled (9)** | 10, 11, 12, 18, 20i, 20l, 33, 41.9, 41.15 |
+| **WEAKENED (25)** | 1, 3, 4, 5, 7, 9b, 14, 16, 17, 19, 20a-f, 20h, 20k, 21, 25, 27, 28, 30, 34, 38, 39, 41.1, 41.8, 41.13, Robustness |
+| **SURVIVES (20)** | 2, 6, 8, 9a, 13(part), 15, 20g, 20j, 22, 23, 24, 26, 29, 31, 32, 35, 36, 37, 40, 41.2-7/10-12/14 |
+
+**The structural criticism, which is fair and which I have not fully repaired below.** Tier 2
+presents its breaches as *"confirmed"* over "176 leaf paths, 2,391 renders", which reads as if
+these were states the tool reaches. **Most are not.** There is exactly one writer of the
+comparison payload (`comparison.py:907` -> `comparison_payload()`), and it writes every key
+unconditionally; rigor writes `failures`, `min_rate` and `alpha` on both branches. So most of
+Tier 2 is an argument about robustness to a *foreign or future* writer — a position this report
+takes explicitly **once**, in finding 35, and nowhere in Tier 2 itself. Sixteen items owe that
+concession: 5, 14, 17, 19, 20a, 20c, 20d, 20e, 20f, 20h, 21, 29 (case A), 38, 41.1, 41.2 and
+Robustness. Read them accordingly. **Without that caveat a fix pass would spend a chunk
+hardening reads against a writer that does not exist** — and finding 35 (no schema guard on the
+evidence log) is the finding that would actually make them reachable, so it should be read as
+Tier 1 and the prerequisite for the rest.
+
+**Demote out of Tier 1:** 1, 3, 4, 5, 7, 14 (to Tier 4); 16 folds into 22. **Move** 26 to Tier 4.
+**Promote:** 20j (needs no payload edit at all — just delete two artifact files), 20g, and 35.
+
+**Where the plan already speaks and I failed to cite it:** 4 (R31.4 records it open), 12 and 13
+(R33 / C14c, committed the day before this audit), 24 (C14a deferred it and C14c does not pick it
+up), 27 (R23.2, ratified), 34 (R20 created `stale_after_days` for exactly this), 39 (R5, known and
+explicitly *not* scheduled).
+
+**Five findings got stronger under attack:** 2 (the terminal prints the exact `0.000 / 0.000` row
+the HTML says it omitted — better evidence than I gave), 6 (`quoted_chars`' own docstring says
+*"the post-truncation size and **not** the size of what the models actually said"*, which is the
+opposite of what the page prints), 8 (zero `<text>` elements confirms screen-reader-only, and
+`_widest_judge`'s docstring shows the two selection rules are deliberately different), 9a
+(re-derived independently, exact), and 20j.
+
+**Corrections to specific numbers below:** finding 13 should read **4 of 9** plotted markers, not
+"3 of the 10", and "one **line**" is wrong — the caption says *"no line joins the markers"*.
+Finding 25's second half overreaches: the truncated prefixes visibly differ and the group's full
+hash *is* on the page; only the excluded run's own hash is uncheckable. Finding 39's plan citation
+is `:2101-2102`, not `:2095`.
+
 **Status of this commit.** These are the findings that were confirmed and independently
 re-verified at the time of writing. A second commit will follow on this branch with five
 verification passes still running: an adversarial pass whose only job is to **refute** the
@@ -317,6 +362,8 @@ imputed or unparseable record never calls `evaluate()` and so emits no" judge ve
 
 ## 10. "powered for the configured effect: yes (60 observed per side, roughly 137 required)"
 
+> **REFUTED by adversarial review.** Fixture artifact, and **I misquoted the page.** `tests/test_report.py:626-635` sets `mw_powered: True` beside `power.powered: False` deliberately — SETUP.md's tripwire firing as designed. The real demo prints, correctly, `powered for the configured effect | no (60 observed per side, roughly 140 required)` and *"so this judge is **not** powered for the question"*. My quote of that sentence dropped the word **not**; the template is `{'powered' if one.mw_powered else 'not powered'}` (report.py:3098-3100). `comparison.py:1137` and `:1168` set both from one variable. **Delete.** The one-line residue worth keeping: `power.powered` is loaded at report.py:2606 and never rendered.
+
 The word and the numbers beside it answer different questions from different fields.
 
 | `mw_powered` | `power.powered` | `underpowered` | rendered word |
@@ -339,6 +386,8 @@ verdict rules honour, and with the flag recorded that way the report prints **"�
 flag rule 4 acted on.
 
 ## 11. In the demo, one arm is underpowered and needs 931 more runs; the page prints "no"
+
+> **REFUTED by adversarial review.** A misread of the mechanism, mine. `comparison.py:1032-1035` derives `floor_cleared`, `underpowered` and `runs_needed` from the **candidate** gate only — `_floor_power` reads a *failed* `assert_pass_rate` and nothing is read when the gate passed. The baseline's `underpowered: true / runs_needed: 931` are rigor's incidental output on its own gate and no rule reads them. So `colspan="2"` is **correct** (none of the three is a per-side fact), and my self-derivation argument was backwards: 0.8385 is the *baseline* bound, while rules 2/3 read the candidate's (0.6486 < 0.90, underpowered false) — **rule 2's condition genuinely holds and the page is self-derivable as printed.** **Delete.** Residue: the appendix says "any judge's one-sided lower bound" without saying *candidate's*.
 
 ```
 baseline : underpowered=True   runs_needed=931   lower_bound=0.8385
@@ -519,6 +568,8 @@ since. `series` already ships `floor_source` for exactly this distinction;
 the page.
 
 ## 18. `alpha` removed borrows the regression block's alpha; `alpha: null` does not
+
+> **REFUTED by adversarial review.** `comparison.py:638` is `"alpha": None if self.regression is None else self.regression.get("alpha")` — the key is always present and its value *is defined as* the regression's alpha. The fallback returns exactly what the writer would have written, and the producible spelling (regression None -> alpha null -> em dash) is the correct one. **Delete.**
 
 Set `judges[0].regression.alpha = 0.09`, remove `judges[0].alpha`, and the page prints
 `alpha 0.090`. Set `judges[0].alpha = null` and it correctly prints `—`. Two spellings of
@@ -745,6 +796,8 @@ scale. Harmless in the demo only because both counts are 0; on a real run with i
 two sentences give opposite pictures of how a crash is scored.
 
 ## 33. Every cell in the demo's dimension table is shaded, and no cell could ever be unshaded
+
+> **REFUTED by adversarial review.** The "could ever" half is false — the repo ships a **second** golden set that unshades every cell: `migkit demo --goldenset src/model_migration_kit/data/showcase_goldenset.jsonl` gives `grep -c 'class="num refused"'` -> **0** of 33 cells. And plan R9 (:2427-2458) *designed* the demo's refusal: *"It refuses the spec's own 4-item example. The showcase clears it at 16 items and 80 completions."* Every cell also carries its own discriminator ("10 items needed for a verdict here; you have 4."). **Delete.**
 
 > "**A cell is shaded where** the sample cannot support a verdict at all… The floors every cell
 > here was judged against are 20 graded completions and **10 items**."
