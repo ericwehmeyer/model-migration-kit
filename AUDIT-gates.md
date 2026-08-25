@@ -634,3 +634,229 @@ reproduce.**
 **Stale `__all__` entries: covered.** Invisible to check 4 but caught by ruff `F822`; measured 0
 in the real tree.
 
+
+---
+
+# `scripts/verify_release.py` — the release gate
+
+The brief said to **start from the assumption it is right**, because my earlier suspicion about
+its exit codes did not reproduce on Windows. That was the correct instruction: **the exit-code
+contract is exactly as documented**, verified by construction for all four states, and the two
+hardest checks resisted deliberate attack.
+
+**Its failures are all one shape: a check that could not do its job says so in the evidence and
+`PASS` in the verdict.**
+
+**A count correction first.** The brief and this machine both say 15 checks. **The count is not
+fixed** — healthy is 16, cascade is 15. `version-matches-installed` is emitted only from inside
+`check_version_coherence`, so when the build is skipped it is not FAILED, not SKIPPED, and **not
+in the total**. A maintainer reading `14 skipped, 15 checks total` has no way to know a
+sixteenth check exists.
+
+## G25. `console-script` passes on a wheel whose `migkit` command does not exist
+
+Its docstring says that without this check *"installing this wheel yields a `migkit` command
+that fails with ModuleNotFoundError on first use"*. It parses the entry point into `module` and
+`func` — and **`func` is captured at `:1150` and used only in an evidence string at `:1153`.**
+The check looks only for the *module file* in the namelist.
+
+With `migkit = "model_migration_kit.cli:no_such_entrypoint"` and a **fresh build**:
+
+```
+[PASS   ] console-script: `migkit` points at a module the wheel ships
+            target model_migration_kit.cli:no_such_entrypoint -> looked for
+                   ['model_migration_kit/cli.py', ...]
+            found in wheel: model_migration_kit/cli.py
+16 passed, 0 failed, 0 flagged, 0 skipped, 16 checks total
+Every check ran and passed.      EXIT=0
+```
+
+That wheel, installed as a user gets it:
+
+```
+$ migkit demo
+ImportError: cannot import name 'no_such_entrypoint' from 'model_migration_kit.cli'
+```
+
+> **CONFIRMED, and ranked first because it survives a fresh build.** Every other wheel finding
+> can be argued away with *"CI builds the wheel in the same job"*. This one cannot — CI builds
+> exactly this wheel and the gate exits 0. `tests/test_release_checks.py:520` asserts only the
+> PASS case against a fixture whose entry-point string is hard-coded correct at `:284`. The
+> wrong-function case is not in the fixture set — **fixture monoculture in the sense CLAUDE.md
+> names.**
+
+## G26. Both README checks report **PASS** when they verified nothing
+
+This is the direct answer to the brief's sharpest question — *is there any path where a check
+skips and the summary still reports exit 0?* **Yes, and the check does not even skip. It
+passes.** `check_readme_pip_install` returns `ok(...)` when `targets == []` (`:1265`);
+`check_readme_commands` returns `ok(...)` when `commands == []` (`:1298`). Both join the passed
+count and neither reaches `if skips: return 2`.
+
+Combined with the frozen contract's rule 1 (four-space indented blocks are not recognised), a
+README wrong in *both* the ways these checks exist to catch goes green:
+
+```
+[PASS   ] readme-pip-install: no `pip install <name>` line in README.md to get wrong
+[PASS   ] readme-commands: README.md shows no `migkit <subcommand>` invocation
+            nothing to verify; when Phase 4 writes the real README this check
+            starts asserting every command it shows
+16 passed, 0 failed, 0 flagged, 0 skipped, 16 checks total
+Every check ran and passed.
+```
+
+**The evidence says "nothing to verify" and the summary says "Every check ran and passed" — in
+the same run**, over a README telling the reader to install a distribution that is not this
+project and to type two subcommands that do not exist.
+
+Two further stings: that PASS text asserts a project state (*"when Phase 4 writes the real
+README"*) that stopped being true several phases ago; and the frozen contract records that on
+2026-08-13 this check returned `[]` against the real README — **it passed by vacuity for the
+whole of its early life**, with nothing distinguishing that from a verified pass.
+
+> **CONFIRMED.** This inverts the script's own design rule 1: an unperformable check counted as
+> a performed one.
+
+## G27. A typo in `[project.optional-dependencies]` licenses the same typo in the README
+
+`readme_pip_install_targets`' docstring names the exact defect it exists to stop — *"the exact
+thing the sibling got wrong when a rename turned `opik-rigor` into `opik-opik_rigor` in the
+published install hint"*. But `allowed` is built from the dist name **plus every extras name**,
+while `split_requires_dist` removes every `extra == '…'` requirement before the dependency
+checks see anything. **An extras entry is checked by nothing and simultaneously widens the
+README allowlist.**
+
+```
+[PASS   ] readme-pip-install: all 2 pip-install target(s) name a real distribution
+            pip install opik-rigorr  ->  normalises to opik-rigorr  ->  ok
+16 passed ... EXIT=0
+```
+
+`opik-rigorr` exists on no index; `pip install model-migration-kit[anthropic]` fails for every
+user. **6 of the 10 requirements this project declares are extras** — all outside every
+dependency assertion, all inside the README allowlist.
+
+## G28. `--no-build` adopts any `dist/` without checking its provenance
+
+Design rule 3 says *"The wheel is the subject."* Under `--no-build`, `check_build` globs `dist/`
+and returns `ok(...)` with evidence `source tree: <repo>` — **an assertion of provenance that is
+never verified.** The gate's own instance of this project's standing rule.
+
+A wheel built from a poisoned `cli.py`, with the tree then restored and `git status` clean:
+
+```
+all 16 [PASS], EXIT=0
+[PASS   ] readme-commands: all 4 README command(s) exist in the CLI
+```
+
+That wheel raises `ImportError: POISON…` on import. Note the `readme-commands` line: it
+introspected the **tree**, while the wheel it is gating on cannot be imported at all. **The only
+wheel code the gate ever executes is `__init__.py`**, via the resource probe. Artifacts copied
+entirely outside the repo pass the same way.
+
+> **CONFIRMED; severity WEAKENED in the current CI topology** — `publish.yml` builds seconds
+> earlier from the same checkout. Real exposure: the documented local invocation, the
+> `workflow_dispatch` → TestPyPI path, and any future split of build and verify, which the
+> `upload-artifact`/`download-artifact` structure already does downstream.
+
+## G29. `version-coherence` claims exhaustiveness it does not have
+
+Docstring: *"**Every place the version is written** agrees."* `grep -n -i "changelog\|git tag"`
+over the script → **no matches.** With the CHANGELOG's top entry edited to `0.2.0`:
+
+```
+[PASS   ] version-coherence: all 4 version sources say 0.1.1
+16 passed ... EXIT=0
+```
+
+The published 0.1.1 sdist would ship a CHANGELOG announcing 0.2.0. And the tag guard lives in
+`publish.yml`'s `pypi` job under `if: github.event_name == 'release'` — **on a manual dispatch,
+nothing anywhere compares the version to a tag.**
+
+> **CONFIRMED as a false claim of exhaustiveness.** The sound counterpart: a genuinely stale
+> wheel *is* caught, `FAILED version-coherence: ['0.1.1', '0.1.2']`, exit 1.
+
+## G30. `version-matches-installed`'s FAIL branch is unreachable in CI
+
+`elsewhere` is computed from `Distribution._path`, which is **always the `.dist-info` directory
+in site-packages** — never the source tree, editable or not. So it tests "is site-packages
+inside the repo", not "is this a different checkout". In `publish.yml` site-packages is never
+inside the repo, so `elsewhere` is permanently true and `bad(...)` is unreachable. Observed with
+a real mismatch on a same-tree editable install:
+
+```
+[SKIPPED] version-matches-installed: the installed distribution is a different tree,
+          so a mismatch here proves nothing
+```
+
+The installed distribution **is** this tree. The stated reason is false.
+
+> **CONFIRMED as degraded, REFUTED as a false-green** — it reduces to PASS or SKIP, and SKIP
+> exits 2. What a maintainer wrongly believes is that this row would report a mismatch as a
+> failure; in CI it reports an unrelated excuse.
+
+## G31. Smaller, confirmed
+
+- **The skip cascade is legible in the rows and flat in the summary.** 14 skips, **2 root
+  causes**, interleaved with no grouping. Worse: `twine-check` skips with *"no wheel was
+  produced"*, so `check_twine`'s own message naming the missing tool **never prints** — the
+  operator installs `build`, re-runs, and only then discovers `twine` is also absent.
+- **`license-metadata`: an absent tree licence file silently drops the wheel↔tree comparison
+  inside a PASS.** `if on_disk.is_file() and …` — a *changed* licence is caught, an *absent* one
+  is not compared, and nothing says the comparison could not be made.
+- **`command_segments` does not implement the frozen contract it is the implementation of.**
+  Contract rule 2 step 3 mandates discarding segments beginning inside a quoted string, with the
+  worked example `echo "a && migkit demo"`. There is no quote tracking, and the docstring
+  asserts the contrary — *"a false split can only lose a match, never invent one"* — which the
+  contract's own counterexample falsifies. **REFUTED as a false-green** (it makes the gate
+  *stricter*, so the failure mode is a spurious FAIL); reported because the frozen contract is
+  supposed to be the specification in force and is not, and **both halves of the blind pair
+  agreed with each other and against the document.**
+- **`_module_available` resolves from the cwd.** Any directory named `build/` — the commonest
+  build-artifact name in Python — is importable as a namespace package, turning an honest
+  `SKIPPED … pip install build twine` into a confusing `FAIL`, **after deleting the two real
+  artifacts in `dist/`**. Loud, so ranked low; included as a clean instance of *"can it be
+  satisfied from outside the tree?"* — yes, from the cwd, which the gate never inspected.
+
+## G32. Sound, and what was tried
+
+**The exit-code contract: verified by construction for all four states.** PASS→0, FAIL→1,
+FLAG→1, SKIP→2. `--allow-dev-version` downgrades FAIL to **SKIP**, not PASS, and cannot produce
+green. **No argument combination turned FAIL or FLAG into exit 0.** My earlier suspicion is
+dropped a second time.
+
+**`wheel-demo-data` and `wheel-demo-data-importable` are the two best checks in the file.** I ran
+the attack `-S -E` exists to stop — stripped the demo files out of the wheel, then ran the gate
+with `PYTHONPATH` pointing at a complete source tree that has them. Both failed loudly, the
+`__path__` assertion reported exactly one entry, and the `-1`-vs-size encoding keeps
+*unreachable*, *empty* and *measured* distinguishable. **I could not get past either.**
+
+**`readme-commands`' wrong-tree guard is sound** — run from a worktree while the editable install
+points elsewhere, it *refuses to answer*: *"verifying against the wrong tree would be a claim
+about someone else's code."* That is exactly the `check_contract.py` defect class, and this
+check is explicitly immune. Contrast G30, where the same idea implemented against `_path` fails.
+
+**`contract-dependency-clause` parses rather than copies** — editing the criterion-7 sentence
+flags immediately, exit 1, with text naming the amendment that would clear it.
+
+**Exclusions, measured.** Rule 1's premise (*"this project's README does not use indented
+blocks"*) is **true today — 0 of 78 relevant lines** — but it is a premise about the README, not
+about markdown. `DEMO_DATA` covers 3 of 6 data files, and the uncovered 86% by size is showcase
+data with **0 user-facing accessors**, verified rather than trusted. The 30-char comment-label
+cap costs **0** today (the one label is 8 chars) but the 31st character *silently deletes* a
+command from the scan. The extras exclusion is right for the runtime claim and **unjustified for
+the README allowlist** (G27).
+
+## G33. Two disclosures, per CLAUDE.md
+
+**The environment changed mid-audit.** `build` appeared in the project venv at 22:25 while
+everything else in that `site-packages` is timestamped 20:28. Another agent on this shared
+machine ran `pip install build`. The brief's premise "13 of 15 skip" is no longer reproducible
+against `.venv`; the cascade was reproduced deterministically in a throwaway venv instead, and
+all cascade output above comes from there.
+
+**One rule violation of my own.** Restoring `LICENSE`/`NOTICE` after the licence construction,
+the agent used `git checkout --` rather than a byte-verified backup — those two were the only
+files not backed up in advance. It verified the restore against the untouched main checkout by
+SHA-256 instead (both match). Reported rather than routed around, which is what CLAUDE.md asks
+for.
