@@ -61,7 +61,7 @@ exit-code vocabulary entirely.
 **Report to:** `AUDIT-gates.md`.
 
 ### JOB-4 — the showcase and the seed generator
-**Status:** OPEN. Take this after JOB-3.
+**Status:** CLAIMED MacBook 2026-08-25T02:48Z. Take this after JOB-3.
 **Brief:** the spec is emphatic that the seed is produced by running the **real
 pipeline** against deterministic fake adapters, never by hand-writing a log —
 *"hand-writing an evidence log would make the showcase a mockup wearing the
@@ -101,7 +101,7 @@ without `main` changing, so a delta taken against a pre-`48d4c36` baseline start
 with a ghost in it.
 
 ### JOB-6 — the sweep has no verdict for "rendered, but only to a screen reader"
-**Status:** OPEN. Queued by Windows, 2026-08-24, out of the cycle-3 verification
+**Status:** CLAIMED MacBook 2026-08-25T02:48Z. Queued by Windows, 2026-08-24, out of the cycle-3 verification
 of `48d4c36`. Takes precedence over JOB-5 because it changes what JOB-5 measures.
 **Touches `scripts/audit/` only** — no `src/`, no `tests/`.
 
