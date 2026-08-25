@@ -5867,3 +5867,85 @@ above it for the hedge to be a sub-section of. **Ruling: ratified as shipped.**
 The same-id discipline that `dimensions` uses is the right one, and it is now
 used twice for the same reason — a link to `#excluded` resolves whichever branch
 rendered.
+
+### R34 — closing R31.4: the asymmetry is real, and it already ships a sentence
+
+C18's implementer reported that the unrecorded provenance state "triggers on the
+headline's two sides only", and that blanking the *history's* adapters removes
+the scripted disclosure and puts nothing in its place. R31.4 recorded it and said
+the thing to rule on was the asymmetry rather than the missing sentence. Ruling
+it now — and looking at the code first found something the report did not.
+
+#### R34.1 — the asymmetry, stated exactly
+
+`Provenance` carries the scripted finding at **both** scopes and the unrecorded
+finding at **one**:
+
+| Finding | Headline scope | Series scope |
+|---|---|---|
+| scripted | `headline_scripted` | `scripted_comparisons` |
+| unrecorded | `unrecorded` (sides) | **nothing** |
+
+That is the whole defect in one row. `is_demo` deliberately reaches into the
+series — its docstring argues it, and correctly: *"a band that appears only when
+the last run was fake is a band you can remove by scripting the runs before
+it."* The unrecorded state was then built at headline scope only, so **the gap
+that the scripted finding was widened to close is still open for the state
+invented to close it.**
+
+**Ruling: `Provenance` gains `unrecorded_comparisons: int`** — comparisons
+naming no adapter on at least one side — as the exact mirror of
+`scripted_comparisons`, counted the same way and in the same unit (comparisons,
+never runs, R29.4).
+
+#### R34.2 — the sentence that ships today, and why it is R29.1 again
+
+Found by reading `report.py:1019-1028` rather than by taking the report's word
+for the shape. When no comparison names a `Fake*` adapter, the document prints:
+
+> none of the **N** comparisons in this document name a Fake adapter in their
+> own payloads, and this band comes from the run artifacts the headline read
+
+**Every word of that is true when the payloads name no adapter at all**, and it
+reads as *these N comparisons were checked and came back clean*. A comparison
+with empty adapter strings is counted in the denominator exactly as if it had
+been examined and cleared. It is R29.1's shape one scope up: not a false
+sentence, but a **true sentence that licenses a false inference**, which is the
+harder of the two to find and the easier to defend in review.
+
+**Ruling: the count must exclude what it could not check, and say how many those
+were.** When `unrecorded_comparisons` is zero the sentence stands unchanged.
+When it is not, the denominator is the comparisons that *named* an adapter, and
+a second clause says how many named none and that the document therefore cannot
+speak for them. **Never a `0 of 0`** — the property already refuses that for the
+empty series, on the same reasoning, and that refusal is the precedent.
+
+#### R34.3 — do not equalise the reach; label it
+
+The tempting fix is to make the band series-scoped so the two disclosures match.
+**Refused.** The band sits over the headline's numbers and a reader takes it as
+being about them; widening it would put a claim about last month's runs on top of
+this comparison's verdict, which is R29.1's defect chosen deliberately.
+
+**Ruling: every provenance sentence names its own scope, and the scopes stay
+different.** The band speaks for the headline comparison. A series claim renders
+in the **timeline section**, beside the lineage block R33.2 puts there — which is
+the same siting argument, reached twice independently: statements about *which
+runs are on this page and what is known about them* belong under the chart that
+draws them, not on the banner that reports one of them.
+
+So the reader is never asked to work out which scope is speaking, because each
+sentence says. That is what closes R31.4 — not a third state, and not a wider
+band.
+
+#### R34.4 — scheduled, not merely recorded
+
+**This is C18's fix pass**, and it is the whole of it. C18 shipped R29's clauses
+and has had no fix pass; this is what that pass is for. Dispatch it with R34 and
+R29 both, and with the `_no_scripted_sentence` line numbers above, because the
+defect in R34.2 is invisible unless you read the sentence against a payload that
+records nothing — which is the fixture the brief must demand.
+
+Recorded here rather than in my head, because R28.1 is the failure this project
+keeps repeating and this is the fourth ruling in two days that would otherwise
+have been carried into no brief at all.
