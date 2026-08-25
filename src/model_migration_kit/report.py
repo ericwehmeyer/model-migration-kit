@@ -4029,6 +4029,14 @@ footer {
 {% set candidate_field = model.candidates %}
 {% set excluded_shown = candidate_field is none or candidate_field.excluded %}
 {% set matrix = model.dimensions %}
+{#- The one line, bound once for the same reason: the nav entry for the parameter
+    strip and the strip itself are gated on `trend.points` (R33.1), and a gate
+    spelled twice is a gate that comes apart. `parameter_strip` is deliberately
+    *not* the gate -- when there is a line the tuple is never empty, so gating on
+    it would publish "no parameters tracked" over a log that simply has no line. -#}
+{% set line = model.trend %}
+{% set on_line = line.points | length %}
+{% set logged = model.series | length %}
 <nav>
   <ol>
 {% if candidate_field is not none %}
@@ -4041,6 +4049,9 @@ footer {
     <li><a href="#compared">What was compared</a></li>
 {% if model.series %}
     <li><a href="#timeline">Run history</a></li>
+{% endif %}
+{% if line.points %}
+    <li><a href="#parameters">Parameters across the line's last two runs</a></li>
 {% endif %}
     <li><a href="#judges">Per-judge results</a></li>
     <li><a href="#latency">Latency (descriptive only)</a></li>
@@ -4064,6 +4075,29 @@ footer {
         at {{ model.completeness.last_ts or 'an unrecorded time' }}</li>
   </ul>
 </div>
+{% endif %}
+
+{#- The spot check. `id="counterfactual"` is the contract's own and is not to be
+    improved on: a link that changes its target is a link somebody else's document
+    has already got wrong.
+
+    Gated on `is not None`, never defaulted: the producer declines on three
+    separate grounds -- nothing failed, the check would read every item, or there
+    is no set at all -- and a zero here would print an absence as a measurement.
+
+    **The sentence is the producer's and is printed, not composed.** SpotCheck
+    carries its judge and its side in the sentence itself, so nothing here
+    captions around it to supply a subject it already states; two renderings of
+    one fact is how they come to disagree. Nothing below quotes a number from the
+    record either -- k, N, F and the probability are in the sentence. -#}
+{% if model.spot_check is not none %}
+<p class="note" id="counterfactual">
+  <strong>What a hand check would have missed.</strong>
+  {{ model.spot_check.sentence }}
+  <span class="secondary">This is arithmetic about a check nobody ran, not a
+  measurement this run took {{ dash }} it is the argument for having run the
+  harness, and it is the one number here a sceptical reader should redo.</span>
+</p>
 {% endif %}
 
 {% if candidate_field is not none %}
@@ -4140,6 +4174,35 @@ footer {
   {% endfor %}
 </ul>
 {% endif %}
+{% endif %}
+
+{#- The multiplicity note, gated on `model.multiplicity` and deliberately not on
+    the candidate table (R33.1). R30.4 makes the two `None` together, so the gates
+    select the same documents today -- but a note gated on a *different* field is a
+    note that can outlive its subject, and this one is only ever true of the table
+    above it.
+
+    `note` is the producer's sentence and carries the method, the family size, the
+    alpha, the untested rows and what the correction changed. It is printed, never
+    summarised: `Multiplicity` exists to make the correction *sayable*, and the
+    failure it is shaped against is a report that states a guard was applied while
+    showing nothing it did. `thresholds` is the one field the sentence does not
+    carry, which is why it renders below rather than being left in the record. -#}
+{% if model.multiplicity is not none %}
+<div class="note" id="multiplicity">
+  <strong>Correcting across the candidates in that table.</strong>
+  {{ model.multiplicity.note }}
+  {% if model.multiplicity.thresholds %}
+  The threshold each candidate's p-value was held to, for display and diagnosis
+  {{ dash }} significance is decided by the step-down that produced these numbers
+  and never by reading a p-value against the one beside it:
+  <ul>
+    {% for name, threshold in model.multiplicity.thresholds.items() %}
+    <li><code>{{ name }}</code> {{ dash }} {{ threshold | num }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</div>
 {% endif %}
 
 {% if excluded_shown %}
@@ -4325,6 +4388,174 @@ rather than hidden:</p>
   {% endif %}
 </ul>
 {% endif %}
+{#- The lineage block (R33.2). Below the chart and inside this section, because
+    its whole job is the *difference* between the log the chart draws and the line
+    the lineage names -- which is a paragraph about two sets, not a second chart.
+    The chart above is still `model.series` and is deliberately not re-pointed at
+    `Trend.points`: its heading says "in this log", and re-pointing it would
+    silently drop every run the lineage does not name.
+
+    It is rendered whenever there is a chart, and it is never a heading over
+    nothing: `trend` raises R21.5's assumed-lineage caveat on every line this
+    project can currently draw, and the paragraph below always states how much of
+    the log the line holds. The alternative -- gating the block on the disclosures
+    being non-empty -- drops exactly that caveat on the commonest document there
+    is, which is the defect this chunk exists to fix.
+
+    The count sentence says "N of M" rather than "the line is the whole log",
+    because the two are not the same claim: a run measured against a *different*
+    baseline is not selected, is not excluded, is in none of these fields, and a
+    page claiming to be the whole log would be wrong about it. -#}
+{#- `Caveat.point` is `RunPoint | None`; the note about the *line* is the one
+    with no point. Split by asking rather than by indexing: rendering a claim
+    about how the chart was assembled against whichever night happened to anchor
+    it is an absence rendering as a measurement, from the rendering side. -#}
+{% set line_notes = line.caveats | selectattr("point", "none") | list %}
+{% set run_notes = line.caveats | rejectattr("point", "none") | list %}
+<h3>The candidate line, and what it leaves out</h3>
+<p class="secondary">
+  The chart above draws every comparison this log holds. The candidate line
+  {{ dash }} one lineage of candidate models against one baseline, which is what
+  the parameter strip and the successions below are about {{ dash }} draws
+  {{ on_line }} of those {{ logged }} comparison(s).
+  {% if on_line == logged %}
+  Every comparison in this log is on it, so nothing was left off the line.
+  {% else %}
+  What became of the rest is below, as far as this log can say: a run measured
+  against a <em>different baseline</em> is not a run of this line at all, was
+  never adjudicated as one, and is not listed here.
+  {% endif %}
+</p>
+{% if line_notes %}
+<p class="secondary">Notes on the line itself, rather than on any one run:</p>
+<ul class="secondary">
+  {% for caveat in line_notes %}
+  <li>{{ caveat.reason }}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% if run_notes %}
+<p class="secondary">Runs that are on the line under protest:</p>
+<ul class="secondary">
+  {% for caveat in run_notes %}
+  <li><code>{{ caveat.point.candidate_model or 'unnamed candidate' }}</code>
+      {{ dash }} {{ caveat.point.created or 'no recorded date' }}
+      {{ dash }} {{ caveat.reason }}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% if line.excluded %}
+<p class="secondary">Runs kept off the line, each with the sentence saying why
+{{ dash }} the count without the reason is the list that is worse than none:</p>
+<ul class="secondary">
+  {% for one in line.excluded %}
+  <li><code>{{ one.point.candidate_model or 'unnamed candidate' }}</code>
+      {{ dash }} {{ one.point.created or 'no recorded date' }}
+      {{ dash }} {{ one.reason }}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% if line.undated %}
+<p class="secondary">
+  {{ line.undated }} otherwise-comparable run(s) recorded no date any axis can
+  place them on, so they sit at no point on the chart and on no line. That is a
+  gap in the record, not a run that happened at the beginning of time.
+</p>
+{% endif %}
+{% if line.outside_lineage %}
+<p class="secondary">
+  Runs measured against <em>this</em> baseline whose candidate model the lineage
+  does not name. They are not exclusions {{ dash }} an exclusion is a
+  comparability verdict, and these were never adjudicated because they were never
+  selected {{ dash }} but a page that did not list them would say the line was
+  drawn in full when it was not:</p>
+<ul class="secondary">
+  {% for point in line.outside_lineage %}
+  <li><code>{{ point.candidate_model or 'unnamed candidate' }}</code>
+      {{ dash }} {{ point.created or 'no recorded date' }}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% if line.absent_models %}
+<p class="secondary">
+  Candidate models the lineage names that have no run anywhere in this log. A
+  model named and never heard of is likelier to be a typo in the declaration than
+  a quiet night:</p>
+<ul class="secondary">
+  {% for name in line.absent_models %}
+  <li><code>{{ name }}</code></li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% if line.successions %}
+<p class="secondary">
+  Where the candidate model changed, inside this one line. The line is still one
+  line {{ dash }} these ids are one lineage {{ dash }} and an unbroken line read
+  without this list reads as one unbroken model:</p>
+<ul class="secondary">
+  {% for one in line.successions %}
+  <li><code>{{ one.before or 'unnamed candidate' }}</code> gave way to
+      <code>{{ one.after or 'unnamed candidate' }}</code> at
+      {{ one.created or 'no recorded date' }}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% endif %}
+
+{#- The parameter strip, gated on `model.trend.points` and never on
+    `len(model.series) >= 2` (R33.1) or on the strip being non-empty: the strip is
+    fed from the *line*, so a four-run log with no line has two runs in `series`
+    and an empty strip, and gating on either would put a heading over nothing.
+    When there is a line the tuple is never empty -- one row per tracked
+    parameter, the ones that held included -- so empty means no line, and the
+    reason for that is in the block above. -#}
+{% if line.points %}
+{#- Display labels, which is the template's job: `ParameterChange.name` carries
+    identifier-safe *keys*, deliberately, because a template deriving a class or
+    an anchor from a label broke on the sixth row once already. The key is printed
+    beside the label so a reader can join the row back to the record, and an
+    unknown key falls back to itself rather than rendering blank. -#}
+{% set parameter_labels = {
+     'model_id': 'candidate model',
+     'n_per_item': 'draws per item',
+     'items': 'golden-set items',
+     'judges': 'judge panel',
+     'goldenset': 'golden set',
+     'config': 'config',
+   } %}
+<h2 id="parameters">Parameters across the line's last two runs</h2>
+<p class="secondary">
+  Every parameter this report tracks, as it stood on the last two runs
+  <em>of the line above</em> {{ dash }} which need not be the last two runs in the
+  log, and need not include the run the banner describes. The list is printed
+  whole every time, the parameters that held included: a strip showing only what
+  moved cannot be told apart from a strip that was not looking.
+  {% if on_line > 1 %}
+  The two runs are {{ line.points[-2].created or 'a run with no recorded date' }}
+  and {{ line.points[-1].created or 'a run with no recorded date' }}.
+  {% else %}
+  This line holds one run, at {{ line.points[-1].created or 'no recorded date' }},
+  so there is nothing before it to compare against and every earlier value says
+  so in words rather than sitting blank {{ dash }} a blank cell in a table of
+  values reads as "same as above", and this one is not.
+  {% endif %}
+</p>
+<table>
+  <thead><tr>
+    <th>parameter</th><th>before</th><th>after</th><th>changed</th>
+  </tr></thead>
+  <tbody>
+  {% for row in model.parameter_strip %}
+    <tr>
+      <td>{{ parameter_labels.get(row.name, row.name) }}
+          <span class="secondary"><code>{{ row.name }}</code></span></td>
+      <td>{{ row.before }}</td>
+      <td>{{ row.after }}</td>
+      <td>{{ row.changed | flag }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
 {% endif %}
 
 <h2 id="judges">Per-judge results</h2>
