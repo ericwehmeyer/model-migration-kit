@@ -6786,6 +6786,42 @@ keeping either way: **20j**, which needs no payload edit at all (delete two
 artifact files), and **20c**, a *derived* key (`failures = n - successes`) whose
 absence fabricates a 100% baseline and moves every delta fifteen points.
 
+#### R40.5 — `verify_release.py`'s remaining constant-vs-artifact checks
+
+Found by G25's sibling scan and recorded here rather than fixed there, because
+each is a different defect wearing the same clothes and each wants its own
+chunk. G25 itself is merged (`6e29539`); **the scan is what it left behind.**
+
+The shape is one step milder than G25's and is worth naming once, because it
+recurs: **a check about the wheel that is answered by the checkout.** G25's row
+resolved a name to a filename; these resolve the artifact to a constant, or to
+`src/`, or to whatever happens to be installed. All five pass today and would
+keep passing through the drift they exist to catch.
+
+| Site | What it actually asserts |
+|---|---|
+| `check_sdist_contents` | Pure tar-name membership. A zero-byte `LICENSE` or a lone `tests/__init__.py` passes — while the **wheel-side sibling byte-compares the same three demo files**, so the two halves of one property are held to two standards. |
+| `check_version_coherence` | Reads `__version__` from `src/`, not from the wheel, against this module's own stated rule that **the wheel is the subject**. |
+| `check_readme_commands` | Hardcodes `from <module> import main` instead of the entry point it has just parsed, and verifies against the checkout rather than the wheel. |
+| `check_readme_pip_install` | Measures the README against the hardcoded `DIST_NAME`, never against the wheel's own `Name`. |
+| `_check_installed_version` | PASSes when a **different tree's** installed version happens to match — the same family as G3's out-of-tree citation, in a second script. |
+
+**The one worth ranking above the other four:** neither
+`pyproject["project"]["name"]` nor `msg.get("Name")` appears anywhere in
+`verify_release.py`. The distribution name is a constant in the gate and a field
+in the artifact, and **nothing in all 16 checks compares them.** A rename in
+`pyproject.toml` ships a wheel no README instruction installs, with every check
+green.
+
+Also recorded, from the same chunk and deliberately not acted on: the
+console-script candidate list is pure-Python only, so a compiled extension
+module would be reported missing before the probe runs. This project builds
+`py3-none-any`, so the branch cannot fire wrongly today, and it was left
+un-widened **because the widened form has no positive case any test here can go
+red on** — a speculative branch nothing can falsify being the exact defect that
+chunk existed to remove. Widen it the day a wheel here is not `py3-none-any`,
+and bring a test. The reasoning is a comment in the code, not only here.
+
 #### R40.4 — the second machine's findings, unscheduled and unreproduced here
 
 Landed on `origin/audit/macbook-2026-08-24` while this box slept (`d35b79c`).
