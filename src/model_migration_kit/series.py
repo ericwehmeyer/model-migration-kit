@@ -1093,7 +1093,10 @@ class CandidateField:
     #: Notes on rows that *are* in the table -- see :class:`Caveat`. Carried up
     #: rather than dropped, because a caveat that reaches nobody is the same as a
     #: caveat never computed. Only notes on rendered rows: a note whose point is
-    #: not in :attr:`candidates` has no row to be printed against.
+    #: not in :attr:`candidates` has no row to be printed against. A note with
+    #: **no** point is not such a note and is kept (R30.5) -- it is about the
+    #: field itself, and a renderer walking these into rows must ask before it
+    #: indexes, exactly as :attr:`Trend.caveats` already requires.
     caveats: tuple[Caveat, ...]
     #: Newest minus oldest candidate in days, over the rows that carry a date.
     #: ``None`` unless **at least two** rows carry one -- not ``0.0``, which would
@@ -1227,8 +1230,26 @@ def candidate_field(
             for point in rendered
         ),
         excluded=_excluded(points, partition, rendered),
+        # R30.5: this filter's business is dropping notes about points the
+        # reader cannot see -- a note on a superseded run has no row to print
+        # against, and printing it would name a night that is not on the page.
+        # A ``point``-less note is not one of those. It is about the field as a
+        # whole, so there is no hidden row it could be describing and no reader
+        # who could be sent looking for one; it is kept. Asking only
+        # ``id(note.point) in shown`` would test ``id(None)``, which is in no
+        # ``shown`` set, and delete such a note without a trace -- the silently
+        # shrunk table this pair of chunks exists to prevent, applied to the
+        # sentence that qualifies the table. ``partition_comparable`` mints
+        # nothing point-less today, but :attr:`Trend.caveats` already carries
+        # such a note and it is the same :class:`Caveat`, so the guard is what
+        # stands between "one is routed through here" and "one is routed
+        # through here and vanishes".
         caveats=(
-            tuple(note for note in partition.caveats if id(note.point) in shown)
+            tuple(
+                note
+                for note in partition.caveats
+                if note.point is None or id(note.point) in shown
+            )
             + _drifted_baselines(anchor, rendered)
         ),
         spread_days=spread,
