@@ -5949,3 +5949,96 @@ records nothing — which is the fixture the brief must demand.
 Recorded here rather than in my head, because R28.1 is the failure this project
 keeps repeating and this is the fourth ruling in two days that would otherwise
 have been carried into no brief at all.
+
+### R35 — C14c is merged, and three contract problems its tester refused to decide
+
+`main` at **2220 passing**, seven gates green. The demo render goes 29,716 to
+**32,635 bytes** and `"assumed"` goes **0 to 1** — R21.5's lineage caveat has
+existed on every model this project can build since C7's follow-up merged, and
+until now was printed nowhere.
+
+**The measurement that says why the chunk existed** is the implementer's: at the
+baseline commit, a five-comparison fixture and one with three more `Trend` fields
+widened rendered at **identical byte counts**. Widening the disclosures changed
+nothing on the page. That is R21's finding reached from the rendering side.
+
+**The blind pair produced zero disagreement** — all thirteen tests pass against
+an implementation that never saw them. That is the fourth such pair on this
+project and it still means nothing about defect-freedom: C10's review found 18
+surviving mutants after a clean pair, C7's found 11. C14c gets a review.
+
+#### R35.1 — `Trend.absent_models` can never fire, and R30.1 is why
+
+The tester was told to build a log with all six of `Trend`'s disclosure fields
+non-empty at once. It reported that this is **not satisfiable**, and it is right.
+
+R30.1 rules that `from_evidence` passes `CandidateLineage.assumed_from(...)`
+unconditionally, because nothing outside `series.py` declares a lineage.
+`assumed_from` assembles the ids **out of the log's own points**. So "declared
+ids with no run anywhere in the log" is empty by construction on every model
+this entry point can build.
+
+**`absent_models` exists to catch a one-character typo in a declaration, and
+there are no declarations.** R24.1 added it for the case *most likely to be an
+operator error rather than a fact about the data* — and R30.1, four revisions
+later, removed the only way to reach it. Neither ruling was wrong; the second did
+not notice what it had done to the first.
+
+**Ruling: the field stays, dormant, and this is recorded rather than fixed.**
+Deleting it would mean rebuilding it the day a declaration path lands, and the
+tester has already written its test against a `Trend` the producer returns
+directly. What must not happen is anyone reading its permanent emptiness as
+evidence that lineages are never mistyped. **Any chunk that adds a declaration
+path is also the chunk that makes `absent_models` reachable, and must say so.**
+
+#### R35.2 — my brief was wrong about the demo, and the tester tested the ruling
+
+The C14c brief said all four new sections are empty on the bundled demo. Under
+R33.1's gate the **parameter strip is not**: one run is a line, R33.1 explicitly
+forbids gating on the strip being non-empty, and the demo renders six rows of
+`NO_PREVIOUS_RUN`. The tester tested R33 and flagged the brief.
+
+**Ratified as the tester read it.** A first run showing six rows that all say
+*no previous run* is exactly what `parameter_strip`'s docstring wants — *"a word,
+not a blank, so a genuine first run cannot be read as a run that changed
+nothing"*. The brief was describing what I expected rather than what the ruling
+said, which is the failure R31.1 is about, in a brief instead of a ruling.
+
+#### R35.3 — a producer that returns `None` throws away the reason, three times now
+
+The tester found `ReportModel.spot_check`'s docstring and R33.1's table pulling
+in different directions. The docstring says the producer declines on three
+grounds and *"each is a different sentence the renderer owes the reader"*;
+R33.1's table says the element renders only when `spot_check is not None`. On the
+demo — 12 items with `k=12`, a census rather than a spot check — the reader sees
+**no spot-check section at all** and is told nothing about why.
+
+The renderer cannot fix this. `spot_check` returns `None` and discards which of
+three refusals it was, so there is no sentence for a template to print.
+
+**This is the third instance of one shape**, and naming it is worth more than
+the individual rulings:
+
+| Producer | Returns | What dies with the `None` |
+|---|---|---|
+| `candidate_field` | `None` | every exclusion sentence computed on the way (R23.2) |
+| `spot_check` | `None` | which of three refusals declined it |
+| `trend` *(nearly)* | — | avoided: `Trend` was widened to seven fields instead |
+
+R23.2 accepted the first cost deliberately and said so. R15.3 caught the third
+before it shipped and widened the return type — *"a contract that promises to
+report an absence needs somewhere to report it"*. **The second was never
+noticed**, because a producer returning `None` looks like a producer with
+nothing to say, and only a reader asking *why is this section missing* can tell
+the difference.
+
+**Ruling: ratify R33.1's table for now** — the element is absent when the value
+is `None`, because there is nothing else the template can honestly do — **and
+record that closing it is a producer chunk, not a rendering one.** `spot_check`
+would return a refusal-carrying type on `DimensionMatrix`'s pattern: *a report
+that has no counts says so in the same place as one that has them.*
+
+And the standing rule the three instances yield: **a producer that returns `None`
+must be asked what it knew at the moment it decided to.** If the answer is
+"which of several reasons", that reason is a fact the reader is entitled to, and
+`None` is the one return type that cannot carry it.
