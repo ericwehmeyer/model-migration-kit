@@ -274,6 +274,9 @@ readme body
 """
 
 
+_DEFAULT_MODULE_BODY = "def main():\n    return 0\n"
+
+
 def _make_wheel(
     path: Path,
     *,
@@ -283,12 +286,25 @@ def _make_wheel(
     license_text=APACHE_HEAD,
     entry_points="[console_scripts]\nmigkit = model_migration_kit.cli:main\n",
     modules=("cli.py",),
+    package_init="",
 ) -> Path:
+    """A wheel-shaped zip. `modules` takes bare filenames, or (filename, body) pairs
+    when the test cares what is *inside* the module rather than that it exists.
+
+    The `__init__.py` is unconditional and load-bearing for the console-script
+    check: it makes the extracted fixture a *regular* package, so an import of
+    `model_migration_kit` from the extract directory wins outright. Without it the
+    extract is only a namespace portion, and a regular `model_migration_kit`
+    installed in the test interpreter's site-packages would beat it -- the fixture
+    would silently verify the real package instead of the wheel under test.
+    """
     with zipfile.ZipFile(path, "w") as zf:
         for name in data_files:
             zf.writestr(f"model_migration_kit/data/{name}", f"payload of {name}\n")
+        zf.writestr("model_migration_kit/__init__.py", package_init)
         for module in modules:
-            zf.writestr(f"model_migration_kit/{module}", "def main():\n    return 0\n")
+            filename, body = module if isinstance(module, tuple) else (module, _DEFAULT_MODULE_BODY)
+            zf.writestr(f"model_migration_kit/{filename}", body)
         zf.writestr("model_migration_kit-0.1.0.dist-info/METADATA", metadata)
         if entry_points is not None:
             zf.writestr("model_migration_kit-0.1.0.dist-info/entry_points.txt", entry_points)
@@ -512,13 +528,100 @@ def test_console_script_target_must_be_in_the_wheel(tmp_path):
     """A wheel declaring `migkit = model_migration_kit.cli:main` without shipping
     cli.py installs a command that dies with ModuleNotFoundError on first use."""
     wheel = _make_wheel(tmp_path / "w.whl", modules=())
-    result = vr.check_console_script(wheel)
+    result = vr.check_console_script(wheel, tmp_path / "work")
     assert result.status == vr.FAIL
     assert "model_migration_kit.cli" in " ".join([result.summary, *result.evidence])
 
 
 def test_console_script_present_passes(tmp_path):
-    assert vr.check_console_script(_make_wheel(tmp_path / "w.whl")).status == vr.PASS
+    assert vr.check_console_script(_make_wheel(tmp_path / "w.whl"), tmp_path / "work").status == (
+        vr.PASS
+    )
+
+
+def test_console_script_naming_a_function_the_module_does_not_have_fails(tmp_path):
+    """G25. The wheel ships `cli.py`, so a check that resolves the target to a
+    *filename* passes this wheel and prints the broken target in the row that
+    passes it. What pip installs is a shim that reads
+
+        from model_migration_kit.cli import no_such_entrypoint
+
+    so the command dies with ImportError the first time anybody types `migkit`.
+    Measured before the fix: a real build carrying this entry point produced
+    `16 passed, 0 failed` and exit 0."""
+    wheel = _make_wheel(
+        tmp_path / "w.whl",
+        entry_points="[console_scripts]\nmigkit = model_migration_kit.cli:no_such_entrypoint\n",
+    )
+    result = vr.check_console_script(wheel, tmp_path / "work")
+    assert result.status == vr.FAIL
+    assert "no_such_entrypoint" in " ".join([result.summary, *result.evidence])
+
+
+def test_console_script_reexported_from_a_sibling_module_passes(tmp_path):
+    """The false-negative mode a source grep would have. `def main` appears
+    nowhere in `cli.py`; the entry point works anyway, because the import system
+    is what resolves it. A check that failed this wheel would be a gate that
+    blocks correct code, which is worse than the defect it was added for."""
+    wheel = _make_wheel(
+        tmp_path / "w.whl",
+        modules=(
+            ("cli.py", "from model_migration_kit._impl import main\n"),
+            ("_impl.py", "def main():\n    return 0\n"),
+        ),
+    )
+    assert vr.check_console_script(wheel, tmp_path / "work").status == vr.PASS
+
+
+def test_console_script_pointing_at_something_uncallable_fails(tmp_path):
+    """The shim ends in `sys.exit(main())`. A name that resolves to a string
+    installs a command that dies with TypeError instead of ImportError, which is
+    the same defect wearing a different exception."""
+    wheel = _make_wheel(
+        tmp_path / "w.whl", modules=(("cli.py", 'main = "not a function"\n'),)
+    )
+    result = vr.check_console_script(wheel, tmp_path / "work")
+    assert result.status == vr.FAIL
+    assert "callable" in " ".join([result.summary, *result.evidence])
+
+
+def test_console_script_with_a_dotted_attribute_is_resolved_through(tmp_path):
+    """`module:obj.method` is legal in the entry-point spec. The regex this
+    replaces stopped at the first dot after the colon, which cost nothing while
+    the attribute was captured and thrown away -- and costs a false FAIL now that
+    it is really resolved, because `app` and `app.run` are different objects and
+    only one of them is callable. The fixture is an *instance* on purpose: a class
+    would be callable and the truncation would hide behind that."""
+    body = "class _App:\n    def run(self):\n        return 0\n\n\napp = _App()\n"
+    wheel = _make_wheel(
+        tmp_path / "w.whl",
+        entry_points="[console_scripts]\nmigkit = model_migration_kit.cli:app.run\n",
+        modules=(("cli.py", body),),
+    )
+    assert vr.check_console_script(wheel, tmp_path / "work").status == vr.PASS
+
+
+def test_console_script_whose_module_raises_on_import_fails(tmp_path):
+    """A module that ships and imports are two different claims."""
+    wheel = _make_wheel(
+        tmp_path / "w.whl", modules=(("cli.py", "raise RuntimeError('boom')\n"),)
+    )
+    result = vr.check_console_script(wheel, tmp_path / "work")
+    assert result.status == vr.FAIL
+    assert "boom" in " ".join([result.summary, *result.evidence])
+
+
+def test_a_dependency_missing_from_the_interpreter_skips_rather_than_fails(tmp_path):
+    """Design rule 1, applied to this check's own blind spot. The wheel is not
+    installed, so its declared dependencies come from the interpreter running the
+    gate. If one is absent that is a fact about this machine, not about the entry
+    point -- and a SKIP still pushes the exit code to 2, so it cannot be mistaken
+    for a pass."""
+    body = "import definitely_not_installed_anywhere\n\n\ndef main():\n    return 0\n"
+    wheel = _make_wheel(tmp_path / "w.whl", modules=(("cli.py", body),))
+    result = vr.check_console_script(wheel, tmp_path / "work")
+    assert result.status == vr.SKIP
+    assert "definitely_not_installed_anywhere" in " ".join([result.summary, *result.evidence])
 
 
 def _make_sdist(path: Path, names) -> Path:
