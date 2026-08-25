@@ -205,3 +205,134 @@ with a reference, 102 tag-slots over 96 items — the two-tag arithmetic renders
 synthetic band fires and cannot be missed.** **Latency is correctly absent, not zeroed** — the
 standing rule done right. **Every threshold echoes with its source file.** **The seed is fast**,
 so it will not rot.
+
+---
+
+# Second pass: the document read independently
+
+A second agent read the rendered showcase without seeing the first's provenance trace. It
+confirmed S1–S4 from the other direction and found four things the first pass did not. Both
+had to reconstruct the document, since no shipped command produces it.
+
+## S10. The dimension table's parts sum to **510 of 480**
+
+The prose claims it *"breaks the banner's own number down by tag"*. Column totals parsed from
+the rendered table:
+
+```
+                 baseline   cand-c    cand-a    cand-b-v2
+column totals    475/510    480/510   480/510   400/510
+items                 102        102       102        102
+```
+
+against the banner's `445 / 480` and `450 / 480` on the same page. **Every denominator inflated
+by exactly 30 completions, every item count by exactly 6.** Verified against the shipped golden
+set directly:
+
+```
+items: 96   tag slots: 102   distinct tags: 6   per-tag counts: [17,17,17,17,17,17]
+multi-tagged items: 6
+  synthetic-extract-06     [extraction, instruction-following]
+  synthetic-summarise-09   [summarisation, refusal]
+  synthetic-summarise-13   [summarisation, multi-step]
+  synthetic-format-16      [instruction-following, classification]
+  synthetic-multistep-05   [multi-step, extraction]
+  synthetic-refuse-04      [refusal, summarisation]
+-> 6 rows x 17 items = 102 item-slots over 96 real items; at 5 draws, 510 vs 480 completions
+```
+
+Nothing discloses the overlap. The same page prints *"96 items, 64 with a reference, **0
+untagged**"* directly above a tag distribution summing to **102**.
+
+> **CONFIRMED — and the project already knows.** `synthetic-summarise-09` is the exact item its
+> own test names: `test_the_refusal_collapse_bottoms_out_at_five_of_eighty_five_because_one_item_borrows_the_tag`.
+> **Understood in the tests, undisclosed on the page.** The demo's version of this is 65/70 vs
+> 55/60; at 96 items it is 510 vs 480 and correspondingly harder to catch by eye.
+
+## S11. "runs rigor says would clear the floor: 931" is a **completion** count labelled as runs
+
+Only reachable in a REVIEW render, so the demo can never exercise it. Recomputed independently:
+
+```
+n=  480 (successes 440)  one-sided 95% Wilson lower = 0.893508   -> misses the 0.90 floor
+n=  931 (successes 853)  one-sided 95% Wilson lower = 0.900050   -> clears it
+```
+
+**931 is the number of completions.** The document uses "run" consistently for a 480-completion
+invocation — *"Run history"*, *"run artifacts"*, *"the newest **run** in this field"* — so 931
+runs of this golden set would be **446,880 completions**, a factor of 480 out. The banner on the
+same page uses the right unit (*"collect more **completions**"*), and the project's second pinned
+value behaves identically (435/480 → 6,364 completions, not runs).
+
+> **CONFIRMED.** The value is correct; the label is wrong. This is **the only actionable number a
+> REVIEW gives a reader** — what to do next — and it is off by the size of the golden set.
+
+## S12. The completeness sentence over-counts model text by 677 characters, 508 of them prompts
+
+> *"Every one of the 3 changed item(s) carries its full outputs: **1,212 characters of quoted
+> model text**… **The figure above counts what the models produced.**"*
+
+```
+model outputs, all 30 draws, both sides      535
+golden-set input text for the 3 items        508     <- no model produced these
+candidate-side judge reasons, deduplicated   169
+                                            1212  ✓   (and 107 + 508 + 169 = 784 ✓)
+```
+
+**44% is model output; 42% is prompts.** Two further inconsistencies inside one number: it counts
+every one of 30 output draws but only *deduplicated* judge reasons, and includes candidate-side
+reasons (169) while excluding baseline-side (164). The demo's over-count is 721; here 677.
+
+## S13. The NO-GO and the REVIEW exist on the page only as coloured 7×7 squares
+
+In the GO document, the words "NO-GO" and "REVIEW" appear **nowhere as verdicts** — three hits
+total, all in the appendix's rule definitions. The only rendering is inside the SVG:
+
+```
+<rect class="review" … data-verdict="REVIEW"/>   <rect class="nogo" … data-verdict="NO-GO"/>
+.go{fill:#1a7f37}  .nogo{fill:#b3261e}  .review{fill:#a76b00}
+```
+
+Checked against the raw HTML: **no `aria-*`, no `<desc>`, no per-marker `<title>`, zero `<text>`
+elements** in the timeline. The chart's single accessible name never says one marker is a NO-GO.
+
+> **CONFIRMED — JOB-6's finding inverted.** That one was *rendered, but only to a screen reader*;
+> this is **rendered, but only to a sighted reader, and only as a hue.** With no tick anywhere,
+> *"a three-week gap … is drawn as three weeks"* renders identically to a 7.1-second gap.
+
+## S14. Smaller, confirmed
+
+- **13 of 42 chart markers are drawn exactly on top of another** — 42 markers, 29 distinct
+  (x, y). Three comparisons share a night's timestamp hence its x, and two models are scripted to
+  the same failure count on 13 of 14 nights. A reader counting squares against the stated 42
+  finds 29. *(The NO-GO and REVIEW markers are not among the hidden ones — checked — so this does
+  not compound S13.)*
+- **The REVIEW document says the sample is underpowered and powered in adjacent rows.**
+  `regressed / floor cleared / underpowered | no / no / yes` sits directly above `powered for the
+  configured effect | yes (480 observed per side, roughly 131 required)`. Two genuinely different
+  questions, no number wrong, and **nothing says they are different quantities**.
+- **The showcase never demonstrates the report's central design rule.** Across all 42
+  comparisons: `parse_failures 0, imputed 0, missing_scores 0, unstable 0, warnings 0, parts>1 0`.
+  **Every zero on the page is a measured zero.** The one artifact built to show the tool off
+  never exercises *"an absence must not render as a measurement"*.
+
+## S15. What the second pass expected to find wrong and did not
+
+**The timestamp asymmetry is disclosed, accurately, unprompted — REFUTED as a defect, and it is
+the strongest thing in the document.** With the plan's dating applied, the synthetic band gains a
+sentence that is absent without it: *"All 42 comparisons record a created date on a different UTC
+day from the evidence record carrying each… A document seeded one night at a time has that gap by
+construction… and it is disclosed here rather than left for a reader to find and distrust."* So
+the fourteen-night arc **is** scripted with fabricated dates, and the document says so on its own
+initiative. Only quibble: the top band carries the adapter count but not the clock sentence.
+
+**Also refuted:** *"no multiplicity correction across the 42 comparisons"* — the page never claims
+one, and Holm within a comparison is correct (identity at one judge). *"The candidate table
+double-counts candidate B (v1 and v2)"* — distinct model ids under one key, and `age in this
+field` discloses that b-v1's row is a night stale.
+
+**Recomputed and exact:** all eight Wilson intervals; Mann-Whitney `0.739639` → scipy
+`0.7396387635627311`; night-14 candidate B → `2.426401761042508e-12`; *"roughly 131 required"* →
+130.2 → 131; item counts `89/7/0` and `90/6/0` summing to 96; every delta against its own night's
+baseline; `4 + 38 = 42`; every `(N)` heading against its contents. **The REVIEW whisker crosses
+the floor line and no GO whisker does — checked across all 42.**
