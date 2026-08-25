@@ -248,3 +248,31 @@ and `%TEMP%` elsewhere; only `masking.py` and `recompute.py --rebuild` care.
 **Load.** `mutation_harness.py` defaults to `pytest -n 4`, per `CLAUDE.md`: wall
 clock here is dominated by other agents, not by the code. Use `--workers 8` only
 when the board is quiet.
+
+### `page_text.py` dropped SVG `<title>` on 2026-08-24 — and why that is not cosmetic
+
+`html_to_text` used to strip tags and keep their character data, so the text of an SVG
+`<title>` came back as prose. An SVG `<title>` is a **tooltip and an accessible name**, not
+something a sighted reader sees. The consequence was a false positive in the one question this
+whole toolkit exists to answer:
+
+```
+$ migkit demo --out demo.html
+$ page_text.py demo.html | grep -c "candidate accuracy: pass rate"
+1          # before the fix -- the tool says a screen-reader-only string is rendered text
+0          # after
+```
+
+That string lives only in `<svg><title>`; the same SVG contains **zero `<text>` elements**.
+
+**Two of this project's audit findings are about `<title>`-only disclosures** — the banner
+bar's "floor not recorded", and the timeline's zero-span note — so with the old behaviour the
+sweep that found them would have reported them as present. A measurement tool that counts a
+tooltip as text reports a screen-reader-only disclosure as a rendered one, which is exactly the
+class of defect these audits exist to find.
+
+`<title>` and `<desc>` are now dropped alongside `<script>` and `<style>`. Verified afterwards
+that real prose is untouched (`FAKE MODELS`, `Methodology appendix`, `Flips`, `Provenance`,
+`roughly 140` all still found). **If you want the accessible names, parse the raw HTML for them
+deliberately** — do not get them by accident from a function whose contract is "what the reader
+sees".

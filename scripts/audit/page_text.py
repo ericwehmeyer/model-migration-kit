@@ -21,6 +21,20 @@ for one job -- making the *sentences* of this report comparable and quotable:
 What it deliberately loses: attributes. The SVGs carry their numbers in
 ``data-value`` / ``data-created`` attributes and those vanish here. A finding
 about the *chart* has to be made against the raw HTML; this is for the prose.
+
+**``<title>`` and ``<desc>`` are dropped, and that is the whole point of this
+module being a module.** An SVG ``<title>`` is a tooltip and an accessible name;
+it is *not* rendered prose. The earlier version of this file stripped the tags
+and kept their character data, so a screen-reader-only disclosure came back as
+visible text -- and "is this sentence on the page?" returned **true** for a
+string no sighted reader can see. That is precisely the class of defect these
+audits exist to find, so a measurement tool that makes it is worse than no tool.
+Two of this project's audit findings are *about* ``<title>``-only disclosures
+(the banner bar's "floor not recorded", and the timeline's zero-span note); with
+the old behaviour both would have been invisible to the sweep that found them.
+
+If you want the accessible names, parse the raw HTML for them deliberately. Do
+not get them by accident from a function whose contract is "what the reader sees".
 """
 
 from __future__ import annotations
@@ -37,7 +51,7 @@ _BLOCK_CLOSE = re.compile(
 
 def html_to_text(source: str) -> str:
     """Return the readable text of a rendered report page."""
-    text = re.sub(r"(?s)<(script|style).*?</\1>", "", source)
+    text = re.sub(r"(?s)<(script|style|title|desc).*?</\1>", "", source)
     text = re.sub(r"(?i)<br\s*/?>", "\n", text)
     text = _BLOCK_CLOSE.sub("\n", text)
     text = re.sub(r"(?i)</t[dh]>", " | ", text)
