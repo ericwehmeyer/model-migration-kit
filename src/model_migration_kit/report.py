@@ -194,7 +194,12 @@ from .dimensions import (
     dimension_cell,
 )
 from .errors import ArtifactError, GoldenSetError, ReportError
-from .evidence import resolve_evidence, stream_records
+from .evidence import (
+    EVIDENCE_SCHEMA_VERSION,
+    SchemaTally,
+    resolve_evidence,
+    stream_records,
+)
 from .goldenset import GoldenSet
 from .judging import JudgedArtifact
 from .runner import RunArtifact
@@ -243,6 +248,8 @@ __all__ = [
     "Completeness",
     "DetailBudget",
     "DimensionMatrix",
+    "EVIDENCE_SCHEMA_BAND",
+    "EvidenceSchema",
     "FlipRow",
     "JudgeRow",
     "MethodologySection",
@@ -881,6 +888,215 @@ class DetailBudget:
         }
 
 
+# --------------------------------------------------------------------------- #
+# R38.3: the log's own envelope, read and disclosed rather than refused
+# --------------------------------------------------------------------------- #
+
+#: The band this document carries when the log declares an envelope schema this
+#: build was not written to read: label, ``id``, CSS modifier, terminal border --
+#: the same four-tuple shape ``_PROVENANCE_BANDS`` rows carry, so the two bands
+#: above the verdict banner are rendered by one pair of renderers reading one
+#: kind of row rather than by two special cases.
+EVIDENCE_SCHEMA_BAND = (
+    "EVIDENCE SCHEMA NOT UNDERSTOOD",
+    "evidence-schema",
+    "schema",
+    "yellow",
+)
+
+#: Distinct declared versions a single document will name. A log is append-only
+#: and rigor supports separate processes appending to one path, so two writers in
+#: one file is a real shape rather than a hypothetical one -- but a hostile log
+#: with a different version on every line must not turn the band into the file.
+#: Past this many the band says so instead of listing more.
+_SCHEMA_VERSIONS_NAMED = 4
+
+
+@dataclass(frozen=True)
+class EvidenceSchema:
+    """Whether this build understood the envelope the log declared, and what it did about it.
+
+    **The ruling this class is, stated where it is implemented.** ``runner.py``
+    and ``judging.py`` refuse an artifact whose schema they do not understand,
+    *"rather than misinterpret it"*, and the evidence log had no such guard at
+    all. The choice available was to copy that refusal or to read the log and say
+    what was read. **This reads and discloses**, and the asymmetry is the whole
+    argument:
+
+    * A runner that misreads an artifact **writes**. Its output is another
+      artifact, consumed by judging, by comparison and finally by this log, with
+      no person in the loop at any step; a misreading there is laundered into new
+      evidence that looks native. Refusing costs a re-run, which is cheap,
+      because the artifact can be produced again.
+    * A report that misreads a log **shows**, to one person, on one page, with
+      room for a disclosure beside the numbers. Nothing downstream consumes the
+      HTML. And the evidence log is the one artifact this pipeline declares
+      permanent -- append-only, with no delete, truncate or update, because *"an
+      audit trail you can edit is not an audit trail"*. Refusing to render it
+      does not cost a re-run; it costs the only copy of a record that was
+      deliberately made un-reproducible.
+
+    So a refusal here would answer "this log may not mean what I think" by
+    showing the reader **nothing at all** -- not the verdict, not the models, not
+    even the fact that a run happened -- when what it actually knows is a great
+    deal, qualified. That is the trade this project has now taken four times:
+    C7's first-run marker, C4's exclusions, R21.5's undeclared lineage, and
+    R29.2's third provenance state, which refused to resolve an unanswerable
+    question to *real* and invented a state that says so instead. This is the
+    same move pointed at the input rather than at the payload.
+
+    **What is deliberately not done.** The exit code and the verdict are still
+    the log's own. ``migkit report`` re-renders a decision that was already made;
+    minting a different exit code because the envelope was unfamiliar would be
+    this module inventing a verdict, and it would be the refusal again wearing a
+    number. The band is printed above the verdict banner and is the first thing
+    on stdout precisely because the exit code is not moving.
+
+    **Two surfaces and not three**, which is R29.2 item 3 and the note above
+    :func:`methodology_sections`: the band and the terminal panel, in one wording
+    written once. A third copy in ``warnings`` would file it under the HTML's
+    *"Warnings recorded during the comparison"* heading, and this was not
+    recorded during the comparison -- it is a fact about the file. A library
+    caller reads this object.
+    """
+
+    #: :data:`~model_migration_kit.evidence.EVIDENCE_SCHEMA_VERSION`, carried so
+    #: the sentence can name the ceiling it measured against without the
+    #: renderers importing it.
+    understood: int
+    #: Records whose declared version this build could not read. Counted over the
+    #: whole log, because the whole log is what the document draws on: the
+    #: headline comes from the last ``migkit.comparison``, the timeline from
+    #: every one of them, and the dimension matrix from every ``judge.verdict``.
+    foreign_records: int
+    #: Records the pass that found them saw -- the denominator of the sentence,
+    #: and ``0`` whenever :attr:`foreign_records` is ``0``.
+    #:
+    #: **Zeroed on a log with nothing to disclose, deliberately.** This object
+    #: exists to carry a disclosure, and a log this build read start to finish has
+    #: none: publishing its record count here would put a *log-scoped* number on a
+    #: model whose every other headline field is scoped to the last comparison,
+    #: and ``test_prepending_an_earlier_run_changes_no_field_but_the_series``
+    #: watches exactly that -- a night of history in front of the same run must
+    #: not move anything but the series. It measured this change and was right to:
+    #: the first version of this field reported 4 records against 6 for one run
+    #: read from two logs. The denominator is only ever read beside a count it is
+    #: the denominator *of*, so it is carried only then. The same reasoning
+    #: :attr:`Provenance._counted` gives for refusing to print ``0 of 0``.
+    total_records: int
+    #: The distinct declared versions, as the log spelled them, in the order they
+    #: were first seen. Never a version this module chose -- see
+    #: :func:`~model_migration_kit.evidence.foreign_schema`, which returns text a
+    #: writer wrote and never a default it filled in.
+    versions: tuple[str, ...] = ()
+    #: Whether more distinct versions were found than :attr:`versions` names.
+    versions_elided: bool = False
+
+    @classmethod
+    def from_tally(cls, tally: SchemaTally) -> EvidenceSchema:
+        """What one pass over a log found, as the renderers' view of it.
+
+        A tally that found nothing yields :data:`_NO_FOREIGN_SCHEMA` rather than
+        a reading carrying the log's size -- see :attr:`total_records` for why
+        the size is not published when there is nothing to measure it against.
+        """
+        if not tally.foreign_records:
+            return _NO_FOREIGN_SCHEMA
+        return cls(
+            understood=EVIDENCE_SCHEMA_VERSION,
+            foreign_records=tally.foreign_records,
+            total_records=tally.total_records,
+            versions=tally.versions,
+            versions_elided=tally.versions_elided,
+        )
+
+    @property
+    def foreign(self) -> bool:
+        """Whether anything in the log declared a schema this build cannot read."""
+        return bool(self.foreign_records)
+
+    @property
+    def banded(self) -> bool:
+        """Whether this document carries the schema band above its verdict banner."""
+        return self.foreign
+
+    @property
+    def label(self) -> str:
+        """The band's shouted half, or ``""`` when there is no band."""
+        return EVIDENCE_SCHEMA_BAND[0] if self.banded else ""
+
+    @property
+    def anchor(self) -> str:
+        """The band's ``id``, so a reviewer can link straight at it."""
+        return EVIDENCE_SCHEMA_BAND[1] if self.banded else ""
+
+    @property
+    def css(self) -> str:
+        """The band's modifier class."""
+        return EVIDENCE_SCHEMA_BAND[2] if self.banded else ""
+
+    @property
+    def border(self) -> str:
+        """The terminal panel's border colour. Never the only carrier of a fact."""
+        return EVIDENCE_SCHEMA_BAND[3] if self.banded else ""
+
+    @property
+    def sentence(self) -> str:
+        """The band's words, written once for the terminal and the HTML both.
+
+        The same discipline as :attr:`DetailBudget.sentence` and
+        :attr:`Provenance.sentence`: two copies of a disclosure are two chances
+        for one of them to go stale.
+
+        It names four things and no more -- how many records, of how many, which
+        versions, and what this build reads -- and then the consequence, which is
+        the part a reader cannot work out alone: the numbers above were read
+        under the schema this build knows, so a field the newer schema moved or
+        redefined is on the page under its old meaning. Naming the count as *n of
+        m* rather than "some" is what lets a reader tell one appended stranger
+        from a whole foreign file.
+        """
+        if not self.banded:
+            return ""
+        listed = ", ".join(self.versions)
+        if self.versions_elided:
+            listed = f"{listed} and others"
+        scope = (
+            f"all {self.total_records} records"
+            if self.foreign_records == self.total_records
+            else f"{self.foreign_records} of the {self.total_records} records"
+        )
+        return (
+            f"{scope} in this evidence log declare envelope schema {listed}, and "
+            f"this build reads up to {self.understood}. The log was read anyway, "
+            f"because refusing to render an append-only audit trail tells a "
+            f"reviewer less than reading it and saying so -- but every number on "
+            f"this page was read under schema {self.understood}, so any field a "
+            f"later schema moved, renamed or redefined is shown here under the "
+            f"older meaning."
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "understood": self.understood,
+            "foreign_records": self.foreign_records,
+            "total_records": self.total_records,
+            "versions": list(self.versions),
+            "versions_elided": self.versions_elided,
+            "foreign": self.foreign,
+        }
+
+
+#: An :class:`EvidenceSchema` that has seen nothing, for a model assembled by any
+#: route other than :meth:`ReportModel.from_evidence`. The same claim as "no
+#: record declared a schema this build cannot read", and the same reasoning
+#: :attr:`ReportModel.dated_apart` gives for its ``0``: the disclosure is written
+#: to appear only when something was actually found.
+_NO_FOREIGN_SCHEMA = EvidenceSchema(
+    understood=EVIDENCE_SCHEMA_VERSION, foreign_records=0, total_records=0
+)
+
+
 #: :attr:`Provenance.state` when a ``Fake*`` adapter produced any run the document
 #: shows. The positive claim, and the only one the ``<title>`` carries.
 PROVENANCE_SCRIPTED = "scripted"
@@ -1381,6 +1597,21 @@ class ReportModel:
     #: nothing about dates, and the disclosure is written to appear only when the
     #: count is positive.
     dated_apart: int = 0
+    #: What the log's own envelope declared, and whether this build could read it.
+    #: R38.3, and the one reader of a written artifact that had no schema guard at
+    #: all: ``runner.py`` and ``judging.py`` both refuse a schema they do not
+    #: understand, and a log with ``schema_version: 99`` on every record used to
+    #: render in full, exit 1, print ``VERDICT: NO-GO`` and say nothing.
+    #:
+    #: It says something now, and it still renders -- see :class:`EvidenceSchema`
+    #: for why those are not in tension. Accumulated in :meth:`from_evidence`'s
+    #: single pass through :class:`SchemaTally`, because that pass is the only
+    #: read of the log there is and a second one is what C3's contract forbids.
+    #:
+    #: Empty on a model built by any other route, which is the same claim as "no
+    #: record declared a schema this build cannot read": the band is written to
+    #: appear only when something was found.
+    evidence_schema: EvidenceSchema = _NO_FOREIGN_SCHEMA
     #: One point per ``migkit.comparison`` record in the log, oldest first --
     #: every run the log holds, not only the one this report is about. A log of
     #: fourteen nightly runs used to render as one verdict with thirteen nights
@@ -1706,10 +1937,18 @@ class ReportModel:
         dated_apart = 0
         builder = SeriesBuilder()
         tally = DimensionTally()
+        # R38.3. It rides *this* loop and not a read of its own, which is the
+        # whole reason it is three lines rather than a function taking a path:
+        # C3's contract forbids a second pass, and the thing being checked is the
+        # envelope of every record the pass already has in its hand. Nothing here
+        # can raise -- see `SchemaTally.add`. A band is a disclosure, and a
+        # disclosure that can abort the render is a refusal with extra steps.
+        schema = SchemaTally()
         for record in _stream_records(path):
             last = record
             builder.add(record)
             tally.add(record)
+            schema.add(record)
             # Last one wins, and a comparison clears the verdict beside it, so
             # these are one reduction over the log and not two independent
             # last-wins variables. Independent, they let a verdict written on an
@@ -1971,6 +2210,7 @@ class ReportModel:
             command=str(payload.get("command", "") or ""),
             artifact_dir="" if artifact_dir is None else str(artifact_dir),
             dated_apart=dated_apart,
+            evidence_schema=EvidenceSchema.from_tally(schema),
             series=series,
             dimensions=dimensions,
             candidates=candidates,
@@ -3480,6 +3720,27 @@ def render_terminal(model: ReportModel, *, console: Console | None = None) -> No
     # separator is an ASCII hyphen and not the HTML's em dash on purpose -- rich
     # substitutes box characters on a legacy Windows console and not arbitrary
     # text, and this line prints before anything else has had a chance to fail.
+    # R38.3, first and above the provenance band for the reason the template
+    # gives: the adapter names the provenance band speaks about were read out of
+    # the same payload this sentence is about. `_cell` and not `Text`, unlike the
+    # band below it: a declared schema version is a field read out of the log and
+    # is as attacker-influenced as a model id, where a provenance state is one of
+    # three constants this module wrote.
+    #
+    # **No single revert turns this line red, and that was measured rather than
+    # assumed.** `evidence._schema_label` already replaces every non-printable
+    # character at the source, so swapping `_cell` for `Text` here leaves
+    # `test_a_hostile_declared_version_cannot_become_the_band` green. Removing
+    # the source strip *alone* turns it red on the **HTML** band -- jinja's
+    # autoescape does not touch ESC -- while the terminal stays clean, which is
+    # this call doing the work. Two independent defences, each covering the
+    # other's absence; the report of this chunk records the green revert rather
+    # than an assertion invented to hide it.
+    schema = model.evidence_schema
+    if schema.banded:
+        shouted = _cell(f"{schema.label} - {schema.sentence}")
+        shouted.stylize("bold")
+        out.print(Panel(shouted, border_style=schema.border))
     provenance = model.provenance
     if provenance.banded:
         out.print(
@@ -3997,6 +4258,11 @@ h2 {
   color: #4a3400;
   border: 2px solid #a8760a;
 }
+.band.schema {
+  background: #fbe9c8;
+  color: #4a3400;
+  border: 2px solid #a8760a;
+}
 .band.mismatch {
   background: #fbe9c8;
   color: #4a3400;
@@ -4169,6 +4435,16 @@ footer {
 </style>
 </head>
 <body>
+{#- Above the provenance band, and that order is the argument: the adapter names
+    the provenance band reads were themselves read out of this log's payload, so
+    a sentence saying the payload may not mean what it appears to mean qualifies
+    the band below it as much as it qualifies the verdict. R38.3. -#}
+{% if model.evidence_schema.banded %}
+<div class="band {{ model.evidence_schema.css }}"
+     id="{{ model.evidence_schema.anchor }}" role="alert">
+{{ model.evidence_schema.label }} {{ dash }} {{ model.evidence_schema.sentence }}
+</div>
+{% endif %}
 {% if model.provenance.banded %}
 <div class="band {{ model.provenance.css }}" id="{{ model.provenance.anchor }}" role="alert">
 {{ model.provenance.label }} {{ dash }} {{ model.provenance.sentence }}
