@@ -6662,8 +6662,8 @@ incidentally — if a chunk closes one, the merge says so and strikes it here.
 
 | Item | Waiting on | Source |
 |---|---|---|
-| R34.3's rendering — the series-scope provenance claim in the timeline section | C14c is merged, so this is now free | R34.3 |
-| R37.6's third counter — `scripted_among_named`, and `_counted_paragraph` still says *"the other 2 do not"* about comparisons that recorded no adapter | chunk 0 is in `_scripted_paragraph` | R37.6 |
+| ~~R34.3's rendering — the series-scope provenance claim in the timeline section~~ **Struck — merged as `cc84092`.** Verified by looking rather than remembering: `timeline_sentence` is in `report.py` on `main`, four sites. | — | R34.3 |
+| R37.6's third counter — `scripted_among_named`, and `_counted_paragraph` still says *"the other 2 do not"* about comparisons that recorded no adapter | **Unblocked and still open.** Chunk 0 merged, so the blocker is gone; `scripted_among_named` is absent from `src/` on `main`, so nothing implemented it incidentally. **Free to dispatch — this is the next R40 brief.** | R37.6 |
 | The four remaining coercion splits — `goldenset_hash`, `judges_hash`, `config_hash`, `config_path` | needs a ruling, not a sweep: `config_path` has a second `or` downstream (`source = config_path or THRESHOLD_SOURCE_UNRECORDED`), so a recorded `"0"` would flip the threshold source | C22b's fix |
 
 #### R40.2 — found, proved, and never scheduled
@@ -6693,8 +6693,17 @@ conflation — a leaked repr.
 **45 numeric leaves are never rendered at all**, including the entire
 `completion_rates` block, every `flips[*]/gains[*].changes[*].{baseline,candidate}_{passes,n}`
 (the page prints a precomputed `label` string instead, so those numbers are dead
-payload), `latency.{baseline,candidate}.n`, `judges[0].regression.*` and
+payload), ~~`latency.{baseline,candidate}.n`~~, `judges[0].regression.*` and
 `judges[0].power.*`. **This is R21's finding in a place nobody has looked.**
+
+**`latency.{baseline,candidate}.n` is closed** — committed on
+`chunk/latency-absence` as `a895004`, unmerged. It was the second-worst of the
+45: not merely unrendered but *load-bearing and unrendered*, since a median over
+60 timings and the same median over 1 rendered byte for byte the same document.
+It now reaches both surfaces beside the statistic it supports. The chunk that
+closed it also found the leaf was the smaller half of the defect — the section
+gated on the adapter's class name rather than on whether anything was measured,
+and printed *"Not measured"* over 120 recorded timings. **44 leaves remain.**
 Either they are superseded — in which case the payload should stop carrying them
 — or the page is hiding numbers it holds. Both answers are chunks; neither is
 free.
@@ -6719,10 +6728,25 @@ window as a link preview"*. **R34.3 ruled beside this and not on it**: it refuse
 to equalise the scopes, which is right for the band and leaves the title
 untouched.
 
-**`check_contract.py` can pass against a file in another checkout** (R39.3). Its
+~~**`check_contract.py` can pass against a file in another checkout** (R39.3). Its
 citation regex excludes `:`, so a rooted Windows citation loses its drive and is
 joined to the drive of `root`. A gate satisfiable by a file outside the tree is
-not a gate.
+not a gate.~~
+**Dispatched on `chunk/g3-contract-citations` as part of issue #9.** The Mac's
+gate audit reached the same defect by a second route and named the mechanism
+more precisely: the out-of-tree guard at `check_contract.py:154` is `and`-ed
+behind *"the citation has no directory component"*, so a citation that carries
+one skips the guard entirely — and `SIBLINGS` (line 48) includes a bare
+`REPO.parent`, which on this box holds 70+ checkouts of this same project.
+Measured: a citation of line 5700 of `report.py` written tree-relative FAILs
+with *"file has 5328 lines"*, while **the same line of the same file** cited
+with a leading checkout directory passes — resolved against a different
+checkout of this same project, and the line-count assertion answered by a file
+the contract does not govern.
+
+(Those two citations are deliberately described rather than written out here:
+spelled literally they are themselves citations, and `check_contract.py` reads
+this document. Writing the example would fail the gate the example is about.)
 
 **R37.2's empty-tag-universe branch has no producer behind it.** C14b's fix pass
 established that `dimensions._index` gives every item at least `UNTAGGED` and
@@ -6761,6 +6785,63 @@ and disclosed, they become real work with a known trigger. Two exceptions worth
 keeping either way: **20j**, which needs no payload edit at all (delete two
 artifact files), and **20c**, a *derived* key (`failures = n - successes`) whose
 absence fabricates a 100% baseline and moves every delta fifteen points.
+
+#### R40.4 — the second machine's findings, unscheduled and unreproduced here
+
+Landed on `origin/audit/macbook-2026-08-24` while this box slept (`d35b79c`).
+They are in this ledger for R28.1's reason: a finding that lives only in another
+machine's commit message is a ruling nobody on this box will execute.
+
+**They are recorded here at the second machine's own evidence standard, not at
+this one's.** The Mac states the provenance itself: V1–V3 are *"a subagent's
+results landed at this session's token limit and I did not independently re-run
+them. Windows should reproduce V1, V2 and V3 before acting on them."* **Nothing
+in this subsection has been reproduced on this box. No entry leaves this list on
+the strength of the Mac's report alone.**
+
+These outrank the rendering items above, and it is worth saying why in one line:
+every finding elsewhere in R40 is about a document that describes a verdict
+wrongly. **These are about the verdict itself being wrong.**
+
+| # | Finding | Why it ranks |
+|---|---|---|
+| **V1** | Twelve items, both models passing all of them every time, and only `--n` varies: one draw gives REVIEW rule 3, five draws give GO rule 5, on identical item-level facts. `n_observed` counts completions and nothing divides by `n_per_item`, while `required_sample_size` derives its figure from independent Bernoulli trials. **A one-item golden set asked 60 times is a GO.** | Not the known demo thread — that was the p-value at rule 1. This is the floor gate and the power flag, the pair separating REVIEW from GO. |
+| **V2** | 99 of 100 candidate scores set to `null` turns a p=1.8e-45 NO-GO into a GO with p=1.0: `_impute_unscored` fills unscored passed records at `SCORE_MAX` and Mann-Whitney runs on an array the tool wrote. | Fully reachable on the default config, and a null score is rigor's *documented* prompt contract. |
+| **V3** | The mirror: the same silence on the baseline manufactures a NO-GO over 100/100 passing both sides with zero flips — and the imputed row, which is the one a reader checks to ask how much rests on imputation, reads `0 \| 0`. | A disclosure field that reads zero at the moment it should read 99. |
+| **U1** | A judge writing score `0` on a 1–5 rubric — total failure, expressed the natural way — turns a NO-GO into a GO. rigor refuses the out-of-range score before returning any part of the verdict, so `_grade` files the whole record *including `pass:false`* as a parse failure and `_counted` drops it from numerator and denominator. 190/200 becomes 190/190, p=1.0, flips 0, exit 0. | `_impute_unscored`'s own docstring names exactly this number as the catastrophe it exists to prevent; the parse-failure door reaches it anyway. At 10/200 — the documented tolerance exactly — nothing warns. Needs the judge's malfunction to correlate with the model's failures, which is the most natural failure of an LLM judge shown a very bad answer. |
+| **U2** | An item whose every draw was unparseable enters no bucket. `38+0+0=38` printed beside `items:40`, with Flips (0) reading `None`. | A second raw-`None` leak, and an arithmetic disclosure that does not sum. |
+| **U4** | `--timeout` makes latency the strictest gate in the tool, on a page that says twice that latency is never a gate — and the correct answer is destroyed, because rigor keeps `run.value` and `_completion_from_run` throws it away. | Contradicts §2.2 item 4 directly. Touches the section `chunk/latency-absence` (`a895004`) rewrites, so **sequence these two.** |
+| **missing_scores** | A second dead disclosure field; on the outcome-fallback path a candidate with all 100 scores absent logs `missing_scores 0`. | An absence recorded as a measured zero, *inside the disclosure field* — the project's central rule broken where it is supposed to be enforced. |
+
+**The negatives are worth as much as the findings, and are recorded so nobody
+re-runs them:**
+
+* `explain_verdict` is a faithful total implementation of its documented
+  precedence — **4,368 cases, zero mismatches**. The precedence table is not
+  where the defects are; every finding above is in *what feeds it*.
+* Determinism holds: ~600 renders across 5 fixtures, 2 interpreters, 300+ hash
+  seeds, 8 timezones and 6 locales gave one byte-string per fixture.
+  `series.py`'s stated hashing hazard is **absent in practice**. What fails is
+  the claim's second clause — **there is no `--now` on the CLI**, verified
+  independently, so the reviewer the sentence is written about cannot reproduce
+  the file they were sent.
+* Output safety beyond the known `cli.py:437`, and zip-slip/tar-slip in
+  `verify_release.py`'s extraction: both **refuted with their coverage named.**
+
+**From the security review (`AUDIT-security.md`, JOB-14):** a hostile evidence
+log turns off the golden-set identity gate by blanking one field and the page
+says nothing; path confinement is textual rather than resolved, so a symlink
+shipped beside a log reads and quotes a file outside the tree while the page
+names the symlink; and confinement is measured against the process CWD rather
+than the log's own directory, so one log renders two different documents from
+two directories. The agent notes the triggering shape **is exactly what this
+project's Windows box writes.**
+
+**Also recorded:** eleven Mac agents were stopped at a token limit and ten had
+not written `FINDINGS.md`, so their work is gone. The Mac's handoff names each
+so a later session re-runs from the brief. **JOB-16, the statistics audit, is
+the one to restart first** — its opening check is whether the Mann-Whitney
+operands are transposed, which if true would sit underneath V2 and V3 both.
 
 ### R41 — `{{ x or default }}`: two sites wrong, thirty-seven right, and the count is the ruling
 
