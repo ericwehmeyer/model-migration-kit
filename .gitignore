@@ -34,5 +34,8 @@ reports/
 
 .DS_Store
 
-# Agent worktrees live here; they are checkouts of this same repo.
-.claude/
+# Claude Code project config is shared rules -- it must be tracked, or a second
+# operator never receives it and `git add -A` silently skips it. Ignore only the
+# per-developer local override and any agent worktrees parked underneath.
+.claude/settings.local.json
+.claude/worktrees/
