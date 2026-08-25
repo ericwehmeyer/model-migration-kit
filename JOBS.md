@@ -96,16 +96,80 @@ change is a fix or a regression. A delta is worth reading; a re-listing is not.
 **Report to:** `AUDIT-VERDICTS.md` under a dated heading of your own, or a new
 `AUDIT-delta-<date>.md`.
 
+**Before you run it, read JOB-6.** Your own `48d4c36` moved one path's verdict
+without `main` changing, so a delta taken against a pre-`48d4c36` baseline starts
+with a ghost in it.
+
+### JOB-6 — the sweep has no verdict for "rendered, but only to a screen reader"
+**Status:** OPEN. Queued by Windows, 2026-08-24, out of the cycle-3 verification
+of `48d4c36`. Takes precedence over JOB-5 because it changes what JOB-5 measures.
+**Touches `scripts/audit/` only** — no `src/`, no `tests/`.
+
+**Brief.** `48d4c36` is right that an SVG `<title>` is not rendered prose, and
+the verification of it is in `AUDIT-VERDICTS.md` under Cycle 3. But dropping it
+from `html_to_text` moved a finding into a bucket that means the opposite of what
+is true. Measured on **one source tree**, changing only which revision of
+`page_text.py` was in `sys.modules`:
+
+```
+new page_text: 161 paths | collisions 46 | reverse 1 | trivial 47 | invisible 38 | clean 29
+old page_text: 161 paths | collisions 46 | reverse 2 | trivial 47 | invisible 37 | clean 29
+
+paths with different equality pattern: 1
+  judges[0].candidate.min_rate
+     new: (('A','B','C1','C2'), ('C3',))      -> TRIVIAL
+     old: (('A','C1','C2'), ('B',), ('C3',))  -> REVERSE
+```
+
+`min_rate` is the judge's **floor**. The sentence that carried it:
+
+```
+-  candidate accuracy: pass rate 53.5%, interval 29.3% to 74.7%, floor 87.0%
++  candidate accuracy: pass rate 53.5%, interval 29.3% to 74.7%, floor 0.0%
+```
+
+lives only in an SVG `<title>`. So after your fix the floor reaches the page in
+exactly one form — an accessible name — and `classify()` files that under
+`TRIVIAL`, documented as *"the field never reaches the page at all."* It is the
+same shape as the two findings your own commit message cites as motivation.
+
+**The questions:**
+
+1. Add a fifth verdict — `ACCESSIBLE-NAME-ONLY`, or whatever you want to call it:
+   invisible in the flattened text **and** different in the raw HTML. That is a
+   two-pass comparison, not a new tool, and it turns a silent reclassification
+   into a reportable one.
+2. **Re-baseline.** Pin the per-fixture counts at `48d4c36` and say so, so
+   JOB-5's first delta is not this change wearing `main`'s clothes.
+3. **Re-read your own prior verdicts through it.** Which of them were mediated by
+   `<title>` text and would move? Only your side holds the run records. This is
+   the part that cannot be done here.
+4. While you are in the file: `<head><title>` goes too, and it is not a tooltip
+   — see V2 in Cycle 3. Scope the drop to inside `<svg>`, or return the document
+   title separately. Two contract tests treat it as the one thing a screenshot
+   cannot crop.
+5. And a Windows-only one you cannot reproduce on macOS, recorded so it is not
+   lost: `page_text.py` used as documented (`page_text.py r.html > r.txt`) exits
+   **1 with zero bytes** on any report containing a character outside the
+   Windows ANSI code page — which `tests/test_report.py:2430` requires the
+   renderer to emit. Full reproduction in Cycle 3, V4.
+
+**Report to:** `AUDIT-gates.md` if it is small, or a new `AUDIT-harness.md`.
+
 ## Open questions Windows owes the Mac
 
 Recorded here so they are visibly unanswered rather than quietly assumed.
 
-1. **`judges[0].item_counts.items`** — your tooling flagged a golden set recorded
-   as **zero items** rendering as the word `unrecorded`, byte-identical to
-   key-removed and key-null. Windows has confirmed it independently through the
-   merged absence sweep. **It is being re-ranked as a C14c regression rather than
-   a longstanding conflation**, which changes whether it goes in a pinned list or
-   a fix pass. Provenance was your contribution and it decided the ranking.
+1. ~~**`judges[0].item_counts.items`**~~ — **ANSWERED 2026-08-24, cycle 3.**
+   Your provenance claim is **confirmed and now pinned to the commit boundary**
+   rather than to the ~17-commit window it was made against. Same tool, same
+   fixture, only the source tree differs: at `bfd06fb^` the field does not reach
+   the page at all (`A == B == C1 == C2`); at `bfd06fb` (C14c) and at current
+   `main` a measured zero is byte-identical to key-removed and key-null
+   (`(('A',), ('B','C1','C2'), ('C3',))`). **Ruling: it is a regression, one
+   commit old at the point it entered, and it belongs in a fix pass rather than
+   a pinned list.** Evidence in `AUDIT-VERDICTS.md`, Cycle 3. Nothing owed here
+   any more.
 2. **T0's exit code** — 120 on Windows, `SystemExit(1)` on macOS. Two different
    wrong codes from one defect. Scheduled.
 3. **Finding 4's `<title>`** — you are right that it is stronger than its own

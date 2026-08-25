@@ -757,3 +757,397 @@ being written; the credit is not mine.
 
 Final state checked: `main` at `59c5e9b`, `mk-main` working tree clean, no
 tracked file in it modified at any point.
+
+---
+
+## Cycle 3 — 2026-08-24, on `48d4c36`, verified against `main` at `b2c0005`
+
+One commit landed since `a842065`:
+
+```
+48d4c36 page_text.py: drop SVG <title>, which the audit harness was reading as prose
+```
+
+It is the JOB-3 prerequisite, not a JOB-3 finding. `AUDIT-gates.md` has not
+arrived. Everything below is about that commit, plus one open question it let me
+close.
+
+**`main` moved twice while this was being written** — `630912d` → `d504b78`
+(R40) → `b2c0005` (METRICS). Neither touched the code under test, so every
+measurement here holds at `b2c0005`, and I re-ran the two decisive ones there
+rather than asserting it:
+
+```
+$ git diff --stat 630912d b2c0005 -- src tests
+                      (no output: no file under src/ or tests/ changed)
+```
+
+---
+
+### V1 — the `<title>` fix does exactly what it claims. **CONFIRMED.**
+
+Rendered a fresh demo from `main` and ran both revisions of the module against
+the same file:
+
+```
+$ python -m model_migration_kit.cli demo --out demo_main.html
+$ python page_text_OLD.py demo_main.html | grep -c "candidate accuracy: pass rate"
+1
+$ python page_text_NEW.py demo_main.html | grep -c "candidate accuracy: pass rate"
+0
+```
+
+And the premise holds — the string really is screen-reader-only:
+
+```
+occurrences of needle in raw HTML: 1
+  enclosing tag start: <title>candidate accuracy: pass rate 75.
+--- svg block len 663
+  <text> elements in that svg: 0
+```
+
+The reasoning in the commit message is right and the change is worth having.
+The rest of this section is about what came with it.
+
+---
+
+### V2 — it also drops the document `<head><title>`, which this project's own contract calls the one thing a screenshot cannot crop. **REAL DEFECT, introduced by `48d4c36`, not present before it.**
+
+The whole text diff between the two revisions on the demo page is three lines,
+and only two of them are SVG:
+
+```
+$ diff text_old.txt text_new.txt
+3,4d2
+< FAKE MODELS — NO-GO — fake-baseline-v1 to fake-candidate-v1 — model-migration-kit
+11,12d8
+<   candidate accuracy: pass rate 75.0%, interval 62.8% to 84.2%, floor 90.0%
+228,229d223
+< Candidate pass rate over 1 run(s); the horizontal axis is time.
+```
+
+The first is `<head><title>`. It is **not** a tooltip; it is the browser tab, the
+bookmark and the window title, and this project treats it as load-bearing in two
+separate contract tests:
+
+```
+tests/test_cli.py:1002
+    Five places say it and none is a footnote. Two are asserted here because
+    they are the two a screenshot cannot crop away: the ``<title>`` and the
+    band above the verdict banner.
+
+tests/test_report.py:1749
+    assert ("FAKE" in document.title.upper()) is is_demo, (
+        f"§2.2 item 0 repeats the warning in the <title>; got {document.title!r}"
+    )
+```
+
+`test_report.py` reads `document.title` **separately from** `document.text` — the
+project already distinguishes the two, which is the argument *for* the change and
+also the reason it should not have been made by the same regex.
+
+The measurable cost:
+
+```
+$ for s in "FAKE MODELS" "Methodology appendix" "Flips" "Provenance" "roughly 140"
+FAKE MODELS              old=2 new=1
+Methodology appendix     old=2 new=2
+Flips                    old=2 new=2
+Provenance               old=2 new=2
+roughly 140              old=2 new=2
+```
+
+The FAKE-models warning is now visible to the harness in one of the two places
+the contract names, and the one it lost is the uncroppable one.
+
+**This is not an argument for reverting.** It is an argument for scoping the drop
+to `<title>`/`<desc>` *inside `<svg>`*, or for exposing the document title as a
+separate return value. Neither the module docstring nor the README says the head
+title is gone; both talk only about SVG tooltips.
+
+---
+
+### V3 — the commit's own verification is the weak form of the check that would have caught V2. **METHOD NOTE.**
+
+> *"Verified afterwards that real prose is untouched (`FAKE MODELS`, `Methodology
+> appendix`, `Flips`, `Provenance`, `roughly 140` all still found)."*
+
+`still found` is a boolean. `FAKE MODELS` is still found and half of it is gone.
+Rule 4 on this branch is *every claim carries its output*; the output here was a
+`grep`, and `grep -c` instead of `grep -q` was the whole difference. Worth
+carrying into JOB-3, where the same shape of claim ("the gate still passes") will
+be made about trees that changed underneath it.
+
+---
+
+### V4 — the harness's documented CLI invocation dies with **zero bytes and exit 1** on any report carrying a character outside the Windows ANSI code page. **STILL LIVE, and worse than this file recorded it.**
+
+Cycle 2 of this file recorded it as a caveat:
+
+```
+AUDIT-VERDICTS.md:374  | `page_text.py` | works, one caveat | needs PYTHONIOENCODING=utf-8 when redirected |
+AUDIT-VERDICTS.md:401  * `page_text.py report.html > report.txt` mangles every em dash to `?` under the …
+```
+
+`48d4c36` did not touch it. It is not mangling, and the severity is a category
+higher. `main`'s own contract test requires the renderer to emit exactly the text
+that kills it:
+
+```
+tests/test_report.py:2430
+    accented = "café naïve — 你好"
+    …
+    assert accented in text
+```
+
+So I built that page with the real renderer — not a hand-written fixture — and
+ran the shipped harness on it:
+
+```
+$ python -c "… tr._scenario(…, candidate_output='café naïve — 你好'); render_html(…)"
+wrote: …\cjkreal\real.html 26886 chars
+contains accented: True
+
+$ python scripts/audit/page_text.py cjkreal/real.html > out.txt
+exit=1
+  File "…\encodings\cp1252.py", line 19, in encode
+UnicodeEncodeError: 'charmap' codec can't encode characters in position 9179-9180
+--- stdout size: 0 bytes ---
+```
+
+Under a cp437 console — a Windows default — **the plain bundled demo is enough**,
+no exotic input required, because the report is full of em dashes:
+
+```
+$ PYTHONIOENCODING=cp437 python page_text.py demo_main.html > cp437.txt
+exit=1   bytes=0
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2014' in position 16
+```
+
+**Why this is worse than "mangles".** The failure mode of a zero-byte stdout in
+this toolkit is *every sentence reports as absent*. A caller that does
+`page_text.py r.html | grep -c "…"` gets `0` and a clean-looking pipeline; the
+traceback is on stderr, which a sweep script discards. For a harness whose entire
+job is finding disclosures that are missing, the failure direction is the worst
+available one.
+
+**Scope, measured, not assumed.** Only the CLI path is affected. The two
+in-process callers import the function and never touch stdout:
+
+```
+scripts/audit/differential_render.py:106  from page_text import html_to_text
+scripts/audit/mutation_harness.py:79      from page_text import html_to_text
+```
+
+**And the recorded mechanism does not reproduce here. NOT REPRODUCIBLE as
+described.** No em dash became `?` in any run. This shell is `chcp 65001` with
+`[Console]::OutputEncoding = utf-8`; redirected, `sys.stdout.encoding` is
+`cp1252`, in which an em dash is byte `0x97` — mojibake to a UTF-8 reader, not a
+question mark. The earlier `?` was probably a different console code page. The
+*existence* of the defect is confirmed; its *mechanism* as recorded is wrong, and
+the recorded remedy does work:
+
+```
+$ PYTHONIOENCODING=utf-8 python page_text.py cjkreal/real.html > out.txt
+exit=0   bytes=16347   "你好" occurrences: 3
+```
+
+macOS cannot see any of this. That is why it is here and not there.
+
+---
+
+### V5 — the headline result: **the `<title>` fix silently erased a REVERSE finding, and the sweep's counts are not comparable across it.** **REAL, and it lands on JOB-5.**
+
+This matters because JOB-5's whole contract is *report only the delta*. Ran the
+`single/comparison` sweep twice against **the same source tree**, changing only
+which revision of `page_text.py` was in `sys.modules`:
+
+```
+sweep_newpt.json  single/comparison: 161 paths | collisions 46 | reverse 1 | trivial 47 | zero-and-absence-both-invisible 38 | clean 29 | errors 1
+sweep_oldpt.json  single/comparison: 161 paths | collisions 46 | reverse 2 | trivial 47 | zero-and-absence-both-invisible 37 | clean 29 | errors 1
+```
+
+Exactly one path moves, and the source tree is byte-identical between the runs:
+
+```
+paths with different equality pattern: 1
+  judges[0].candidate.min_rate
+     new page_text: (('A', 'B', 'C1', 'C2'), ('C3',))      <- TRIVIAL
+     old page_text: (('A', 'C1', 'C2'), ('B',), ('C3',))   <- REVERSE
+```
+
+The region the new tool no longer compares, from the old run's own `--json`:
+
+```
+# judges[0].candidate.min_rate   base=0.87 A=0.87 B=0.0
+--- A
++++ B
+-  candidate accuracy: pass rate 53.5%, interval 29.3% to 74.7%, floor 87.0%
++  candidate accuracy: pass rate 53.5%, interval 29.3% to 74.7%, floor 0.0%
+```
+
+That sentence lives only in an SVG `<title>`. Three consequences, and the middle
+one is the finding:
+
+1. **The delta is contaminated.** A JOB-5 run today against a pre-`48d4c36`
+   baseline shows `reverse 2 → 1, invisible 37 → 38` and nothing in `main`
+   explains it, because nothing in `main` caused it. `git diff --stat 630912d
+   b2c0005 -- src tests` is empty. **Re-baseline the sweep on `48d4c36` before
+   reporting any delta**, or the first delta of the next cycle is a ghost.
+
+2. **The finding it erased got *stronger*, and the tool now files it under a
+   bucket that says the opposite.** `judges[0].candidate.min_rate` is the
+   judge's floor. After the fix, changing it from `0.87` to `0.0` changes **not
+   one byte** of the page's visible text on this fixture — its only appearance is
+   an accessible name — so it lands in `TRIVIAL`, whose documented meaning is *"the
+   field never reaches the page at all"*. It reaches the page. It reaches it in
+   the one form a sighted reader cannot see. The sweep has no verdict for that,
+   and it is precisely the class the commit message says it cares about — the
+   banner bar's "floor not recorded" is the same shape.
+
+3. The `errors 1` in both runs predates all of this and is unchanged; noting it
+   so the next reader does not chase it.
+
+**The sweep needs a fifth verdict — `ACCESSIBLE-NAME-ONLY`** — or the fix has
+traded a false positive for a false negative in the direction that hides
+findings. That is JOB-6.
+
+---
+
+### V6 — `<desc>` is untested and the alternation has no word boundary. **NIT. Real, small, cheap.**
+
+```
+head <title> count: 3   desc: 0
+```
+
+There is not one `<desc>` in the rendered report, so that half of the change is
+unexercised by the verification the commit ran. And:
+
+```python
+re.sub(r"(?s)<(script|style|title|desc).*?</\1>", "", source)
+```
+
+has no `\b`, so a future `<description>` element would be swallowed whole
+(`<desc` matches, `</desc` matches inside `</description>`). Nothing emits one
+today. One character fixes it.
+
+---
+
+### V7 — the docstring and the README describe the old behaviour in opposite words. **STYLE, not a defect.**
+
+```
+README.md      "…the sweep that found them would have reported them as present."
+page_text.py   "…with the old behaviour both would have been invisible to the
+                sweep that found them."
+```
+
+Both are defensible — the *disclosure* read as present, so the *finding* was
+invisible — and "both" has two possible antecedents. In a module whose entire
+argument is precision about what counts as visible, one clarifying word is worth
+spending. **Not a defect; I am not asking for a commit on its own.**
+
+---
+
+## Open question 1 — **ANSWERED.** The C14c provenance is confirmed at the commit boundary, and the leaf is still live.
+
+`JOBS.md` records this as *"being re-ranked as a C14c regression rather than a
+longstanding conflation"*, on evidence from an approximate baseline (`~e2b0614`,
+17 commits back). I pinned it to the commit itself. Same tool, same fixture, only
+the source tree differs — resolved through `worktree_path.py`, verified before
+trusting either:
+
+```
+##### cwd=…\old_c14c_pre        (bfd06fb^ = 8779207, the commit before C14c)
+source tree: …\old_c14c_pre\src\model_migration_kit\__init__.py
+single/comparison  judges[0].item_counts.items  base=12 A=12 B=0
+equality pattern: (('A', 'B', 'C1', 'C2'), ('C3',))
+A == B ? True
+
+##### cwd=…\at_c14c             (bfd06fb, C14c itself)
+equality pattern: (('A',), ('B', 'C1', 'C2'), ('C3',))
+A == B ? False
+
+##### cwd=…\mk-main             (b2c0005, current main)
+equality pattern: (('A',), ('B', 'C1', 'C2'), ('C3',))
+A == B ? False
+```
+
+**Before C14c the field did not reach the page at all. C14c made it reach the
+page, and a measured zero renders byte-identically to key-removed and to
+key-null.** Not "roughly C14c" — `bfd06fb^` clean, `bfd06fb` conflated, one
+commit apart.
+
+The page region, at current `main`:
+
+```
+--- variant A ---            --- variant B ---
+    golden-set items             golden-set items
+        items |                      items |
+    no previous run |            no previous run |
+    12 |                         unrecorded |
+--- variant C1: BYTE-IDENTICAL to variant B ---
+--- variant C2: BYTE-IDENTICAL to variant B ---
+```
+
+Still pinned rather than fixed at `b2c0005`:
+
+```
+tests/test_absence_sweep.py:128
+    "judges[0].item_counts.items": ("key-removed", "key-null"),
+```
+
+**Ruling: the re-ranking is correct. It is a regression, it is one commit old at
+the point it entered, and it belongs in a fix pass rather than a pinned list.**
+The Mac's provenance contribution stands, and it is now nailed to the boundary
+rather than to a 17-commit window. Question 1 is closed.
+
+Questions 2 and 3 are unchanged: both scheduled, neither newly evidenced this
+cycle.
+
+---
+
+## Ranking after three cycles
+
+By what a maintainer would wrongly believe is guaranteed:
+
+1. **V5 — the sweep hides `<title>`-only disclosures in a bucket labelled "never
+   reaches the page".** A maintainer reading `TRIVIAL` concludes the field is
+   unrendered and stops. It is rendered, to screen readers only. Queued as
+   JOB-6.
+2. **`judges[0].item_counts.items`** — unchanged in rank, now with exact
+   provenance and confirmed live at `b2c0005`. Fix pass, not pinned list.
+3. **V4 — the harness's CLI produces zero bytes on legal report content.** Every
+   sentence reads as absent, silently, in the tool the audits are measured with.
+   Windows-only, so only this side can see it.
+4. **V2 — the harness lost the uncroppable FAKE warning.** Small blast radius
+   today; it is the one place the contract says cannot be cropped.
+5. Previous cycles' items 2–5 (terminal `FAKE` assertion, T0, Finding 4, T1)
+   unchanged; nothing this cycle bears on them.
+
+**Not defects:** V7. **Nit:** V6.
+
+---
+
+## Method note, cycle 3
+
+Read-only against `mk-main` throughout; `git status` clean there at start and
+end, no tracked file modified. Own writes confined to a detached worktree at
+`mk-watch2` and to this session's scratchpad. The two historical trees were
+`git archive`d into the scratchpad rather than checked out, so no worktree was
+created in, or borrowed from, any other agent's directory.
+
+Source resolution was verified before every comparison rather than assumed:
+
+```
+cwd=mk-main            -> C:\Users\ewehm\repos\mk-main\src\model_migration_kit\__init__.py
+cwd=old_c14c_pre       -> …\scratchpad\watch2\old_c14c_pre\src\model_migration_kit\__init__.py
+cwd=at_c14c            -> …\scratchpad\watch2\at_c14c\src\model_migration_kit\__init__.py
+```
+
+The two sweeps in V5 differ **only** in which `page_text` module was injected
+into `sys.modules` before `differential_render` imported it; the source tree,
+fixtures and pinned `now` were identical. That is what makes the one-path delta
+attributable to the tool.
+
+All harness invocations ran under `PYTHONIOENCODING=utf-8`, for the reason in V4.
+No fix was made to the project.
