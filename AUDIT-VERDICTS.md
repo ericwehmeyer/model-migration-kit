@@ -2007,3 +2007,111 @@ later**, because some of its fourteen may now be red and the headline count woul
 be wrong. That is another reason `COMPOSED.diff` needs to be on the branch: the
 number in it has a shelf life measured in hours, and only the machine holding the
 file can say what it is now.
+
+---
+
+## Cycle 7 — 2026-08-24, closing. `6d5ef57` (JOB-6) and `0c30686` (JOB-4), against `main` at `e50a842`
+
+### V19 — JOB-6 closes cycle 3's V5 completely, and the counts reconcile. **VERIFIED, and this is the loop closing end to end.**
+
+The leaf I reported now carries its own verdict, and the sweep names the channel:
+
+```
+$ differential_render.py sweep --fixture single/comparison
+single/comparison: 161 paths | collisions 46 | reverse 1 | trivial-unrendered 47
+                 | zero-and-absence-both-invisible 37 | a11y-name-only 1
+                 | render-errors 0 | clean 29
+
+A11Y-NAME-ONLY judges[0].candidate.min_rate | identical prose: A==B,B==C1,B==C2
+                                            | REVERSE-IN-NAME (name A==C1,C2)
+```
+
+and `quote` now prints the accessible-name channel beside the prose, including a
+third state the prose never had:
+
+```
+# accessible names DIFFER between A and B -- this field is announced, whether or not it is printed
+--- accessible names, variant A ---
+    candidate accuracy: pass rate 53.5%, interval 29.3% to 74.7%, floor 87.0%
+--- accessible names, variant B ---
+    candidate accuracy: pass rate 53.5%, interval 29.3% to 74.7%, floor 0.0%
+--- accessible names, variant C3 (a third state) ---
+    candidate accuracy: pass rate not recorded, interval not recorded, floor 87.0%
+```
+
+**The arithmetic is the part worth checking, and it comes out.** Three runs of
+one fixture:
+
+```
+old page_text,  main 630912d : 46 | reverse 2 | 47 | invisible 37 |          | clean 29
+new page_text,  main 630912d : 46 | reverse 1 | 47 | invisible 38 |          | clean 29
+JOB-6,          main e50a842 : 46 | reverse 1 | 47 | invisible 37 | a11y 1   | clean 29
+```
+
+`invisible` is back to **37**, and the path that had been absorbed into it is now
+its own row. `reverse 1 + a11y-name-only 1` recovers the original `reverse 2`
+without pretending the two are the same thing — and it calls it
+**REVERSE-IN-NAME**, which is a stronger and more accurate statement than the
+`REVERSE` it replaced: delete the floor and the accessible name still announces
+one.
+
+**So the JOB-5 contamination is gone and the delta is comparable to the
+pre-`48d4c36` baseline again.** That was the reason JOB-6 was sequenced ahead of
+JOB-5 and the sequencing was right.
+
+**One control I did not run, said plainly:** `main` moved from `630912d` to
+`e50a842` between the first two runs and the third, and `e50a842` touches
+`report.py` (+47 lines). Collisions, trivial and clean are 46/47/29 in all three
+runs, which is evidence that chunk 0 did not move this fixture — but it is
+evidence, not a control. A clean re-baseline for JOB-5 should be taken at one
+commit with one tool.
+
+---
+
+### V20 — JOB-4 landed and I have **not** verified it. Neither can anyone else: the driver is in a scratchpad.
+
+`0c30686` adds `AUDIT-showcase.md` and nothing else. Its own method note:
+
+> *"So a driver was written (~95 lines, **in the scratchpad**) mirroring `_drive`
+> call-for-call… **Everything below is measured against that driver**, and every
+> finding that depends on a driver decision says so."*
+
+The transparency is exactly right and the findings read as serious — S1's
+5,376/5,376 identical cells, S2's verdict flipping on comparison order, S4's
+missing dimension matrix. **I can check none of it**, because the 95 lines every
+number depends on are not in the repository.
+
+**This is the second time in two jobs.** `COMPOSED.diff` (cycle 6, V18) and now
+the showcase driver: the two most valuable findings on this branch both rest on
+an artifact only one machine holds. That is a pattern rather than an oversight,
+and it is worth naming once:
+
+> **A finding is worth more than a patch — that is this branch's rule and it is
+> right. But a finding whose apparatus was thrown away is worth less than a
+> finding whose apparatus was committed, because only the second one can be
+> checked, re-run when `main` moves, or turned into a test.**
+
+Both of these will need re-running as `main` moves — `e50a842` already lands on
+G41's ground — and each re-run currently costs whoever does it the cost of
+rebuilding the apparatus from prose.
+
+**Ask, and it is small:** commit the driver and `COMPOSED.diff` under
+`scripts/audit/`, which is MacBook-owned and touches neither `src/` nor `tests/`.
+Then S1, S2, S4 and G41–G45 become findings two machines hold instead of reports
+one machine made.
+
+---
+
+## Closing state, cycle 7
+
+`main` at `e50a842`. Branch at `0c30686` plus this. `mk-main` clean and untouched
+throughout; `mk-watch2` is the only worktree this session created; every
+construction lived in `git clone --local` copies or `git archive` extracts under
+the session scratchpad, and nothing was written into `C:\Users\ewehm\repos`.
+
+**Nothing the MacBook reported in seven cycles has been refuted.** Two mechanisms
+were corrected (G6 narrower than stated, G38 wider), three findings are worse on
+Windows than macOS could show (G2, G3→G4, G5), one open question is closed
+(`item_counts.items`, pinned to `bfd06fb`), one queued job is complete and
+verified (JOB-6), and two headline findings remain unverifiable for want of their
+apparatus.
