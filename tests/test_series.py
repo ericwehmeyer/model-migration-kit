@@ -7670,6 +7670,61 @@ def test_a_caveat_raised_on_a_superseded_run_never_reaches_the_table():
     assert "superseded" in field.excluded[0].reason
 
 
+def test_a_caveat_about_no_point_at_all_is_kept_where_one_about_a_hidden_row_is_dropped(
+    monkeypatch,
+):
+    """R30.5. The filter above drops notes about points the reader cannot see; a
+    note about *no* point is not one of those and must survive it.
+
+    **This input is not reachable from a log today, and the guard is still
+    required.** `partition_comparable` mints nothing point-less, so no evidence
+    file can put such a note into a `Partition` -- which is why the fixture builds
+    one directly rather than through `read_series`. But `Caveat.point` is
+    `RunPoint | None` because `Trend.caveats` already carries exactly this note,
+    R21.5's assumed-lineage sentence, and the two tuples hold the *same* type. The
+    day anything routes a `Trend`-shaped note through here -- a shared renderer, a
+    caveat raised on the field the way `_drifted_baselines` raises its own, a
+    partition taught to say something about the group rather than a run -- the old
+    condition tests `id(None)`, which is in no `shown` set, and the sentence
+    disappears with no exclusion, no count and no error. There is no failing test
+    to write after that has shipped: the only trace of the note is the note.
+
+    The two notes are asserted **together and not separately** on purpose. Keeping
+    the point-less one is only correct while the hidden-row one is still dropped;
+    a filter that stopped filtering would satisfy half of this test and undo the
+    decision the other half pins."""
+    stale = _run(
+        "alpha-candidate", created=_AUG_10, judged_candidate=44, judge_failures_candidate=11
+    )
+    fresh = _run("alpha-candidate", created=_AUG_20)
+    other = _run("beta-candidate", created=_AUG_20)
+    about_the_field = series.Caveat(
+        point=None,
+        reason=(
+            "the succession of these candidate ids was assumed from the log and not declared"
+        ),
+    )
+    widest = series._widest_field
+
+    def _with_a_note_about_the_field(points):
+        chosen = widest(points)
+        assert chosen is not None, "this fixture was built to elect a group and elected none"
+        key, partition = chosen
+        raised = [note.point for note in partition.caveats]
+        assert raised == [stale], (
+            f"the fixture must raise exactly one caveat, on the superseded run: {raised}"
+        )
+        return key, partition._replace(caveats=(about_the_field, *partition.caveats))
+
+    monkeypatch.setattr(series, "_widest_field", _with_a_note_about_the_field)
+    field = _field_of([stale, fresh, other])
+    assert _models(field) == ["alpha-candidate", "beta-candidate"]
+    assert field.caveats == (about_the_field,), (
+        "a note about the whole field was filtered out as though it were a note about "
+        "a row the reader cannot see, or a note about a hidden row was let through"
+    )
+
+
 def test_exclusions_from_all_three_rules_come_back_in_the_order_the_log_wrote_them():
     """`_excluded`'s docstring claims log order explicitly, and the claim is the
     useful part: a reader working through why a run is missing has the log in front
