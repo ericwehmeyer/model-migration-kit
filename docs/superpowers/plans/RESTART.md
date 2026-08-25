@@ -59,56 +59,51 @@ forty lines below it.
 
 | Branch | Contains | State |
 |---|---|---|
-| `main` | C1-C22, R1-R34 | all seven gates green, **2206 passed** |
-| `chunk/c14c-impl` | spot-check, multiplicity, strip, lineage block | in flight (stage 1/5) |
-| `chunk/c14c-test` | blind tests for the same | in flight (stage 2/5) |
-| *(detached)* `mk-c14b-review` | mutation-testing the template | in flight (stage 4/5) |
-| *(detached)* `mk-c22b-review` | mutation-testing the view model | in flight (stage 4/5) |
-| `chunk/c5-caveat-filter` | R30.5's point-less caveat drop | in flight (follow-up) |
-| `chunk/c18-fix` | R34.1 and R34.2, model half only | in flight (stage 5/5) |
-| `review/2026-08-24` | pushed to GitHub for a second machine | audit in progress |
+| `main` | C1-C22, R1-R41, the absence sweep, the status line | seven gates green, **2252 passed, 1 xfailed** |
+| `chunk/gate-blindspots` | R39.4 — the two things the gate cannot see | in flight |
+| `chunk/schema-guard` | finding 35 — **the prerequisite** | in flight |
+| `chunk/completeness-certificate` | finding 6 — counts the wrong characters | in flight |
+| `chunk/latency-absence` | finding 2 — a measurement rendering as an absence | in flight |
+| `chunk/provenance-timeline` | R34.3's rendering | in flight |
+| `chunk/render-cost` | the template recompiled on every render | in flight |
+| `audit/macbook-2026-08-24` | **the second machine's channel** — see `JOBS.md` on it | live, both sides pushing |
 
-Updated 2026-08-24 evening, main at `45d6448`. **All 22 chunks have landed at
-least once.** `chunk/c10-impl` and `chunk/c10-test` (no `2`) are **dead**;
-ignore them.
+Updated 2026-08-24, late. **All 22 chunks merged; the work now is the audit
+backlog.** `chunk/c10-impl` and `chunk/c10-test` (no `2`) are **dead**.
 
-**The artifact moves now.** Measured on `main`, not inferred:
+**The artifact moves.** Measured on `main`, not inferred:
 
-| | three merges ago | now |
+| | before C14b | now |
 |---|---|---|
-| bytes | 24,600 | **29,716** |
-| `"dimension"` | **0** | **6** |
-| `"exclud"` | 1 | 5 |
-| `"assumed"` | 0 | 0 — C14c's |
-| `"spot check"` | 0 | 0 — C14c's |
+| bytes | 24,600 | **32,635** |
+| `"dimension"` | 0 | **6** |
+| `"assumed"` | 0 | **1** |
+| `"parameter"` | 0 | **8** |
 
-**A second machine is running an independent audit.** A MacBook Pro cloned
-`review/2026-08-24` and is reading the *rendered document* as a hostile reader,
-against `MACBOOK-AUDIT.md` which lives on that branch. It is the one perspective
-this pipeline structurally lacks: every role in it reads the contract, and until
-now nobody read the finished document. It reports by pushing
-`audit/macbook-2026-08-24`.
+### Two machines, one branch — read `JOBS.md` before anything else
 
-Worth recording why a second machine was **not** the throughput fix it looked
-like. Measured with four agents running: CPU 30-37% of a 12-core i7-1260P, 5.2GB
-of 15.7GB RAM free. Wall-clock here is model inference, not compute, so a second
-box buys almost no parallelism on the same work. What it buys is a *different
-reader*. Give a second operator a different perspective, not more of the same
-throughput.
+A MacBook audits; this box runs the pipeline. **They coordinate through
+`audit/macbook-2026-08-24` with no human relaying.** `JOBS.md` on that branch is
+the protocol: append-only between machines, never force-push, claim before you
+work, and `src/`/`tests/` are Windows-only — findings come here and go through
+the chunk pipeline, because a patch skips implementer/tester/review/fix and a
+finding does not.
 
-**The C22a process debt is paid.** Part one was merged without its blind tests
-because several targeted a `spot_check` that did not exist yet; all 15 landed
-with part two. One of them needed a one-line adaptation -- the tester's branch
-predated C11's follow-up making `subject` required -- and the adaptation is
-commented in place with the argument for why it preserves the test's intent.
-The lesson is not "do not take the debt": it is that a blind test written against
-a signature in flight will need adapting, and the adaptation is the merger's job
-to argue rather than to perform quietly.
+It works. The Mac has claimed its own next jobs off the board unprompted.
 
-**Three consecutive blind pairs produced zero disagreement** -- C7 (33 tests),
-C10 (22), C6 (31) -- and it still meant nothing about defect-freedom: C10's
-review then found **18** surviving mutants and C7's found **11**. Agreement
-between two roles given one contract is not independent evidence.
+**Why a second machine, and why not for the reason you would think.** Measured
+with four agents running: **30-37% CPU on twelve cores, 5.2GB of 15.7GB free.**
+Wall-clock here is model inference, not compute, so a second box buys almost no
+parallelism on the same work. **It buys a different reader** — every role in this
+pipeline reads the *contract*, and until that machine ran, nobody had read the
+rendered *document*. It found, in its first pass, a page printing "Not measured"
+over 120 recorded timings.
+
+**And make it refute itself.** Its adversarial pass turned 41 raw findings into
+**20 that survived**, and five got *stronger* under attack. That pass is the most
+valuable thing either machine has produced — including its observation that most
+of Tier 2 hardens reads against a writer that does not exist, which saved a chunk
+of misdirected work and is now R38.2.
 
 ### The watchdog was right and I was wrong -- a correction
 
@@ -153,35 +148,33 @@ than none.
 
 ## Do these next, in this order
 
-Rewritten 2026-08-24 evening. Six agents in flight; nothing below is dispatchable
-until they return, and that is the correct state rather than a stall.
+1. **Land the seven in flight.** Two reviews will each produce a fix pass; budget
+   for it.
+2. **`chunk/schema-guard` decides the next six chunks.** If a foreign log is
+   refused, sixteen Tier 2 findings are correctly unreachable. If it is accepted
+   and disclosed, they become real work with a known trigger. **Read its report
+   before writing any Tier 2 brief.**
+3. **Work the R40 ledger.** It is the list of everything ruled and unscheduled,
+   in one place, with what each waits on. An entry leaves it only by being
+   dispatched or explicitly withdrawn — **not by being fixed incidentally.**
+4. **R41.1's two one-liners** — `{{ n_per_item or dash }}` in two places, where a
+   recorded zero renders as an em dash. Fold into whichever template chunk lands
+   next rather than dispatching alone.
+5. **The deferred repo-wide `ruff format` drift.** Still last: it touches every
+   file and would conflict with every branch in flight at once.
 
-1. **Land the six in flight**, in arrival order. Two are reviews and will each
-   produce a fix pass; budget for it — seven of seven reviews on this project
-   have found defects both other roles missed.
-2. **C14c's merge.** Both halves together. This is the last chunk that moves the
-   artifact: it renders `spot_check`, `multiplicity`, `parameter_strip` and
-   `trend`, and it is what finally puts R21.5's assumed-lineage caveat in front
-   of a reader. `"assumed"` is **0** in the rendered document today and exists on
-   every model.
-3. **R34.3's rendering** — the series-scope provenance claim, in the timeline
-   section. Deliberately deferred out of C18's fix pass because C14c is editing
-   that exact section. C18's fix reports what a renderer needs from it; read that
-   report before writing this brief.
-4. **The two fix passes** from C14b's and C22b's reviews, plus **R32.1**
-   (`baseline_model` from `series[-1]`, not `baseline.model_id`) which is already
-   ruled and already assigned to C22b's fix.
-5. **The MacBook audit's findings**, when `audit/macbook-2026-08-24` lands. Rule
-   on them before scheduling; an audit finding is not yet a chunk.
-6. **The deferred repo-wide `ruff format` drift** — tree at 88,
-   `pyproject.toml` says 100, ~26 files. **Last, not next.** It touches every
-   file and would conflict with every branch in flight simultaneously.
+**Before dispatching any brief, grep the merged code for the ruling it
+implements** (R28.1). That failure has now happened five times, and R40 exists
+because the check only catches rulings that reach a brief — it does nothing for
+findings that never reach one.
 
-**Before dispatching any brief, grep the merged code for the ruling it is
-supposed to implement** (R28.1). A ruling in the plan with no brief behind it is
-a ruling nobody will execute. This has now happened four times in two days —
-R21.5, R25.5's table edit, R30.5's filter and R31.4's asymmetry — and each was
-caught by looking rather than remembering.
+**And prescribe outcomes, not mechanisms** (METRICS §4). Fourteen orchestrator
+errors, and the split is clean: rulings that say *what* survive being wrong,
+because satisfying them forces any obstacle into the open and the agent reports
+it. Rulings that say *how* are claims about code you have not run, and an agent
+following one faithfully builds real work on a false premise. Fourteen of
+fourteen were caught because an agent needed a value and could not take the
+sentence on trust. **Zero were caught by re-reading.**
 
 ### Two errors of mine, both caught by agents, both the same shape
 
