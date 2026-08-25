@@ -911,6 +911,15 @@ class Provenance:
     :attr:`state` is :data:`PROVENANCE_SCRIPTED`, which is why the sentences
     below never describe an unnamed side as real.
 
+    **Both findings are carried at both scopes.** R34.1: the scripted finding was
+    built at the headline (:attr:`headline_scripted`) and across the series
+    (:attr:`scripted_comparisons`), and the unrecorded finding was built at the
+    headline only -- so the gap ``is_demo`` was widened to close was still open
+    for the state invented to close it. :attr:`unrecorded_comparisons` closes it.
+    The *reach of the band* is untouched (R34.3): the band still speaks for the
+    headline comparison, and the series counts speak for the series, each
+    sentence naming its own scope so no reader has to work out which is speaking.
+
     **The counts are in comparisons, and say so.** R29.4: a :class:`RunPoint`
     carries no run id and no artifact path, so two comparisons naming the same
     baseline run cannot be told from two comparisons naming two -- in the
@@ -934,6 +943,22 @@ class Provenance:
     #: Headline sides whose adapter the evidence never recorded, ``"baseline"``
     #: before ``"candidate"``. Empty on every log this tool writes.
     unrecorded: tuple[str, ...]
+    #: Of the comparisons, how many name no adapter on at least one side. R34.1:
+    #: the exact mirror of :attr:`scripted_comparisons`, counted the same way and
+    #: in the same unit, and it exists because the scripted finding was carried at
+    #: both scopes while the unrecorded finding was built at headline scope only.
+    #: ``is_demo`` reaches into the series deliberately -- a band that appears
+    #: only when the *last* run was fake is a band you can remove by scripting the
+    #: runs before it -- so the gap that the scripted finding was widened to close
+    #: was still open for the state invented to close it.
+    #:
+    #: A side is unrecorded when its adapter string is blank once stripped, which
+    #: is the rule :attr:`unrecorded` already applies to the headline's two sides.
+    #: A comparison can be counted here *and* in
+    #: :attr:`scripted_comparisons` -- a ``Fake*`` baseline beside a candidate
+    #: that named nothing is both a finding and a gap -- so the two counts do not
+    #: partition the series and nothing here subtracts them as if they did.
+    unrecorded_comparisons: int
     #: Comparisons whose payload ``created`` names a different UTC calendar day
     #: from the evidence record carrying it. R29.3: detected, never assumed --
     #: unconditional prose would be false on ``migkit demo``, where the two are
@@ -1000,6 +1025,10 @@ class Provenance:
         be chosen independently: "all 1 comparison name a Fake adapter" is what a
         helper produces, and a document whose loudest sentence is ungrammatical
         is a document a reader trusts less than one that says nothing.
+
+        The last branch -- the one that has to speak for comparisons it may not
+        have been able to check -- is :attr:`_no_scripted_sentence`, which carries
+        R34.2's argument beside its own wording.
         """
         if not self.comparisons:
             return ""
@@ -1016,17 +1045,88 @@ class Provenance:
                 f"{self.scripted_comparisons} of the {self.comparisons} comparisons "
                 f"in this document {verb} a Fake adapter"
             )
-        if self.comparisons == 1:
+        return self._no_scripted_sentence
+
+    @property
+    def _no_scripted_sentence(self) -> str:
+        """The clause for a band whose own series names no ``Fake*`` adapter. R34.2.
+
+        What shipped counted every comparison into one denominator and said none
+        of them names a Fake adapter. Every word of that is true when the payloads
+        name no adapter at all, and it reads as *these N were checked and came
+        back clean*: a comparison with empty adapter strings sat in the
+        denominator exactly as if it had been examined and cleared. Not a false
+        sentence but a **true one licensing a false inference**, which is R29.1's
+        shape one scope up -- harder to find, and easier to defend in review.
+
+        So the denominator is the comparisons that named an adapter **on both
+        sides**, because a comparison naming one side and not the other was
+        half-examined and the unnamed half is exactly where a ``Fake*`` would
+        hide; and the ones that named none are counted in a clause of their own
+        that disowns them. When *every* comparison is in that second group there
+        is no denominator left, and this claims nothing rather than printing the
+        ``0 of 0`` :attr:`_counted` already refuses for the empty series -- that
+        refusal is the precedent here, not a separate rule.
+
+        This runs only where :attr:`scripted_comparisons` is ``0``, and that is
+        the one branch where the subtraction is sound: elsewhere a comparison can
+        be scripted *and* unrecorded, so ``comparisons - unrecorded_comparisons``
+        is not the complement of the scripted count and a numerator could exceed
+        its own denominator. The branches above therefore keep the whole series in
+        view; they make a positive claim about the comparisons that did name a
+        Fake adapter, and no claim of cleanliness about the rest.
+
+        Written out per number rather than reached through a pluralising helper,
+        for the reason :attr:`_counted` gives: English will not let the number and
+        the verb be chosen independently.
+        """
+        total = self.comparisons
+        unnamed = self.unrecorded_comparisons
+        named = total - unnamed
+        band = "this band comes from the run artifacts the headline read"
+        if not unnamed:
+            if total == 1:
+                return (
+                    f"the one comparison in this document names no Fake adapter in "
+                    f"its own payload, and {band}"
+                )
             return (
-                "the one comparison in this document names no Fake adapter in its "
-                "own payload, and this band comes from the run artifacts the "
-                "headline read"
+                f"none of the {total} comparisons in this document name a Fake "
+                f"adapter in their own payloads, and {band}"
             )
-        return (
-            f"none of the {self.comparisons} comparisons in this document name a "
-            f"Fake adapter in their own payloads, and this band comes from the run "
-            f"artifacts the headline read"
-        )
+        if not named:
+            if total == 1:
+                return (
+                    f"the one comparison in this document records no adapter on at "
+                    f"least one side, so this document cannot say whether it was "
+                    f"scripted, and {band}"
+                )
+            return (
+                f"none of the {total} comparisons in this document record an "
+                f"adapter on both sides, so this document cannot say whether any of "
+                f"them was scripted, and {band}"
+            )
+        if named == 1:
+            checked = (
+                "the one comparison in this document that records an adapter on "
+                "both sides names no Fake adapter in its own payload"
+            )
+        else:
+            checked = (
+                f"none of the {named} comparisons in this document that record an "
+                f"adapter on both sides name a Fake adapter in their own payloads"
+            )
+        if unnamed == 1:
+            gap = (
+                "the other one records no adapter on at least one side, and this "
+                "document cannot speak for it"
+            )
+        else:
+            gap = (
+                f"the other {unnamed} record no adapter on at least one side, and "
+                f"this document cannot speak for them"
+            )
+        return f"{checked}, and {band}; {gap}"
 
     @property
     def _sides(self) -> str:
@@ -1886,13 +1986,21 @@ class ReportModel:
         The precedence is R29.2's: scripted outranks unrecorded, because a
         ``Fake*`` adapter is a finding and a missing adapter is a gap.
 
-        **The unrecorded state is read off the headline sides only.** The series
-        is deliberately not consulted for it. ``test_a_series_of_real_runs_does_
-        not_band_the_report`` was written by C3's reviewer around exactly the
-        input "an earlier run whose adapter strings are empty, under a real
-        headline", and whether that shape should now disclose a gap is a question
-        R29.2 did not reach -- it decided the *sides*, in the vocabulary of the
-        headline. It is reported open rather than answered here.
+        **The unrecorded state is read off the headline sides only, and R34.3
+        keeps it that way.** The band sits over the headline's numbers and a
+        reader takes it as being about them; widening its reach would put a claim
+        about last month's runs on top of this comparison's verdict, which is
+        R29.1's defect chosen deliberately.
+        ``test_a_series_of_real_runs_does_not_band_the_report`` was written by
+        C3's reviewer around exactly the input "an earlier run whose adapter
+        strings are empty, under a real headline", and it still passes: nothing
+        below can turn :attr:`state` on from the series.
+
+        **What the series does now carry is the count.**
+        :attr:`Provenance.unrecorded_comparisons` is series-scoped because
+        :attr:`scripted_comparisons` is, and R34.1 ruled the two must be mirrors.
+        A count is not a band: it changes what the sentences may say they
+        checked, not which document gets banded.
         """
         unrecorded = tuple(
             name
@@ -1916,6 +2024,12 @@ class ReportModel:
                 or point.adapter_candidate.startswith(_FAKE_PREFIX)
             ),
             unrecorded=unrecorded,
+            unrecorded_comparisons=sum(
+                1
+                for point in self.series
+                if not point.adapter_baseline.strip()
+                or not point.adapter_candidate.strip()
+            ),
             dated_apart=self.dated_apart,
         )
 
