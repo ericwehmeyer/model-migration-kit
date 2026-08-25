@@ -4,7 +4,9 @@
 CLAUDE.md, "Your scratchpad is shared. Namespace it." This has cost the project
 twice -- C4 and C14b -- and prose did not prevent the second one.
 """
-import json, re, sys
+import json
+import re
+import sys
 
 try:
     ev = json.load(sys.stdin)

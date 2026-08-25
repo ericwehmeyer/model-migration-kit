@@ -3,7 +3,9 @@
 
 CLAUDE.md, "Mutating code you are reviewing": restore from a byte-verified backup.
 """
-import json, re, sys
+import json
+import re
+import sys
 
 try:
     ev = json.load(sys.stdin)
