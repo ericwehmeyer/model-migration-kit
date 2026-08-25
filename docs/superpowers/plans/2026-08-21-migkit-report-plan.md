@@ -6828,12 +6828,19 @@ Landed on `origin/audit/macbook-2026-08-24` while this box slept (`d35b79c`).
 They are in this ledger for R28.1's reason: a finding that lives only in another
 machine's commit message is a ruling nobody on this box will execute.
 
-**They are recorded here at the second machine's own evidence standard, not at
-this one's.** The Mac states the provenance itself: V1–V3 are *"a subagent's
-results landed at this session's token limit and I did not independently re-run
-them. Windows should reproduce V1, V2 and V3 before acting on them."* **Nothing
-in this subsection has been reproduced on this box. No entry leaves this list on
-the strength of the Mac's report alone.**
+**V1, V2 and V3 have now been reproduced on this box** — `AUDIT-V1-V3-windows.md`
+and `scripts/audit/v1_v3_repro.py`, merged. Their rows below carry the *observed*
+numbers, not the reported ones, and the differences are recorded because they
+are the reason the reproduction was asked for. **Everything else in this
+subsection is still at the second machine's evidence standard and unreproduced
+here** — U1, U2, U4 and `missing_scores` especially. No further entry leaves
+this list on the strength of the Mac's report alone.
+
+**The ledger undercounts the source.** This subsection was written from the
+Mac's commit messages. `AUDIT-verdict.md` on `origin/audit/macbook-2026-08-24`
+carries **V1–V8, L1–L3, U1–U10 and D1** — roughly 25 findings, not the seven
+below. The document wants ingesting in full; until it is, treat this table as a
+sample and not an inventory.
 
 These outrank the rendering items above, and it is worth saying why in one line:
 every finding elsewhere in R40 is about a document that describes a verdict
@@ -6841,9 +6848,9 @@ wrongly. **These are about the verdict itself being wrong.**
 
 | # | Finding | Why it ranks |
 |---|---|---|
-| **V1** | Twelve items, both models passing all of them every time, and only `--n` varies: one draw gives REVIEW rule 3, five draws give GO rule 5, on identical item-level facts. `n_observed` counts completions and nothing divides by `n_per_item`, while `required_sample_size` derives its figure from independent Bernoulli trials. **A one-item golden set asked 60 times is a GO.** | Not the known demo thread — that was the p-value at rule 1. This is the floor gate and the power flag, the pair separating REVIEW from GO. |
-| **V2** | 99 of 100 candidate scores set to `null` turns a p=1.8e-45 NO-GO into a GO with p=1.0: `_impute_unscored` fills unscored passed records at `SCORE_MAX` and Mann-Whitney runs on an array the tool wrote. | Fully reachable on the default config, and a null score is rigor's *documented* prompt contract. |
-| **V3** | The mirror: the same silence on the baseline manufactures a NO-GO over 100/100 passing both sides with zero flips — and the imputed row, which is the one a reader checks to ask how much rests on imputation, reads `0 \| 0`. | A disclosure field that reads zero at the moment it should read 99. |
+| **V1** ✅ **CONFIRMED** | Reproduced digit for digit: 12×1 → REVIEW rule 3, Wilson `0.8160188`; 12×5 → GO rule 5, Wilson `0.9568532`; identical 12/0/0 items both sides, zero flips. The extreme is a separate claim and also confirms — **one item asked 60 times is a GO**, with the appendix printing *"60 completions per side observed against roughly 56 required … so this judge is powered for the question."* | Not the known demo thread — that was the p-value at rule 1. This is the floor gate and the power flag, the pair separating REVIEW from GO. **One wording correction:** `grep -rn "Bernoulli" src/` returns nothing. The docstring's noun is "completions per side"; the independence assumption lives in the variance term, not in the prose the original quoted. |
+| **V2** ⚠ **PARTIAL** | The verdict flip is exact and the control p is exact (`1.7608079411973e-45`). **The 99-null p is `0.161087`, not 1.0** — and 1.0 is arithmetically unreachable there (U=5050 against a null mean of 5000, tie-corrected σ=50). The reported 1.0 belongs to a *different* case: at **100** of 100 unscored, `_scores` falls out of the imputation branch to outcomes → GO, `p=1.000000`, test `mann-whitney-u-on-outcomes`. The original's row pairs the 99-null verdict with the 100-null p-value. | **The understatement is bigger than the overstatement.** The 100-null route is *cleaner*, and it carries **no imputation warning and zero numeric disclosure** — a note reading "scores absent" on a run whose baseline supplied 100 scores. Reach is genuinely narrow: NO-GO holds through 95 nulls (p=0.0121), which the original did not overstate. |
+| **V3** ✅ **CONFIRMED, understated 33×** | Not 99 nulls — **3**. Swept on this box rather than taken on report: `0 → GO p=1.0`, `2 → GO p=0.0791678`, **`3 → NO-GO p=0.0413688`**, `4 → NO-GO p=0.0222045`, `5 → NO-GO p=0.0120865`, `99 → NO-GO p=1.2753108e-44`. Over 100/100 passing both sides with zero flips. | **The warning threshold sits at 5, so the two counts that first flip the verdict are exactly the two that say nothing.** `imputed` reads `0 \| 0` throughout. And `missing_scores` is written to the log (`comparison.py:655-657`) but appears nowhere in `report.py` — **the real count is never rendered as a number anywhere**, which makes this the 45-dead-leaves finding and a verdict defect at the same address. |
 | **U1** | A judge writing score `0` on a 1–5 rubric — total failure, expressed the natural way — turns a NO-GO into a GO. rigor refuses the out-of-range score before returning any part of the verdict, so `_grade` files the whole record *including `pass:false`* as a parse failure and `_counted` drops it from numerator and denominator. 190/200 becomes 190/190, p=1.0, flips 0, exit 0. | `_impute_unscored`'s own docstring names exactly this number as the catastrophe it exists to prevent; the parse-failure door reaches it anyway. At 10/200 — the documented tolerance exactly — nothing warns. Needs the judge's malfunction to correlate with the model's failures, which is the most natural failure of an LLM judge shown a very bad answer. |
 | **U2** | An item whose every draw was unparseable enters no bucket. `38+0+0=38` printed beside `items:40`, with Flips (0) reading `None`. | A second raw-`None` leak, and an arithmetic disclosure that does not sum. |
 | **U4** | `--timeout` makes latency the strictest gate in the tool, on a page that says twice that latency is never a gate — and the correct answer is destroyed, because rigor keeps `run.value` and `_completion_from_run` throws it away. | Contradicts §2.2 item 4 directly. Touches the section `chunk/latency-absence` (`a895004`) rewrites, so **sequence these two.** |
