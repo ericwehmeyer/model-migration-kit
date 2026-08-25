@@ -6749,3 +6749,93 @@ and disclosed, they become real work with a known trigger. Two exceptions worth
 keeping either way: **20j**, which needs no payload edit at all (delete two
 artifact files), and **20c**, a *derived* key (`failures = n - successes`) whose
 absence fabricates a 100% baseline and moves every delta fifteen points.
+
+### R41 — `{{ x or default }}`: two sites wrong, thirty-seven right, and the count is the ruling
+
+R40.1 left four coercion splits open — `goldenset_hash`, `judges_hash`,
+`config_hash`, `config_path` — with a note that `config_path` has a downstream
+`or` and so needs a ruling rather than a sweep. Reading the code to rule on it
+found the `or` is not downstream of one field. **It is an idiom, used 45 times in
+the template**, and the obvious next move was a 45-site sweep.
+
+**Counted first, and the count is the whole answer:**
+
+```
+template interpolations using a bare `or` default   45
+  numeric-valued (a measured zero takes the default)  2
+  string-valued  ("" already means absence here)     37
+  (remaining are compound expressions, judged individually)
+
+str(x or "") coercions in report.py   3
+                       in series.py   0
+```
+
+#### R41.1 — the two that are wrong
+
+```
+{{ candidate_field.key.n_per_item or dash }}
+{{ model.n_per_item or dash }}
+```
+
+Jinja's `or` is falsy-triggered, so a **recorded `n_per_item: 0`** renders as an
+em dash — a measured zero rendering as an absence. That is R38.4's missing half,
+in the template, on a field a reader uses to judge how deep the sampling was.
+
+The merged absence sweep already flagged the *symptom* — `n_per_item = 0` prints
+`n per item —` and flips the run-history section to *"0 of those 1
+comparison(s)… What became of the rest is below"*. **This is its cause**, and it
+is one line each.
+
+**Ruling: both become an explicit `is none` test.** A number is absent only when
+it is `None`; zero is a measurement and must render as `0`.
+
+#### R41.2 — the thirty-seven that are right, and why that must be written down
+
+`{{ model.baseline.model_id or dash }}`, `{{ judge.rubric_hash or dash }}`,
+`{{ caveat.point.created or 'no recorded date' }}` and thirty-four like them are
+**correct as written**, because this codebase deliberately uses `""` to mean
+*nothing to say* for strings. The absence sweep reached the same conclusion
+independently and from the other direction: applying "a measured zero" to strings
+produced 67 spurious findings — *"every hash, path and `model_id`: `"" ==
+absent`, which are noise here because the codebase deliberately uses `""` as
+absence."*
+
+**Ruling: they stay, and this section is why.** Two agents have now
+independently derived that `""` is absence for strings here; the next one should
+not have to. A sweep converting all 45 would have turned thirty-seven honest
+sentences into `is none` tests that never fire, and made the two real defects
+harder to see by burying them in a diff of forty-five.
+
+#### R41.3 — the near-miss is the point
+
+**I was one step from ruling a 45-site sweep off an unmeasured instinct**, on the
+strength of noticing the idiom and recognising its shape. The reasoning was
+sound: a falsy-triggered default over a project whose central rule is that
+absence and zero must differ is exactly the right thing to be suspicious of. The
+code was different — 37 of 45 sites are over values where the project has already
+decided that falsy *is* absence.
+
+That is the fifteenth instance of METRICS' error taxonomy and the first one
+caught **before** it reached a brief, by the taxonomy's own rule: *prescribe
+outcomes, prove mechanisms.* The mechanism here would have been "convert every
+`or` default", and proving it took two greps.
+
+**The general form, worth having:** an idiom used many times is not evidence of a
+defect used many times. It is evidence of a *decision* used many times, and the
+question is whether the decision was right for each class of value it covers —
+which is a counting question before it is a judgement one. **Count the
+population, split it by the property that matters, and rule on the parts.** A
+ruling that cannot say how many sites it touches is a ruling that has not been
+measured.
+
+#### R41.4 — the four fields R40.1 left open, now settled
+
+`goldenset_hash`, `judges_hash` and `config_hash` are **strings**, so R41.2
+covers them: `""` is absence, the coercion split is invisible on any value they
+can hold, and they need no change. `config_path` is likewise a string — its
+downstream `source = config_path or THRESHOLD_SOURCE_UNRECORDED` is the same
+honest idiom, one layer over.
+
+**Struck from the R40 ledger.** The entry said this needed "a ruling, not a
+sweep"; the ruling is that there is nothing to convert, and the reason is
+recorded so the split is not re-discovered as a defect in three weeks.
