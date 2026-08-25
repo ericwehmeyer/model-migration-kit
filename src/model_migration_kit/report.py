@@ -1741,7 +1741,7 @@ class ReportModel:
             {} if verdict_record is None else verdict_record.payload
         )
 
-        warnings: list[str] = [str(one) for one in payload.get("warnings", ())]
+        warnings: list[str] = _payload_warnings(payload.get("warnings", ()))
         missing: list[str] = []
 
         # Every path this reconstruction reads out of the log is resolved against
@@ -2647,6 +2647,51 @@ def _load_artifact(loader: Any, path: str, label: str, warnings: list[str]) -> A
     except (ArtifactError, OSError) as exc:
         warnings.append(f"the {label} at {path!r} could not be read ({exc}).")
         return None
+
+
+#: What the page says when the payload carries a ``warnings`` value this report
+#: cannot read. It states the gap and claims nothing on either side, in the same
+#: register as the exclusions note: an absence must not render as a measurement,
+#: and a silent warnings section is the measurement "nothing was flagged".
+_WARNINGS_NOT_RECORDED = (
+    "this comparison's own warnings are recorded as a value this report cannot "
+    "read, so none of them were carried onto this page. Read this as not known, "
+    'and never as "the comparison recorded no warnings".'
+)
+
+
+def _payload_warnings(value: Any) -> list[str]:
+    """The comparison's own warnings, or a stated gap when they cannot be read.
+
+    **A null ``warnings`` is not an empty ``warnings``.** ``[]`` is a writer that
+    ran the comparison and recorded that it produced none; a value that is not a
+    list of warnings at all is a writer that had somewhere to say so and said
+    nothing readable. Only the first is a measurement, and the page's silence
+    about warnings is read as exactly that measurement -- the warnings list is
+    where "60 completions cannot detect a 10% drop" appears, so a reader who sees
+    no warnings section concludes there was nothing to see. Coercing the second
+    case into the first would print that conclusion off no evidence, which is this
+    package's central rule inverted. The gap therefore goes into the warnings list
+    itself, which is already where this reconstruction says what it could not read
+    (see :func:`_load_artifact`).
+
+    **An absent key is left as it was**, at ``()``: ``payload.get("warnings", ())``
+    is a decision somebody made and wrote down, and every log this tool writes
+    carries the key (``comparison.py`` emits ``list(self.warnings)``
+    unconditionally), so an absent key is a foreign or pre-field log rather than
+    the state this rules on. Re-deciding it is a separate question and is left
+    visibly open rather than quietly assumed.
+
+    **A bare string is one warning, never its letters.** ``str`` is iterable, so
+    the obvious comprehension renders ``"careful"`` as seven single-character
+    rows. :func:`model_migration_kit.series._warnings` ruled this and is tested on
+    it; the two readers of the same payload field must not disagree about it.
+    """
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (list, tuple)):
+        return [str(one) for one in value]
+    return [_WARNINGS_NOT_RECORDED]
 
 
 def _run_summary(

@@ -14342,3 +14342,374 @@ def test_the_band_agrees_with_itself_about_number_at_every_boundary(
     html_text, terminal_text = _band_text(model)
     for surface, text in (("the HTML band", html_text), ("the terminal band", terminal_text)):
         assert sentence in text, f"{surface} does not carry the band's own words: {text!r}"
+
+
+# --------------------------------------------------------------------------- #
+# 41. Which of R29.1's two openings renders for which evidence. R39.4.
+#
+# The audit's most uncomfortable measurement: `scripts/check_merge.py` was green
+# on all seven checks -- 2,241 tests -- on a tree where C18's two openings had
+# been swapped, so a real headline over a scripted history printed "at least one
+# side of this comparison was produced by a Fake adapter" and named two *real*
+# adapters. That is the exact defect R29.1 was written to kill, restored by a
+# seven-line edit that no test in the suite could see.
+#
+# Six mutations were applied and the whole suite run against each. All six
+# survived: swapping the two openings, negating the condition, deleting either
+# opening so both cases share one sentence, swapping the two adapter names inside
+# the fake opening, and inverting the fake opening's claim word for word. Nothing
+# in the suite asserted anything about the paragraph at all.
+#
+# So the assertions below are about *pairing*, never about membership. A test
+# that checks both sentences exist somewhere in the module is satisfied by every
+# one of those six mutants; what has to be pinned is which sentence a document
+# gets, given what its evidence says -- and, for the real-headline shape, that
+# the paragraph names no adapter, because the adapters on this side of the
+# document are not the evidence for the claim it is making.
+# --------------------------------------------------------------------------- #
+
+
+#: The opening for a headline whose own sides name a ``Fake*`` adapter. The
+#: adapters are named because they *are* the evidence for the sentence.
+_SCRIPTED_HEADLINE_OPENING = (
+    "These numbers describe scripted responses, not a real provider. At least one "
+    "side of this comparison was produced by a Fake adapter "
+    "({baseline} for the baseline, {candidate} for the candidate)."
+)
+
+#: The opening for a real headline over a scripted history. It names no adapter:
+#: the scripted runs are elsewhere on the timeline, and naming this comparison's
+#: two sides would name the wrong runs -- which is what R29.1 found shipping.
+_SCRIPTED_HISTORY_OPENING = (
+    "This document draws scripted runs, and the comparison in front of you is not "
+    "one of them: neither of its sides names a Fake adapter. No adapter is named "
+    "here as the evidence, because the scripted runs are other comparisons on the "
+    "timeline and naming this one's sides would name the wrong runs."
+)
+
+#: Locator, not assertion: the closing sentence C18 ships in *both* cases, used to
+#: find the scripted paragraph among the appendix's paragraphs without assuming
+#: which opening it took. Asserting on it would test the wrong sentence.
+_SCRIPTED_PARAGRAPH_MARKER = "The only real thing in this document is the machinery"
+
+
+def _scripted_opening_paragraph(html: str) -> str:
+    """The rendered methodology paragraph R29.1 rules on, as one line of prose.
+
+    Read out of the HTML rather than off ``methodology_sections``, because the
+    claim being pinned is what the page says. Located by its closing sentence so
+    that the openings -- the thing under test -- are never used to find it.
+    """
+    found = [
+        _flat(_parse(one).text)
+        for one in re.findall(r"<p\b[^>]*>(.*?)</p>", html, re.S)
+        if _SCRIPTED_PARAGRAPH_MARKER in _flat(_parse(one).text)
+    ]
+    assert len(found) == 1, (
+        f"expected exactly one scripted methodology paragraph, found {len(found)}"
+    )
+    return found[0]
+
+
+def _headline_scripted_shape(root: Path) -> Any:
+    """A document whose headline comparison is itself scripted."""
+    scenario = _scripted_scenario(root)
+    model = _model_from(scenario.evidence)
+    provenance = _get(model, "provenance")
+    assert _get(provenance, "state") == _get(_module(), "PROVENANCE_SCRIPTED")
+    assert _get(provenance, "headline_scripted") is True, (
+        "this fixture stopped being the headline-scripted shape, so the test below "
+        "would pass on either opening"
+    )
+    return model
+
+
+def _history_scripted_shape(root: Path) -> Any:
+    """R29.1's live shape: a real headline standing over a scripted history."""
+    scenario = _scenario(root)
+    log = _log_with_history(
+        scenario,
+        "evidence-scripted-history.jsonl",
+        _earlier_run(
+            scenario,
+            tag="scripted",
+            baseline_adapter="FakeScriptedAdapter",
+            candidate_adapter="FakeAdapter",
+        ),
+    )
+    model = _model_from(log)
+    provenance = _get(model, "provenance")
+    assert _get(provenance, "state") == _get(_module(), "PROVENANCE_SCRIPTED"), (
+        "a scripted run in the history must still band the document, or the "
+        "paragraph under test is never reached"
+    )
+    assert _get(provenance, "headline_scripted") is False, (
+        "this fixture stopped being R29.1's shape -- its headline is scripted, so "
+        "the test below would pass on either opening"
+    )
+    return model
+
+
+def test_a_scripted_headline_names_its_own_two_adapters_as_the_evidence(
+    tmp_path: Path,
+) -> None:
+    """R29.1's first case, pinned to the sentence it gets and the names in it.
+
+    The adapters are named in the order the sentence claims -- baseline, then
+    candidate -- and the fixture's two are deliberately different strings, so a
+    build that names them the other way round is a failure here rather than a
+    coincidence that reads correctly.
+    """
+    model = _headline_scripted_shape(tmp_path / "headline-scripted")
+    paragraph = _scripted_opening_paragraph(_html(model))
+
+    expected = _SCRIPTED_HEADLINE_OPENING.format(
+        baseline="FakeScriptedAdapter", candidate="FakeAdapter"
+    )
+    assert paragraph.startswith(expected), (
+        f"a scripted headline must open with its own case's sentence; got {paragraph!r}"
+    )
+    assert "is not one of them" not in paragraph, (
+        "the real-headline opening rendered over a scripted headline"
+    )
+
+
+def test_a_real_headline_over_a_scripted_history_names_no_adapter_at_all(
+    tmp_path: Path,
+) -> None:
+    """R29.1's second case, and the defect itself: no adapter may be named here.
+
+    This is the shape that shipped the false sentence. The paragraph must not
+    name either of the headline's adapters, because both are real and the
+    scripted runs it is disclosing are other comparisons on the timeline. The
+    adapter strings are read off the model rather than spelled again, so the
+    assertion keeps meaning what it means if the fixture's adapters change.
+    """
+    model = _history_scripted_shape(tmp_path / "history-scripted")
+    paragraph = _scripted_opening_paragraph(_html(model))
+
+    assert paragraph.startswith(_SCRIPTED_HISTORY_OPENING), (
+        f"a real headline over a scripted history must open with its own case's "
+        f"sentence; got {paragraph!r}"
+    )
+    assert "produced by a Fake adapter" not in paragraph, (
+        "the headline-scripted opening rendered over a headline that is not scripted"
+    )
+    for side in ("baseline", "candidate"):
+        adapter = str(_get(_get(model, side), "adapter"))
+        assert adapter and adapter not in paragraph, (
+            f"the paragraph names {adapter!r}, a real adapter, as the evidence for "
+            f"a claim about scripted runs it is not about -- R29.1 verbatim: "
+            f"{paragraph!r}"
+        )
+
+
+def test_the_two_scripted_openings_are_two_sentences_and_not_one_with_a_variable(
+    tmp_path: Path,
+) -> None:
+    """R29.1's ruling itself: "two different sentences, not one with a variable".
+
+    An implementation that emits one opening for both cases satisfies each of the
+    tests above on the case it happens to match and fails the other; this one
+    fails on either collapse from a single document pair, and says which way it
+    collapsed. Both closings are checked because the sentence used to *locate*
+    each paragraph must be present in both, or the pairing above is being read off
+    two paragraphs that are not comparable.
+    """
+    scripted = _scripted_opening_paragraph(
+        _html(_headline_scripted_shape(tmp_path / "pair-headline"))
+    )
+    history = _scripted_opening_paragraph(
+        _html(_history_scripted_shape(tmp_path / "pair-history"))
+    )
+
+    assert scripted != history, (
+        "both shapes rendered the same opening, so the disclosure no longer "
+        "distinguishes a scripted headline from a scripted history"
+    )
+    assert "produced by a Fake adapter" in scripted
+    assert "produced by a Fake adapter" not in history
+    assert "is not one of them" in history
+    assert "is not one of them" not in scripted
+    for label, paragraph in (("scripted headline", scripted), ("scripted history", history)):
+        assert _SCRIPTED_PARAGRAPH_MARKER in paragraph, (
+            f"the {label} paragraph lost the closing both cases share"
+        )
+
+
+# --------------------------------------------------------------------------- #
+# 42. `warnings: null` -- the crash, and the ruling that a null is not an empty.
+# R39.4.
+#
+# `warnings: null` in the comparison payload raised `TypeError: 'NoneType' object
+# is not iterable` out of `ReportModel.from_evidence`, so `migkit report` exited
+# 3 and wrote no HTML at all: the spec's named failure, "an empty chart or a
+# crash", reachable from one null. No test in the suite was aware of it, and the
+# absence sweep cannot reach it -- it enumerates the leaves the standard scenario
+# produces, and `warnings` is `[]` there and has no leaves.
+#
+# The fix is one function. The ruling is which of the two states a null is, and
+# it is that a null is an *absence*, not an empty. `[]` is a writer that ran the
+# comparison and recorded that it produced no warnings; a null is a writer that
+# had somewhere to say so and put nothing readable there. The page's silence
+# about warnings is read as the first of those -- the warnings list is where "60
+# completions cannot detect a 10% drop" appears, so a reader who sees no warnings
+# section concludes there was nothing to see. So the two must not render the
+# same page, which is what the pair of tests below asserts directly rather than
+# checking each in isolation.
+#
+# An *absent* key is deliberately left where it was, at `()`. That default is a
+# decision somebody wrote down, every log this tool writes carries the key, and
+# re-deciding it is a separate question; `test_an_absent_warnings_key_is_still
+# _read_as_no_warnings` pins the current answer so that changing it is a visible
+# choice rather than a side effect.
+# --------------------------------------------------------------------------- #
+
+
+#: The heading the HTML puts over the comparison's warnings. Its presence is what
+#: a reader uses to tell "there was something to say" from "there was not".
+_WARNINGS_SECTION_HEADING = "Warnings recorded during the comparison"
+
+
+def _document_whose_warnings_are(
+    root: Path, value: Any, *, present: bool = True
+) -> tuple[Any, str]:
+    """A whole report built from a payload whose ``warnings`` is ``value``.
+
+    ``present=False`` deletes the key instead, which is the third state and not
+    the same claim as either of the two this section rules on.
+    """
+    scenario = _scenario(root)
+    payload: dict[str, Any] = json.loads(json.dumps(dict(scenario.comparison)))
+    if present:
+        payload["warnings"] = value
+    else:
+        payload.pop("warnings", None)
+    log = _log_headlined_by(scenario, "evidence-warnings.jsonl", payload)
+    model = _model_from(log)
+    return model, _html(model)
+
+
+def _warnings_gap_sentence() -> str:
+    """The module's own words for a warnings value it could not read."""
+    return _flat(str(_get(_module(), "_WARNINGS_NOT_RECORDED")))
+
+
+def test_a_null_warnings_renders_a_document_instead_of_raising(tmp_path: Path) -> None:
+    """The crash itself: one null took the whole document out.
+
+    ``TypeError`` rather than a refusal, so nothing downstream could tell it from
+    a bug in the renderer, and ``migkit report`` exited 3 with no file written.
+    """
+    model, html = _document_whose_warnings_are(tmp_path / "null-warnings", None)
+
+    assert _flat(_parse(html).text), "a null warnings produced no document"
+    assert _get(model, "verdict"), "the document rendered without its verdict"
+
+
+def test_a_null_warnings_says_so_and_an_empty_warnings_says_nothing(
+    tmp_path: Path,
+) -> None:
+    """The ruling, asserted as the difference between two whole documents.
+
+    A null is an absence and an empty is a measurement, and this package's
+    central rule is that the two must be distinguishable on the page. Asserted as
+    a pair, because each half alone passes on a build that renders both the same:
+    a `null` coerced to `()` satisfies "an empty warnings shows no section", and a
+    `[]` that printed the gap sentence satisfies "a null warnings says so".
+    """
+    _, null_html = _document_whose_warnings_are(tmp_path / "null", None)
+    _, empty_html = _document_whose_warnings_are(tmp_path / "empty", [])
+
+    null_text = _flat(_parse(null_html).text)
+    empty_text = _flat(_parse(empty_html).text)
+    gap = _warnings_gap_sentence()
+
+    assert gap in null_text, (
+        f"a null warnings rendered no statement of the gap; the page says {null_text[:400]!r}"
+    )
+    assert _WARNINGS_SECTION_HEADING in null_text
+    assert gap not in empty_text, (
+        "an empty warnings printed the sentence reserved for a warnings value that "
+        "could not be read, which makes a measured 'no warnings' unsayable"
+    )
+    assert _WARNINGS_SECTION_HEADING not in empty_text, (
+        "a comparison that recorded no warnings put a warnings section on the page"
+    )
+
+
+def test_a_recorded_warning_is_carried_and_is_not_the_gap_sentence(
+    tmp_path: Path,
+) -> None:
+    """The third state, so the fix cannot have swallowed the real ones.
+
+    A build that returned the gap sentence for every value at all would pass the
+    null half of the pair above and lose every warning the comparison recorded --
+    which is the same failure, from the other side.
+    """
+    recorded = "CARRIED-WARNING: 60 completions cannot detect a 10% drop"
+    _, html = _document_whose_warnings_are(tmp_path / "recorded", [recorded])
+
+    text = _flat(_parse(html).text)
+    assert recorded in text
+    assert _warnings_gap_sentence() not in text
+    assert _WARNINGS_SECTION_HEADING in text
+
+
+def test_a_single_warning_recorded_as_a_bare_string_is_one_warning_not_seven(
+    tmp_path: Path,
+) -> None:
+    """``str`` is iterable, and the obvious comprehension shreds it into letters.
+
+    ``series._warnings`` ruled this and is tested on it; the report read the same
+    payload field the other way, so ``"careful"`` became seven single-character
+    rows in the one place a reader looks to find out why a difference should not
+    be trusted. Two readers of one field may not disagree about what it says.
+    """
+    _, html = _document_whose_warnings_are(tmp_path / "bare-string", "careful")
+
+    items = re.findall(r"<li>(.*?)</li>", html, re.S)
+    shown = [_flat(_parse(one).text) for one in items]
+    assert "careful" in shown, f"the bare string did not survive as one warning: {shown!r}"
+    assert "c" not in shown and "a" not in shown, (
+        f"the warning was rendered as its letters: {shown!r}"
+    )
+
+
+def test_an_absent_warnings_key_is_still_read_as_no_warnings(tmp_path: Path) -> None:
+    """The state this section deliberately did *not* re-decide, pinned as it is.
+
+    ``payload.get("warnings", ())`` is a written decision and every log this tool
+    writes carries the key, so an absent one is a foreign log rather than the
+    state ruled on above. Recorded here so that changing it later is a choice
+    somebody makes on purpose and not a side effect of touching this function.
+    """
+    _, html = _document_whose_warnings_are(tmp_path / "absent", None, present=False)
+
+    text = _flat(_parse(html).text)
+    assert _WARNINGS_SECTION_HEADING not in text
+    assert _warnings_gap_sentence() not in text
+
+
+def test_the_terminal_render_says_the_same_words_about_an_unreadable_warnings(
+    tmp_path: Path,
+) -> None:
+    """One disclosure, two surfaces, written once. R29.2's third decision.
+
+    The gap goes into ``model.warnings``, which both renderers read, rather than
+    into a second sentence one of them owns -- so a terminal user and an HTML
+    reader are told the same thing about the same log.
+    """
+    model, html = _document_whose_warnings_are(tmp_path / "null-terminal", None)
+
+    from rich.console import Console
+
+    buffer = io.StringIO()
+    _get(_module(), "render_terminal")(
+        model, console=Console(file=buffer, width=200, no_color=True, force_terminal=False)
+    )
+    gap = _warnings_gap_sentence()
+    assert gap in _flat(_parse(html).text)
+    assert gap in _terminal_prose(buffer.getvalue()), (
+        f"the terminal render does not carry the words the page does: {buffer.getvalue()!r}"
+    )
