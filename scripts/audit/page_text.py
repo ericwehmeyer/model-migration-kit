@@ -22,8 +22,14 @@ What it deliberately loses: attributes. The SVGs carry their numbers in
 ``data-value`` / ``data-created`` attributes and those vanish here. A finding
 about the *chart* has to be made against the raw HTML; this is for the prose.
 
-**``<title>`` and ``<desc>`` are dropped, and that is the whole point of this
-module being a module.** An SVG ``<title>`` is a tooltip and an accessible name;
+**An SVG's ``<title>`` and ``<desc>`` are dropped; the document's ``<title>`` is
+kept.** That distinction is the whole point of this module being a module, and
+getting it wrong cost one round trip: the first version of this fix dropped
+*every* ``<title>``, including ``<head><title>``, which is not a tooltip at all --
+it is the browser tab, the link preview, and one of the two places a screenshot
+cannot crop. "FAKE MODELS" in the flattened demo went from 2 to 1 and the
+regression check said "still found", because it counted presence and not
+occurrences. An SVG ``<title>`` is a tooltip and an accessible name;
 it is *not* rendered prose. The earlier version of this file stripped the tags
 and kept their character data, so a screen-reader-only disclosure came back as
 visible text -- and "is this sentence on the page?" returned **true** for a
@@ -44,6 +50,14 @@ import re
 import sys
 from pathlib import Path
 
+#: An ``<svg>`` element, whole. ``<title>``/``<desc>`` are stripped *only* inside
+#: one of these -- see the module docstring. Non-greedy and non-nested, which is
+#: what this renderer emits: two flat ``<svg>`` elements, never one inside another.
+_SVG_BLOCK = re.compile(r"(?s)<svg\b.*?</svg>")
+
+#: The accessible-name elements, inside an SVG only.
+_SVG_LABEL = re.compile(r"(?s)<(title|desc)\b.*?</\1>")
+
 _BLOCK_CLOSE = re.compile(
     r"(?i)</(p|div|h[1-6]|li|tr|section|table|thead|tbody|details|summary|pre|dd|dt)>"
 )
@@ -51,7 +65,8 @@ _BLOCK_CLOSE = re.compile(
 
 def html_to_text(source: str) -> str:
     """Return the readable text of a rendered report page."""
-    text = re.sub(r"(?s)<(script|style|title|desc).*?</\1>", "", source)
+    text = re.sub(r"(?s)<(script|style).*?</\1>", "", source)
+    text = _SVG_BLOCK.sub(lambda m: _SVG_LABEL.sub("", m.group(0)), text)
     text = re.sub(r"(?i)<br\s*/?>", "\n", text)
     text = _BLOCK_CLOSE.sub("\n", text)
     text = re.sub(r"(?i)</t[dh]>", " | ", text)
