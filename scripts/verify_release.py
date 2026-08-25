@@ -599,6 +599,23 @@ def check_wheel_demo_data(wheel: Path, source_data_dir: Path) -> Result:
     return ok(name, f"all {len(DEMO_DATA)} demo files present inside {wheel.name}", evidence)
 
 
+def extract_wheel(wheel: Path, dest: Path) -> Path:
+    """Unpack a wheel into a clean directory and return it.
+
+    Every check that wants to *run* what the wheel ships needs the same thing: the
+    archive laid out on disk exactly as an install would lay it out, in a directory
+    nothing else has written to. Re-extracting per check rather than sharing one
+    directory keeps the checks independent of the order `main` happens to call them
+    in, which is worth more than the milliseconds a shared copy would save.
+    """
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.mkdir(parents=True)
+    with zipfile.ZipFile(wheel) as zf:
+        zf.extractall(dest)  # noqa: S202 - our own freshly built artifact
+    return dest
+
+
 RESOURCE_PROBE = '''
 import json, sys
 
@@ -661,12 +678,7 @@ def check_demo_data_importable(wheel: Path, workdir: Path) -> Result:
     `$tmp`: a repo-root cwd masks a missing package resource.
     """
     name = "wheel-demo-data-importable"
-    extract = workdir / "wheel-extract"
-    if extract.exists():
-        shutil.rmtree(extract)
-    extract.mkdir(parents=True)
-    with zipfile.ZipFile(wheel) as zf:
-        zf.extractall(extract)
+    extract = extract_wheel(wheel, workdir / "wheel-extract")
 
     probe = workdir / "_resource_probe.py"
     probe.write_text(RESOURCE_PROBE, encoding="utf-8")
@@ -1133,8 +1145,89 @@ def _check_installed_version(repo: Path, dunder: str) -> Result:
     return ok(name, f"__version__ and installed metadata agree on {dunder}", evidence)
 
 
-def check_console_script(wheel: Path) -> Result:
-    """The console script's target module must be in the wheel it is declared in."""
+ENTRY_POINT_PROBE = '''
+import importlib, json, sys
+
+extract, module_name, attr_path = sys.argv[1], sys.argv[2], sys.argv[3]
+sys.path.insert(0, extract)
+out = {"module": module_name, "attr": attr_path}
+try:
+    module = importlib.import_module(module_name)
+except Exception as exc:  # noqa: BLE001 - reported verbatim to the parent
+    out["stage"] = "import"
+    out["type"] = type(exc).__name__
+    out["error"] = "%s: %s" % (type(exc).__name__, exc)
+    out["missing"] = getattr(exc, "name", None)
+    print(json.dumps(out))
+    raise SystemExit(0)
+out["file"] = str(getattr(module, "__file__", "") or "")
+root = sys.modules[module_name.split(".")[0]]
+out["root_paths"] = [str(p) for p in getattr(root, "__path__", [])]
+target = module
+try:
+    for part in attr_path.split("."):
+        target = getattr(target, part)
+except Exception as exc:  # noqa: BLE001 - reported verbatim to the parent
+    out["stage"] = "attribute"
+    out["type"] = type(exc).__name__
+    out["error"] = "%s: %s" % (type(exc).__name__, exc)
+    print(json.dumps(out))
+    raise SystemExit(0)
+out["stage"] = "resolved"
+out["callable"] = callable(target)
+out["repr"] = repr(target)[:200]
+print(json.dumps(out))
+'''
+
+
+def check_console_script(wheel: Path, workdir: Path) -> Result:
+    """The console script must resolve to something callable, not to a filename.
+
+    G25. The check this replaces parsed `entry_points.txt` into `module` and `func`
+    and then asked only whether a *file* for `module` was in the zip. `func` was
+    captured and never used. Measured on a real build carrying
+    `migkit = model_migration_kit.cli:no_such_entrypoint`: 16 passed, 0 failed,
+    exit 0 -- with the broken target printed in the evidence of the row that passed
+    it. The installed command died with `ImportError: cannot import name
+    'no_such_entrypoint' from 'model_migration_kit.cli'` on first use, because what
+    pip installs is a shim that reads `from <module> import <func>` and ends in
+    `sys.exit(<func>())`.
+
+    So this resolves the entry point the way the shim does, in a subprocess with the
+    *extracted wheel* first on `sys.path`. Three alternatives were considered:
+
+    - **Grep the module source for `def <func>`.** Cheapest, and wrong in a way that
+      matters: a module may legitimately re-export its entry point
+      (`from ._impl import main`), and the grep would fail a wheel that works. A gate
+      that blocks correct code is a worse defect than the one being fixed. An AST
+      pass has the same hole, plus it would have to reimplement the import system to
+      close it. The import system is already installed.
+    - **`pip install` the wheel into a throwaway venv and run `migkit --help`.** The
+      strongest end-to-end claim, and it buys nothing over resolving the same name in
+      process: the shim's body *is* import-then-call. It costs a venv, a dependency
+      resolution and, on a cold cache, the network -- inside a script whose contract
+      is stdlib plus `build` and `twine`. A release gate that can go red because PyPI
+      was slow reports something other than the release.
+    - **Run the probe under `-S -E` like `check_demo_data_importable` does.** Not
+      available here. That check imports only `model_migration_kit` and
+      `importlib.resources`; this one imports `model_migration_kit.cli`, which pulls
+      the wheel's declared third-party dependencies. `-S` drops site-packages, so
+      the probe would report a missing `opik_rigor` on a perfectly good wheel.
+
+    Dropping `-S` means site-packages is on `sys.path` behind the extract, and an
+    installed copy of this package could in principle answer instead of the wheel.
+    That door is closed by the same assertion `check_demo_data_importable` documents
+    as its real mechanism rather than by a flag: the probe reports the resolved
+    `__file__`, and this function refuses to claim anything unless that file is
+    inside the extract directory. `model_migration_kit` ships an `__init__.py`, so
+    it is a regular package and the first `sys.path` hit wins outright; the
+    assertion is the backstop for the day that stops being true. `-E` is kept, so a
+    `PYTHONPATH` cannot contribute.
+
+    A dependency the *interpreter running the gate* does not have is a fact about
+    this machine, not about the entry point, and is reported SKIPPED -- which under
+    design rule 1 still pushes the exit code to 2.
+    """
     name = "console-script"
     with zipfile.ZipFile(wheel) as zf:
         member = dist_info_member(zf, "entry_points.txt")
@@ -1142,27 +1235,129 @@ def check_console_script(wheel: Path) -> Result:
             return bad(name, "the wheel declares no entry points", [f"wheel: {wheel.name}"])
         text = zf.read(member).decode("utf-8")
         names = set(zf.namelist())
-    match = re.search(rf"^{re.escape(CONSOLE_SCRIPT)}\s*=\s*([\w.]+):(\w+)", text, re.M)
+    # `[\w.]+` after the colon on purpose: `module:obj.method` is legal in the
+    # entry-point specification, and the `(\w+)` this replaces stopped at the first
+    # dot. That was harmless while nothing used `func`; now that the name is really
+    # resolved it is not, because the truncated half is a different object. Measured:
+    # with the old pattern, `migkit = ...cli:app.run` resolves `app`, and if `app` is
+    # an instance rather than a class the callable test FAILs a wheel that works.
+    match = re.search(rf"^{re.escape(CONSOLE_SCRIPT)}\s*=\s*([\w.]+)\s*:\s*([\w.]+)", text, re.M)
     declared = " | ".join(line.strip() for line in text.splitlines() if line.strip())
     evidence = [f"entry_points.txt: {declared}"]
     if not match:
         return bad(name, f"no console script named {CONSOLE_SCRIPT}", evidence)
     module, func = match.group(1), match.group(2)
+    target = f"{module}:{func}"
+
+    # The file check stays in front of the probe. It is not what settles a PASS --
+    # that is the whole point of this chunk -- but "the archive does not contain this
+    # member" is a fact the archive settles by itself, and saying so from the zip
+    # listing is better evidence than an import traceback.
+    #
+    # Known limitation, left in on purpose: the candidate list is pure-Python only,
+    # so a `cli.cp312-win_amd64.pyd` would be reported missing here without the probe
+    # ever running. This project builds `py3-none-any` and ships no extension modules,
+    # so the branch cannot fire wrongly today. It is not widened because the widened
+    # form has no positive case anything in this repository can exercise -- a
+    # speculative branch that no test can go red on is the defect this chunk exists
+    # to remove, wearing different clothes. Widen it the day a wheel here is not
+    # `py3-none-any`, and bring a test.
     candidates = [module.replace(".", "/") + ".py", module.replace(".", "/") + "/__init__.py"]
     present = [c for c in candidates if c in names]
-    evidence.append(f"target {module}:{func} -> looked for {candidates}")
+    evidence.append(f"target {target} -> looked for {candidates}")
     if not present:
         return bad(
             name,
             f"the wheel declares `{CONSOLE_SCRIPT}` but does not contain {module}",
             evidence
             + [
-                "installing this wheel yields a `migkit` command that fails with",
+                f"installing this wheel yields a `{CONSOLE_SCRIPT}` command that fails with",
                 "ModuleNotFoundError on first use",
             ],
         )
     evidence.append(f"found in wheel: {present[0]}")
-    return ok(name, f"`{CONSOLE_SCRIPT}` points at a module the wheel ships", evidence)
+
+    extract = extract_wheel(wheel, workdir / "entry-point-extract")
+    probe = workdir / "_entry_point_probe.py"
+    probe.write_text(ENTRY_POINT_PROBE, encoding="utf-8")
+    proc = run([sys.executable, "-E", str(probe), str(extract), module, func], cwd=workdir)
+    evidence.append(f"resolved {target} with sys.path[0]={extract}")
+    if proc.returncode != 0:
+        return bad(
+            name,
+            f"importing {module} took the interpreter down (exit {proc.returncode})",
+            evidence
+            + [
+                f"a `{CONSOLE_SCRIPT}` command whose module cannot be imported is not a command",
+                *tail(proc.stderr),
+            ],
+        )
+    try:
+        data = json.loads(proc.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return bad(name, "the entry-point probe produced no JSON", evidence + tail(proc.stdout))
+
+    stage = data.get("stage")
+    if stage == "import":
+        missing = data.get("missing") or ""
+        ours = missing == IMPORT_NAME or missing.startswith(IMPORT_NAME + ".")
+        if data.get("type") == "ModuleNotFoundError" and not ours:
+            return skipped(
+                name,
+                f"{module} needs `{missing}`, which this interpreter does not have, so"
+                f" `{CONSOLE_SCRIPT}` is UNVERIFIED",
+                evidence
+                + [
+                    data["error"],
+                    f"interpreter: {sys.executable}",
+                    "the wheel is not installed here, so its dependencies come from this"
+                    " interpreter; a missing one is a fact about this machine",
+                ],
+            )
+        return bad(
+            name,
+            f"the wheel declares `{CONSOLE_SCRIPT}` but importing {module} raises",
+            evidence + [data["error"]],
+        )
+
+    resolved_file = Path(data.get("file") or ".").resolve()
+    if extract.resolve() not in resolved_file.parents:
+        return skipped(
+            name,
+            "the import resolved outside the extracted wheel, so this proves nothing",
+            evidence
+            + [
+                f"{module}.__file__ = {resolved_file}",
+                f"{IMPORT_NAME}.__path__ = {data.get('root_paths')}",
+                f"extracted wheel: {extract}",
+            ],
+        )
+    evidence.append(f"{module}.__file__ = {resolved_file}")
+
+    if stage == "attribute":
+        return bad(
+            name,
+            f"the wheel declares `{CONSOLE_SCRIPT} = {target}` but {module} has no {func}",
+            evidence
+            + [
+                data["error"],
+                f"installing this wheel yields a `{CONSOLE_SCRIPT}` command that fails with",
+                f"ImportError: cannot import name '{func.split('.')[0]}' from '{module}'"
+                " on first use",
+            ],
+        )
+    if not data.get("callable"):
+        return bad(
+            name,
+            f"`{CONSOLE_SCRIPT} = {target}` resolves to something that is not callable",
+            evidence
+            + [
+                f"{target} is {data.get('repr')}",
+                f"the installed shim ends in `sys.exit({func}())`, which raises TypeError",
+            ],
+        )
+    evidence.append(f"{target} resolved to {data.get('repr')} and is callable")
+    return ok(name, f"`{CONSOLE_SCRIPT}` resolves to a callable {target}", evidence)
 
 
 def check_wheel_py_typed(wheel: Path, repo: Path) -> Result:
@@ -1435,7 +1630,7 @@ def main(argv: list[str] | None = None) -> int:
                         [result.summary, "this must be a PASS before Phase 8 cuts the tag"],
                     )
                 emit(result)
-            emit(check_console_script(wheel))
+            emit(check_console_script(wheel, workdir))
             emit(check_wheel_py_typed(wheel, repo))
             emit(check_twine(sdist, wheel, repo))
 
