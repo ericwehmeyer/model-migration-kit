@@ -208,8 +208,8 @@ dispatching is a budget nobody executes.
 | ≥ 100% | **refuse**, and name the override in the refusal text |
 
 **Projected cost of a dispatch** = `expected_tool_calls × current_context`, from
-§1.4. `expected_tool_calls` comes from the brief (§3.4). Absent one, use **70**,
-the median of the twelve agents whose tool-call counts are on record — METRICS.md
+§1.4. `expected_tool_calls` comes from the brief (§3.4). Absent one, use **70**
+(the median of the twelve agents on record is 69.5) — METRICS.md
 §2's seven (64, 188, 73, 63, 62, 79, 63) and 2026-08-25's five (66, 62, 89, 101,
 73). Note the 188: the spread is 3×, so this default is a floor for a warning,
 not a forecast to rely on.
