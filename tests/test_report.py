@@ -3244,6 +3244,39 @@ def test_the_log_is_read_once_for_both_the_headline_and_the_series(
     this measurement is about: the evidence log is the largest artifact the
     pipeline writes, and ``stream_records`` exists because an 86 MB one already
     cost 502 MB once.
+
+    **What this does not cover** (R36.3, and the same paragraph stands on the
+    other three open-counting tests in this file):
+
+    * **Binary reads, deliberately.** ``contracts.hash_file`` opens the log in
+      binary on every report, so a count that included binary mode would be a
+      count of two and would say nothing. The cost is that
+      ``open(path, "rb").read()`` -- a whole second pass -- is invisible to all
+      four of these tests.
+    * **Anything that is not ``open``.** ``os.open`` plus ``os.read`` reads the
+      log again and every one of these tests stays green. So does ``mmap``.
+
+    The binary hole is closed only by
+    ``test_rebuilding_the_report_does_not_hold_the_log_either`` in
+    ``tests/test_evidence_scale.py``, and closed **by accident**: that is a
+    peak-allocation *slope* test, not a read count, so it catches a second read
+    that buffers the whole file and not one that streams.
+
+    Measured rather than argued -- four second reads injected beside the loop in
+    ``from_evidence``, against all four open-counting tests in this file and then
+    against the allocation test::
+
+        read_series(path)             4 open-counting red
+        Path(path).read_text()        4 open-counting red
+        open(path, "rb").read()       all green -- allocation test red
+        os.open + os.read, 64 KB      all green -- allocation test green
+
+    R36.3 rules this limit is to be recorded and not closed. A test that patches
+    every syscall is a test nobody can read, and the regressions a real slip
+    would actually take -- the top two rows -- both go red here today. **A
+    guarantee whose edges are written down is worth more than one nobody has
+    measured**, and the honest statement of this one is: single-pass holds for
+    the paths a slip would take, not as a general guarantee.
     """
     import builtins
     import os
@@ -9684,6 +9717,12 @@ def test_building_the_matrix_does_not_read_the_evidence_log_a_second_time(
     verdicts until the golden set arrives -- was measured at 5.0-5.8 times the
     log's own bytes resident, so both shortcuts are closed and only the two-phase
     tally is left.
+
+    **What this does not cover**, in full on
+    ``test_the_log_is_read_once_for_both_the_headline_and_the_series``: binary
+    reads, excluded on purpose because the provenance hash is one, and any read
+    that never goes through ``open`` -- ``os.open`` plus ``os.read`` passes here.
+    R36.3 rules that limit recorded rather than closed.
     """
     import builtins
     import os
@@ -10463,6 +10502,12 @@ def test_both_new_fields_are_populated_while_the_log_is_still_read_once(
     implementation that never built them is exactly the one that reads the log
     once. Counting text-mode opens ignores the binary hashing every report has
     always done.
+
+    **What this does not cover**, in full on
+    ``test_the_log_is_read_once_for_both_the_headline_and_the_series``: binary
+    reads, excluded on purpose because the provenance hash is one, and any read
+    that never goes through ``open`` -- ``os.open`` plus ``os.read`` passes here.
+    R36.3 rules that limit recorded rather than closed.
     """
     import builtins
     import os
@@ -10532,6 +10577,19 @@ def test_both_new_fields_are_populated_while_the_log_is_still_read_once(
 #   `ReportModel.baseline.model_id` and `series[-1].baseline_model` disagree.
 #   See its docstring: they are the same JSON field read through two different
 #   coercions, so it takes an edited log to separate them at all.
+#
+# Three more were added by C22b's fix pass, each for a mutant that survived the
+# whole suite because no fixture varied the field the code reads (R36):
+#
+# * `_falsy_shared_fields_log` carries *all five* fields R36.4 names, falsy and
+#   recorded, in one payload. One field at a time is how five sites become six.
+# * `_headline_excluded_log` takes the headline run off its own line, so
+#   `Trend.points[-1] is series[-1]` is finally False somewhere in this file --
+#   until it existed, `current=series[-1]` was a mutation nothing could catch.
+# * `_long_line_log` draws a line of **four**. Two is where `points[0]` hides;
+#   three is where `points[1]` hides. R24.7's pairwise rule, one index out: this
+#   file varied line length and varied strip content and never varied them
+#   together, and `previous` went unpinned in the gap.
 # --------------------------------------------------------------------------- #
 
 
@@ -10567,6 +10625,27 @@ FAMILY_P_VALUES = {
 #: three rows of the field are three distinct dates and none of them ties.
 THIRD_CREATED = "2026-08-12T08:59:58.000000+00:00"
 
+#: A fourth candidate under the headline's key, for the two fixtures R36.1 and
+#: R36.2 need. Named ``LATE_`` rather than ``FOURTH_`` because C10 already
+#: defines a module-level ``FOURTH_MODEL`` at 8222 -- the third time this file
+#: has had to route around a name it does not own, and the reason `check_merge`
+#: now walks constants (R32.2).
+LATE_SIBLING_MODEL = "model-e-20260101"
+
+#: Later than ``THIRD_CREATED`` and earlier than ``TS_COMPARISON``, so a line
+#: holding both siblings and the headline is four runs on four distinct
+#: instants: ``points[0]``, ``points[1]`` and ``points[-2]`` are then three
+#: different runs, which is what it takes to see `parameter_strip`'s ``previous``
+#: at all. See `_long_line_log`.
+LATE_SIBLING_CREATED = "2026-08-12T20:00:00.000000+00:00"
+
+#: Not the golden set the siblings ran against. `partition_comparable` refuses a
+#: point whose comparability key disagrees with the anchor's, so writing this on
+#: the *headline* run takes the headline off its own line -- which is the only
+#: way ``Trend.points[-1]`` and ``series[-1]`` become different runs. See
+#: `_headline_excluded_log`.
+EXCLUDED_GOLDENSET_HASH = "e" * 64
+
 
 # -- accessors --------------------------------------------------------------- #
 
@@ -10588,9 +10667,14 @@ def _line(model: Any) -> Any:
 
     The lineage is `CandidateLineage.assumed_from` unconditionally (R30.1 --
     nothing declares one anywhere) and the baseline is
-    ``ReportModel.baseline.model_id`` and never ``series[-1].baseline_model``
-    (R30.4). Assembled here from the producers so that an expectation cannot
-    drift into agreeing with whatever the wiring happens to pass.
+    ``ReportModel.baseline.model_id`` (R30.4). Assembled here from the producers
+    so that an expectation cannot drift into agreeing with whatever the wiring
+    happens to pass.
+
+    Since R36.4 the second half of that sentence has stopped being a choice:
+    ``baseline.model_id`` and ``series[-1].baseline_model`` are one JSON field
+    read through one coercion, so they are equal on every log including the
+    edited ones. What R30.4 picked between no longer has two answers.
     """
     from model_migration_kit.series import CandidateLineage, trend
 
@@ -10732,6 +10816,129 @@ def _family_log(scenario: Scenario, name: str = "evidence-family.jsonl") -> Path
     return _write_evidence(scenario.root / name, records)
 
 
+def _headline_excluded_log(
+    scenario: Scenario, name: str = "evidence-excluded-headline.jsonl"
+) -> Path:
+    """Two siblings anchor the line and the headline run is not on it.
+
+    R30.3 consequence 1 says the strip's ``current`` is ``Trend.points[-1]`` and
+    not ``series[-1]``. **Every other fixture in this suite has
+    ``line.points[-1] is series[-1]``** -- the headline run is the newest run and
+    it is always on the line -- so the two readings name the same object and the
+    ruling is unobservable. This log separates them.
+
+    In log order:
+
+    0. ``SIBLING_MODEL``, two days before the headline, under the headline's key;
+    1. ``LATE_SIBLING_MODEL``, the day before, also under the headline's key;
+    2. the headline run, ``CANDIDATE_MODEL``, whose ``goldenset_hash`` is
+       `EXCLUDED_GOLDENSET_HASH` and therefore **not** the key the two siblings
+       share.
+
+    `_anchor` takes the earliest run that identifies a group, which is the
+    sibling at index 0, so `partition_comparable` keeps the two siblings and
+    refuses the headline. The line is the two siblings; the log's last run is the
+    headline; and the strip built from each is a different six rows.
+
+    The headline is excluded rather than merely absent from the log because that
+    is R30.3's own case and because it keeps the fixture honest: the run is still
+    on the page -- it is the banner, and it is in ``Trend.excluded`` with the
+    field and both values -- so the two readings differ over which of two
+    *rendered* runs the strip attributes to.
+
+    A mismatched ``goldenset_hash`` degrades the golden-set view and does not
+    raise; see `test_a_changed_golden_set_suppresses_the_inputs_but_not_the_outputs`.
+    """
+    payload = json.loads(json.dumps(scenario.comparison))
+    payload["goldenset_hash"] = EXCLUDED_GOLDENSET_HASH
+    records = [
+        _record(
+            EVENT_COMPARISON,
+            _sibling_comparison(
+                scenario, candidate_model=SIBLING_MODEL, created=SIBLING_CREATED_NARROW
+            ),
+            EARLIER_TS_COMPARISON,
+        ),
+        _record(
+            EVENT_COMPARISON,
+            _sibling_comparison(
+                scenario,
+                candidate_model=LATE_SIBLING_MODEL,
+                created=LATE_SIBLING_CREATED,
+            ),
+            EARLIER_TS_COMPARISON,
+        ),
+        _record(EVENT_COMPARISON, payload, TS_COMPARISON),
+    ]
+    if scenario.verdict is not None:
+        records.append(_record(EVENT_VERDICT, scenario.verdict, TS_VERDICT))
+    return _write_evidence(scenario.root / name, records)
+
+
+def _long_line_log(scenario: Scenario, name: str = "evidence-longline.jsonl") -> Path:
+    """A line of **four** runs, which is what it takes to pin ``previous``.
+
+    `parameter_strip`'s ``previous`` is ``Trend.points[-2]``. Three wrong
+    readings of that are one character away -- ``points[0]``, ``points[1]`` and
+    ``points[-2]`` -- and a fixture only kills the ones it can tell apart:
+
+    * on a line of **two**, ``points[0] == points[-2]``, so ``points[0]`` is
+      invisible -- which is the shape every asserted strip in this file had;
+    * on a line of **three**, ``points[1] == points[-2]``, so a three-point
+      fixture kills ``points[0]`` and cannot see ``points[1]`` at all.
+
+    Four is the first length at which all three index differently, and that is
+    the whole reason this fixture exists rather than reusing `_family_log`'s
+    three-point line. R24.7's rule is that a fixture set can vary every field
+    individually and still be a monoculture in *combination*; this file already
+    varied line length and varied strip content and never varied them together,
+    which is how ``previous`` went unpinned. Fixing that with a three-point line
+    would reproduce the same shape one index further out.
+
+    Measured, because the two mutants are not equally hidden and R36.2 reads as
+    though they were. With this fixture removed, ``previous = points[0]``
+    survives the whole of ``test_report.py`` and ``test_series.py``; that is the
+    real survivor. ``previous = points[1]`` does **not** survive them -- on the
+    two-point lines the older strip tests assert, ``points[1]`` *is*
+    ``points[-1]``, so the strip compares a run to itself and five merged tests
+    go red. This fixture kills both, and it is the only thing in either file that
+    kills the first.
+
+    Four runs on four distinct instants, all under one comparability key, the
+    candidate model the only tracked parameter that moves: ``SIBLING_MODEL``,
+    ``FAMILY_THIRD_MODEL``, ``LATE_SIBLING_MODEL``, then the headline.
+    """
+    records = [
+        _record(
+            EVENT_COMPARISON,
+            _sibling_comparison(
+                scenario, candidate_model=SIBLING_MODEL, created=SIBLING_CREATED_NARROW
+            ),
+            EARLIER_TS_COMPARISON,
+        ),
+        _record(
+            EVENT_COMPARISON,
+            _sibling_comparison(
+                scenario, candidate_model=FAMILY_THIRD_MODEL, created=THIRD_CREATED
+            ),
+            EARLIER_TS_COMPARISON,
+        ),
+        _record(
+            EVENT_COMPARISON,
+            _sibling_comparison(
+                scenario,
+                candidate_model=LATE_SIBLING_MODEL,
+                created=LATE_SIBLING_CREATED,
+            ),
+            EARLIER_TS_COMPARISON,
+        ),
+        _record(EVENT_COMPARISON, scenario.comparison, TS_COMPARISON),
+    ]
+    if scenario.verdict is not None:
+        records.append(_record(EVENT_VERDICT, scenario.verdict, TS_VERDICT))
+    return _write_evidence(scenario.root / name, records)
+
+
 def _nameless_candidate_log(
     scenario: Scenario, name: str = "evidence-nameless.jsonl"
 ) -> Path:
@@ -10756,23 +10963,58 @@ def _nameless_candidate_log(
 
 
 def _falsy_baseline_log(scenario: Scenario, name: str = "evidence-falsy.jsonl") -> Path:
-    """The one log on which R30.4's two candidate sources disagree.
+    """The one log on which R30.4's two candidate sources *used to* disagree.
 
     They are the *same JSON field* -- ``comparison["baseline"]["model_id"]`` of
-    the same headline payload -- read through two coercions that differ on
-    exactly one class of value. ``RunPoint`` reads it through ``series._text``,
-    which is ``"" if value is None else str(value)``; ``RunSummary`` reads it as
-    ``str(side.get("model_id", "") or "")``, whose ``or ""`` swallows every falsy
-    non-``None`` value. So ``0`` arrives as ``"0"`` on the point and as ``""`` on
-    the summary, and on every log this tool writes -- where the field is a
-    non-empty string -- the two agree and no fixture can separate them.
+    the same headline payload -- and until R36.4 they were read through two
+    coercions that differ on exactly one class of value. ``RunPoint`` reads it
+    through ``series._text``, which is ``"" if value is None else str(value)``;
+    ``RunSummary`` read it as ``str(side.get("model_id", "") or "")``, whose
+    ``or ""`` swallows every falsy non-``None`` value. So ``0`` arrived as
+    ``"0"`` on the point and as ``""`` on the summary, and on every log this tool
+    writes -- where the field is a non-empty string -- the two agree and no
+    fixture can separate them.
 
-    That is the finding, and it is why this log is hand-edited rather than
-    generated: R30.4's tie-break is unobservable on honest evidence, and the only
-    thing that can hold the wiring to it is an edited one.
+    R36.4 made the two agree by making them **one function**: `report` imports
+    ``series._text`` rather than re-spelling it. So this log now pins the
+    opposite claim from the one it was written for, and it is a stronger claim.
+    Before, it could only assert *which* of two readings the wiring used, and
+    R30.4's answer cost the page a run. Now it asserts that there is one reading,
+    and that the run is on the page.
+
+    It stays hand-edited for the same reason it always was: the split is
+    unobservable on honest evidence, so an agreement asserted on honest evidence
+    asserts nothing. Only an edited log can tell a shared coercion from two that
+    happen to match.
     """
     payload = json.loads(json.dumps(scenario.comparison))
     payload["baseline"]["model_id"] = 0
+    records = [_record(EVENT_COMPARISON, payload, TS_COMPARISON)]
+    if scenario.verdict is not None:
+        records.append(_record(EVENT_VERDICT, scenario.verdict, TS_VERDICT))
+    return _write_evidence(scenario.root / name, records)
+
+
+def _falsy_shared_fields_log(
+    scenario: Scenario, name: str = "evidence-falsy-shared.jsonl"
+) -> Path:
+    """Every field R36.4 names, falsy and recorded, in one payload.
+
+    R36.4's ruling is that the *split is the defect and not any one of its
+    sites*, so the fixture that holds the wiring to it has to carry every site
+    at once. One field at a time is how five sites become six.
+
+    ``0`` and not ``""``: the two coercions agree on ``""`` -- ``str("" or "")``
+    and ``_text("")`` are both ``""`` -- so an empty string separates nothing.
+    The class of value that separates them is falsy **and recorded**, and ``0``
+    is the one a log can plausibly carry.
+    """
+    payload = json.loads(json.dumps(scenario.comparison))
+    payload["baseline"]["model_id"] = 0
+    payload["candidate"]["model_id"] = 0
+    payload["judges"][0]["name"] = 0
+    payload["judges"][0]["model_id"] = 0
+    payload["judges"][0]["rubric_hash"] = 0
     records = [_record(EVENT_COMPARISON, payload, TS_COMPARISON)]
     if scenario.verdict is not None:
         records.append(_record(EVENT_VERDICT, scenario.verdict, TS_VERDICT))
@@ -11100,6 +11342,151 @@ def test_the_strip_is_the_producers_over_the_lines_own_last_two_points(
     )
 
 
+def test_the_strips_current_run_is_the_lines_last_and_not_the_logs(
+    tmp_path: Path,
+) -> None:
+    """R30.3 consequence 1, on the first fixture in this file that can see it.
+
+    The strip's ``current`` is ``Trend.points[-1]``. Until this log, **every
+    fixture in the suite had ``line.points[-1] is series[-1]``** -- the headline
+    run is the newest and it is always on the line -- so ``current=series[-1]``
+    was a mutation nothing could catch. The test above pins ``previous`` against
+    a log whose ``series[-2]`` is a foreign run; nothing pinned ``current``,
+    because on that log the two candidates for it were one object.
+
+    `_headline_excluded_log` takes the headline off its own line by editing its
+    golden-set hash, so ``partition_comparable`` refuses it and the line is the
+    two siblings that came before. Then the two readings render differently, and
+    they differ in the direction R30.3 is about::
+
+        row        line-fed                    log-fed
+        model_id   model-c -> model-e          model-c -> model-b
+        items      3 -> 3       changed=False  3 -> 96   changed=True
+        goldenset  3f51 -> 3f51 changed=False  3f51 -> eeee changed=True
+
+    Three of six rows differ and two flip ``changed`` False to True. **The
+    log-fed strip asserts that the golden set changed and the item count went 3
+    to 96 between the line's last two runs** -- when one of those runs is not on
+    the line, and the chart never draws the two as consecutive. That is precisely
+    the false attribution the strip exists to license against, and it is the
+    wiring a refactor reaches for first, on the reasonable-sounding ground that
+    the strip should surely be about the run in the banner.
+
+    The excluded run is still on the page. It is the headline, and it is in
+    ``Trend.excluded`` naming the field and both values. So this is not a run the
+    report hides; it is a run the report must not draw *as consecutive with*.
+    """
+    scenario = _counted_scenario(tmp_path / "currentrun")
+    model = _model_from(_headline_excluded_log(scenario))
+    series = _series(model)
+    line = _trend_of(model)
+    rows = {one.name: one for one in _strip_of(model)}
+
+    assert [one.candidate_model for one in series] == [
+        SIBLING_MODEL,
+        LATE_SIBLING_MODEL,
+        CANDIDATE_MODEL,
+    ], (
+        f"the log is not the three runs this fixture writes: "
+        f"{[one.candidate_model for one in series]}"
+    )
+    assert line.points[-1] is not series[-1], (
+        "the line's last run and the log's last run are the same object on this "
+        "fixture, so `current=points[-1]` and `current=series[-1]` cannot be told "
+        "apart and every assertion below is vacuous"
+    )
+    assert [one.point.candidate_model for one in line.excluded] == [CANDIDATE_MODEL], (
+        f"the headline run is not the excluded one; `excluded` holds "
+        f"{[one.point.candidate_model for one in line.excluded]}, and a fixture where "
+        f"it is missing rather than refused is a different case"
+    )
+    assert (rows["model_id"].before, rows["model_id"].after) == (
+        SIBLING_MODEL,
+        LATE_SIBLING_MODEL,
+    ), (
+        f"the strip compares {rows['model_id'].before!r} to "
+        f"{rows['model_id'].after!r}. Both runs come from the line, whose last point "
+        f"is {LATE_SIBLING_MODEL}; the *log's* last record is the headline run, which "
+        f"`trend` refused and the chart never draws beside these two"
+    )
+    assert rows["items"].changed is False and rows["items"].after == "3", (
+        f"the `items` row reads {rows['items'].before!r} -> {rows['items'].after!r} "
+        f"changed={rows['items'].changed}. Both runs of this line counted 3 items; "
+        f"96 is the *headline* run's count, and a strip that reports it says the item "
+        f"count moved between two nights on which it held"
+    )
+    assert rows["goldenset"].changed is False, (
+        f"the `goldenset` row reads {rows['goldenset'].before!r} -> "
+        f"{rows['goldenset'].after!r} changed={rows['goldenset'].changed}. The two "
+        f"runs of this line share a golden set -- that is *why* they are one line. "
+        f"The hash that moved is the excluded run's, and the page must not attribute "
+        f"it to a transition the chart does not draw"
+    )
+    assert rows["goldenset"].after != EXCLUDED_GOLDENSET_HASH[:16], (
+        "the strip's golden-set cell is the excluded headline run's hash, so the "
+        "strip is being fed from the log and not from the line"
+    )
+
+
+def test_the_strips_previous_run_is_the_lines_second_to_last_on_a_long_line(
+    tmp_path: Path,
+) -> None:
+    """R36.2: ``previous`` is ``points[-2]``, pinned where the index can be wrong.
+
+    ``previous = points[0]`` and ``previous = points[1]`` both used to survive
+    the whole suite. The only test pinning the pair ran on a line of exactly
+    **two**, where ``points[0] == points[-2]`` and the mutation is invisible.
+
+    A line of three would kill ``points[0]`` and leave ``points[1]`` standing,
+    because ``points[1] == points[-2]`` there. **A line of four is the first
+    length at which the three indices name three different runs**, and building
+    one rather than reusing the three-point line already in the file is the whole
+    point: R24.7's rule is that fixing the instance one index further out
+    reproduces the same monoculture. See `_long_line_log`.
+
+    What a wrong ``previous`` costs is a whole night. On ``c -> d -> e -> b``,
+    ``points[0]`` prints the transition as ``c -> b`` and silently absorbs
+    everything ``d`` and ``e`` changed into it -- the strip does not say it
+    skipped two runs, because a strip cannot say that. Every row still reads as a
+    change between two adjacent nights, and two of them were not adjacent.
+
+    The ``after`` side is asserted alongside, so the test cannot pass by having
+    got ``current`` wrong in a compensating direction.
+    """
+    scenario = _counted_scenario(tmp_path / "longline")
+    model = _model_from(_long_line_log(scenario))
+    line = _trend_of(model)
+    rows = {one.name: one for one in _strip_of(model)}
+
+    assert [one.candidate_model for one in line.points] == [
+        SIBLING_MODEL,
+        FAMILY_THIRD_MODEL,
+        LATE_SIBLING_MODEL,
+        CANDIDATE_MODEL,
+    ], (
+        f"the line is {[one.candidate_model for one in line.points]}; this test needs "
+        f"four runs on one line, because on three `points[1]` and `points[-2]` are the "
+        f"same object and the mutation is invisible again"
+    )
+    assert len({id(line.points[0]), id(line.points[1]), id(line.points[-2])}) == 3, (
+        "`points[0]`, `points[1]` and `points[-2]` are not three distinct runs on this "
+        "line, so the assertion below cannot separate the three readings"
+    )
+    assert (rows["model_id"].before, rows["model_id"].after) == (
+        LATE_SIBLING_MODEL,
+        CANDIDATE_MODEL,
+    ), (
+        f"the strip's `model_id` row reads {rows['model_id'].before!r} -> "
+        f"{rows['model_id'].after!r}. `previous` is `points[-2]` "
+        f"({LATE_SIBLING_MODEL}) and not `points[0]` ({SIBLING_MODEL}) or `points[1]` "
+        f"({FAMILY_THIRD_MODEL}): naming an earlier run prints a transition the chart "
+        f"does not draw and absorbs every change the runs between them made"
+    )
+    assert rows["model_id"].changed is True, (
+        "the last succession on this line does not show as a change"
+    )
+
+
 def test_the_lines_points_are_the_series_own_points(tmp_path: Path) -> None:
     """Identity, not equality: the line is arithmetic over what the model holds.
 
@@ -11355,52 +11742,185 @@ def test_a_log_whose_line_is_empty_carries_no_multiplicity_either(
     )
 
 
-# -- R30.4: the baseline the line is drawn against --------------------------- #
+# -- R36.4: one JSON field, one coercion, and the run stays on the page ------ #
 
 
-def test_the_line_is_drawn_against_the_baseline_the_records_name(
+def test_the_two_readers_of_the_baseline_id_agree_on_a_falsy_recorded_value(
     tmp_path: Path,
 ) -> None:
-    """R30.4's tie-break, on the only log this suite could build that can see it.
+    """R36.4, on the log R30.4's tie-break was decided against.
 
-    ``baseline_model`` comes from ``ReportModel.baseline.model_id`` and not from
-    ``series[-1].baseline_model``. They are the same fact and R23.2's rule is
-    exactly one source, so the tie is broken on which one is always there.
+    ``ReportModel.baseline.model_id`` and ``series[-1].baseline_model`` are the
+    same JSON field of the same headline payload. R30.4 chose between them;
+    R32.1 corrected the reason it chose on; **R36.4 removed the choice**, by
+    making `report` read the field through the very function `series` reads it
+    through. So the assertion here is not "the wiring used the right one of two
+    readings" -- it is that there is one reading.
 
-    **On honest evidence they cannot disagree** -- they are the same JSON field of
-    the same payload -- so this fixture edits it to a falsy non-``None`` value,
-    which is the one class of value the two coercions read differently. See
-    `_falsy_baseline_log`. That makes this the *only* assertion in the file that
-    can hold the wiring to R30.4's choice, and it is also the case that shows what
-    the choice costs: read from the records the line is empty, because no run in
-    the log is measured against ``""``.
+    That is a strictly stronger test than the one it replaces, and the reason is
+    worth stating. Pinning *which* source the wiring picked is a test a sixth
+    call site walks straight past: the next field read two ways is not this
+    field, so nothing goes red. Pinning that the two agree on a value that can
+    only be told apart by coercion goes red for any site that reverts to
+    ``str(x or "")``.
 
-    Whether that cost is acceptable is R30.4's to answer and not this file's. What
-    is asserted here is only that the source is the one the ruling names.
+    ``0`` is the whole class: ``str(0 or "")`` is ``""`` and ``_text(0)`` is
+    ``"0"``. On every log this tool writes the field is a non-empty string, both
+    readings agree, and nothing here would be measuring anything -- which is why
+    `_falsy_baseline_log` is hand-edited.
     """
     scenario = _counted_scenario(tmp_path / "baselineid")
     model = _model_from(_falsy_baseline_log(scenario))
     series = _series(model)
     from_the_records = _get(_get(model, "baseline"), "model_id")
 
-    assert from_the_records != series[-1].baseline_model, (
-        f"the two sources agree on this fixture ({from_the_records!r}), so nothing "
-        f"here separates them and the assertions below are vacuous"
+    assert series[-1].baseline_model == "0", (
+        f"`RunPoint.baseline_model` is {series[-1].baseline_model!r} and not '0', so "
+        f"this fixture no longer carries a falsy *recorded* id and the assertion "
+        f"below could pass on two readings that merely both lost the value"
+    )
+    assert from_the_records == series[-1].baseline_model, (
+        f"`baseline.model_id` is {from_the_records!r} where "
+        f"`series[-1].baseline_model` is {series[-1].baseline_model!r}. They are "
+        f"`comparison['baseline']['model_id']` of one payload read twice, and R36.4 "
+        f"rules the split is the defect: `str(x or '')` swallows a recorded `0` and "
+        f"`series._text` keeps it, so one page prints an absence the log did not "
+        f"record"
     )
     assert _trend_of(model) == _line(model), (
-        f"the line was drawn against {series[-1].baseline_model!r}, which is "
-        f"`series[-1].baseline_model`. R30.4 takes the baseline from "
-        f"`ReportModel.baseline.model_id` ({from_the_records!r}): `baseline` is read "
-        f"from the records and always present, `series` can be empty, and choosing "
-        f"it needs an empty-series special case that exists only to answer a "
-        f"question `baseline` already answers"
+        "the line on the model is not the one `trend` draws over this model's own "
+        "series against this model's own baseline"
     )
-    assert _trend_of(model).points == (), (
-        f"the line holds {len(_trend_of(model).points)} point(s); no run in this log "
-        f"is measured against the baseline the records name, so `trend` selects none"
+
+
+def test_a_falsy_baseline_id_no_longer_puts_the_run_on_no_part_of_the_page(
+    tmp_path: Path,
+) -> None:
+    """R36.4's cost, which is the reason the split was ruled a defect at all.
+
+    ``trend`` selects on ``point.baseline_model != baseline_model: continue``.
+    With the two readers split, the headline run was measured against ``'0'`` and
+    the line was drawn against ``''``, so the run was **not selected, not
+    excluded, and not a stranger**: it landed in none of `Trend`'s seven fields.
+
+    Measured on this fixture before the fix::
+
+        points=0  successions=0  excluded=0  undated=0
+        outside_lineage=0  absent_models=0
+
+    -- 0 of the 1 run in the log accounted for anywhere. That is R24.1 exactly,
+    and `outside_lineage`, the field whose whole purpose is to say that an
+    absence is a claim about the declaration, was the one that failed to catch
+    it.
+
+    The count and not merely ``points`` is asserted, because the defect was never
+    "the line is short". A run may legitimately be off the line -- excluded,
+    undated, outside the lineage. What may not happen is that it is nowhere.
+    Asserting ``points == 1`` alone would go green for an implementation that
+    drew this run and lost some other one.
+
+    The caveat is asserted too, because the second half of the same defect was
+    that the page then made a **false statement** about the absence it had
+    invented: with no candidate selected, `trend` printed *"this baseline
+    recorded no candidate the log could name"* over a log that recorded
+    ``model-b-20260101``. An absence rendering as a measurement, and then as a
+    finding.
+    """
+    scenario = _counted_scenario(tmp_path / "accounted")
+    model = _model_from(_falsy_baseline_log(scenario))
+    series = _series(model)
+    line = _trend_of(model)
+    accounted = (
+        len(line.points) + len(line.excluded) + line.undated + len(line.outside_lineage)
     )
-    assert _strip_of(model) == (), (
-        "the strip is not empty over an empty line; R30.4 ties it to `trend`"
+
+    assert len(series) == 1, "this fixture writes exactly one comparison"
+    assert accounted == 1, (
+        f"{accounted} of the {len(series)} run(s) in this log is accounted for "
+        f"anywhere on the line -- points={len(line.points)}, "
+        f"excluded={len(line.excluded)}, undated={line.undated}, "
+        f"outside_lineage={len(line.outside_lineage)}, "
+        f"absent_models={len(line.absent_models)}. R24.1: a run in the log and on no "
+        f"part of the page is the one outcome none of these seven fields may allow"
+    )
+    assert len(line.points) == 1, (
+        f"the line holds {len(line.points)} point(s); this run is measured against "
+        f"the baseline the line is drawn against, so it is drawn"
+    )
+    assert len(_strip_of(model)) == 6, (
+        f"the strip holds {len(_strip_of(model))} row(s) over a line of one; R30.4 "
+        f"spells `()` for an *empty line*, and this line is not empty"
+    )
+    said = " ".join(one.reason for one in line.caveats)
+    assert CANDIDATE_MODEL in said, (
+        f"the caveats say {said!r}. The log recorded {CANDIDATE_MODEL!r} as this "
+        f"baseline's candidate; a sentence saying this baseline recorded none is an "
+        f"absence the wiring invented rendering as a finding"
+    )
+
+
+def test_every_field_r36_names_is_read_through_one_coercion(tmp_path: Path) -> None:
+    """The class, not the instance: all five shared sites on one payload.
+
+    R36.4 rules that **the split is the defect and not any one of its five
+    sites**, on the argument that fixing call sites one at a time guarantees a
+    sixth. A test that pins one field is a test that argues the opposite, so
+    this one carries every field the ruling names in a single log and compares
+    the two readers of each.
+
+    The five are ``baseline.model_id``, ``candidate.model_id`` and three fields
+    of ``judges[0]`` -- ``name``, ``model_id`` and ``rubric_hash``. Each is one
+    JSON key read once by `report` and once by `series.run_point`.
+
+    **Two limits, written down rather than assumed away.**
+
+    ``RunSummary.adapter`` is not here and R36.4 excludes it by name: it also
+    disagrees with ``RunPoint.adapter_baseline``, but for a second and unrelated
+    reason -- `_run_summary` prefers ``run.header.adapter`` over the payload
+    entirely, so on this fixture it reads the header's adapter rather than either
+    coercion of the payload's. Folding two disagreements into one assertion would
+    make this test go green on a fix that closed neither.
+
+    And this pins the five R36.4 measured, not every shared field in the package.
+    ``goldenset_hash``, ``judges_hash``, ``config_hash`` and ``config_path`` are
+    read by both modules too and still split on a falsy recorded value; they were
+    left for a ruling because at least one of them -- ``config_path``, which
+    `from_evidence` feeds to ``config_path or THRESHOLD_SOURCE_UNRECORDED`` -- has
+    a second ``or`` downstream, which is the same shape as the reason ``adapter``
+    was excluded. This test would not catch a regression there, and saying so is
+    worth more than quietly widening it.
+    """
+    scenario = _counted_scenario(tmp_path / "sharedcoercion")
+    model = _model_from(_falsy_shared_fields_log(scenario))
+    point = _series(model)[-1]
+    judge = _get(model, "judges")[0]
+    readings = {
+        "baseline.model_id": (_get(_get(model, "baseline"), "model_id"), point.baseline_model),
+        "candidate.model_id": (
+            _get(_get(model, "candidate"), "model_id"),
+            point.candidate_model,
+        ),
+        "judges[0].name": (judge.name, point.judge_name),
+        "judges[0].model_id": (judge.model_id, point.judge_model_id),
+        "judges[0].rubric_hash": (judge.rubric_hash, point.rubric_hashes[0]),
+    }
+
+    assert {series_side for _, series_side in readings.values()} == {"0"}, (
+        f"`series` did not keep the recorded value on every field: "
+        f"{ {name: pair[1] for name, pair in readings.items()} }. This fixture writes "
+        f"`0` to all five, and if the point lost them too there is nothing here for "
+        f"the report side to disagree with"
+    )
+    split = {name: pair for name, pair in readings.items() if pair[0] != pair[1]}
+    assert not split, (
+        f"{len(split)} of the five fields R36.4 names is read through two coercions: "
+        + "; ".join(
+            f"{name}: report={report_side!r} series={series_side!r}"
+            for name, (report_side, series_side) in sorted(split.items())
+        )
+        + ". They are the same JSON keys of the same payload. `str(x or '')` renders "
+        "a recorded falsy value as an absence and `series._text` keeps it, and R36.4 "
+        "rules the split itself is the defect -- one function, or a sixth site"
     )
 
 
@@ -11428,6 +11948,15 @@ def test_the_three_new_fields_are_populated_while_the_log_is_still_read_once(
     `test_the_log_is_read_once_for_both_the_headline_and_the_series` and
     `test_rebuilding_the_report_does_not_hold_the_log_either` -- are untouched.
     This one adds the C22b fields to what has to be true while the count holds.
+
+    **What this does not cover**, in full on
+    ``test_the_log_is_read_once_for_both_the_headline_and_the_series``: binary
+    reads, excluded on purpose because the provenance hash is one, and any read
+    that never goes through ``open`` -- ``os.open`` plus ``os.read`` passes here.
+    The whole-file binary case is caught only by
+    ``test_rebuilding_the_report_does_not_hold_the_log_either``, which is a
+    peak-allocation test and closes that hole by accident. R36.3 rules the limit
+    recorded rather than closed.
     """
     import builtins
     import os
