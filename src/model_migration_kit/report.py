@@ -164,6 +164,7 @@ fourth number derived from them.
 
 from __future__ import annotations
 
+import functools
 import html
 import math
 import os
@@ -5223,8 +5224,9 @@ def _source_label(value: object) -> str:
     return _basename(text) if _is_absolute(text) else text
 
 
+@functools.lru_cache(maxsize=1)
 def _environment() -> Environment:
-    """jinja2, with the two defaults that matter turned off.
+    """jinja2, with the two defaults that matter turned off. Built once per process.
 
     ``autoescape`` is ``False`` by default in jinja2 3.1.6. Model outputs are
     arbitrary attacker-influenced text, and an output containing
@@ -5235,6 +5237,35 @@ def _environment() -> Environment:
     ``StrictUndefined`` catches a different failure: a renamed model field would
     otherwise render an empty verdict banner rather than raising, and an empty
     banner is a document that says nothing while looking complete.
+
+    **Memoised, because building one recompiles the template.** The
+    ``Environment`` owns jinja2's compiled-template cache, so a fresh one per call
+    meant every ``render_html_string`` paid the compile again. Measured both ways
+    in one process, interleaved so a load spike would land on both sides: median
+    **89.4 ms** per render with a fresh environment against **0.9 ms** with a
+    shared one. Recompiling a template that never changes was 98% of the cost of
+    producing a report. R40.2 in the plan carries the original measurement;
+    ``test_the_jinja_environment_is_built_once_however_many_documents_are_rendered``
+    is what keeps it fixed, and it asserts the *construction count* rather than a
+    wall-clock number, because this machine runs several agents at once and a
+    timing assertion here would be flaky by construction.
+
+    The function takes no arguments and closes over module constants, so every
+    call built an equivalent object; caching changes no rendered byte. It is safe
+    to share because jinja2 environments are documented as safe to use from
+    several threads once built -- what is *not* safe is mutating one afterwards,
+    and **nothing here does**: the only other reader,
+    ``test_stripping_a_safe_escapes_the_chart_instead_of_drawing_it``, copies the
+    filters *out* into an environment of its own.
+    ``test_rendering_does_not_mutate_the_shared_environment`` pins that, because a
+    caller that started mutating this object would corrupt every later render in
+    the process and the failure would surface nowhere near the edit.
+
+    ``_environment.cache_clear()`` exists for the one case that needs it: a test
+    that rebinds one of the module-level filter functions or the template source
+    and then renders. The filters bound by name below are captured at build time,
+    so before the cache such a rebinding was picked up on the next render and now
+    is not.
     """
     env = Environment(
         loader=DictLoader({_TEMPLATE_NAME: _CHANGES_MACRO + _TEMPLATE}),

@@ -7298,6 +7298,112 @@ def test_stripping_a_safe_escapes_the_chart_instead_of_drawing_it(tmp_path: Path
         )
 
 
+def test_the_jinja_environment_is_built_once_however_many_documents_are_rendered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R40.2's performance defect, pinned as a **call count** and not as a clock.
+
+    ``_environment()`` used to build a fresh ``Environment`` on every call, and
+    the ``Environment`` owns jinja2's compiled-template cache, so every rendered
+    document recompiled the template. Measured on this machine, interleaved so
+    both sides shared the same load: a median 89.4 ms per render with a fresh
+    environment against 0.9 ms with a shared one, on a box running about a dozen
+    other python processes at 30-95% CPU.
+
+    **The assertion is the count, deliberately.** The obvious test -- render and
+    assert a wall-clock budget -- would be flaky by construction here: this
+    project's own ``CLAUDE.md`` records ``test_report.py`` measured at 365 s and
+    at 27 s on identical code, minutes apart, because of other agents. A count of
+    constructions is the same fact with none of the noise, and it goes red for the
+    real regression: put the ``Environment(...)`` call back inside the per-render
+    path and this test sees three.
+
+    The environment is warmed **before** the counting class is installed, and the
+    count taken from there, so the expected number is zero and the counting class
+    is never constructed at all. That is not a trick to keep the arithmetic
+    simple: a test that cleared the cache first would have to put a class of its
+    own invention back into a process-wide cache, and it would also be pinned to
+    ``functools.lru_cache`` specifically rather than to the property that matters.
+    """
+    from jinja2 import Environment as _RealEnvironment
+
+    scenario = _scenario(tmp_path / "env-once")
+    model = _from_evidence(scenario)
+
+    built: list[int] = []
+
+    class _Counting(_RealEnvironment):
+        # Never reached while the fix holds; that is exactly the assertion below.
+        def __init__(self, *args: Any, **kwargs: Any) -> None:  # pragma: no cover
+            built.append(1)
+            super().__init__(*args, **kwargs)
+
+    _report._environment()  # whatever the memoisation is, it is warm from here
+
+    monkeypatch.setattr(_report, "Environment", _Counting)
+    try:
+        first = _html(model)
+        _html(model, title="a second document out of the same process")
+        third = _html(model)
+    finally:
+        monkeypatch.undo()
+
+    assert built == [], (
+        f"rendering three documents built {len(built)} jinja2 Environments; each one "
+        f"recompiles the template, which was measured at 89 ms of a 90 ms render -- "
+        f"see R40.2"
+    )
+    assert first == third, (
+        "two renders of the same model at the same instant produced different "
+        "bytes, so sharing the environment is not neutral after all"
+    )
+
+
+def test_rendering_does_not_mutate_the_shared_environment(tmp_path: Path) -> None:
+    """Sharing one environment is safe only while nothing writes to it.
+
+    jinja2 environments may be used from several threads once built; what is not
+    allowed is mutating one afterwards. Nothing in this package does -- the only
+    other reader of ``_environment()`` is the ``| safe`` mutation test above, and
+    it copies the filters *out* into an environment of its own. This says so as an
+    assertion rather than as a comment, because a caller that started registering
+    a filter or flipping ``autoescape`` on the object it got back would corrupt
+    every later render in the process, and the wrong page would appear somewhere
+    with no edit anywhere near it.
+    """
+    scenario = _scenario(tmp_path / "env-shared")
+    model = _from_evidence(scenario)
+
+    env = _report._environment()
+    assert _report._environment() is env, (
+        "two calls returned different environments, so the template is being "
+        "recompiled once per rendered document again -- see R40.2"
+    )
+
+    filters_before = dict(env.filters)
+    globals_before = dict(env.globals)
+    settings_before = (env.autoescape, env.undefined, env.trim_blocks, env.lstrip_blocks)
+
+    _html(model)
+
+    assert dict(env.filters) == filters_before, (
+        "rendering changed the shared environment's filters; a cached environment "
+        "makes that a process-wide edit rather than a local one"
+    )
+    assert dict(env.globals) == globals_before, (
+        "rendering changed the shared environment's globals"
+    )
+    assert (
+        env.autoescape,
+        env.undefined,
+        env.trim_blocks,
+        env.lstrip_blocks,
+    ) == settings_before, (
+        "rendering changed one of the environment settings the escaping and the "
+        "StrictUndefined guarantee rest on"
+    )
+
+
 # -- defect 1: repetition presented as evidence ------------------------------ #
 
 
