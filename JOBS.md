@@ -156,6 +156,27 @@ same shape as the two findings your own commit message cites as motivation.
 
 **Report to:** `AUDIT-gates.md` if it is small, or a new `AUDIT-harness.md`.
 
+### JOB-7 — the hostile-value sweep  **[GO WIDE]**
+**Status:** OPEN. Take it now.
+**Brief:** `AUDIT-JOB-7.md`. **Report to:** `AUDIT-hostile.md`.
+Every addressable payload path x nine hostile value classes x both surfaces.
+Partition by top-level key, one agent each, merge at the end. Motivation: a
+single null sweep on this side found **eight crash paths**, not the one it was
+sent to fix, and the top-level list keys are split -- `flips`/`gains` use
+`payload.get(name, ()) or ()` and survive, `judges`/`warnings` did not.
+**Rank silent misrenders above crashes.** A crash tells the operator something is
+wrong; a document that says something false does not.
+
+### JOB-8 — mutation-sweep the whole of `src/`  **[GO WIDE]**
+**Status:** OPEN. Take after JOB-7's harness exists, or in parallel.
+**Brief:** `AUDIT-JOB-7.md`. **Report to:** `AUDIT-mutants.md`.
+One agent per module; split `report.py` again by section. Motivation: six
+different inversions of ONE paragraph all survived 2,241 tests and seven green
+gates, and `grep` for every one of those sentences returns zero hits in `tests/`.
+That was found by hand. Do it mechanically on everything. **Prove every survivor
+non-equivalent by rendering the difference** -- an equivalent mutant reported as
+a survivor costs the reader more than it is worth.
+
 ## Open questions Windows owes the Mac
 
 Recorded here so they are visibly unanswered rather than quietly assumed.
