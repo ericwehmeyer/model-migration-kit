@@ -215,11 +215,23 @@ class _Document(HTMLParser):
         self.tags: list[tuple[str, dict[str, str | None]]] = []
         self.ids: list[str] = []
         self.cells: list[str] = []
+        #: Every ``table`` in the document, in document order, as rows of
+        #: ``(name, attributes, text)``. R37.1: a rate is in a *cell*, and
+        #: `cells` above flattens away the grid that says which one.
+        self.tables: list[list[list[tuple[str, dict[str, str | None], str]]]] = []
         self._chunks: list[str] = []
         self._title: list[str] = []
         self._in_title = False
         self._opaque = 0
         self._cell: list[str] | None = None
+        self._cell_element: tuple[str, dict[str, str | None]] | None = None
+        #: Every ``li``'s own text, in document order. A list item is the
+        #: element that binds an exclusion's sentence to the run it is about,
+        #: the way a ``tr`` binds a cell to its row.
+        self.items: list[str] = []
+        self._item: list[str] | None = None
+        self._open_tables: list[list[list[tuple[str, dict[str, str | None], str]]]] = []
+        self._row: list[tuple[str, dict[str, str | None], str]] | None = None
 
     # -- HTMLParser hooks ---------------------------------------------------- #
 
@@ -236,6 +248,18 @@ class _Document(HTMLParser):
         if tag in _CELL_ELEMENTS:
             self._close_cell()
             self._cell = []
+            self._cell_element = (tag, mapping)
+        if tag == "table":
+            self._close_row()
+            table: list[list[tuple[str, dict[str, str | None], str]]] = []
+            self.tables.append(table)
+            self._open_tables.append(table)
+        if tag == "tr":
+            self._close_row()
+            self._row = []
+        if tag == "li":
+            self._close_item()
+            self._item = []
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         mapping = dict(attrs)
@@ -251,6 +275,14 @@ class _Document(HTMLParser):
             self._opaque -= 1
         if tag in _CELL_ELEMENTS:
             self._close_cell()
+        if tag == "li":
+            self._close_item()
+        if tag == "tr":
+            self._close_row()
+        if tag == "table":
+            self._close_row()
+            if self._open_tables:
+                self._open_tables.pop()
 
     def handle_data(self, data: str) -> None:
         if self._opaque:
@@ -258,19 +290,40 @@ class _Document(HTMLParser):
         self._chunks.append(data)
         if self._cell is not None:
             self._cell.append(data)
+        if self._item is not None:
+            self._item.append(data)
         if self._in_title:
             self._title.append(data)
 
     def close(self) -> None:
         super().close()
         self._close_cell()
+        self._close_row()
+        self._close_item()
 
     # -- readings ------------------------------------------------------------ #
 
     def _close_cell(self) -> None:
         if self._cell is not None:
-            self.cells.append("".join(self._cell).strip())
+            text = "".join(self._cell).strip()
+            self.cells.append(text)
+            if self._row is not None and self._open_tables and self._cell_element:
+                name, attributes = self._cell_element
+                self._row.append((name, attributes, text))
             self._cell = None
+            self._cell_element = None
+
+    def _close_item(self) -> None:
+        if self._item is not None:
+            self.items.append(_squeeze("".join(self._item)).strip())
+            self._item = None
+
+    def _close_row(self) -> None:
+        self._close_cell()
+        if self._row is not None:
+            if self._open_tables:
+                self._open_tables[-1].append(self._row)
+            self._row = None
 
     @property
     def text(self) -> str:
@@ -12079,6 +12132,119 @@ def _anchor_text(html: str, anchor: str) -> str:
     return _squeeze(_visible(_anchor_region(html, anchor)))
 
 
+class _Grid:
+    """One rendered ``table``, addressed by its row heading and its column heading.
+
+    R37.1, and it is the whole reason this class exists: *an assertion that
+    searches a container for a value proves the value is in the container.* Every
+    assertion this section made about the matrix and the candidate table was
+    ``value in region`` -- and a table whose cells are rotated one row up, or one
+    column left, keeps every number in the region and passes all of them. Four
+    mutants survived the full suite on that alone, one of them printing a
+    dimension's 0.0% under the heading of a dimension that scored 100%.
+
+    The header row is the first row, and a row is keyed by its own first cell --
+    which is a ``th`` in the matrix (the tag) and a ``td`` in the candidate table
+    (the model). One rule covers both, and neither table has a second header.
+
+    Cells are ``(name, attributes, text)`` so that a claim about the *shading* of
+    a refused cell is addressable too: ``class="num refused"`` is a statement to
+    the reader and dropping it is invisible in the text.
+    """
+
+    def __init__(self, rows: Sequence[Sequence[tuple[str, dict[str, str | None], str]]]) -> None:
+        assert rows, "this table has no rows at all, so nothing below can address a cell of it"
+        self._rows = [tuple(row) for row in rows]
+        self.headings = tuple(_squeeze(text) for _name, _attributes, text in self._rows[0])
+        assert len(set(self.headings)) == len(self.headings), (
+            f"two columns of this table carry the same heading {self.headings}; a cell "
+            f"cannot be addressed by a heading that names two of them"
+        )
+
+    @property
+    def keys(self) -> tuple[str, ...]:
+        """Each body row's own first cell, in the order the table prints them."""
+        return tuple(_squeeze(row[0][2]) for row in self._rows[1:])
+
+    def at(self, key: str, heading: str) -> tuple[str, dict[str, str | None], str]:
+        """The cell in the row named ``key`` under the column headed ``heading``."""
+        assert heading in self.headings, (
+            f"this table has no column headed {heading!r}; its headings are "
+            f"{list(self.headings)}"
+        )
+        column = self.headings.index(heading)
+        for row in self._rows[1:]:
+            if _squeeze(row[0][2]) == key:
+                assert column < len(row), (
+                    f"the {key!r} row has {len(row)} cell(s) and the {heading!r} column "
+                    f"is number {column + 1}; a short row puts every cell after the gap "
+                    f"under its neighbour's heading"
+                )
+                return row[column]
+        raise AssertionError(f"this table has no row keyed {key!r}; its rows are {list(self.keys)}")
+
+    def text(self, key: str, heading: str) -> str:
+        """The visible text of that one cell, whitespace squeezed."""
+        return _squeeze(self.at(key, heading)[2])
+
+    def classes(self, key: str, heading: str) -> frozenset[str]:
+        """The classes on that one cell, which carry the refused shading."""
+        return frozenset((self.at(key, heading)[1].get("class") or "").split())
+
+
+def _section_items(html: str, anchor: str) -> list[str]:
+    """The text of each ``li`` in one section, whitespace squeezed.
+
+    The same reading as `_Grid`, one element down: a list item is what binds an
+    exclusion's sentence to the run it is about, and "the sentence is in the
+    section and the model id is in the section" is satisfied by a list that
+    printed every reason with no subject and every subject somewhere else.
+    """
+    return _parse(_anchor_region(html, anchor)).items
+
+
+def _column_heading(grid: _Grid, model_id: str) -> str:
+    """The one heading of this table that names ``model_id``, label and all.
+
+    The matrix heads each column with a model id **and** the side it is, so the
+    heading a cell is addressed by carries both -- which is why swapping the
+    `baseline` and `candidate` labels is a failure here rather than a rename.
+    """
+    found = [one for one in grid.headings if one.split(" ")[0] == model_id]
+    assert len(found) == 1, (
+        f"{len(found)} column(s) of this table are headed {model_id!r}; the headings "
+        f"are {list(grid.headings)}"
+    )
+    return found[0]
+
+
+def _leading_value(cell: str) -> str:
+    """The first thing printed in a cell, which is the reading it is about.
+
+    A matrix cell prints its rate, then its interval, then its counts, then its
+    note, and the interval of a cell that scored 100% ends in ``1.0000`` -- so a
+    search of the whole cell for "1.0" finds the interval on a cell whose rate was
+    dropped. The rate is what comes first; that is where it is asserted.
+    """
+    return _squeeze(cell).split(" ")[0]
+
+
+def _section_grid(html: str, anchor: str) -> _Grid:
+    """The one ``table`` inside section ``anchor``, ready to be addressed by cell.
+
+    Parsed with the same `_Document` every other reading in this file goes
+    through, so "the value is in this cell" and "the document has no ``script``"
+    stay two readings of one parse rather than a second parser that can disagree
+    with the first about what a cell is.
+    """
+    tables = _parse(_anchor_region(html, anchor)).tables
+    assert len(tables) == 1, (
+        f"section {anchor!r} holds {len(tables)} table(s); these assertions address "
+        f"cells of the one table the contract puts there"
+    )
+    return _Grid(tables[0])
+
+
 def _sentences(text: str) -> list[str]:
     return [one.strip() for one in re.split(r"(?<=[.!?])\s+", _squeeze(text)) if one.strip()]
 
@@ -12227,6 +12393,232 @@ def _never_closed_model(root: Path) -> Any:
     return model
 
 
+# -- the fixture that takes the branches the producers document ---------------- #
+
+#: A ``created`` no parser can place. Written into **both** clocks by
+#: `_thin_field_log`: `series._created` falls back to the envelope ``ts``, so a
+#: payload-only edit leaves the run perfectly dated by the envelope and the
+#: undated row this fixture is for never exists. Deliberately not a date.
+UNPLACEABLE_CREATED = "the Tuesday after the freeze"
+
+#: The gaining row's recorded pass rate, above the 0.85 every run in this file's
+#: baseline side records, so its delta is **positive**. Nothing else in this
+#: section renders a positive delta, and without one `_pp` dropping its ``+``
+#: changes no character of any document the suite builds -- a negative number
+#: keeps its sign from ``:.1f`` whether the format string asks for it or not.
+GAINING_PASS_RATE = 0.92
+
+#: A note about the field as a whole rather than about a night, carrying nothing
+#: any arithmetic on this model produces. `Caveat.point` is ``None`` for exactly
+#: this case, `CandidateField` keeps such a note deliberately (R30.5), and the
+#: template's ``{% if caveat.point is none %}`` is what stands between it and an
+#: ``UndefinedError`` -- the spec's own named "crash" -- on the line below.
+FIELD_CAVEAT_MARK = "FIELD-CAVEAT-MARK-4B71"
+
+
+def _gaining_row(payload: dict[str, Any]) -> dict[str, Any]:
+    """The same run with a candidate side that scored **above** its baseline."""
+    payload["judges"][0]["candidate"] = _gate(
+        successes=18,
+        n=ODD_N,
+        pass_rate=GAINING_PASS_RATE,
+        lower_bound=0.7423,
+        interval=(0.7127, 0.9793),
+        label=f"{J}:candidate",
+    )
+    return payload
+
+
+def _rateless_row(payload: dict[str, Any]) -> dict[str, Any]:
+    """The same run with a candidate side that graded, and recorded no rate.
+
+    ``n`` survives -- a side that graded nothing is *excluded* by
+    `series._nothing_graded`, so a run whose ``n`` is zero never reaches a row
+    and cannot show what a row with no rate looks like. What is removed is the
+    rate, the bound and the interval, which is the state `series._candidate_rate`
+    documents and which makes `Candidate.delta_pp` ``None`` one subtraction later:
+    "a delta that could not be computed because a side recorded no rate is not a
+    delta of zero".
+
+    ``n`` is also moved off the baseline side's, which earns this row the
+    uneven-coverage `Caveat` -- the only caveat a log this file can write puts on
+    a **kept** row, and the section's only fixture that renders one at all.
+    """
+    payload["judges"][0]["candidate"] = _gate(
+        successes=ODD_SUCCESSES,
+        n=ODD_N - 3,
+        pass_rate=None,
+        lower_bound=None,
+        interval=None,
+        label=f"{J}:candidate",
+    )
+    return payload
+
+
+def _thin_field_log(scenario: Scenario, name: str = "evidence-c14b-thin.jsonl") -> Path:
+    """Three rows under one key, no two of which print the same thing anywhere.
+
+    Every branch of the candidate table that `_every_element_log` cannot reach,
+    in one document, and the row fixture R20.1 asks for on top: that log's two
+    rows carry the **same** pass rate, the **same** delta and differ only in age,
+    so a table with its cells rotated one row up renders byte-identically on it.
+
+    In log order:
+
+    0. ``THIRD_MODEL``, **undated**, scoring above its baseline -- a positive
+       delta, and the only one in this file;
+    1. ``SIBLING_MODEL``, **undated**, recording no rate at all -- a dash for the
+       rate, a dash for the delta, and an uneven-coverage `Caveat`;
+    2. the headline run, ``CANDIDATE_MODEL``, dated, 53.5% and 31.5 points down.
+
+    One dated row of three, so `CandidateField.spread_days` is ``None`` and the
+    field says its spread was not measurable rather than printing a zero; and
+    nothing is excluded, so this is also the document R37.4 needs -- a page whose
+    nav must not offer a link to `#excluded`.
+    """
+    records = [
+        _record(
+            EVENT_COMPARISON,
+            _gaining_row(
+                _sibling_comparison(
+                    scenario, candidate_model=THIRD_MODEL, created=UNPLACEABLE_CREATED
+                )
+            ),
+            UNPLACEABLE_CREATED,
+        ),
+        _record(
+            EVENT_COMPARISON,
+            _rateless_row(
+                _sibling_comparison(
+                    scenario, candidate_model=SIBLING_MODEL, created=UNPLACEABLE_CREATED
+                )
+            ),
+            UNPLACEABLE_CREATED,
+        ),
+        _record(EVENT_COMPARISON, scenario.comparison, TS_COMPARISON),
+    ]
+    if scenario.verdict is not None:
+        records.append(_record(EVENT_VERDICT, scenario.verdict, TS_VERDICT))
+    return _write_evidence(scenario.root / name, records)
+
+
+def _thin_field_model(root: Path) -> Any:
+    """The model built from that log, with every branch it exists to reach asserted.
+
+    `_every_element_model`'s reason, and one more: five of the six states below
+    are named in a producer docstring as real and were reached by no fixture in
+    the suite, so a fixture that quietly stopped producing one would leave the
+    assertions about it passing over a document that no longer has the case in it.
+    """
+    scenario = _counted_scenario(root)
+    model = _model_from(_thin_field_log(scenario))
+    field = _model_field(model)
+
+    rows = {row.model: row for row in field.candidates}
+    assert sorted(rows) == sorted((THIRD_MODEL, SIBLING_MODEL, CANDIDATE_MODEL)), (
+        f"this fixture is built for three rows under one key and holds {sorted(rows)}"
+    )
+    assert field.excluded == (), (
+        f"this log excludes nothing and the field names {len(field.excluded)}; it is "
+        f"the document R37.4 needs, where a nav link to `#excluded` has no target"
+    )
+    assert field.spread_days is None and field.spread_flagged is False, (
+        f"one row of three carries a date, so the spread is not measurable; the field "
+        f"says {field.spread_days!r}"
+    )
+    assert rows[SIBLING_MODEL].point.pass_rate is None, (
+        "the rateless row records a rate, so nothing here renders the dash a delta "
+        "that could not be computed has to print"
+    )
+    for undated in (THIRD_MODEL, SIBLING_MODEL):
+        assert rows[undated].point.created == "" and rows[undated].stale_days is None, (
+            f"{undated!r} is dated in this fixture ({rows[undated].point.created!r}); "
+            f"both clocks are written unplaceable so that the row is undated and its "
+            f"age is `None` rather than a zero"
+        )
+    deltas = {model_id: row.delta_pp for model_id, row in rows.items()}
+    assert deltas[THIRD_MODEL] is not None and deltas[THIRD_MODEL] > 0, (
+        f"the gaining row's delta is {deltas[THIRD_MODEL]!r}; `_pp` dropping its `+` "
+        f"is invisible without a positive one"
+    )
+    assert deltas[CANDIDATE_MODEL] is not None and deltas[CANDIDATE_MODEL] < 0, (
+        f"the headline row's delta is {deltas[CANDIDATE_MODEL]!r}; a sign flip is "
+        f"invisible without a signed one"
+    )
+    assert deltas[SIBLING_MODEL] is None, "the rateless row computed a delta anyway"
+    printed = {(row.point.pass_rate, row.delta_pp, row.stale_days) for row in field.candidates}
+    assert len(printed) == 3, (
+        "two rows of this fixture print the same three numbers, so a table whose "
+        "cells are rotated one row up is the right table by coincidence"
+    )
+    assert field.caveats, (
+        "this fixture carries no caveat, and nothing else in the suite renders "
+        "`candidate_field.caveats` at all -- removing the template's guard on them "
+        "would then be invisible in every document the suite builds"
+    )
+    assert all(note.point is not None for note in field.caveats), (
+        "a producer minted a `point`-less caveat onto this field. That is the branch "
+        "`_caveated_model` substitutes by hand precisely because no producer reaches "
+        "it; if one now does, this fixture should carry it instead of the substitution"
+    )
+    return model
+
+
+def _caveated_model(root: Path) -> tuple[Any, Any]:
+    """`_thin_field_model` with a second caveat, about the field and about no row.
+
+    ``partition_comparable`` mints nothing ``point``-less today -- `CandidateField`
+    says so in the comment on the filter that deliberately keeps such a note --
+    so this one is constructed from the producer's own `Caveat` and substituted
+    with `dataclasses.replace`, the way `_marked_notes` substitutes cell notes.
+    It is a state the type permits, the field's own filter is written to preserve,
+    and the template's `is none` guard exists for; removing that guard raises
+    ``UndefinedError: 'None' has no attribute 'candidate_model'`` on this document
+    and on no other in the suite.
+    """
+    from model_migration_kit.series import Caveat
+
+    model = _thin_field_model(root)
+    field = _model_field(model)
+    widened = dataclasses.replace(
+        field, caveats=(*field.caveats, Caveat(point=None, reason=FIELD_CAVEAT_MARK))
+    )
+    return dataclasses.replace(model, candidates=widened), widened
+
+
+def _untagged_universe_model(root: Path) -> Any:
+    """A matrix that ran, came back available, and has no tags to break down by.
+
+    **This state is not constructible through `ReportModel.from_evidence`**, and
+    that is reported rather than worked around: `dimensions._index` gives every
+    item at least ``UNTAGGED``, so the universe is empty only for a golden set
+    with no items -- and `GoldenSet.parse` refuses one ("A comparison over an
+    empty golden set has no evidence in it"). The branch is therefore live code
+    with no producer behind it, which is a finding about the template and not
+    about the test; the matrix is narrowed here with `dataclasses.replace` so that
+    the branch at least says what it claims to say, and so that deleting it is a
+    visible edit rather than a silent one.
+    """
+    scenario = _counted_scenario(root)
+    log = _matrix_log(
+        scenario, "evidence-c14b-notags.jsonl", judging=_both_sides(scenario)
+    )
+    model = _model_from(log)
+    matrix = _available_matrix(model)
+    assert _get(matrix, "tags"), (
+        "this matrix already carries no tags, so the narrowing below is a no-op"
+    )
+    emptied = dataclasses.replace(
+        matrix,
+        tags=(),
+        baseline=dataclasses.replace(_baseline_column(matrix), cells=()),
+        candidates=tuple(
+            dataclasses.replace(one, cells=()) for one in _candidate_columns(matrix)
+        ),
+    )
+    return dataclasses.replace(model, dimensions=emptied)
+
+
 # -- the four anchors, and their order --------------------------------------- #
 
 
@@ -12303,20 +12695,19 @@ def test_the_candidate_table_holds_a_row_for_each_candidate_and_none_for_the_exc
     """
     model = _every_element_model(tmp_path / "rows")
     field = _model_field(model)
-    region = _anchor_text(_html(model), "candidates")
+    html = _html(model)
+    region = _anchor_text(html, "candidates")
     rows = [row.model for row in field.candidates]
 
-    positions = []
-    for name in rows:
-        assert name in region, (
-            f"the candidate table has no row for {name!r}; the field carries rows "
-            f"for {rows} and the table shows {region!r}"
-        )
-        positions.append(region.index(name))
-    assert positions == sorted(positions), (
-        f"the rows render in a different order from the field's own {rows}; C5 "
-        f"orders them by candidate model and never by result, so a table that "
-        f"re-sorts is a table that disagrees with the model beneath it"
+    # R37.1: the rows keyed by their own first cell, not their positions in the
+    # section's text. `name in region` passes on a table that prints the right set
+    # of names in the right order and every *number* one row out of place, and
+    # `region.index` cannot tell a row heading from a mention in the prose above.
+    assert list(_section_grid(html, "candidates").keys) == rows, (
+        f"the table's rows are {list(_section_grid(html, 'candidates').keys)} and the "
+        f"field's are {rows}. C5 orders them by candidate model and never by result, "
+        f"so a table that re-sorts, drops or repeats one disagrees with the model "
+        f"beneath it"
     )
 
     foreign = [
@@ -12349,15 +12740,36 @@ def test_the_excluded_list_gives_every_exclusion_the_sentence_the_field_wrote(
     prose: the wording belongs to `test_series.py`, and a second copy here would
     be a second thing to keep in step. What is pinned here is that nothing between
     the field and the reader re-wrote it.
+
+    And that each sentence is still attached to the run it is about. The sentences
+    name a *field* -- "golden set b789… against the group's 107c…" -- and not a
+    candidate, so a list that dropped the model and the date off the front of each
+    item still carries every reason and reads as three anonymous complaints. That
+    mutation survived the full suite; the run each sentence is about is asserted
+    in the same item as the sentence, which is where a reader has to find it.
     """
     model = _every_element_model(tmp_path / "exclusions")
     field = _model_field(model)
-    region = _anchor_text(_html(model), "excluded")
+    html = _html(model)
+    region = _anchor_text(html, "excluded")
+    listed = _section_items(html, "excluded")
 
     for one in field.excluded:
         assert _squeeze(one.reason) in region, (
             f"this run's exclusion sentence is not on the page:\n  {one.reason!r}\n"
             f"the section reads:\n  {region!r}"
+        )
+        holding = [item for item in listed if _squeeze(one.reason) in item]
+        assert len(holding) == 1, (
+            f"{len(holding)} list item(s) carry this exclusion's sentence, and it "
+            f"belongs to exactly one run:\n  {one.reason!r}"
+        )
+        named = one.point.candidate_model or "unnamed candidate"
+        dated = one.point.created or "no recorded date"
+        assert named in holding[0] and dated in holding[0], (
+            f"the item carrying this exclusion does not say which run it is about. It "
+            f"should name {named!r} and date it {dated!r} -- an undated run says so "
+            f"rather than leaving the space blank -- and it reads:\n  {holding[0]!r}"
         )
 
 
@@ -12455,11 +12867,29 @@ def test_the_matrix_renders_every_column_and_every_tag_the_model_carries(
     baseline against `candidates[0]` and stops, drops a column of real
     measurements in silence -- and a dropped column is an absence that renders as
     nothing at all.
+
+    **The rows had no order assertion at all**, which R37.1's generalising
+    question turned up: the loop below asserted each tag was *in the section* and
+    stopped, so a template iterating ``matrix.tags | reverse`` rendered a table
+    whose every cell was correct, whose rows were upside down, and passed all 470
+    tests in this file -- the new cell-addressed ones included, because a cell
+    addressed by its row heading follows the heading wherever it moves. The
+    columns' order was pinned by `region.index` and the rows' by nothing; both are
+    now read off the table itself.
     """
     model = _every_element_model(tmp_path / "columns")
     matrix = _available_matrix(model)
-    region = _anchor_text(_html(model), "dimensions")
+    html = _html(model)
+    region = _anchor_text(html, "dimensions")
+    grid = _section_grid(html, "dimensions")
     columns = [_get(one, "model_id") for one in _all_columns(matrix)]
+
+    assert grid.keys == _get(matrix, "tags"), (
+        f"the matrix prints its rows {list(grid.keys)} and the model publishes "
+        f"{list(_get(matrix, 'tags'))}. The order is the counter's -- the golden "
+        f"set's own tag universe -- and a table that re-derives it disagrees with "
+        f"every other reading of the same matrix on this page"
+    )
 
     positions = []
     for name in columns:
@@ -12494,11 +12924,19 @@ def test_each_matrix_column_shows_its_own_reading_and_not_its_neighbours(
 
     The half-passing column is the discriminating one -- 25 of 50 is a number no
     other cell in this document holds.
+
+    **Cell-addressed since R37.1, and the rewrite is the finding.** Every
+    assertion here used to be ``rate in region``, and the mutant this test was
+    written against -- a column filled from its neighbour -- was only one of four:
+    cells rotated one row up, cells rotated one column left, and the two side
+    labels swapped all keep every number inside the region and all three survived
+    the full suite. *An assertion that searches a container proves the value is in
+    the container*; this test's name claims a column, so it addresses one.
     """
     model = _every_element_model(tmp_path / "readings")
     matrix = _available_matrix(model)
-    region = _anchor_region(_html(model), "dimensions")
-    text = _squeeze(_visible(region))
+    html = _html(model)
+    grid = _section_grid(html, "dimensions")
 
     rates = {}
     for column in _all_columns(matrix):
@@ -12516,15 +12954,21 @@ def test_each_matrix_column_shows_its_own_reading_and_not_its_neighbours(
     )
 
     for model_id, rate in rates.items():
-        assert _shows(region, rate), (
-            f"the {MEASURED_TAG!r} rate {rate!r} that {model_id!r} recorded is "
-            f"nowhere in the matrix, in any of the forms {_renderings(rate)}"
+        heading = _column_heading(grid, model_id)
+        shown = _leading_value(grid.text(MEASURED_TAG, heading))
+        assert shown in _renderings(rate), (
+            f"the {MEASURED_TAG!r} cell under {heading!r} reads {shown!r} and that "
+            f"column recorded {rate!r}, whose printed forms are {_renderings(rate)}. "
+            f"A rate is in a *cell*: this is the row that names it and the column "
+            f"that names it, and the number under both is somebody else's"
         )
+    third = _column_heading(grid, THIRD_MODEL)
     passes = _get(_cell(_candidate_column(matrix, THIRD_MODEL), MEASURED_TAG), "passes")
-    assert re.search(rf"\b{passes}\b", text), (
+    assert re.search(rf"\b{passes}\b", grid.text(MEASURED_TAG, third)), (
         f"the third side passed {passes} of its {MEASURED_TAG!r} completions and that "
-        f"count is not in the section; it is the one count in this document that "
-        f"belongs to no other cell"
+        f"count is not in its own cell, which reads "
+        f"{grid.text(MEASURED_TAG, third)!r}; it is the one count in this document "
+        f"that belongs to no other cell"
     )
 
 
@@ -12746,12 +13190,30 @@ def test_no_anchor_this_document_links_to_is_missing_from_it(tmp_path: Path) -> 
     can strand a link the day a report is generated without that data. Both
     branches are rendered here because a nav written against the available branch
     is exactly what dangles on the other one.
+
+    **R37.4: the third document is the one this test was missing.** It rendered
+    exactly two, and *both* carried ``id="excluded"`` -- so the one gate the
+    excluded-runs link depends on, `excluded_shown`, was never off while this ran.
+    Ungating that nav link put ``<a href="#excluded">`` on a page with nothing to
+    point at and the whole suite passed. The assertion was already right; the
+    document where it bites was not being rendered. `_thin_field_model` has a
+    candidate table and excludes nothing, which is exactly that document.
     """
     available = _html(_every_element_model(tmp_path / "links-available"))
     scenario = _scenario(tmp_path / "links-missing")
     missing = _html(_model_from(_matrix_log(scenario, "evidence-c14b-links.jsonl", judging=())))
+    unexcluded = _html(_thin_field_model(tmp_path / "links-unexcluded"))
+    assert "excluded" not in set(_parse(unexcluded).ids), (
+        "the third document carries an excluded-runs section after all, so this test "
+        "is back to rendering two documents that both do and the `excluded_shown` "
+        "gate is again unexercised"
+    )
 
-    for label, html in (("with a matrix", available), ("without one", missing)):
+    for label, html in (
+        ("with a matrix", available),
+        ("without one", missing),
+        ("with a table that excluded nothing", unexcluded),
+    ):
         ids = set(_parse(html).ids)
         targets = {
             value[1:]
@@ -12768,6 +13230,563 @@ def test_no_anchor_this_document_links_to_is_missing_from_it(tmp_path: Path) -> 
             f"the document {label} links to {dangling}, which no element carries. "
             f"Its ids are {sorted(ids)}"
         )
+
+
+# -- R37: the place, not the container; and the branches only prose reached ---- #
+#
+# Everything below is the fix pass for C14b's review. Two causes account for all
+# of it. R37.1: every assertion about the matrix and the candidate table was a
+# substring search over the section, so four mutants that keep every number on
+# the page -- cells rotated a row, cells rotated a column, the two side labels
+# swapped, every row showing the field's baseline rate -- survived the full
+# suite. R37.2: no fixture made a value `None`, or a collection non-empty, in the
+# places the producers document as possible, so `_days`, `_pp` and the caveat
+# guard had no test between them and removing the guard *raised* on nothing.
+
+
+def test_the_matrix_heads_each_column_with_the_model_and_the_side_it_is(
+    tmp_path: Path,
+) -> None:
+    """`baseline`, `candidate`, `also judged in this run` -- and which id has which.
+
+    R27.8 #1 asked that `matrix.candidates[0]`'s meaning be pinned by a test, and
+    the *order* of the ids is pinned above. The labels attached to them are not,
+    and they are the only thing on the whole page that says which side is which:
+    swapping them transposes the comparison, prints the baseline's numbers as the
+    candidate's, and survived all 2,206 tests because both strings stayed in the
+    region.
+
+    Asserted as the whole heading rather than as two readings, because a heading
+    is what a cell is addressed by below and a model id under the wrong label is
+    the same defect as a number under the wrong model id.
+    """
+    model = _every_element_model(tmp_path / "labels")
+    matrix = _available_matrix(model)
+    grid = _section_grid(_html(model), "dimensions")
+    baseline = _get(_baseline_column(matrix), "model_id")
+    first, second = (_get(one, "model_id") for one in _candidate_columns(matrix))
+
+    assert grid.headings == (
+        "dimension",
+        f"{baseline} baseline",
+        f"{first} candidate",
+        f"{second} also judged in this run",
+    ), (
+        f"the matrix heads its columns {list(grid.headings)}. The baseline is "
+        f"{baseline!r}, `candidates[0]` is {first!r} -- the comparison's own "
+        f"candidate by construction -- and {second!r} is a side this run also "
+        f"judged. Those three labels are the only thing on this page identifying "
+        f"the sides, so a label on the wrong id transposes the comparison"
+    )
+
+
+def test_every_matrix_cell_prints_the_interval_and_the_counts_of_the_cell_it_names(
+    tmp_path: Path,
+) -> None:
+    """Nine cells, each addressed by its own row and its own column.
+
+    The sweep the test above does for one tag, over the whole grid and over the
+    two readings a rate alone does not carry. Three mutants live here: dropping
+    the interval leaves a rate with no width and the page still shows nine rates;
+    rotating the cells one row up prints `extraction`'s five completions under
+    `arithmetic`, which is the reading R37.1 opens with; and a cell filled from
+    its neighbour's counts is a real measurement under the wrong dimension, which
+    the implementer's commit message calls "the worst failure this document has".
+
+    The counts are asserted as an ordered triple and word-anchored, so `5` never
+    satisfies a cell that printed `50`.
+    """
+    model = _every_element_model(tmp_path / "cells")
+    matrix = _available_matrix(model)
+    grid = _section_grid(_html(model), "dimensions")
+    dash = _get(_module(), "EM_DASH")
+
+    for column in _all_columns(matrix):
+        heading = _column_heading(grid, _get(column, "model_id"))
+        for tag in _get(matrix, "tags"):
+            cell = _cell(column, tag)
+            text = grid.text(tag, heading)
+            rate = _get(cell, "rate")
+            if rate is None:
+                assert _leading_value(text) == dash, (
+                    f"the {tag!r} cell of {heading!r} opens {_leading_value(text)!r} "
+                    f"and nothing was measured for it. A number here is an absence "
+                    f"rendered as a measurement"
+                )
+            else:
+                assert _leading_value(text) in _renderings(rate), (
+                    f"the {tag!r} cell of {heading!r} opens {_leading_value(text)!r} "
+                    f"and that column recorded {rate!r} on that row"
+                )
+            interval = _get(cell, "interval")
+            if interval is None:
+                assert f"{dash} {dash}" in text, (
+                    f"the {tag!r} cell of {heading!r} has no interval and prints no "
+                    f"second dash for it: {text!r}"
+                )
+            else:
+                for end in interval:
+                    assert _shows(text, end), (
+                        f"the {tag!r} cell of {heading!r} does not carry {end!r}, an "
+                        f"end of its own interval, in any of the forms "
+                        f"{_renderings(end)}. The cell reads:\n  {text!r}"
+                    )
+            passes, n, items = (_get(cell, one) for one in ("passes", "n", "items"))
+            assert re.search(rf"\b{passes}\b.*\b{n}\b.*\b{items}\b", text), (
+                f"the {tag!r} cell of {heading!r} does not print its own "
+                f"{passes}/{n}/{items}; it reads:\n  {text!r}"
+            )
+
+
+def test_only_the_cells_the_matrix_refused_a_verdict_on_are_shaded_as_refused(
+    tmp_path: Path,
+) -> None:
+    """The shading is a statement, and it belongs to the cell that earned it.
+
+    The section's own prose says "a cell is shaded where the sample cannot support
+    a verdict at all", so the shading is a claim the page makes and not decoration.
+    Dropping it says nine cells were read as judgements when six were not; putting
+    it on every cell says none of them was. Both survived, because a class
+    attribute is in no reading of the document's *text*.
+
+    Both polarities are in this fixture -- three measured cells and six refused --
+    which is what makes an inversion a failure rather than a coincidence.
+    """
+    model = _every_element_model(tmp_path / "shading")
+    matrix = _available_matrix(model)
+    grid = _section_grid(_html(model), "dimensions")
+
+    shaded = {
+        (tag, _get(column, "model_id")): _get(_cell(column, tag), "verdict_refused")
+        for column in _all_columns(matrix)
+        for tag in _get(matrix, "tags")
+    }
+    assert set(shaded.values()) == {True, False}, (
+        f"every cell of this fixture agrees about refusal ({set(shaded.values())}), "
+        f"so a shading that is always on and one that is always off render the same "
+        f"document"
+    )
+    for (tag, model_id), refused in shaded.items():
+        heading = _column_heading(grid, model_id)
+        classes = grid.classes(tag, heading)
+        assert ("refused" in classes) is refused, (
+            f"the {tag!r} cell of {heading!r} carries {sorted(classes)} and the cell "
+            f"itself says verdict_refused={refused!r}. The section promises the "
+            f"reader that shading marks a sample that cannot support a verdict"
+        )
+
+
+def test_the_dimension_note_names_its_judge_and_each_floor_in_the_unit_it_counts(
+    tmp_path: Path,
+) -> None:
+    """One judge, two floors, and the floors are not interchangeable.
+
+    `min_n` counts graded completions and `min_items` counts items; they are two
+    different numbers about two different denominators, and printing each under
+    the other's noun publishes a floor of twenty items on a set of twelve. The
+    swap survived the full suite because both numbers stayed in the section.
+
+    The judge is named for R21.5's reason one section over: a table of per-tag
+    rates with no judge on it is a table a reader will read as the panel's, and a
+    panel writes one verdict per judge per completion and they are never summed.
+    """
+    model = _every_element_model(tmp_path / "floors")
+    matrix = _available_matrix(model)
+    text = _anchor_text(_html(model), "dimensions")
+    floor_n, floor_items = _get(matrix, "min_n"), _get(matrix, "min_items")
+
+    assert floor_n != floor_items, (
+        f"both floors of this fixture are {floor_n}, so a document that swapped them "
+        f"is this document"
+    )
+    assert re.search(rf"\b{floor_n}\b graded completions", text), (
+        f"the section does not say it refused cells below {floor_n} graded "
+        f"completions; it reads:\n  {text!r}"
+    )
+    assert re.search(rf"\b{floor_items}\b items", text), (
+        f"the section does not say it refused cells below {floor_items} items; it "
+        f"reads:\n  {text!r}"
+    )
+    judge = _get(matrix, "judge")
+    assert judge and judge in text, (
+        f"the per-dimension table does not name the judge it was counted under "
+        f"({judge!r}). Every number in it is one judge's, and a table that does not "
+        f"say so is read as the panel's"
+    )
+
+
+def test_a_matrix_that_ran_and_found_no_tags_says_the_universe_was_empty(
+    tmp_path: Path,
+) -> None:
+    """The third state of this section, between "no matrix" and "a matrix".
+
+    The template distinguishes a counter that declined from a counter that ran and
+    came back with nothing to break the run down by, and says so: "an empty tag
+    universe in the golden set, not a set of dimensions that every model scored
+    zero on". Nothing rendered it.
+
+    **And nothing can.** `dimensions._index` gives every item at least `UNTAGGED`,
+    so the universe is empty only for a golden set with no items -- and
+    `GoldenSet.parse` refuses one outright. This is a live branch of the template
+    with no producer behind it, reported in `_untagged_universe_model` and pinned
+    here so that deleting it is a visible edit; it is *not* a defect, and the
+    honest alternative is to delete the branch.
+    """
+    model = _untagged_universe_model(tmp_path / "notags")
+    html = _html(model)
+    text = _anchor_text(html, "dimensions")
+
+    assert "dimensions" in _parse(html).ids, (
+        f"the section lost its anchor on the empty-universe branch, so a link to "
+        f"`#dimensions` dangles here; the ids are {_parse(html).ids}"
+    )
+    assert "no tags" in text and "empty tag universe" in text, (
+        f"the section does not say the counting ran and found no tags; it reads:\n"
+        f"  {text!r}"
+    )
+    assert not _parse(_anchor_region(html, "dimensions")).tables, (
+        "a matrix with no tags renders a table anyway, which is a grid of headings "
+        "over nothing"
+    )
+
+
+def test_a_column_whose_cells_are_out_of_order_renders_under_the_tags_they_name(
+    tmp_path: Path,
+) -> None:
+    """R37.5's ruling, pinned: the tag join is the contract, not an accident.
+
+    The reviewer tested this both ways and proved the divergence **unreachable**:
+    `column.cell(tag)` resolved for every tag in every column across all five
+    documents, and no producer emits a column whose cells are in an order other
+    than `matrix.tags`. So positional indexing is an *equivalent* mutant on every
+    model this package can build, R27.8 #5's nudge toward it is withdrawn, and
+    there is no defect here to test for.
+
+    What there is, is a future edit back to positional that would pass all 2,231
+    tests. This is that edit made to fail, in eight lines and with no fixture
+    invented: one producer-built column, its own cells permuted, and the document
+    required to be the same document. It is a property of the renderer and not a
+    state of the model -- nothing here claims a report could look like this.
+    """
+    model = _every_element_model(tmp_path / "join")
+    matrix = _available_matrix(model)
+    column = _candidate_column(matrix, THIRD_MODEL)
+    cells = _cells(column)
+    assert len(cells) > 1 and tuple(reversed(cells)) != cells, (
+        f"this column holds {len(cells)} cell(s) in an order reversal does not "
+        f"change, so permuting it cannot tell a tag join from a positional index"
+    )
+
+    permuted = dataclasses.replace(
+        matrix,
+        candidates=tuple(
+            dataclasses.replace(one, cells=tuple(reversed(cells)))
+            if _get(one, "model_id") == THIRD_MODEL
+            else one
+            for one in _candidate_columns(matrix)
+        ),
+    )
+    assert _html(dataclasses.replace(model, dimensions=permuted)) == _html(model), (
+        "reordering one column's cells changed the rendered document. The template "
+        "is required to reach a cell by the tag it carries -- `column.cell(tag)` -- "
+        "so that a cell can only ever appear on its own row; a positional index "
+        "prints a real measurement under the wrong dimension the day the two orders "
+        "disagree, and R37.5 makes the join the contract"
+    )
+
+
+def test_every_candidate_row_prints_its_own_runs_numbers_and_not_its_neighbours(
+    tmp_path: Path,
+) -> None:
+    """Four cells a row, each addressed by the row and the column that name it.
+
+    R37.1 for the candidate table. `rate in region` passes on a table whose rows
+    are rotated one up, whose columns are rotated one left, and on the mutant that
+    prints the *field's* baseline rate in every row -- 85.0% where each row scored
+    53.5% -- because every one of those keeps a plausible number in the section.
+
+    Two documents, because `_every_element_log`'s two rows carry the same pass
+    rate and the same delta and differ only in age: on that fixture alone a
+    rotation is the right table by coincidence, which is R20.1 exactly.
+    `_thin_field_model` is three rows that agree on nothing.
+
+    The delta's *sign* is asserted with it. It is the only cell on this page whose
+    subject is direction, and `_pp` flipping it turns a 31.5-point regression into
+    a 31.5-point gain on a document the suite already renders.
+    """
+    dash = _get(_module(), "EM_DASH")
+    for label, model in (
+        ("three rows agreeing on nothing", _thin_field_model(tmp_path / "cells-thin")),
+        ("the every-element field", _every_element_model(tmp_path / "cells-every")),
+    ):
+        field = _model_field(model)
+        grid = _section_grid(_html(model), "candidates")
+        for row in field.candidates:
+            run = grid.text(row.model, "run")
+            assert (row.point.created or "no recorded date") in run, (
+                f"{label}: the {row.model!r} row's run cell reads {run!r} and that run "
+                f"is dated {row.point.created!r}. A run whose date was never recorded "
+                f"says so; a blank is an absence rendered as nothing at all"
+            )
+            assert row.point.created_source in run, (
+                f"{label}: the {row.model!r} row does not say which clock its date "
+                f"came from ({row.point.created_source!r}); the cell reads {run!r}. A "
+                f"payload's own timestamp and the envelope's are different claims"
+            )
+
+            rate = grid.text(row.model, "pass rate")
+            if row.point.pass_rate is None:
+                assert rate == dash, f"{label}: {row.model!r} recorded no rate and prints {rate!r}"
+            else:
+                assert rate in _renderings(row.point.pass_rate), (
+                    f"{label}: the {row.model!r} row prints {rate!r} as its pass rate "
+                    f"and that run measured {row.point.pass_rate!r}"
+                )
+
+            delta = grid.text(row.model, "delta vs its own baseline")
+            if row.delta_pp is None:
+                assert delta == dash, (
+                    f"{label}: {row.model!r} has no delta -- a side of it recorded no "
+                    f"rate -- and its cell reads {delta!r}"
+                )
+            else:
+                sign = "+" if row.delta_pp > 0 else "-"
+                assert delta.startswith(sign), (
+                    f"{label}: the {row.model!r} row's delta is {row.delta_pp!r} and "
+                    f"the page prints {delta!r}. The number's whole subject is "
+                    f"direction: a gain shown as a loss is the most expensive single "
+                    f"character on this page"
+                )
+                assert f"{abs(row.delta_pp):.1f}" in delta, (
+                    f"{label}: the {row.model!r} row prints {delta!r} against a delta "
+                    f"of {row.delta_pp!r}"
+                )
+
+            age = grid.text(row.model, "age in this field")
+            if row.stale_days is None:
+                assert age == dash, (
+                    f"{label}: {row.model!r} carries no readable date, so its age is "
+                    f"unknown, and the page prints {age!r}"
+                )
+            else:
+                assert f"{row.stale_days:.1f}" in age, (
+                    f"{label}: the {row.model!r} row prints {age!r} against an age of "
+                    f"{row.stale_days!r} days"
+                )
+
+
+def test_an_undated_row_and_an_uncomputed_delta_print_the_dash_and_never_a_zero(
+    tmp_path: Path,
+) -> None:
+    """`_days` and `_pp`, which had no test between them, on their own case.
+
+    Both docstrings insist on it and nothing held them there: `_days(None)` as
+    ``0.0 days`` states "measured in a single sitting" on the evidence for "we do
+    not know when this was measured", and `_pp(None)` as ``+0.0 pp`` states "no
+    change" on the evidence for "a side of this comparison recorded no rate".
+    Both mutants survived all 2,231 tests, because no fixture in the suite ever
+    handed either filter a `None`.
+
+    This is the document's central design rule -- an absence must not render as a
+    measurement -- in the two functions written to serve it. The dash is asserted
+    exactly, and the absence of any digit with it: a zero is the specific lie
+    these two exist to refuse, and it is the plausible wrong implementation.
+    """
+    model = _thin_field_model(tmp_path / "absences")
+    field = _model_field(model)
+    grid = _section_grid(_html(model), "candidates")
+    dash = _get(_module(), "EM_DASH")
+
+    blank = [
+        (row.model, column)
+        for row in field.candidates
+        for column, value in (
+            ("pass rate", row.point.pass_rate),
+            ("delta vs its own baseline", row.delta_pp),
+            ("age in this field", row.stale_days),
+        )
+        if value is None
+    ]
+    assert len(blank) == 4, (
+        f"this fixture leaves {len(blank)} cell(s) unrecorded and is built for four "
+        f"-- two ages, one rate and the delta that rate could not be subtracted "
+        f"from: {blank}"
+    )
+    for model_id, column in blank:
+        printed = grid.text(model_id, column)
+        assert printed == dash, (
+            f"the {column!r} cell of {model_id!r} was never recorded and the page "
+            f"prints {printed!r}. A measured zero, a comparison that could not be "
+            f"made and a value nobody wrote down must be three different cells"
+        )
+        assert not re.search(r"\d", printed), (
+            f"the {column!r} cell of {model_id!r} carries a digit ({printed!r}) for a "
+            f"reading that was never taken"
+        )
+
+    undated = [row for row in field.candidates if not row.point.created]
+    assert undated, "no row of this fixture is undated, so nothing below is exercised"
+    for row in undated:
+        run = grid.text(row.model, "run")
+        assert "no recorded date" in run and "unknown" in run, (
+            f"the {row.model!r} row's date was never recorded and its run cell reads "
+            f"{run!r}. An empty space there reads as a date the reader missed, and "
+            f"the clock it did not come from is part of the same statement"
+        )
+
+
+def test_a_field_whose_spread_could_not_be_measured_says_so_rather_than_flagging_it(
+    tmp_path: Path,
+) -> None:
+    """Both ends of `spread_days`, which only had one.
+
+    `CandidateField` publishes three states and the page has to keep them apart: a
+    spread that was measured and sits inside the window, one that was measured and
+    is wider than it -- the warning that these rows may not be readable side by
+    side -- and one that could not be measured at all, because fewer than two rows
+    carry a date. `spread_flagged` is documented as ``False`` when `spread_days` is
+    ``None`` for exactly that reason, so the flag alone cannot tell the third state
+    from the first.
+
+    Dropping the warning survived, and so did rendering the unmeasurable case as a
+    measured zero. Two documents, one of each, and each is asserted to say the
+    other one's sentence nowhere.
+    """
+    flagged = _every_element_model(tmp_path / "spread-wide")
+    unmeasured = _thin_field_model(tmp_path / "spread-none")
+    field = _model_field(flagged)
+    assert field.spread_days is not None and field.spread_flagged, (
+        f"the wide fixture's spread is {field.spread_days!r}/"
+        f"{field.spread_flagged!r}; it is built to exceed the window"
+    )
+
+    wide = _anchor_text(_html(flagged), "candidates")
+    assert re.search(
+        rf"{field.spread_days:.1f} days .*window of {field.stale_after_days:.1f} days",
+        wide,
+    ), (
+        f"the section does not print {field.spread_days!r} days between the oldest "
+        f"and the newest row against a window of {field.stale_after_days!r}; it "
+        f"reads:\n  {wide!r}"
+    )
+    assert "wider than the window" in wide, (
+        f"this field's rows are further apart than the window it was built with and "
+        f"the page does not warn that they may not be readable side by side:\n"
+        f"  {wide!r}"
+    )
+    assert "not measurable" not in wide, (
+        "the page says the spread was not measurable on a field that measured it"
+    )
+
+    thin = _anchor_text(_html(unmeasured), "candidates")
+    assert "not measurable" in thin, (
+        f"one row of this field carries a date, so its spread was never measured, "
+        f"and the page does not say so:\n  {thin!r}"
+    )
+    assert "wider than the window" not in thin, (
+        "the page warns that rows are further apart than the window on a field whose "
+        "spread it could not measure -- which is a measurement it does not have"
+    )
+    assert not re.search(r"\bdays between\b", thin), (
+        f"the page prints a span in days for a spread that was never measured:\n"
+        f"  {thin!r}"
+    )
+
+
+def test_the_rows_under_protest_name_the_row_each_note_is_about(
+    tmp_path: Path,
+) -> None:
+    """The caveat list, which nothing in the suite rendered at all.
+
+    Removing the template's `{% if caveat.point is none %}` makes the render
+    **raise** -- ``UndefinedError: 'None' has no attribute 'candidate_model'``, the
+    spec's own named "crash" -- and all 2,231 tests stayed green, because no
+    fixture put a caveat on a `CandidateField`. R33 warned about this exact shape:
+    a renderer walking caveats into rows must ask before it indexes. The
+    implementer asked. Nothing held it there.
+
+    Both branches, in one document. A note about a *row* names that row and dates
+    it, so the reader can find the line it qualifies; a note about the field as a
+    whole must not be dressed as a row, because a caveat printed against a night
+    it is not about sends the reader to the wrong line -- `Caveat`'s own docstring
+    is where that is written down.
+    """
+    model, field = _caveated_model(tmp_path / "caveats")
+    listed = _section_items(_html(model), "candidates")
+    assert len(listed) == len(field.caveats), (
+        f"the section prints {len(listed)} note(s) under protest and the field "
+        f"carries {len(field.caveats)}; a caveat that reaches nobody is the same as "
+        f"a caveat never computed"
+    )
+
+    # Paired by position and not by sentence. `correct_field` writes the same
+    # sentence for every row it corrected -- the run's own verdict is the only
+    # variable in it and all three recorded none -- so the *only* thing that says
+    # which row a multiplicity note is about is the subject printed in front of
+    # it. Which is the mutant: dropping that subject leaves the list looking
+    # complete and every sentence unchanged.
+    for note, item in zip(field.caveats, listed, strict=True):
+        assert _squeeze(note.reason) in item, (
+            f"the note in this position is not the field's:\n  {note.reason!r}\nthe "
+            f"item reads:\n  {item!r}"
+        )
+        if note.point is None:
+            assert FIELD_CAVEAT_MARK in item, "the substituted note lost its marker"
+            assert "this field as a whole" in item, (
+                f"a note about the field as a whole is printed without saying so:\n"
+                f"  {item!r}"
+            )
+            named = [row.model for row in field.candidates if row.model in item]
+            assert not named, (
+                f"a note about no row in particular is printed against {named}. It "
+                f"qualifies the table, not a night, and a reader sent to that row "
+                f"will not find what the note is about"
+            )
+        else:
+            assert item.startswith(note.point.candidate_model), (
+                f"this note is about {note.point.candidate_model!r} and its item does "
+                f"not open by naming it:\n  {item!r}"
+            )
+            assert (note.point.created or "undated") in item, (
+                f"this note's item does not date the run it is about; it reads:\n"
+                f"  {item!r}"
+            )
+
+
+def test_a_page_that_can_name_the_runs_it_left_out_does_not_also_hedge_about_them(
+    tmp_path: Path,
+) -> None:
+    """R23.2's hedge, pinned in the direction it was not.
+
+    The hedge -- "runs may have been excluded from a comparison without this page
+    being able to name them" -- is required when there is no candidate table and
+    is killed when deleted. Rendering it *alongside* a populated list survived:
+    the page then declines to name the excluded runs immediately above three named
+    runs with three reasons, and every existing assertion still passes because
+    each of them only ever looked for something that is present.
+
+    R28.2's shape, one section over: *a refused correction must not leave behind
+    the furniture of an applied one.* A hedge is furniture. Where the thing it
+    hedges is on the page, it is not a caution, it is a contradiction.
+    """
+    model = _every_element_model(tmp_path / "hedge")
+    field = _model_field(model)
+    html = _html(model)
+    region = _anchor_region(html, "excluded")
+
+    assert field.excluded, "this fixture excludes nothing, so there is no list to hedge over"
+    hedged = _hedged_exclusion_sentences(region)
+    assert not hedged, (
+        f"this page names {len(field.excluded)} excluded run(s), each with the "
+        f"sentence saying why, and the same section also says it cannot name them:\n"
+        f"  {hedged}\nOne of the two is false, and the empty state's sentence is the "
+        f"one that has no business here"
+    )
+    listed = _section_items(html, "excluded")
+    assert len(listed) == len(field.excluded), (
+        f"the section prints {len(listed)} item(s) against {len(field.excluded)} "
+        f"exclusions, so what stands in place of the hedge is not the list"
+    )
 
 
 # -- the two mechanisms this chunk may not weaken ----------------------------- #
