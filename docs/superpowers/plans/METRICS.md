@@ -179,6 +179,75 @@ on trust.**
 > 2. **Write briefs that make an agent derive a number rather than accept one.**
 >    This is the only mechanism that has actually caught these.
 
+### The second batch — ten more, and the thing all fourteen have in common
+
+Added 2026-08-24 evening, after a session that dispatched ~20 agents and a second
+machine. Every one of these was caught, and **not one was caught by re-reading.**
+
+| Error | Where it lived | What caught it |
+|---|---|---|
+| R27.3 prescribed a fixture that could not kill the mutant it named | a ruling | the fix pass built it and measured the mutant surviving all 2,142 tests |
+| R30.4's tie-break — **both** of its reasons were false | a ruling | the blind tester measured that `series` cannot be empty there, and that `baseline` is the reader that *loses* a recorded value |
+| R36.2 claimed two mutants were equally hidden; one wasn't | a ruling | the fix pass found `points[1] == points[-1]` on a two-point line, killing five merged tests |
+| R37.2 demanded a fixture with `available=True` and an empty tag universe | a ruling | the fix pass proved no producer can reach it — `GoldenSet.parse` refuses an empty golden set outright |
+| finding 23 scheduled after C14c already fixed it | a schedule | the ingest reproduced it against merged code and found it fixed |
+| chunk 5 built on finding 16's headline | a schedule | measured: `--quiet` silences the *terminal*; the two HTML files are byte-identical |
+| "all four sections are empty on the demo" | a brief | the blind tester read R33.1's gate and found the strip renders on a one-run line |
+| "removing stale worktrees will speed up the agents" | a claim to the user | `git worktree prune --dry-run` → **0 stale**; 71 entries cost milliseconds |
+| "give the second machine the CPU-bound reviewer role" | a recommendation | measured 30–37% CPU on twelve cores with four agents running |
+| R31.4 recorded and left unscheduled | a ruling | found by auditing the plan against the code, not by remembering |
+
+**Fourteen errors, one shape, and the shape is not "carelessness".** Every one
+was a reasonable inference from a real source: a docstring, a neighbouring
+function, a measurement taken under different conditions, a plan section written
+four hours earlier. The reasoning was sound in all fourteen. The code was
+different in all fourteen.
+
+#### What separates the ones that cost hours from the ones that cost minutes
+
+**Rulings that prescribe an *outcome* survive being wrong.** *"The note must not
+claim a measured zero"* — if the implementer hits an obstacle, satisfying the
+outcome forces it into the open, and the agent reports it. Four of these were
+outcome rulings and all four were caught inside one agent-hour.
+
+**Rulings that prescribe a *mechanism* do not.** *"This fixture kills that
+mutant"*, *"this field holds those keys"*, *"both these mutants are hidden"* —
+these are claims about code the ruler has not run, and an agent following them
+faithfully produces work built on a false premise. R27.3 cost a full fix pass
+before the agent thought to measure it.
+
+> **Prescribe outcomes. Prove mechanisms.** A ruling that helpfully tells the
+> implementer *how* has silently become a claim about code, and it must carry the
+> output of running it — which is R26.1 applied to the one place it keeps being
+> forgotten.
+
+#### The mechanism that actually catches them
+
+Fourteen for fourteen: **an agent needed the value to do its job, so it could not
+take the sentence on trust.**
+
+Zero for fourteen: re-reading, reviewing the plan, or an orchestrator checking
+its own work.
+
+That asymmetry is the whole finding, and it has a practical consequence beyond
+"be careful". **A brief that hands an agent a number is a brief that cannot catch
+the number being wrong. A brief that makes the agent derive it can.** Wherever a
+brief could state a fact or ask for it, ask for it — the cost is one measurement
+and the return is the only error-detection mechanism this project has that
+actually works.
+
+#### And the one that generalises past this project
+
+Five of the fourteen were **not wrong when written.** `main` moved, C14c merged,
+a fix landed, and a true sentence became false without anyone touching it. That
+is not an error of care; it is what a fast-moving tree does to any written claim.
+
+The defence is not to write fewer claims. It is that **every claim about the code
+carries the commit it was measured at**, so a reader can tell staleness from
+error. The two need different responses — a stale claim is re-measured, a wrong
+claim is retracted — and a claim with no sha attached is indistinguishable
+between them.
+
 A related instance with a different surface: the stall watchdog fired 7 alerts
 naming completed agents, and the handoff initially blamed the tool. The tool was
 correct — it reads `completed_agents.txt`, which the orchestrator is supposed to
