@@ -253,6 +253,8 @@ __all__ = [
     "EvidenceSchema",
     "FlipRow",
     "JudgeRow",
+    "Latency",
+    "LatencySide",
     "MethodologySection",
     "PROVENANCE_RECORDED",
     "PROVENANCE_SCRIPTED",
@@ -825,6 +827,13 @@ class RunSummary:
     artifact_path: str
     latency_median: float | None
     latency_p90: float | None
+    #: How many completions the median and p90 were taken over, as the log records
+    #: it. ``None`` when the log records no count, ``0`` when it records that
+    #: nothing was timed -- **two different facts, and R38.4 is the whole reason
+    #: the field exists rather than being folded into a truthiness test.** A
+    #: median over sixty timings and a median over one are not the same claim, so
+    #: the support is printed beside the statistic rather than left in the payload.
+    latency_n: float | None = None
 
     @property
     def is_fake(self) -> bool:
@@ -841,6 +850,193 @@ class RunSummary:
         """
         expected = str(self.expected) if self.expected else "?"
         return f"{self.completions} / {expected}"
+
+
+@dataclass(frozen=True)
+class LatencySide:
+    """One side's latency as the evidence log records it, and what may be said of it.
+
+    Split out of :class:`RunSummary` so that the question "is there a measurement
+    here" has one answer, computed once, that both renderers read. It used to be
+    asked in a jinja2 ``{% if %}`` about the *adapter's name*, and R38.4 is the
+    record of what that cost: a payload holding sixty recorded timings per side,
+    with medians and p90s, rendered under the words "Not measured".
+    """
+
+    #: ``"baseline"`` or ``"candidate"``. Carried so the sentence can name the
+    #: side it is about instead of the template deciding which half it is in.
+    label: str
+    #: Whether this side ran on rigor's scripted stand-in. **Provenance, and only
+    #: provenance.** It changes what the numbers may be *compared with*; it does
+    #: not decide whether they exist, and nothing here may use it to suppress one.
+    scripted: bool
+    n: float | None
+    median: float | None
+    p90: float | None
+
+    @property
+    def measured(self) -> bool:
+        """The gate: did anything record a statistic for this side?
+
+        **The whole ruling of this chunk is in this expression.** Not
+        ``is_fake`` -- an adapter's class name is a fact about where the answers
+        came from, not about whether a clock was read -- and not ``n``, which is
+        the measurement's *support* and answers a different question: a log can
+        record ``n: 60`` beside a null median, and that is neither a measurement
+        nor the absence of a timing, it is a statistic that was not computed. So
+        the gate is the statistic itself, and everything the gate does not settle
+        is said in :attr:`reason` rather than folded into a boolean.
+
+        ``or`` and not ``and``: a side that recorded a median and no p90 has been
+        measured, and dropping it because half the summary is missing would be
+        this chunk's own defect committed one column narrower.
+        """
+        return self.median is not None or self.p90 is not None
+
+    @property
+    def reason(self) -> str:
+        """Why there is no statistic, in the clause both renderers print.
+
+        Empty when there is one. The three unmeasured states are kept apart
+        because they are three different facts about the log and a reader who
+        cannot tell them apart will guess the flattering one:
+
+        * ``n`` absent -- nothing recorded a timing or a count for this side, the
+          state a missing or unreadable run artifact leaves behind;
+        * ``n == 0`` -- the log states positively that nothing was timed, which is
+          what a side with no completions looks like;
+        * ``n > 0`` with no statistic -- timings were counted and the summary over
+          them was not written down.
+
+        The middle one is the reason ``n`` is a ``float | None`` and not an
+        ``int`` defaulting to ``0``: a default would erase exactly the distinction
+        this property exists to print.
+        """
+        if self.measured:
+            return ""
+        if self.n is None:
+            return "no timings are recorded"
+        if self.n == 0:
+            return "0 timings are recorded"
+        return f"{_count(self.n)} timings are recorded but no median or p90 was computed"
+
+    @property
+    def cell(self) -> str:
+        """``median / p90 over n``, or the reason there is none. Terminal-facing.
+
+        The HTML puts the same three numbers in three columns; this is the one
+        line a table row in a terminal has room for. Both go through
+        :func:`_duration`, so neither can round a measurement into an absence
+        while the other does not.
+        """
+        if not self.measured:
+            return f"not measured: {self.reason}"
+        return (
+            f"{_duration(self.median, TERMINAL_DASH)} / "
+            f"{_duration(self.p90, TERMINAL_DASH)} over "
+            f"{_count(self.n, TERMINAL_DASH)}"
+        )
+
+
+@dataclass(frozen=True)
+class Latency:
+    """The latency section: two sides, one gate, and one sentence for both surfaces.
+
+    :attr:`sentence` is written here rather than in the template for the reason
+    :attr:`DetailBudget.sentence` and
+    :attr:`~model_migration_kit.series.Multiplicity.note` are: R29.2 item 3 says
+    the terminal and the HTML must say the same words, and while the scripted
+    caveat lived in the template the terminal said none of them -- it printed
+    ``0.000 / 0.000`` with no caveat at all under a page claiming the row had been
+    omitted *because* it would read that way.
+    """
+
+    baseline: LatencySide
+    candidate: LatencySide
+
+    @property
+    def sides(self) -> tuple[LatencySide, LatencySide]:
+        return (self.baseline, self.candidate)
+
+    @property
+    def measured(self) -> bool:
+        """Is there a table to print? True when **either** side has a statistic.
+
+        ``any`` and not ``all``: the half-scripted run is the case that made the
+        old ``and`` look correct, and it is the case that shows the old rule was
+        about the wrong thing entirely. One measured side is a table with one
+        measured row in it and a named reason in the other.
+        """
+        return any(side.measured for side in self.sides)
+
+    @property
+    def sentence(self) -> str:
+        """What this section has to disclose, or ``""`` when it has nothing.
+
+        Two disclosures, either, both or neither:
+
+        **What is missing**, naming each unmeasured side and which of the three
+        absences it is. It says the unmeasured cell prints as a dash, because the
+        rule this section broke cuts both ways and a reader who has just been told
+        a number is missing should be told what a missing number looks like.
+
+        **What a scripted timing measures.** The caveat is kept and the
+        suppression it justified is gone, which is not a contradiction: a
+        sub-microsecond dictionary lookup is a real measurement of something that
+        is not a provider, so a reader who compares it with a production latency
+        is misled -- and a reader shown a blank where the log holds sixty timings
+        is misled in the other direction, which is worse, because nothing on the
+        page tells him it happened.
+
+        **No magnitude is quoted.** The words this replaces asserted the timings
+        "would be a few microseconds"; the demo's recorded medians move with the
+        machine (1.6e-06 s here, 5.5e-07 s on the auditor's), and a sentence that
+        names an order of magnitude it does not read off the payload is a third
+        way of printing something the evidence does not say. The numbers are in
+        the table, at :data:`_DURATION_FIGURES` significant figures so that they
+        survive being printed.
+
+        An ASCII hyphen and no em dash anywhere in here: this string goes to a
+        rich ``Console`` as well as to the HTML, and rich substitutes box
+        characters on a legacy Windows console, not arbitrary text.
+        """
+        parts: list[str] = []
+        missing = [side for side in self.sides if not side.measured]
+        if missing:
+            # "; and on ", not " and ": each clause already carries a comma, and
+            # two of them joined by a bare "and" read as one clause about a side
+            # called "the baseline, where no timings are recorded and the
+            # candidate".
+            named = "; and on ".join(
+                f"the {side.label}, where {side.reason}" for side in missing
+            )
+            parts.append(
+                f"Not measured on {named}. An unmeasured cell prints as a dash and "
+                f"never as a zero: a row of zeros is not a fast model."
+            )
+        scripted = [side for side in self.sides if side.scripted and side.measured]
+        if len(scripted) == 2:
+            parts.append(
+                "Both sides ran on scripted adapters, which answer from an "
+                "in-process dictionary without calling a provider. The timings in "
+                "this table were recorded and are printed rather than omitted, "
+                "because an omitted row cannot be told apart from a fast model. "
+                "What they measure is a dictionary lookup in this process and not "
+                "a provider's response time, so no figure here is comparable with "
+                "a production latency."
+            )
+        elif scripted:
+            parts.append(
+                f"The {scripted[0].label} ran on a scripted adapter, which answers "
+                f"from an in-process dictionary without calling a provider. Its "
+                f"timings in this table were recorded and are printed rather than "
+                f"omitted, because an omitted row cannot be told apart from a fast "
+                f"model. What they measure is a dictionary lookup in this process "
+                f"and not a provider's response time, so they are comparable "
+                f"neither with a production latency nor with the other side of "
+                f"this table."
+            )
+        return " ".join(parts)
 
 
 @dataclass(frozen=True)
@@ -2589,6 +2785,32 @@ class ReportModel:
         )
 
     @property
+    def latency(self) -> Latency:
+        """The latency section, assembled once for both renderers.
+
+        A property rather than a field for :attr:`provenance`'s reason: it is
+        derived wholly from the two :class:`RunSummary` objects already
+        reconstructed from the log, and a second stored copy is a copy that can be
+        made to disagree with them.
+        """
+        return Latency(
+            baseline=LatencySide(
+                label="baseline",
+                scripted=self.baseline.is_fake,
+                n=self.baseline.latency_n,
+                median=self.baseline.latency_median,
+                p90=self.baseline.latency_p90,
+            ),
+            candidate=LatencySide(
+                label="candidate",
+                scripted=self.candidate.is_fake,
+                n=self.candidate.latency_n,
+                median=self.candidate.latency_median,
+                p90=self.candidate.latency_p90,
+            ),
+        )
+
+    @property
     def exit_code(self) -> int:
         return Verdict.exit_code(self.verdict or Verdict.ERROR)
 
@@ -3286,6 +3508,7 @@ def _run_summary(
         artifact_path=str(side.get("artifact", "") or ""),
         latency_median=_number(stat.get("median")),
         latency_p90=_number(stat.get("p90")),
+        latency_n=_number(stat.get("n")),
     )
 
 
@@ -3972,6 +4195,42 @@ def _num(value: float | None, digits: int = 4, dash: str = EM_DASH) -> str:
     return f"{value:.{digits}f}"
 
 
+#: Significant figures in every printed duration. **Significant figures and not
+#: decimal places**, and R38.4 is the reason: ``f"{v:.3f}"`` renders every timing
+#: under half a millisecond as ``0.000``, so a scripted adapter's 1.6 microseconds
+#: and a side that recorded nothing arrive on the page as the same three
+#: characters -- the project's central rule broken inside the very cell that
+#: reports the measurement. ``g`` never renders a non-zero number as zero: it
+#: switches to an exponent instead. So ``0`` in a duration cell means a measured
+#: zero and nothing else, and an unmeasured cell is the dash it has always been.
+#:
+#: Four, because the fixtures and the demo both carry four-significant-figure
+#: timings (``0.1234``, ``1.600e-06``) and a descriptive-only figure has no claim
+#: on more. Latency is never a gate (contract §2.2 item 4), so rounding it is
+#: legitimate in a way that rounding a gate's lower bound is not -- rounding it
+#: *away* is not.
+_DURATION_FIGURES = 4
+
+
+def _duration(value: float | None, dash: str = EM_DASH) -> str:
+    """One latency, in seconds, at :data:`_DURATION_FIGURES` significant figures.
+
+    Shared by ``render_terminal`` and the HTML through the ``duration`` filter,
+    because two renderers with two number formats are two chances for one of them
+    to round a measurement into an absence.
+    """
+    if value is None:
+        return dash
+    return f"{value:.{_DURATION_FIGURES}g}"
+
+
+def _count(value: float | None, dash: str = EM_DASH) -> str:
+    """A recorded count, or the dash. ``0`` is a count and is printed as one."""
+    if value is None:
+        return dash
+    return f"{value:,.0f}"
+
+
 def _pct(value: Any, dash: str = EM_DASH) -> str:
     number = _number(value)
     if number is None:
@@ -4029,12 +4288,6 @@ def _flag(value: bool | None, dash: str = EM_DASH) -> str:
     if value is None:
         return dash
     return "yes" if value else "no"
-
-
-def _latency_cell(summary: RunSummary) -> str:
-    median = _num(summary.latency_median, 3, TERMINAL_DASH)
-    p90 = _num(summary.latency_p90, 3, TERMINAL_DASH)
-    return f"{median} / {p90}"
 
 
 def _parts_phrase(summary: RunSummary, side: str) -> str:
@@ -4176,12 +4429,19 @@ def render_terminal(model: ReportModel, *, console: Console | None = None) -> No
         str(model.candidate.failures),
     )
     compared.add_row("parts", str(model.baseline.parts), str(model.candidate.parts))
+    latency = model.latency
     compared.add_row(
-        "latency median / p90 (descriptive only, never a gate)",
-        _latency_cell(model.baseline),
-        _latency_cell(model.candidate),
+        "latency median / p90 over n (descriptive only, never a gate)",
+        _cell(latency.baseline.cell),
+        _cell(latency.candidate.cell),
     )
     out.print(compared)
+    # R29.2 item 3: the two surfaces say the same words, from the one place the
+    # words are written. Before this line the terminal printed the timings with no
+    # caveat while the HTML printed the caveat with no timings, and each surface
+    # was missing exactly the half the other had.
+    if latency.sentence:
+        out.print(_cell(latency.sentence))
 
     gs = model.goldenset
     facts = Table(show_header=False, box=None)
@@ -5487,35 +5747,32 @@ measures quality.</p>
 <p class="secondary"><strong>Descriptive only. Latency is never a gate</strong>
 {{ dash }} a migration that is slower per call is a product decision, not a
 quality regression.</p>
-{% if model.baseline.is_fake and model.candidate.is_fake %}
-<p class="secondary">
-  <strong>Not measured.</strong> Both sides of this comparison ran on scripted
-  adapters, which return their answers without calling a provider, so every
-  timing here would be a few microseconds of local dictionary lookup. The table
-  is omitted rather than printed as zeros: a row that reads
-  <code>0.000 / 0.000</code> is not a fast model, it is the absence of a
-  measurement, and a reader should not have to work that out.
-</p>
-{% else %}
+{#
+  The gate is `model.latency.measured` -- "did anything record a statistic" --
+  and never `is_fake`. See `LatencySide.measured` for the ruling. The sentence
+  below is `model.latency.sentence`, written where its numbers are so that
+  `render_terminal` prints the same words; nothing about the scripted caveat is
+  spelled out here, because a caveat rewritten in a template goes stale against
+  the payload it describes.
+#}
+{% if model.latency.sentence %}
+<p class="secondary">{{ model.latency.sentence }}</p>
+{% endif %}
+{% if model.latency.measured %}
 <table>
-  <thead><tr><th></th><th>median (s)</th><th>p90 (s)</th></tr></thead>
+  <thead><tr><th></th><th>timings (n)</th><th>median (s)</th><th>p90 (s)</th></tr></thead>
   <tbody>
-    <tr><td>baseline</td>
-    {% if model.baseline.is_fake %}
-        <td colspan="2">not measured {{ dash }} scripted adapter</td>
+    {% for side in model.latency.sides %}
+    <tr><td>{{ side.label }}</td>
+        <td class="num">{{ side.n | count }}</td>
+    {% if side.measured %}
+        <td class="num">{{ side.median | duration }}</td>
+        <td class="num">{{ side.p90 | duration }}</td>
     {% else %}
-        <td class="num">{{ model.baseline.latency_median | num3 }}</td>
-        <td class="num">{{ model.baseline.latency_p90 | num3 }}</td>
+        <td colspan="2">not measured {{ dash }} {{ side.reason }}</td>
     {% endif %}
         </tr>
-    <tr><td>candidate</td>
-    {% if model.candidate.is_fake %}
-        <td colspan="2">not measured {{ dash }} scripted adapter</td>
-    {% else %}
-        <td class="num">{{ model.candidate.latency_median | num3 }}</td>
-        <td class="num">{{ model.candidate.latency_p90 | num3 }}</td>
-    {% endif %}
-        </tr>
+    {% endfor %}
   </tbody>
 </table>
 {% endif %}
@@ -5969,6 +6226,11 @@ def _environment() -> Environment:
     env.filters["num"] = lambda value: _num(_number(value), 4)
     env.filters["num3"] = lambda value: _num(_number(value), 3)
     env.filters["num6"] = lambda value: _num(_number(value), 6)
+    # Durations and their support, formatted by the same two functions the
+    # terminal calls. `duration` is significant figures and not decimal places --
+    # see `_DURATION_FIGURES`, and R38.4 for what three decimal places cost.
+    env.filters["duration"] = lambda value: _duration(_number(value))
+    env.filters["count"] = lambda value: _count(_number(value))
     env.filters["interval"] = _interval
     # A delta and a span, formatted at the edge rather than on the model, and each
     # rendering its ``None`` as the dash rather than as a zero -- see _pp and _days.

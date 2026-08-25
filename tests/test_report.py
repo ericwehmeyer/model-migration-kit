@@ -821,6 +821,7 @@ def _scenario(
         ("item-07", 4, 5, 1, 5),
     ),
     gains: Sequence[tuple[str, int, int, int, int]] = (("item-11", 0, 5, 5, 5),),
+    latency: Mapping[str, Any] | None = None,
 ) -> Scenario:
     """The standard run: 12 items x 5 draws a side, one judge, two flips.
 
@@ -943,7 +944,16 @@ def _scenario(
         "flips": _grouped(flips),
         "gains": _grouped(gains),
         "unstable": _grouped(()),
-        "latency": {side: dict(stat) for side, stat in LATENCY.items()},
+        # `latency=` replaces the whole block, key for key, so a test can hand in
+        # a side with a null median, a side with `n: 0`, a side that is not there
+        # at all, or no `latency` key whatever. R38.4: those are four different
+        # facts about the log and the page has to keep them apart, which a fixture
+        # that can only vary the numbers cannot check.
+        **(
+            {"latency": {side: dict(stat) for side, stat in LATENCY.items()}}
+            if latency is None
+            else ({} if not latency else {"latency": dict(latency)})
+        ),
         "completion_rates": {
             "baseline": {"passes": ODD_SUCCESSES, "n": ODD_N},
             "candidate": {"passes": 11, "n": ODD_N},
@@ -8051,10 +8061,23 @@ def _visible_between(html: str, start_id: str, end_id: str) -> str:
     return _visible(html[start:end])
 
 
-def test_a_wholly_scripted_run_omits_the_latency_table_and_says_why(
+def test_a_wholly_scripted_run_prints_its_recorded_timings_and_says_what_they_measure(
     tmp_path: Path,
 ) -> None:
-    """``0.000 / 0.000`` is not a fast model; it is the absence of a measurement."""
+    """R38.4: a measurement must not render as an absence.
+
+    This test used to assert the opposite -- that the table is *omitted* on a
+    wholly scripted run -- and the shipped demo is what falsified it: sixty
+    recorded timings a side, medians and p90s in the payload, under the words
+    "Not measured". The suppression keyed on the adapter's class name and never
+    on whether anything had been measured, so the page said the log held nothing
+    while the log held 120 timings.
+
+    The caveat survives the fix and the suppression does not. A sub-microsecond
+    dictionary lookup is a real measurement of something that is not a provider,
+    so the reader is told what the numbers are of; he is not shown a blank and
+    left to discover that the evidence he was told did not exist is in the log.
+    """
     model, html = _rendered(
         tmp_path / "fake",
         baseline_adapter="FakeAdapter",
@@ -8062,37 +8085,275 @@ def test_a_wholly_scripted_run_omits_the_latency_table_and_says_why(
     )
     assert model.baseline.is_fake
     assert model.candidate.is_fake
+    assert model.latency.measured, (
+        "the payload records a median and a p90 for both sides, so the section has "
+        "a measurement in it whatever the adapters were called"
+    )
 
     start = html.find('<h2 id="latency"')
     end = html.find('<h2 id="flips"', start + 1)
     tags = [tag for tag, _ in _parse(html[start:end]).tags]
-    assert "table" not in tags, (
-        "the latency table is still rendered for a wholly scripted run; every cell "
-        "in it is a few microseconds of local dictionary lookup"
+    assert "table" in tags, (
+        "the latency table is omitted for a run whose payload holds recorded "
+        "timings; an omitted row cannot be told apart from a fast model"
     )
 
     latency = _visible_between(html, "latency", "flips")
-    assert "not measured" in latency.lower(), (
-        "the table was removed without saying why, which is an absence a reader "
-        "cannot distinguish from a rendering bug"
+    for value in (
+        LATENCY["baseline"]["median"],
+        LATENCY["candidate"]["p90"],
+    ):
+        assert any(form in latency for form in _durations(value)), (
+            f"latency {value} is recorded and was suppressed because the adapter's "
+            f"name begins with 'Fake'"
+        )
+    lowered = latency.lower()
+    assert "scripted adapter" in lowered, (
+        "the timings are printed with no word about what they are timings of; a "
+        "reader comparing a dictionary lookup with a production latency is misled"
+    )
+    assert "not measured" not in lowered, (
+        "the page still claims the section was not measured while printing the "
+        "measurement, which is R38.4's defect with the table put back"
     )
 
 
 def test_a_real_run_still_gets_its_latency_table(tmp_path: Path) -> None:
-    """The suppression must key off ``is_fake`` and not off the numbers.
+    """The gate is "was a statistic recorded", and a real run recorded one.
 
-    A real provider that genuinely answered in under a millisecond would round to
-    ``0.000`` too, and suppressing *that* would hide a measurement rather than an
-    absence.
+    A real provider that genuinely answered in under a millisecond is measured,
+    and so is a scripted one; the section stands or falls on the payload. This
+    case is the one the old ``is_fake`` gate happened to get right, and it is kept
+    so that a future narrowing of the gate cannot pass by suppressing everything.
     """
     model, html = _rendered(tmp_path / "real")
     assert not model.baseline.is_fake
     assert not model.candidate.is_fake
 
     latency = _visible_between(html, "latency", "flips")
-    assert "median" in latency.lower(), (
-        "a real run lost its latency table; the suppression is meant to fire on "
-        "scripted adapters only"
+    assert "median" in latency.lower(), "a real run lost its latency table"
+    assert "scripted adapter" not in latency.lower(), (
+        "a run with no scripted side carries the scripted caveat anyway, which "
+        "teaches the reader to skip the caveat where it is true"
+    )
+
+
+#: The demo's own recorded timings, as the R38.4 audit read them off the shipped
+#: payload. Sub-microsecond medians and single-digit-microsecond p90s: real
+#: numbers, taken over 60 completions a side, that three decimal places render as
+#: ``0.000 / 0.000``. Kept as a constant because three tests below are about the
+#: same four numbers and a copy in each is a copy that can drift.
+SUB_MICROSECOND_LATENCY = {
+    "baseline": {"n": 60, "median": 5.5e-07, "p90": 4.02e-06},
+    "candidate": {"n": 60, "median": 8.0e-07, "p90": 4.52e-06},
+}
+
+
+def _latency_section(html: str) -> str:
+    return _visible_between(html, "latency", "flips")
+
+
+def test_a_sub_microsecond_timing_is_not_rounded_into_a_row_of_zeros(
+    tmp_path: Path,
+) -> None:
+    """R38.4's third form: the rendering itself must not erase the measurement.
+
+    Putting the table back is not enough. At three decimal places every one of
+    these four recorded numbers prints as ``0.000``, so the page would print the
+    absence it had just stopped printing -- and would print it as a *measurement*,
+    which is the rule broken in both directions in one cell.
+
+    The adapters here are real, so nothing about scripting is in play: the only
+    thing under test is that a number the log holds survives being printed.
+    """
+    _, html = _rendered(tmp_path / "sub-us", latency=SUB_MICROSECOND_LATENCY)
+    section = _latency_section(html)
+
+    assert "0.000" not in section, (
+        f"a recorded sub-microsecond timing was rounded to 0.000: {section!r}"
+    )
+    for side, stat in SUB_MICROSECOND_LATENCY.items():
+        for name in ("median", "p90"):
+            value = stat[name]
+            assert any(form in section for form in _durations(value)), (
+                f"the {side} {name} of {value} is in the payload and not on the page "
+                f"in any recognisable form: {section!r}"
+            )
+
+
+def test_a_measured_zero_and_an_unmeasured_side_are_not_the_same_page(
+    tmp_path: Path,
+) -> None:
+    """The central rule, on the section this chunk is about, in one comparison.
+
+    Five logs, one field's worth of difference between them, and the fixture
+    varies the *pair* rather than one key at a time: a statistic with its count, a
+    measured zero with its count, a count with no statistic, a statistic-less side
+    that positively recorded ``0`` timings, and a side that is not in the log at
+    all. A rendering that collapses any two of these lets a reader take one for
+    another, and the flattering reading is always the one he takes.
+    """
+    shapes = {
+        "measured": {
+            "baseline": {"n": 60, "median": 0.1234, "p90": 0.5678},
+            "candidate": {"n": 60, "median": 0.2345, "p90": 0.6789},
+        },
+        "measured-zero": {
+            "baseline": {"n": 60, "median": 0.0, "p90": 0.0},
+            "candidate": {"n": 60, "median": 0.2345, "p90": 0.6789},
+        },
+        "counted-but-not-summarised": {
+            "baseline": {"n": 60, "median": None, "p90": None},
+            "candidate": {"n": 60, "median": 0.2345, "p90": 0.6789},
+        },
+        "nothing-timed": {
+            "baseline": {"n": 0, "median": None, "p90": None},
+            "candidate": {"n": 60, "median": 0.2345, "p90": 0.6789},
+        },
+        "side-absent": {
+            "candidate": {"n": 60, "median": 0.2345, "p90": 0.6789},
+        },
+    }
+    sections = {
+        name: _latency_section(_rendered(tmp_path / name, latency=shape)[1])
+        for name, shape in shapes.items()
+    }
+
+    names = sorted(sections)
+    for index, left in enumerate(names):
+        for right in names[index + 1 :]:
+            assert sections[left] != sections[right], (
+                f"{left!r} and {right!r} render the same latency section, so a "
+                f"reader cannot tell them apart:\n{sections[left]}"
+            )
+    assert "not measured" not in sections["measured-zero"].lower(), (
+        "a side that measured zero is reported as unmeasured, which is the rule "
+        "broken in the other direction"
+    )
+    assert "0 timings are recorded" in sections["nothing-timed"], (
+        "a side that positively recorded no timings does not say so"
+    )
+    assert "no timings are recorded" in sections["side-absent"], (
+        "a side the log does not mention is not distinguished from one that "
+        "recorded nothing"
+    )
+
+
+def test_a_side_with_one_of_the_two_statistics_is_measured_and_prints_it(
+    tmp_path: Path,
+) -> None:
+    """``measured`` is ``or``, and half a summary is still a measurement.
+
+    ``and`` would drop a recorded p90 because the median beside it is missing, and
+    that is this chunk's own defect committed one column narrower: the number is
+    in the log and the page would print a reason for its absence over it. The
+    missing half prints as the dash, which is what the dash is for.
+    """
+    _, html = _rendered(
+        tmp_path / "p90-only",
+        latency={
+            "baseline": {"n": 60, "median": None, "p90": 0.5678},
+            "candidate": {"n": 60, "median": 0.2345, "p90": 0.6789},
+        },
+    )
+    section = _latency_section(html)
+
+    assert any(form in section for form in _durations(0.5678)), (
+        f"a recorded p90 was suppressed because no median stood beside it: {section!r}"
+    )
+    assert "not measured" not in section.lower(), (
+        "the side is reported as unmeasured over its own printed p90"
+    )
+    assert _get(_module(), "EM_DASH") in section, (
+        "the missing median does not print as the dash"
+    )
+
+
+def test_a_log_with_no_latency_block_prints_no_table_and_says_why(
+    tmp_path: Path,
+) -> None:
+    """The other direction, which stays guarded: an absence renders as an absence.
+
+    Nothing was recorded, so there is no table -- and the section says which sides
+    have no measurement and what the missing cell would have looked like, rather
+    than leaving a heading over white space that a reader cannot tell from a
+    rendering bug.
+    """
+    model, html = _rendered(tmp_path / "no-latency", latency={})
+    assert not model.latency.measured
+    section = _latency_section(html)
+
+    assert "<table" not in html[html.find('<h2 id="latency"') : html.find('<h2 id="flips"')], (
+        "a table is drawn over a payload that recorded no latency at all"
+    )
+    assert "Not measured" in section
+    for side in ("baseline", "candidate"):
+        assert side in section, f"the section does not say the {side} was unmeasured"
+    assert "no timings are recorded" in section
+
+
+def test_the_median_is_printed_with_the_number_of_timings_behind_it(
+    tmp_path: Path,
+) -> None:
+    """A median over 60 draws and a median over 1 are not the same claim.
+
+    ``n`` was in the payload from the first version of this section and reached
+    neither surface, so two documents differing only in how much evidence stood
+    behind an identical median rendered byte for byte the same.
+    """
+    many = {
+        "baseline": {"n": 60, "median": 0.1234, "p90": 0.5678},
+        "candidate": {"n": 60, "median": 0.2345, "p90": 0.6789},
+    }
+    one = {
+        "baseline": {"n": 1, "median": 0.1234, "p90": 0.5678},
+        "candidate": {"n": 60, "median": 0.2345, "p90": 0.6789},
+    }
+    wide = _latency_section(_rendered(tmp_path / "n-60", latency=many)[1])
+    narrow = _latency_section(_rendered(tmp_path / "n-1", latency=one)[1])
+
+    assert wide != narrow, (
+        "a median over 60 timings and the same median over 1 render identically, "
+        "so the page states a summary and hides its support"
+    )
+    assert "60" in wide and "1" in narrow
+
+
+def test_the_terminal_and_the_html_say_the_same_words_about_latency(
+    tmp_path: Path,
+) -> None:
+    """R29.2 item 3, on the section that broke it hardest.
+
+    The two surfaces disagreed outright: the HTML printed "Not measured ... the
+    table is omitted rather than printed as zeros", and the terminal, on the same
+    model in the same process, printed the exact ``0.000 / 0.000`` row the HTML
+    said it had omitted. Neither the caveat nor the numbers may live on one
+    surface only.
+    """
+    scenario = _scenario(
+        tmp_path / "two-surfaces",
+        baseline_adapter="FakeAdapter",
+        candidate_adapter="FakeAdapter",
+        latency=SUB_MICROSECOND_LATENCY,
+    )
+    model = _from_evidence(scenario)
+    html_text, terminal_text = _band_text(model)
+
+    sentence = _flat(model.latency.sentence)
+    assert sentence, "a wholly scripted run says nothing about what its timings are of"
+    for surface, text in (("HTML", html_text), ("terminal", terminal_text)):
+        assert sentence in text, (
+            f"the {surface} does not carry the latency sentence, so the two "
+            f"surfaces no longer say the same words:\n{sentence!r}"
+        )
+    for stat in SUB_MICROSECOND_LATENCY.values():
+        for value in (stat["median"], stat["p90"]):
+            assert any(form in terminal_text for form in _durations(value)), (
+                f"the terminal rounded the recorded {value} away"
+            )
+    assert "0.000 / 0.000" not in terminal_text, (
+        "the terminal still prints the row of zeros the HTML used to claim it had "
+        "omitted"
     )
 
 
@@ -8393,16 +8654,17 @@ def test_the_nav_offers_the_run_history_exactly_when_there_is_one(
     )
 
 
-def test_a_half_scripted_run_keeps_the_table_and_names_the_side_it_could_not_measure(
+def test_a_half_scripted_run_prints_both_sides_and_names_the_scripted_one(
     tmp_path: Path,
 ) -> None:
-    """The suppression is ``and``, and the per-side cells exist for this run.
+    """The one shape where the old ``and`` gate and the new one disagree least.
 
-    Turning it into ``or`` left the suite green, because nothing rendered a run
-    with one scripted side and one real one -- so the two per-side branches inside
-    the table were unreachable from any test. Under ``or`` a real, measured
-    candidate loses its latency numbers because the *baseline* was scripted, which
-    hides a measurement rather than an absence.
+    It is kept because it is the shape that made the old rule look defensible: a
+    real candidate beside a scripted baseline kept its numbers only because the
+    suppression happened to be ``and``. The rule is now about the payload, so this
+    run prints both sides -- the scripted side's timings are a measurement of a
+    dictionary lookup, which is a fact about this process and not a blank -- and
+    the caveat names *which* side it is about rather than saying "both".
     """
     model, html = _rendered(
         tmp_path / "half",
@@ -8415,20 +8677,19 @@ def test_a_half_scripted_run_keeps_the_table_and_names_the_side_it_could_not_mea
     start = html.find('<h2 id="latency"')
     end = html.find('<h2 id="flips"', start + 1)
     section = html[start:end]
-    assert "<table" in section, (
-        "a run with one measured side lost its latency table; the suppression is "
-        "for a run where neither side was measured"
+    assert "<table" in section, "a run with two measured sides lost its latency table"
+    sentence = model.latency.sentence
+    assert "baseline" in sentence and "candidate" not in sentence, (
+        f"the caveat does not say which side was scripted: {sentence!r}"
     )
-    assert "scripted adapter" in section, (
-        "the scripted side is printed as a number rather than named as unmeasured"
+    assert "Both sides" not in sentence, (
+        f"one scripted side is reported as two, which overstates the caveat: {sentence!r}"
     )
-    assert f"{model.candidate.latency_median:.3f}" in section, (
-        "the measured side's median is missing from the table"
-    )
-    assert f"{model.baseline.latency_median:.3f}" not in section, (
-        "the scripted side's timing is printed anyway, which is the 0.000 this "
-        "chunk exists to stop printing"
-    )
+    for side in ("baseline", "candidate"):
+        median = LATENCY[side]["median"]
+        assert any(form in section for form in _durations(median)), (
+            f"the {side} median {median} is recorded and is not on the page"
+        )
 
 
 def test_a_threshold_source_that_is_not_a_path_is_printed_whole() -> None:
