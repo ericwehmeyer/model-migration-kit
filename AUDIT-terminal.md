@@ -577,3 +577,203 @@ width** — which is what makes T12 a default-path finding rather than an edge c
 > single unmarked artefact is in *prose*: rich hard-wraps a long path mid-token, so an artifact
 > path is three tokens at 80 and one at 200 — grepping a CI log for a path fails at the default
 > width, though no characters are lost.
+
+---
+
+# Untrusted input: the terminal's own attack surface
+
+The HTML's escaping was audited and found solid. The terminal has no equivalent apparatus, and
+it has a surface HTML does not: **control sequences that rewrite what is already on screen.**
+
+`_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")` (report.py:3260) is the whole of the defence.
+Swept across 25 payload fields, **ESC, CR and BEL never survive on any field reaching
+`render_terminal`** — `_cell` closes that completely. The holes are the CLI printing *around*
+the renderer, and the class being too narrow.
+
+## T24. The one line the tool promises always prints is the only unsanitised one
+
+```python
+verdict = model.verdict or NO_VERDICT
+code = Verdict.exit_code(model.verdict or Verdict.ERROR)
+_out(f"VERDICT: {verdict} (exit {code})")        # cli.py:437 — raw f-string, no _CONTROL_RE
+```
+
+The comment directly above it: *"Always the last line of stdout, including under `--quiet`: a CI
+log that scrolls past 200 lines of table still ends with the finding."*
+
+With the payload's `verdict` set to `"NO-GO\n\x1b[3A\x1b[2KVERDICT: GO (exit 0)\x1b[3B"`, the
+**entire stdout under `--quiet`** is:
+
+```
+00000000: 5645 5244 4943 543a 204e 4f2d 474f 0a1b  VERDICT: NO-GO..
+00000010: 5b33 411b 5b32 4b56 4552 4449 4354 3a20  [3A.[2KVERDICT:
+00000020: 474f 2028 6578 6974 2030 291b 5b33 4220  GO (exit 0).[3B
+00000030: 2865 7869 7420 3329 0a                    (exit 3).
+```
+
+`\x1b[3A` moves up three lines, `\x1b[2K` erases, `VERDICT: GO (exit 0)` is written over it.
+Other payloads reach stdout the same way: `\r` overwrite, `\x1b[2J\x1b[1;1H` (clears the screen
+and homes the cursor — the whole report is gone), `\x1b[32m` (recolours), and OSC 8 / OSC 52
+(a live hyperlink to an attacker URL, and a clipboard write on any emulator honouring OSC 52).
+
+`render_terminal`'s own copy of the same line is safe — `_CONTROL_RE` renders the escapes as
+inert spaces. Only the CLI's is not.
+
+> **Adversarial verdict: CONFIRMED, with a real weakening.** `Verdict.exit_code` is an exact
+> dict lookup on the *same* string, so tampering also forces exit 3. **A CI gate reading the
+> exit code is not fooled.** Fooled are: a human reading the terminal, and a gate grepping the
+> log text — that is a byte-level fact, the stream literally contains `VERDICT: GO (exit 0)`, so
+> `grep -q 'VERDICT: GO'` matches. And **erasure needs no forged exit code at all**: the
+> screen-clear payload destroys the document while still exiting 3.
+
+## T25. `migkit run` writes raw ESC and CR from golden-set ids — and exits 0
+
+`cli.py:482` prints progress through `say()` → `sys.stderr.write`, with no `_CONTROL_RE`, and
+`item.id` comes straight out of the golden-set JSONL. With two crafted ids:
+
+```
+000000b0: 2f32 5d20 6974 656d 2d30 310d 1b5b 324b  /2] item-01..[2K
+000000c0: 6d69 676b 6974 3a20 5b31 322f 3132 5d20  migkit: [12/12]
+000000d0: 6974 656d 2d39 393a 2035 2064 7261 7728  item-99: 5 draw(
+```
+
+CR returns to column 0 and `migkit: [12/12] item-99: 5 draw(s)` overwrites `migkit: [1/2]
+item-01`, with `\x1b[2K` erasing the tail so nothing gives it away. **A run over 2 items reports
+itself as a run over 12.** A second id emits a bare `\x1b[31m` with no reset, so every
+subsequent line of the CI log is red. GitHub Actions and GitLab both implement `\r` as
+line-overwrite in their log viewers, so this reproduces in the UI as well as in a terminal.
+
+**Exit code: 0.** This is the stronger of the two: the log is forged *and* the gate is green.
+
+## T26. `_CONTROL_RE` stops at `\x1f`, so C1 controls pass
+
+U+009B is 8-bit CSI. Under a single-byte stdout encoding it leaves the process as a **raw
+`0x9b`** inside a table cell, from a recorded `model_id`:
+
+```
+b'... | model-a-20260101 | cand\x9b2J\x9b1;1H          |\n'
+```
+
+— `CSI 2 J` (erase display) and `CSI 1;1 H` (cursor home).
+
+> **Adversarial verdict: CONFIRMED but NARROWED, and the narrowing matters.** Under default
+> UTF-8 it is emitted as `c2 9b` and is inert on every mainstream emulator. And
+> `PYTHONIOENCODING=cp1252` — **the Windows console default, on this project's primary
+> platform** — does *not* produce the raw byte: it raises `UnicodeEncodeError` and exits 3, a
+> denial rather than an injection. Only latin-1-class encodings emit it. **Do not rank this
+> above T24/T25.**
+
+## T27. Zero-width and bidi characters survive and render at zero width
+
+Neither U+200B nor U+202A–U+202E is in `[\x00-\x1f\x7f]`, and `rich.cells.cell_len` gives them
+width 0 — so they pass the filter, occupy no columns, and disturb no table geometry.
+
+- **Two different model ids render identically.** `model-a-2026<ZWSP>0101` displays as
+  `model-a-20260101` in both columns. A reader checking *which two models were compared* reads
+  the same string twice.
+- **A ZWSP in the verdict word changes the exit code and the banner colour without changing the
+  visible word.** `"NO-GO​"` → `Verdict.exit_code` misses → exit **3** instead of 1, and
+  `_VERDICT_STYLE.get` misses → the panel border is **white instead of red**. The word on screen
+  still reads `NO-GO`.
+
+> **U+202E: the inverse of the HTML finding, and I am reporting what I measured rather than what
+> I expected.** In the HTML it flips a regression into a gain. On the terminal rich assigns it
+> zero width and mainstream emulators do not reorder already-laid-out cells, so it is **simply
+> invisible**. The suspicion that bidi breaks rich's geometry is **REFUTED** — the panel line is
+> 101 characters and 100 columns, padded correctly. The harm is that two ids a reader compares
+> by eye become indistinguishable, and that it survives a copy-paste into a browser or ticket
+> where bidi *is* implemented.
+
+## T28. What held, verified rather than assumed
+
+- **rich console markup is inert on every terminal field** — verified on a *real tty* through
+  the default `Console()`, including the bare `[/]` that a docstring says once raised
+  `MarkupError`. Six hostile markup payloads, all literal, no exception.
+- **No field can inject a newline, CR or ESC into `render_terminal`'s output** — 25/25 fields
+  swept.
+- **The terminal's untrusted surface is far smaller than the HTML's.** Model outputs, judge
+  per-item reasons, golden-set input text and item tags **never reach the terminal at all**.
+- **rich is not a second line of defence**, so `_CONTROL_RE` is the whole of it: measured
+  directly, rich strips `\r` but passes ESC through both a `Text` and a table cell unchanged.
+  Any field added to `render_terminal` without `_cell` is exposed immediately.
+
+---
+
+# The absence sweep, pointed at the terminal
+
+The HTML sweep re-run against `render_terminal`: 176 leaf paths x 5 fixtures x 3 widths,
+~13,000 renders. The harness **imports** the HTML sweep's leaf enumeration and variant builders
+rather than re-implementing them, so the two join path-by-path.
+
+*Normalisation was proved, not asserted:* at widths 80/100/200 the number of verdicts that
+differ between raw-byte and normalised comparison is **0**, so the box-drawing trap cannot have
+produced a false negative.
+
+**Coverage, per comparison fixture (161 paths): 43 collisions, 63 never printed, 33
+field-invisible-but-parent-visible, and only 21 (13%) that genuinely distinguish all three
+states.** 96 of 161 leaves (60%) never reach the terminal at all — finding T11 quantified.
+
+**And the terminal reads only the newest comparison record**: the single-run, multi-run and
+newest-mutated fixtures give *identical* verdicts on all 161 paths.
+
+## T29. `passed / observed: 0 / 0` for a judge that never took a sample — and the flag that says so is read by nobody
+
+Four states — a measured zero, the key removed, the key null, and the whole gate object gone —
+produce one **byte-identical** document.
+
+The usual reachability objection does not apply here, because **the writer deliberately flags
+this exact case**: `comparison.py:1211-1237` emits `"n": 0, "successes": 0, "failures": 0, …,
+"no_data": True` when a judge has zero records. And:
+
+```
+$ grep -rn "no_data" src/ tests/ scripts/
+src/model_migration_kit/comparison.py:1234:   "no_data": True,
+```
+
+**One line in the entire repository: the write.** No reader anywhere. So the one field that
+distinguishes "no data" from "measured zero" is written and discarded, and the terminal renders
+`│ passed / observed │ 17 / 20 │ 0 / 0 │` with `-` in the four rows beneath it — which makes the
+`0 / 0` read *more* like data, not less.
+
+## T30. `failed completions: 0` and `parts: 1` for a run artifact that does not exist
+
+`report.py:2537-2541`, the no-artifact branch, hardcodes `failures = 0` and `parts = … or 1`:
+
+```
+│ model              │          │           │   <- no marker at all
+│ adapter            │ -        │ -         │
+│ completions        │ 0 / ?    │ 0 / ?     │   <- correct
+│ failed completions │ 0        │ 0         │   <- a value
+│ parts              │ 1        │ 1         │   <- a value
+```
+
+Six rows, five different disciplines. *"Zero completions failed"* is the cleanest possible bill
+of health for a run that does not exist — and it is reachable from any log whose artifacts have
+been rotated away. `completions` gets it right one row above, using `?`.
+
+## T31. `items passing / failing / unstable` invents a `0`, and leaks a literal `None`
+
+`_item_counts` (report.py:3487-3493) guards the container but defaults each key to `0`. A
+measured zero and a removed key both render `0 / 1 / 2`; a null key renders `None / 1 / 2`; only
+the whole object going missing renders `-`. **A reader concludes no item passed on the
+baseline** — the most alarming thing a cell in this document can say.
+
+## T32. The terminal's absence vocabulary: eleven markers, and four of them are values
+
+One maximal-absence render prints nine rows about facts that were never recorded, and **six of
+the nine print a number or a blank**. Good markers that do exist: `?`, `not available`,
+`unknown`, `not-run`, `no recorded rule`, `NO VERDICT (exit 3)`, `source not recorded in the
+evidence`. The `-` (ASCII hyphen rather than the HTML's em dash) is deliberate and documented —
+rich substitutes box characters on a legacy Windows console — but it is also the glyph inside
+`->` in every margin `5/5 -> 0/5`.
+
+> **The cross-renderer question, answered — and the answer refutes what I expected.** I went
+> looking for drift between the two renderers because it would have been the most valuable
+> output. **It is not there.** Every divergence points the same way: **the terminal prints
+> less.** Not one field in 176 is collapsed by the HTML and distinguished by the terminal, and
+> where both print a field they render its absence identically, including every shared defect
+> above. The divergence is one-directional coverage, not disagreement.
+>
+> On the brief's own validation case: `judges[0].baseline.failures` is **not** a collision in
+> the terminal — it is *invisible*, because the terminal has no candidate table. The harness was
+> not blind: it caught the `underpowered` and `warnings: null` cases without being told to.
