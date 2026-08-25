@@ -6495,3 +6495,147 @@ which makes this the one class of test that must be proved to fail before it is
 believed when it passes.
 
 Dispatched as a permanent test rather than left as an audit script.
+
+### R39 — the audit verified against `main`, and R38 corrected by it
+
+R38 scheduled the audit's findings after reading the audit. This is what
+happened when every finding was reproduced against merged code rather than
+against the report of it. **Three of R38's own decisions were wrong**, and the
+verification found a lost disclosure the audit's method should have caught and
+did not.
+
+#### R39.1 — three corrections to R38.5's schedule
+
+**Finding 16's headline is false, and chunk 5 was partly built on it.** The claim
+was that `--quiet` silences the FAKE MODELS disclosure. Measured: `--quiet`
+silences the *terminal*, not the report.
+
+```
+q.html vs nq.html          byte-identical
+grep -c "FAKE MODELS"      2   (including the <title>)
+```
+
+The surviving half is finding 22 — the terminal discloses none of it — which is
+a real defect and is already chunk 5's subject. **The `--quiet` clause is struck
+from the chunk.** A brief written against the headline would have sent an agent
+to fix a disclosure that is not missing.
+
+**Finding 23 is already fixed and R38 schedules it anyway.** C14c renders
+`Multiplicity.note`, and the page now reads *"across the 2 candidates in this
+field… 1 candidate(s) in the table recorded no p-value, were not tested, and are
+not in the family."* Confirmed on merged code. **Struck from chunk 6** — this is
+R28.1's failure mirrored: not a ruling with no brief, but a brief with no
+remaining defect.
+
+**Finding 34's citation was over-retracted, which made it look weaker than it
+is.** The audit withdrew it to R20; the ruling that actually speaks is **§9 risk
+7**, which *prescribed* the mitigation — *"both appear in the methodology
+appendix… clearly separated"* — and only the docstring half shipped. The correct
+citation makes the finding **stronger**: it is not a style preference, it is a
+prescribed mitigation that was skipped. **Promoted within chunk 6.**
+
+#### R39.2 — R29.3's disclosure fires only where it does not matter
+
+**The audit's own method should have caught this and stopped one question
+short.** Its finding-12 grep listed four unreferenced fields and dismissed one as
+a false positive without asking whether the others were *conditionally*
+reachable. One of them is a genuine lost disclosure.
+
+```
+one comparison, envelope ts on a different UTC day from payload["created"]
+
+REAL adapters : state=recorded  dated_apart=1 of 1  disclosed on the page? False
+FAKE adapters : state=scripted  dated_apart=1 of 1  disclosed on the page? True
+```
+
+`_dated_sentence` is correct, and its docstring correctly says it discloses the
+asymmetry "when it is there and not when it is not". **Its only call site is
+inside `_scripted_paragraph`, which runs only when
+`provenance.state == PROVENANCE_SCRIPTED`.** So the two-clocks disclosure fires
+on scripted documents and never on a real production report — the only place a
+reader needs it.
+
+Decisive test: mutating the field with paths and hash masked produces **zero**
+page change. Grep for `dated_apart`, `two clocks`, `calendar`, `asymmetr`
+anywhere after R38's heading: **no match. Unscheduled.**
+
+R29.3 was implemented exactly as ruled and then wired somewhere it cannot speak.
+**That is a fourth instance of R21's shape** — a value computed correctly and
+read by no production path — and the first where the producer *is* read, just
+never on the branch that matters. **Scheduled: chunk 4**, beside the other
+banner-scope work.
+
+#### R39.3 — `check_contract.py` can pass against a file in another checkout
+
+Worse than the audit reported, and this one is about a gate rather than a
+document. The citation regex excludes `:`, so a rooted Windows citation loses its
+drive letter and is joined to the *drive* of `root`. **The gate can resolve a
+citation into a different checkout and pass against a file that is not in the
+tree being checked.** Live example in the repo: `docs/release-evidence.md:104`.
+
+A gate that can be satisfied by a file outside the tree is not a gate. **Scheduled
+as its own small chunk**, ahead of the document work, on the same reasoning that
+put finding 35 first: a check nobody can trust makes every result downstream of
+it unfalsifiable.
+
+#### R39.4 — the merge gate is green on a tree where R29.1's fix is inverted
+
+The most uncomfortable measurement in the ingest. Three spot-checked mutations
+survive — **including inverting R29.1's fix**, the exemplar defect this entire
+audit brief was built around:
+
+```
+scripts/check_merge.py  ->  [PASS] on all seven checks, including [PASS] pytest
+```
+
+Not merely "the file's own tests pass". **The project's own merge gate is green
+on a tree where the disclosure is inverted.** Seven checks, 2,241 tests, and the
+sentence that says whether these numbers came from a real provider can be turned
+inside out without one of them noticing.
+
+And separately: **`warnings: null` still crashes the renderer** — `TypeError`,
+exit 3, no HTML written — with no test aware of it.
+
+**Ruling: both go to the chunk that closes them, and neither is folded into a
+document chunk.** The first is a test gap on the single most load-bearing
+sentence in the document; the second is the spec's named "crash" reachable from
+one null. Chunk 0, before finding 35, because they are the cheapest and the
+loudest.
+
+#### R39.5 — finding 1, ruled by splitting it
+
+R38 demoted the pseudoreplication finding to chunk 6 on the grounds that the
+report faithfully echoes what `comparison.py` computed. The ingest's verifier
+disagreed and its argument is better than the demotion:
+
+> **R9 already established the principle** — *"Twenty completions from four items
+> are not twenty observations… correlated by construction"* — and applied it
+> **only to the dimension matrix**, leaving the headline gate computing the
+> forbidden way.
+
+Both are right about different things, so the finding splits:
+
+1. **The unreconciled sentence is the report's, and is scheduled.** The page
+   prints `n=60` as evidential depth and, eight times, "all 5 draws identical",
+   and nothing connects them. Worse, the one sentence that could disclose it
+   asserts the opposite — that the five draws carry distributional information.
+   That sentence is report-authored and it is wrong on this evidence. **Chunk 6,
+   promoted to its head.**
+2. **The gate's unit is `comparison.py`'s and is outside this rebuild's declared
+   files.** Recorded here as an open question with R9's own words attached, so
+   whoever opens `comparison.py` next finds the argument already made rather than
+   re-deriving it. **Not scheduled by this plan**, and saying so is the point:
+   R28.1's lesson is that an unscheduled ruling must be visibly unscheduled
+   rather than quietly assumed.
+
+#### R39.6 — a harness caveat worth more than most findings
+
+`_visible()` includes SVG `<title>` text, so **tooltips read as visible prose.**
+Anyone asking "is X on the page?" gets a false positive for every
+`<title>`-only disclosure — which is precisely the mechanism behind findings 40,
+41.12, 45 and 47.
+
+A measurement tool that counts a tooltip as text will report a
+screen-reader-only disclosure as a rendered one, and that is the exact class of
+defect the audit exists to find. **Whoever reruns this must fix the harness
+first**, or the harness will hide the findings it was built to surface.
