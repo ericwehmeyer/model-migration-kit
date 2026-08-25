@@ -487,6 +487,15 @@ def test_an_unbounded_report_says_that_it_is_unbounded(rendered: dict[str, Any])
     that the warning exists in order to trust its absence, and the reader of a
     change-control document is by construction someone who has not read this
     source file.
+
+    **Unbounded is not the same fact as complete, and this fixture is the proof.**
+    Nothing here hit ``max_report_chars`` -- every one of the thirty rows carries
+    its outputs -- and yet every one of them was cut by ``max_output_chars``, which
+    the test three above this one asserts outright. This assertion used to read
+    ``"carries its full outputs" in detail.sentence``, over a document whose own
+    suite knew all thirty rows were truncated. The budget being unspent says
+    nothing about whether the quotations are whole, and a certificate that reads
+    the one off the other is certifying a fact it never checked.
     """
     model = rendered["model"]
     detail = model.detail
@@ -497,7 +506,27 @@ def test_an_unbounded_report_says_that_it_is_unbounded(rendered: dict[str, Any])
     assert detail.embedded <= detail.limit
     assert detail.sentence not in model.warnings
     assert model.warnings == ()
-    assert "carries its full outputs" in detail.sentence
+
+    assert detail.truncated_rows == ITEMS, (
+        "the fixture is supposed to truncate every row -- see "
+        "test_the_truncation_that_is_announced_is_the_per_block_one -- and if it "
+        "no longer does, the assertions below stop testing the truncated branch"
+    )
+    assert detail.complete is False, (
+        "thirty rows were cut at max_output_chars and the document is calling "
+        "itself complete"
+    )
+    assert "carries its full outputs" not in detail.sentence, (
+        f"every row in this document was truncated and it still certifies full "
+        f"outputs: {detail.sentence}"
+    )
+    assert "but not in full" in detail.sentence
+    assert f"{detail.produced:,}" in detail.sentence
+    assert f"{detail.model_embedded:,}" in detail.sentence
+    assert detail.produced > detail.model_embedded, (
+        "the certificate must state a produced figure larger than the embedded "
+        "one on a document that truncated every row"
+    )
     assert 'id="detail-budget"' in rendered["html"]
     assert detail.sentence in rendered["html"]
 

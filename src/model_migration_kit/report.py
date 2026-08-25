@@ -748,20 +748,53 @@ class FlipRow:
     #: different fact. Defaults True so that every other construction site --
     #: tests, and any caller building a row directly -- keeps the old meaning.
     detail_embedded: bool = True
+    #: Characters of **model** text this row's draws held before
+    #: ``max_output_chars`` cut them -- both sides' completions and nothing else.
+    #: ``None`` means *not known*, which is the honest answer on a row built
+    #: without opening a run artifact, and is not the same fact as ``0``.
+    #: :attr:`DetailBudget.produced` refuses to count a ``None``.
+    produced_chars: int | None = None
+    #: Distinct values among each side's **full** draws, before truncation.
+    #: ``None`` where no run artifact was opened. Read by :func:`_draws`, which
+    #: must not decide uniformity from the strings it is about to print.
+    baseline_distinct: int | None = None
+    candidate_distinct: int | None = None
 
     @property
     def quoted_chars(self) -> int:
-        """Characters of model text this row embeds. What the budget counts.
+        """Characters of quoted text this row embeds. What the budget counts.
 
         The input, both sides' draws and the judge reasons -- each already cut to
         ``max_output_chars``, so this is the post-truncation size and not the size
         of what the models actually said.
+
+        **Both of those departures are deliberate and neither may be described as
+        model output.** The budget bounds the *document*, so it has to charge for
+        the golden-set author's prompt and the judge's reason exactly as it charges
+        for a completion: they are bytes on the page. And it has to charge the
+        post-truncation size, because that is the number of bytes embedded. What
+        this figure must never be called is "what the models produced" --
+        :attr:`DetailBudget.produced` is that number, and the two differed by 12.4%
+        on the bundled demo and by a factor of twelve under truncation while a
+        single integer was printed under the completeness wording.
         """
         return (
             len(self.input or "")
             + sum(len(one) for one in self.baseline_outputs)
             + sum(len(one) for one in self.candidate_outputs)
             + sum(len(one) for one in self.reasons.values())
+        )
+
+    @property
+    def model_chars(self) -> int:
+        """Characters of model text this row embeds, after truncation.
+
+        The draws only: no prompt, no judge reason. Against
+        :attr:`produced_chars` this says how much of what the models said
+        survived ``max_output_chars``.
+        """
+        return sum(len(one) for one in self.baseline_outputs) + sum(
+            len(one) for one in self.candidate_outputs
         )
 
     @property
@@ -824,16 +857,41 @@ class Completeness:
 
 @dataclass(frozen=True)
 class DetailBudget:
-    """How much quoted model text the document embedded, against what it was allowed.
+    """How much quoted text the document embedded, against what it was allowed.
 
     Present on every report, capped or not, because "this document is complete" is
     a fact a reviewer signing a migration decision needs stated rather than
     inferred from the absence of a warning.
+
+    **Three numbers and not one, which is the whole of this class's history.** The
+    certificate used to print :attr:`embedded` under the words "what the models
+    produced", and those words are false of it in two independent directions:
+
+    * ``embedded`` charges the golden-set author's prompt and the judge's reason
+      against the budget alongside the completions, because they are bytes on the
+      page. On the bundled demo, default path, that was 426 characters of prompts
+      and 295 of judge reasons inside a figure of 5,821 -- **12.4% of a
+      "what the models produced" claim was not model output.**
+    * ``embedded`` is measured *after* ``max_output_chars`` cuts each block. With
+      candidate outputs of 50,000 characters the page certified **60,408** against
+      artifacts holding **750,000** -- twelve times short -- and compared the 60,408
+      to a 10,000,000 budget, telling the reader there had been ample room. The
+      truncation had nothing to do with the budget.
+
+    So :attr:`produced` is what the models produced, before truncation, model text
+    only, and it is the figure the completeness claim is made about.
+    :attr:`embedded` stays what it always was -- the budget's cost, which the
+    reader needs in order to check the budget arithmetic at all -- and is no longer
+    described as model output. :attr:`printed` is what survives the presentation
+    layer. Naming one and hiding the others is how a certificate ends up
+    flattering itself; :meth:`sentence` names all of them.
     """
 
     #: ``max_report_chars`` in force. ``0`` when the caller asked for no bound.
     limit: int
-    #: Characters of quoted text actually embedded, summed over every row.
+    #: Characters of quoted text actually embedded, summed over every row: the
+    #: item inputs, both sides' draws and the judge reasons, each after truncation.
+    #: **The budget's cost, and not a statement about the models.**
     embedded: int
     #: Changed items in the document, over all three sections.
     rows: int
@@ -841,6 +899,20 @@ class DetailBudget:
     rows_embedded: int
     #: section name -> ``{"rows": int, "embedded": int, "chars": int}``.
     sections: Mapping[str, Mapping[str, int]] = field(default_factory=dict)
+    #: Characters the models produced across the embedded rows, **before**
+    #: ``max_output_chars``, counting completions and nothing else. The
+    #: completeness claim is about this number.
+    produced: int = 0
+    #: Of :attr:`produced`, how much is actually in the document: the same draws
+    #: after truncation. Equal to ``produced`` exactly when nothing was cut.
+    model_embedded: int = 0
+    #: Embedded rows in which ``max_output_chars`` cut something.
+    truncated_rows: int = 0
+    #: ``max_output_chars`` in force, so the sentence can name the limit that cut.
+    output_limit: int = 0
+    #: Characters of quoted text the document prints, after identical draws are
+    #: collapsed to one block. See :func:`_printed_chars`.
+    printed: int = 0
 
     @property
     def capped(self) -> bool:
@@ -851,32 +923,123 @@ class DetailBudget:
         return self.rows - self.rows_embedded
 
     @property
+    def complete(self) -> bool:
+        """True when every changed item's model text is in the document, whole.
+
+        Two ways to fail and the certificate has to survive both: the budget
+        stopped embedding rows, or ``max_output_chars`` cut the rows it did embed.
+        The second used to be invisible here, which is how "carries its full
+        outputs" printed over outputs cut to 8% of themselves.
+        """
+        return not self.capped and self.truncated_rows == 0
+
+    @property
+    def _budget_clause(self) -> str:
+        """What the embedded total is, and what it is measured against."""
+        against = (
+            f"a budget of {self.limit:,}"
+            if self.limit > 0
+            else "no budget ([report] max_report_chars was set to no bound)"
+        )
+        return (
+            f"With the golden-set prompts and the judge reasons quoted beside them, "
+            f"the document embeds {self.embedded:,} characters of quoted text against "
+            f"{against}."
+        )
+
+    @property
+    def _printed_clause(self) -> str:
+        """The presentation-layer figure, or ``""`` when it adds nothing."""
+        if self.printed == self.embedded:
+            return ""
+        return (
+            f"Of that, {self.printed:,} characters are printed below: where every draw "
+            f"of a side came back byte-identical it is shown once and counted, rather "
+            f"than repeated."
+        )
+
+    @property
+    def _produced_clause(self) -> str:
+        """What the models produced, and how much of it survived truncation.
+
+        Scoped to the **embedded** rows in both states, and it says which. What the
+        rows past the budget produced is not counted here and is not knowable from
+        this document: those rows are deliberately built without opening a run
+        artifact, so the honest report of their size is the pointer to the
+        artifacts the head clause already gives, not a zero.
+        """
+        if self.rows_embedded == 0:
+            # Nothing was embedded, so there is nothing this document knows about
+            # what the models produced. "0 characters produced" is that ignorance
+            # wearing a measurement's clothes; the head clause has already said
+            # where the text is.
+            return ""
+        subject = (
+            f"Across those {self.rows_embedded} row(s), the models produced"
+            if self.capped
+            else "The models produced"
+        )
+        if self.truncated_rows == 0:
+            return (
+                f"{subject} {self.produced:,} characters of text and all "
+                f"{self.produced:,} are embedded."
+            )
+        limit = (
+            f" ([report] max_output_chars, {self.output_limit:,} characters per block)"
+            if self.output_limit > 0
+            else ""
+        )
+        return (
+            f"{subject} {self.produced:,} characters of text, of which "
+            f"{self.model_embedded:,} are embedded: {self.truncated_rows} of the "
+            f"{self.rows_embedded} row(s) had text cut{limit}. The full text is in the "
+            f"run artifacts named in the provenance block."
+        )
+
+    @property
     def sentence(self) -> str:
-        """One sentence naming exactly what was left out, or why nothing was.
+        """What was embedded, what was left out, and what each figure counts.
 
         Written here rather than in the template so that the terminal renderer,
         the HTML band and ``warnings`` all say the same words: three copies of a
-        disclosure are three chances for one of them to go stale.
+        disclosure are three chances for one of them to go stale. The reconciling
+        clauses used to live in the template, in two branches, and the second
+        branch's copy is exactly where the false sentence survived an audit that
+        had read the first.
         """
-        if not self.capped:
+        if self.rows == 0:
             return (
-                f"Every one of the {self.rows} changed item(s) carries its full "
-                f"outputs: {self.embedded:,} characters of quoted model text "
-                f"against a budget of {self.limit:,}."
+                "No item changed state, so there are no outputs to embed. The "
+                f"budget for quoted model text is {self.limit:,} characters "
+                f"([report] max_report_chars)."
+                if self.limit > 0
+                else "No item changed state, so there are no outputs to embed."
             )
-        listed = ", ".join(
-            f"{name} {self.sections[name]['embedded']} of {self.sections[name]['rows']}"
-            for name in _CHANGE_SECTIONS
-            if self.sections.get(name, {}).get("rows")
-        )
-        return (
-            f"The budget for quoted model text ({self.limit:,} characters, "
-            f"[report] max_report_chars) was reached: {self.rows_embedded} of "
-            f"{self.rows} changed item(s) carry their outputs ({listed}). The other "
-            f"{self.rows_summarised} are listed in full with their ids, tags, judges "
-            f"and margins, and their model text is not embedded -- it is in the run "
-            f"artifacts named in the provenance block. No row was dropped."
-        )
+        if not self.capped:
+            head = (
+                f"Every one of the {self.rows} changed item(s) carries its full "
+                f"outputs."
+                if self.complete
+                else (
+                    f"All {self.rows} changed item(s) are embedded, but not in full."
+                )
+            )
+        else:
+            listed = ", ".join(
+                f"{name} {self.sections[name]['embedded']} of {self.sections[name]['rows']}"
+                for name in _CHANGE_SECTIONS
+                if self.sections.get(name, {}).get("rows")
+            )
+            head = (
+                f"The budget for quoted model text ({self.limit:,} characters, "
+                f"[report] max_report_chars) was reached: {self.rows_embedded} of "
+                f"{self.rows} changed item(s) carry their outputs ({listed}). The other "
+                f"{self.rows_summarised} are listed in full with their ids, tags, judges "
+                f"and margins, and their model text is not embedded -- it is in the run "
+                f"artifacts named in the provenance block. No row was dropped."
+            )
+        parts = [head, self._produced_clause, self._budget_clause, self._printed_clause]
+        return " ".join(part for part in parts if part)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -885,6 +1048,12 @@ class DetailBudget:
             "rows": self.rows,
             "rows_embedded": self.rows_embedded,
             "capped": self.capped,
+            "complete": self.complete,
+            "produced": self.produced,
+            "model_embedded": self.model_embedded,
+            "truncated_rows": self.truncated_rows,
+            "output_limit": self.output_limit,
+            "printed": self.printed,
             "sections": {name: dict(one) for name, one in self.sections.items()},
         }
 
@@ -3127,6 +3296,9 @@ def _change_sections(
 
     bounded = budget > 0
     spent = 0
+    produced = 0
+    model_embedded = 0
+    truncated_rows = 0
     stopped = False
     built: dict[str, list[FlipRow]] = {name: [] for name in _CHANGE_SECTIONS}
     counts = {name: {"rows": len(ordered[name]), "embedded": 0, "chars": 0} for name in ordered}
@@ -3149,6 +3321,18 @@ def _change_sections(
                 built[name].append(_change_row(entries[index], context, detail=False))
                 continue
             spent += cost
+            # The completeness figure is accumulated here, beside the budget's
+            # cost and never derived from it: `cost` is post-truncation and
+            # includes the prompt and the judge reason, and reusing it as "what
+            # the models produced" is the defect this pair of counters replaces.
+            # `produced_chars` is None only on a row built without opening a run
+            # artifact, which this branch never is; refusing the None keeps an
+            # unrecorded size from being summed as a zero.
+            if row.produced_chars is not None:
+                produced += row.produced_chars
+            model_embedded += row.model_chars
+            if row.truncated:
+                truncated_rows += 1
             counts[name]["embedded"] += 1
             counts[name]["chars"] += cost
             built[name].append(row)
@@ -3160,6 +3344,11 @@ def _change_sections(
         rows=sum(one["rows"] for one in counts.values()),
         rows_embedded=sum(one["embedded"] for one in counts.values()),
         sections={name: dict(one) for name, one in counts.items()},
+        produced=produced,
+        model_embedded=model_embedded,
+        truncated_rows=truncated_rows,
+        output_limit=max(context.limit, 0),
+        printed=_printed_over(tuple(sections.values())),
     )
     return sections, detail
 
@@ -3199,56 +3388,102 @@ def _change_row(
             detail_embedded=False,
         )
     text, text_cut = _truncate(item.input, limit) if item is not None else (None, False)
-    base_outputs, base_cut = _outputs(context.base_run, item_id, limit)
-    cand_outputs, cand_cut = _outputs(context.cand_run, item_id, limit)
-    reasons = _reasons(context.cand_judged, item_id, judges, limit)
+    base = _outputs(context.base_run, item_id, limit)
+    cand = _outputs(context.cand_run, item_id, limit)
+    reasons, reason_cut = _reasons(context.cand_judged, item_id, judges, limit)
     return FlipRow(
         item_id=item_id,
         tags=tags,
         input=text,
-        baseline_outputs=base_outputs,
-        candidate_outputs=cand_outputs,
+        baseline_outputs=base.texts,
+        candidate_outputs=cand.texts,
         judges=judges,
         reasons=reasons,
-        truncated=bool(text_cut or base_cut or cand_cut),
+        # Every quotation this row embeds is a term here, the judge reason
+        # included. The reason used to be the one omission, and it is the piece of
+        # text the row exists to show.
+        truncated=bool(text_cut or base.truncated or cand.truncated or reason_cut),
         labels=labels,
+        produced_chars=base.produced + cand.produced,
+        baseline_distinct=base.distinct,
+        candidate_distinct=cand.distinct,
     )
 
 
-def _outputs(
-    run: RunArtifact | None, item_id: str, limit: int
-) -> tuple[tuple[str, ...], bool]:
+class _Side(NamedTuple):
+    """One side's draws for one item, and the three facts about them.
+
+    ``texts`` is what the document may print and is already cut to
+    ``max_output_chars``. ``produced`` and ``distinct`` are measured **before**
+    that cut, which is the whole reason this type exists rather than a bare
+    tuple: a completeness figure and a uniformity claim taken off the truncated
+    strings are statements about the presentation layer wearing the words of
+    statements about the run. See :func:`_draws` and :attr:`DetailBudget.produced`.
+    """
+
+    #: Post-truncation, one entry per draw the run recorded, in sample order.
+    texts: tuple[str, ...]
+    #: True when ``max_output_chars`` cut any of them.
+    truncated: bool
+    #: Characters the model actually produced, summed over the draws, before
+    #: truncation. A failed completion produced none and contributes ``0``: the
+    #: ``[no output - ...]`` placeholder below is this tool's words, not a model's.
+    produced: int
+    #: Distinct values among the **full** draws. Never derived from ``texts``.
+    distinct: int
+
+
+def _outputs(run: RunArtifact | None, item_id: str, limit: int) -> _Side:
     """All n draws for one item, failures included and labelled as such.
 
     A failed completion has no text, and printing nothing for it would make the
     side that crashed look like the side that was not asked.
+
+    Uniformity and size are counted off ``completion.output`` and the placeholder
+    -- the values as recorded -- and the truncation is applied afterwards, only to
+    what is printed. Counting them off the cut strings is what let five different
+    draws be certified as "all 5 draws identical".
     """
     if run is None:
-        return (), False
+        return _Side((), False, 0, 0)
     out: list[str] = []
+    full: list[str] = []
+    produced = 0
     truncated = False
     for completion in sorted(run.completions_for(item_id), key=lambda c: c.sample_index):
         if completion.output is None:
-            out.append(f"[no output - {completion.error_type or 'error'}: {completion.error}]")
+            placeholder = f"[no output - {completion.error_type or 'error'}: {completion.error}]"
+            out.append(placeholder)
+            full.append(placeholder)
             continue
         text, cut = _truncate(completion.output, limit)
         truncated = truncated or cut
+        produced += len(completion.output)
+        full.append(completion.output)
         out.append(text or "")
-    return tuple(out), truncated
+    return _Side(tuple(out), truncated, produced, len(set(full)))
 
 
 def _reasons(
     judged: JudgedArtifact | None, item_id: str, judges: Sequence[str], limit: int
-) -> dict[str, str]:
-    """The candidate-side sentence each judge wrote about this item.
+) -> tuple[dict[str, str], bool]:
+    """The candidate-side sentence each judge wrote about this item, and whether cut.
 
     A failing reason is preferred over a passing one: the row exists because the
     item stopped working, and the reason a reader needs is the one attached to the
     draw that failed.
+
+    The cut flag is returned rather than dropped. It used to be dropped, and the
+    consequence was that a 9,047-character reason rendered at 4,000 with
+    ``truncated`` still ``False`` and ``"truncated at"`` appearing nowhere on the
+    page -- an invisible truncation of the one piece of text the reader opened the
+    row to read. :func:`_truncate`'s own docstring: "Invisible truncation
+    misquotes."
     """
     if judged is None:
-        return {}
+        return {}, False
     reasons: dict[str, str] = {}
+    truncated = False
     for name in judges:
         chosen = ""
         for record in judged.for_judge(name):
@@ -3259,9 +3494,10 @@ def _reasons(
                 break
             chosen = chosen or record.reason
         if chosen:
-            text, _ = _truncate(chosen, limit)
+            text, cut = _truncate(chosen, limit)
+            truncated = truncated or cut
             reasons[name] = text or ""
-    return reasons
+    return reasons, truncated
 
 
 def _truncate(text: str | None, limit: int) -> tuple[str | None, bool]:
@@ -5151,26 +5387,21 @@ quality regression.</p>
 </div>
 {% endif %}
 
-{% set printed = model | printed_chars %}
 {#
-  The budget sentence counts what the run *produced*. Identical draws are printed
-  once below, so what is on the page is smaller, and both numbers are given
-  rather than letting one quietly replace the other: the sentence is a
-  completeness claim, and a completeness claim that starts counting what survived
-  the presentation layer certifies a smaller thing in the same words.
+  Every figure in this block comes from `DetailBudget.sentence` and none of it is
+  composed here. It used to be composed here, in two branches, and the two said
+  the same thing about `detail.embedded` -- that it "counts what the models
+  produced" -- which was false of it in both. An audit read one branch, conceded
+  the other, and the false sentence shipped in both: prose about a number, written
+  anywhere but beside the number, is prose nobody re-checks when the number's
+  meaning changes. `DetailBudget` now carries `produced`, `embedded` and `printed`
+  as three separate facts and says which is which, and the terminal render and
+  `warnings` get that reconciliation too -- they never saw this paragraph at all.
 #}
 {% if model.detail.capped %}
 <div class="note" id="detail-budget">
   <strong>The quoted model text in this report is bounded.</strong>
   {{ model.detail.sentence }}
-  {% if printed != model.detail.embedded %}
-  The rows that do carry their outputs embedded
-  {{ '{:,}'.format(model.detail.embedded) }} characters of model text, of which
-  {{ '{:,}'.format(printed) }} are printed below: where every draw of a side came
-  back byte-identical it is shown once and counted, rather than repeated. The
-  first figure counts what the models produced, which is what completeness is
-  about; the second counts what this page spends on it.
-  {% endif %}
   <ul>
     <li>rows are visited round-robin across flips, gains and unstable, in
         golden-set order within each, so no section crowds out another</li>
@@ -5181,14 +5412,7 @@ quality regression.</p>
   </ul>
 </div>
 {% else %}
-<p class="secondary" id="detail-budget">{{ model.detail.sentence }}
-{% if printed != model.detail.embedded %}
-  Of those, {{ '{:,}'.format(printed) }} characters are printed below: where every
-  draw of a side came back byte-identical it is shown once and counted, rather
-  than repeated. The figure above counts what the models produced, which is what
-  completeness is about.
-{% endif %}
-</p>
+<p class="secondary" id="detail-budget">{{ model.detail.sentence }}</p>
 {% endif %}
 
 <h2 id="flips">Flips {{ dash }} items that stopped working ({{ model.flips | length }})</h2>
@@ -5301,7 +5525,7 @@ _CHANGES_MACRO = """
     {% else %}
     <p class="secondary">Input not shown: the golden set is unavailable or has changed.</p>
     {% endif %}
-    {% set baseline_draws = row.baseline_outputs | draws %}
+    {% set baseline_draws = row.baseline_outputs | draws(row.baseline_distinct) %}
     <h4>Baseline outputs ({{ baseline_draws.total }})</h4>
     {% for text in baseline_draws.texts %}
     <pre class="output">{{ text }}</pre>
@@ -5312,7 +5536,7 @@ _CHANGES_MACRO = """
     {% if not row.baseline_outputs %}
     <p class="secondary">No baseline outputs available.</p>
     {% endif %}
-    {% set candidate_draws = row.candidate_outputs | draws %}
+    {% set candidate_draws = row.candidate_outputs | draws(row.candidate_distinct) %}
     <h4>Candidate outputs ({{ candidate_draws.total }})</h4>
     {% for text in candidate_draws.texts %}
     <pre class="output">{{ text }}</pre>
@@ -5361,7 +5585,8 @@ class _Draws(NamedTuple):
     #: Draws the run produced. Never derived from ``texts``, which is the whole
     #: point: after a collapse the two differ, and the sentence below needs both.
     total: int
-    #: Distinct texts among them.
+    #: Distinct values among the draws **as the run recorded them**, before
+    #: ``max_output_chars`` cut anything. Never derived from ``texts``.
     distinct: int
 
     @property
@@ -5370,25 +5595,61 @@ class _Draws(NamedTuple):
         return len(self.texts) < self.total
 
     @property
+    def blurred(self) -> bool:
+        """True when truncation made distinct draws print as the same block.
+
+        Not a collapse: every draw is still printed. It is the case where the
+        page's blocks and the page's count would contradict each other unless the
+        contradiction is explained, and it is why :attr:`sentence` has a fourth
+        case.
+        """
+        return self.distinct > 1 and len(set(self.texts)) < self.distinct
+
+    @property
     def sentence(self) -> str:
         """What the reader is owed about the draws, or ``""`` when nothing is.
 
-        Three cases and three different facts. Every draw agreeing is stated
+        Four cases and four different facts. Every draw agreeing is stated
         *because* only one block is shown -- the count would otherwise be missing
         from the page entirely. Draws differing is stated because the number that
-        differed is the finding, and today it is invisible: uniformity and
-        variation render identically. A single draw gets no sentence, because
+        differed is the finding, and it would otherwise be invisible: uniformity
+        and variation render identically. A single draw gets no sentence, because
         "1 draw, 1 distinct" tells a reader nothing they cannot see.
+
+        The fourth case is truncation. Five draws that differ only past
+        ``max_output_chars`` print as five identical-looking blocks, and a reader
+        comparing the blocks to the count would conclude one of them is wrong. The
+        count is the true one; the sentence says so rather than leaving the reader
+        to pick.
         """
         if self.total < 2:
             return ""
         if self.distinct == 1:
             return f"all {self.total} draws identical"
+        if self.blurred:
+            return (
+                f"{self.total} draws, {self.distinct} distinct -- blocks above that "
+                f"look alike differ only past the truncation limit"
+            )
         return f"{self.total} draws, {self.distinct} distinct"
 
 
-def _draws(outputs: Sequence[str]) -> _Draws:
-    """Group one side's outputs, collapsing only total agreement.
+def _draws(outputs: Sequence[str], distinct: int | None = None) -> _Draws:
+    """Group one side's outputs for printing, collapsing only total agreement.
+
+    ``distinct`` is the count of distinct values among the **full** draws, as
+    :class:`_Side` measured it before truncation. **Comparison is on full values
+    and display is truncated, in that order and never the reverse** -- the rule
+    :func:`~model_migration_kit.series.parameter_strip` already states for its own
+    cells, one section over. Deciding uniformity from ``outputs`` instead put "all
+    5 draws identical" on the page over five genuinely different draws whose first
+    ``max_output_chars`` happened to agree: not an absence rendering as a
+    measurement, but the renderer asserting something false about the very thing
+    the reader is assessing.
+
+    ``distinct is None`` means no run artifact recorded the answer, and the only
+    values available are the ones passed in; a row past the document's budget has
+    no draws at all, so in practice this is a caller building a row by hand.
 
     Only the all-identical case collapses. Partial grouping -- three of one text
     and two of another shown as two blocks with counts -- was considered and
@@ -5402,9 +5663,10 @@ def _draws(outputs: Sequence[str]) -> _Draws:
     for text in outputs:
         if text not in seen:
             seen.append(text)
-    if len(seen) == 1 and len(outputs) > 1:
+    measured = len(seen) if distinct is None else distinct
+    if measured == 1 and len(outputs) > 1:
         return _Draws((seen[0],), len(outputs), 1)
-    return _Draws(tuple(outputs), len(outputs), len(seen))
+    return _Draws(tuple(outputs), len(outputs), measured)
 
 
 def _banner_bar(model: ReportModel) -> str:
@@ -5449,7 +5711,7 @@ def _banner_bar(model: ReportModel) -> str:
 
 
 def _printed_chars(model: ReportModel) -> int:
-    """Characters of quoted model text the document actually prints.
+    """Characters of quoted text the document actually prints.
 
     Not what it embedded -- :attr:`DetailBudget.embedded` counts that, and the two
     differ by exactly the draws this document collapsed. Both numbers are printed,
@@ -5458,15 +5720,29 @@ def _printed_chars(model: ReportModel) -> int:
     start counting what was printed would shrink the thing it certifies while
     leaving the wording intact, which is the same failure as stating missing data
     as zero, in a new coat.
+
+    One implementation, two entry points: :func:`_change_sections` calls
+    :func:`_printed_over` on the rows it has just built so that
+    :attr:`DetailBudget.printed` -- the number the sentence prints -- and this
+    read-back off the finished model cannot drift into disagreeing.
     """
+    return _printed_over((model.flips, model.gains, model.unstable))
+
+
+def _printed_over(sections: Sequence[Sequence[FlipRow]]) -> int:
+    """The printed total over already-built rows. See :func:`_printed_chars`."""
     total = 0
-    for section in (model.flips, model.gains, model.unstable):
+    for section in sections:
         for row in section:
             if not row.detail_embedded:
                 continue
             total += len(row.input or "")
-            total += sum(len(text) for text in _draws(row.baseline_outputs).texts)
-            total += sum(len(text) for text in _draws(row.candidate_outputs).texts)
+            total += sum(
+                len(text) for text in _draws(row.baseline_outputs, row.baseline_distinct).texts
+            )
+            total += sum(
+                len(text) for text in _draws(row.candidate_outputs, row.candidate_distinct).texts
+            )
             total += sum(len(reason) for reason in row.reasons.values())
     return total
 
@@ -5570,6 +5846,11 @@ def _environment() -> Environment:
     env.filters["interval_bar"] = _banner_bar
     env.filters["timeline"] = lambda points: timeline_svg(tuple(points))
     env.filters["draws"] = _draws
+    # Kept registered although the shipped template no longer calls it: the figure
+    # now reaches the page through `DetailBudget.printed`, beside the two numbers
+    # it has to be read against, which is the point of moving it. The filter is the
+    # supported way for a caller's own template to reach the same number, computed
+    # the same way.
     env.filters["printed_chars"] = _printed_chars
     env.filters["source_label"] = _source_label
     return env

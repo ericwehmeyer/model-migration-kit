@@ -808,6 +808,14 @@ def _scenario(
     candidate_completions: int | None = None,
     recorded_goldenset_hash: str | None = None,
     candidate_output: str | None = None,
+    #: One text per draw, so a fixture can vary *within* a side. ``candidate_output``
+    #: gives every draw the same string and cannot reach the case where draws differ
+    #: only past ``max_output_chars`` -- the case that manufactured "all 5 draws
+    #: identical" over five different draws.
+    candidate_draws: Sequence[str] | None = None,
+    #: The candidate-side judge reason. Long values reach the truncation of the one
+    #: piece of text a reader opens the row to read.
+    candidate_reason: str | None = None,
     flips: Sequence[tuple[str, int, int, int, int]] = (
         ("item-03", 5, 5, 0, 5),
         ("item-07", 4, 5, 1, 5),
@@ -830,13 +838,20 @@ def _scenario(
         for item_id in item_ids
     }
     cand_text = candidate_output
-    cand_outputs = {
-        item_id: [
-            f"CAND-OUT {item_id} #{index}" if cand_text is None else cand_text
-            for index in range(N_PER_ITEM)
-        ]
-        for item_id in item_ids
-    }
+    if candidate_draws is not None:
+        assert candidate_output is None, "pass one of candidate_output / candidate_draws"
+        assert len(candidate_draws) == N_PER_ITEM, (
+            f"candidate_draws must give all {N_PER_ITEM} draws a value"
+        )
+        cand_outputs = {item_id: list(candidate_draws) for item_id in item_ids}
+    else:
+        cand_outputs = {
+            item_id: [
+                f"CAND-OUT {item_id} #{index}" if cand_text is None else cand_text
+                for index in range(N_PER_ITEM)
+            ]
+            for item_id in item_ids
+        }
     if candidate_completions is not None:
         remaining = candidate_completions
         trimmed: dict[str, list[str | None]] = {}
@@ -884,7 +899,12 @@ def _scenario(
         source=str(candidate_run),
         item_ids=item_ids,
         passes={item_id: 0 for item_id in item_ids},
-        reasons={item_id: f"CAND-REASON {item_id}" for item_id in item_ids},
+        reasons={
+            item_id: candidate_reason
+            if candidate_reason is not None
+            else f"CAND-REASON {item_id}"
+            for item_id in item_ids
+        },
     )
 
     active_thresholds = dict(thresholds or THRESHOLDS)
@@ -7563,6 +7583,339 @@ def test_the_completeness_claim_still_counts_what_the_models_produced(
         f"the document collapses draws but never states the {printed:,} characters "
         f"it actually prints, so the two numbers cannot be reconciled by a reader"
     )
+
+
+# --------------------------------------------------------------------------- #
+# finding 6 -- the completeness certificate counted characters the models did
+# not produce, and counted them after truncation. R38.4.
+#
+# Three quantities were printed as one integer under the words "what the models
+# produced":
+#
+#   produced        what the models said, before max_output_chars
+#   embedded        every quotation on the page after it -- the golden-set
+#                   author's prompts and the judge's reasons included, because
+#                   those are bytes the budget pays for
+#   printed         embedded, minus the draws the renderer collapsed
+#
+# On `migkit demo`, default path, nothing capped, `embedded` was 5,821 of which
+# 426 was prompts and 295 was judge reasons: 12.4% of a claim about model output
+# was not model output. Under truncation the same figure was twelve times short.
+# --------------------------------------------------------------------------- #
+
+
+def _budget_terms(model: Any) -> dict[str, int]:
+    """The three sources inside ``DetailBudget.embedded``, re-derived from the rows.
+
+    Deliberately not read off ``DetailBudget``: the assertion these feed is that
+    the certificate's figure is not the sum of all three, and computing it from
+    the same object would let one mistake satisfy both sides.
+    """
+    terms = {"prompts": 0, "model": 0, "reasons": 0}
+    for row in (*model.flips, *model.gains, *model.unstable):
+        if not row.detail_embedded:
+            continue
+        terms["prompts"] += len(row.input or "")
+        terms["model"] += sum(len(one) for one in row.baseline_outputs)
+        terms["model"] += sum(len(one) for one in row.candidate_outputs)
+        terms["reasons"] += sum(len(one) for one in row.reasons.values())
+    return terms
+
+
+def test_the_completeness_figure_excludes_prompts_and_judge_reasons(
+    tmp_path: Path,
+) -> None:
+    """`DetailBudget.produced` is model output. The budget's cost is not.
+
+    The defect was one integer wearing two descriptions. ``embedded`` charges the
+    golden-set author's prompt and the judge's reason against the budget -- it has
+    to, they are bytes on the page -- and the page then called that same integer
+    "what the models produced". On the bundled demo the gap was 721 characters in
+    5,821.
+
+    This fixture makes the two terms enormous and unmistakable rather than 12% of
+    each other: whichever of the two the certificate is reading, it cannot read
+    the other by accident.
+    """
+    model, html = _rendered(
+        tmp_path / "sources",
+        candidate_output="c" * 40,
+        candidate_reason="J" * 900,
+    )
+    terms = _budget_terms(model)
+    detail = model.detail
+
+    assert terms["reasons"] > terms["model"], (
+        "this fixture is supposed to make the judge reasons dominate the model "
+        "output; if they do not, a certificate reading either one would pass"
+    )
+    assert detail.embedded == terms["prompts"] + terms["model"] + terms["reasons"], (
+        "the budget must charge for every quotation on the page, or the figure a "
+        "reader checks max_report_chars against is not the page's cost"
+    )
+    assert detail.produced == terms["model"], (
+        f"the completeness figure is {detail.produced:,}; the models produced "
+        f"{terms['model']:,}. The difference is {terms['prompts']:,} characters of "
+        f"golden-set prompts, written by the golden-set author, and "
+        f"{terms['reasons']:,} of judge reasons, written by the judge"
+    )
+    assert detail.produced != detail.embedded, (
+        "this fixture quotes prompts and judge reasons, so the two figures must "
+        "differ or the assertion above is vacuous"
+    )
+
+    visible = _squeeze(_visible(html))
+    assert f"{detail.produced:,}" in visible, (
+        f"the page never states the {detail.produced:,} characters the models "
+        f"produced, which is the only figure a completeness claim is about"
+    )
+    assert f"{detail.embedded:,}" in visible, (
+        f"the page states no total for what it embedded, so the {detail.limit:,} "
+        f"budget cannot be checked against anything"
+    )
+
+
+def test_the_completeness_figure_is_the_size_before_truncation(
+    tmp_path: Path,
+) -> None:
+    """A certificate of completeness may not certify the post-truncation size.
+
+    ``quoted_chars``' own docstring says it is "the post-truncation size and not
+    the size of what the models actually said", and the page said it counted what
+    the models produced. Two sentences about one integer, one of them false, both
+    shipped.
+
+    The direction matters. Post-truncation is the smaller number, so the false
+    reading always flatters: with candidate draws of 50,000 characters the page
+    certified 60,408 against artifacts holding 750,000 and compared it to a
+    10,000,000 budget, which tells the reader there had been ample room. The
+    truncation had nothing to do with the budget.
+    """
+    long_output = "X" * 50_000
+    scenario = _scenario(tmp_path / "before", candidate_output=long_output)
+    model = _from_evidence(scenario, max_output_chars=4000)
+    html = _html(model)
+    detail = model.detail
+
+    assert detail.capped is False, "this is the uncapped branch; the budget never bound"
+    assert detail.truncated_rows > 0, "nothing was truncated, so this test is vacuous"
+
+    rows = [row for row in (*model.flips, *model.gains, *model.unstable) if row.detail_embedded]
+    on_disk = sum(50_000 * len(row.candidate_outputs) for row in rows)
+    assert detail.produced > on_disk, (
+        f"the certificate says the models produced {detail.produced:,} characters; "
+        f"the candidate draws alone hold {on_disk:,}. A completeness figure taken "
+        f"after max_output_chars certifies the completeness of something the "
+        f"reader is not reading"
+    )
+    assert detail.model_embedded < detail.produced, (
+        "the document embeds every character the models produced, on a fixture "
+        "whose draws are twelve times max_output_chars"
+    )
+    assert detail.complete is False
+
+    visible = _squeeze(_visible(html))
+    assert "carries its full outputs" not in visible, (
+        f"outputs cut from 50,000 to 4,000 per block, and the page certifies full "
+        f"outputs: {detail.sentence}"
+    )
+    assert f"{detail.produced:,}" in visible and f"{detail.model_embedded:,}" in visible, (
+        "a truncated document must give both figures; one of them alone is either "
+        "a size the reader cannot find on the page or a completeness claim about "
+        "text that is not there"
+    )
+
+
+def test_both_branches_of_the_certificate_are_measured_not_one(
+    tmp_path: Path,
+) -> None:
+    """The capped branch is not the honest one. It was the worse one.
+
+    An audit conceded the capped branch and challenged only the default path. The
+    concession was wrong, and measuring rather than reading is what shows it: the
+    two branches printed the same reconciling paragraph, once each, from two
+    copies in the template, and the copy nobody re-read is the one that survived.
+    Under a small budget the capped branch's own figure is *more* contaminated,
+    not less, because the rows that fit are the ones whose model text is shortest
+    while their prompt and judge reason are not.
+    """
+    scenario = _scenario(tmp_path / "branches", candidate_output="c" * 30)
+    sentences = {}
+    for budget, name in ((10_000_000, "uncapped"), (600, "capped")):
+        model = _from_evidence(scenario, max_report_chars=budget)
+        detail = model.detail
+        assert detail.capped is (name == "capped"), (
+            f"the {name} case is not in the branch it names: capped={detail.capped}"
+        )
+        terms = _budget_terms(model)
+        sentences[name] = detail.sentence
+        assert detail.produced == terms["model"], (
+            f"the {name} branch certifies {detail.produced:,} as model output over "
+            f"{terms['model']:,} actually produced"
+        )
+        assert "counts what the models produced" not in _squeeze(_visible(_html(model))), (
+            f"the {name} branch still prints the sentence that names the budget's "
+            f"cost as model output"
+        )
+    assert sentences["capped"] != sentences["uncapped"], (
+        "the two branches produced the same sentence, so this test never entered "
+        "the capped one"
+    )
+    assert "was reached" in sentences["capped"]
+
+
+def test_a_truncated_judge_reason_is_disclosed(tmp_path: Path) -> None:
+    """Finding 6a. `truncated` was False on a row whose judge reason was cut.
+
+    `_change_row` OR-ed the cut flags of the item input and of both sides' draws
+    and dropped the one `_reasons` returned -- it did not return one. So a
+    9,047-character reason rendered at 4,000, `truncated` stayed `False`, and
+    "truncated at" appeared nowhere on the page.
+
+    The ruling is that the bug is in the flag rather than in what it flags. The
+    notice the flag drives is printed once per row, *below* the judge reasons, and
+    its wording names no particular block -- it is a row-level statement that
+    something in this row was cut at `max_output_chars`, and the reason is
+    something in this row. `_truncate`'s own docstring: "Invisible truncation
+    misquotes." And a judge reason is why the item regressed: the one piece of
+    text a reader opened the row to read.
+    """
+    reason = "R" * 9047
+    scenario = _scenario(tmp_path / "reason", candidate_reason=reason)
+    model = _from_evidence(scenario, max_output_chars=4000)
+    html = _html(model)
+
+    rows = [row for row in model.flips if row.detail_embedded]
+    assert rows, "this fixture needs embedded flip rows"
+    row = rows[0]
+
+    assert all(len(one) <= 40 for one in row.candidate_outputs), (
+        "the draws in this fixture must be short, or the row would be flagged "
+        "truncated for a reason that is not the judge reason and the test would "
+        "pass against the defect"
+    )
+    assert row.input is not None and len(row.input) <= 4000
+    assert len(row.reasons["accuracy"]) == 4000, (
+        f"the judge reason was not truncated ({len(row.reasons['accuracy'])} "
+        f"characters), so nothing here is being disclosed"
+    )
+    assert reason not in html, "max_output_chars did not cut the reason at all"
+
+    assert row.truncated is True, (
+        "a row whose judge reason was cut from 9,047 characters to 4,000 reports "
+        "truncated=False"
+    )
+    assert "truncated at" in _squeeze(_visible(html)), (
+        "the page says nothing about the cut anywhere: the reason a reader opened "
+        "the row for is misquoted with no marker"
+    )
+
+
+def test_draws_are_compared_before_they_are_truncated(tmp_path: Path) -> None:
+    """Finding 6b, and the sharpest defect in this chunk.
+
+    Five genuinely different draws that agree for their first `max_output_chars`
+    characters collapsed to one block and the page asserted "all 5 draws
+    identical". That is not an absence rendering as a measurement -- it is an
+    affirmative false statement, produced by the renderer, about the thing the
+    reader is assessing: whether the model gives the same answer twice.
+
+    `parameter_strip`'s docstring already states the rule for its own cells --
+    "Comparison is on full values and display is truncated to _HASH_WIDTH, in that
+    order and never the reverse". This is the same rule one section over.
+    """
+    prefix = "P" * 4200
+    draws = tuple(f"{prefix}-TAIL-{index}" for index in range(N_PER_ITEM))
+    assert len(set(draws)) == N_PER_ITEM
+    assert len({one[:4000] for one in draws}) == 1, (
+        "the fixture must make the truncated prefixes agree, or there is no "
+        "collapse to get wrong"
+    )
+
+    scenario = _scenario(tmp_path / "blurred", candidate_draws=draws)
+    model = _from_evidence(scenario, max_output_chars=4000)
+    html = _html(model)
+
+    row = next(row for row in model.flips if row.detail_embedded)
+    assert row.candidate_distinct == N_PER_ITEM, (
+        f"the row records {row.candidate_distinct} distinct candidate draws over "
+        f"{N_PER_ITEM} different ones; uniformity was decided from the strings the "
+        f"document was about to print"
+    )
+    assert len(set(row.candidate_outputs)) == 1, (
+        "the displayed draws no longer collide, so the defect's precondition is "
+        "gone and this test is vacuous"
+    )
+
+    visible = _squeeze(_visible(html))
+    assert f"all {N_PER_ITEM} draws identical" not in visible, (
+        f"the page asserts all {N_PER_ITEM} draws identical over {N_PER_ITEM} "
+        f"genuinely different draws"
+    )
+    assert f"{N_PER_ITEM} draws, {N_PER_ITEM} distinct" in visible, (
+        "the true distinct count is nowhere on the page"
+    )
+    assert "differ only past the truncation limit" in visible, (
+        "the page prints five blocks that look identical beside a count of five "
+        "distinct, and explains neither; a reader has to decide which of the two "
+        "is wrong"
+    )
+
+    printed = [text for text in _pre_texts(html) if text.startswith("P" * 100)]
+    assert len(printed) >= N_PER_ITEM, (
+        f"only {len(printed)} of the {N_PER_ITEM} draws were printed: a side whose "
+        f"draws differ must not be collapsed"
+    )
+
+
+def test_only_full_agreement_still_collapses_when_nothing_was_truncated(
+    tmp_path: Path,
+) -> None:
+    """The other side of 6b: the collapse must survive the fix.
+
+    Comparing before truncation must not turn into never collapsing. Five draws
+    that really are byte-identical are still one block and still say so, and this
+    is the fixture where the pre- and post-truncation comparisons agree -- so it
+    is the one that catches a fix that simply stopped collapsing.
+    """
+    repeated = "the candidate said exactly this, five times over"
+    model, html = _rendered(tmp_path / "still", candidate_output=repeated)
+
+    row = next(row for row in model.flips if row.detail_embedded)
+    assert row.candidate_distinct == 1
+    assert row.truncated is False, "nothing in this fixture should be truncated"
+    assert f"all {N_PER_ITEM} draws identical" in _squeeze(_visible(html))
+    assert "differ only past the truncation limit" not in _squeeze(_visible(html)), (
+        "nothing was truncated here and the page is blaming truncation"
+    )
+
+
+def test_the_certificate_says_nothing_it_did_not_measure_when_nothing_embedded(
+    tmp_path: Path,
+) -> None:
+    """A budget that embedded no row knows nothing about what the models produced.
+
+    Rows past the budget are built without opening a run artifact -- deliberately,
+    it is the memory cost the cap exists to remove -- so their size is not merely
+    zero, it is unrecorded. Printing "the models produced 0 characters" would be
+    this document's central rule broken by the fix for a different break of it.
+    """
+    scenario = _scenario(tmp_path / "nothing")
+    model = _from_evidence(scenario, max_report_chars=10)
+    detail = model.detail
+
+    assert detail.rows_embedded == 0 and detail.rows > 0
+    assert "produced 0" not in detail.sentence, (
+        f"an unopened artifact is not a measured zero: {detail.sentence}"
+    )
+    assert "run artifacts named in the provenance block" in detail.sentence, (
+        "the sentence must point at where the text actually is"
+    )
+    for row in model.flips:
+        assert row.produced_chars is None, (
+            "a row built without opening a run artifact records a produced size, "
+            "so an absence has become a number one layer down"
+        )
 
 
 # -- defect 2: the finding behind a closed triangle --------------------------- #
