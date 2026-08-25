@@ -860,3 +860,175 @@ the agent used `git checkout --` rather than a byte-verified backup — those tw
 files not backed up in advance. It verified the restore against the untouched main checkout by
 SHA-256 instead (both match). Reported rather than routed around, which is what CLAUDE.md asks
 for.
+
+---
+
+# `.github/workflows/*.yml` and `conftest.py`
+
+**I cannot run GitHub Actions.** Every claim below is either the workflow's own shell replayed
+verbatim on a constructed tree, or reasoning from YAML marked `UNVERIFIED-LOCALLY`.
+
+## G34. "The suite makes no network calls" is false by five routes, one of which the suite uses constantly
+
+Claimed at `README.md:595`, `PROGRESS.md:27` (*"proved … Offline"*) and `ci.yml:67`
+(*"network physically blocked"*). `netguard` patches **four names on `socket`**:
+
+```
+socket.socket.connect   socket.socket.connect_ex   socket.getaddrinfo   socket.create_connection
+```
+
+Verified with the guard armed, against real hosts:
+
+| route | result | why it is missed |
+|---|---|---|
+| `socket.create_connection` | **blocked** | patched |
+| `_socket.socket().connect()` | **through** | the guard patches the Python subclass; the C base is untouched |
+| `socket.gethostbyname` | **through** — returned a real A record | only `getaddrinfo` is patched |
+| UDP `sendto(("8.8.8.8", 53))` | **through** — a full DNS reply came back | no `connect()` involved |
+| `subprocess.run([...urlopen...])` | **through** — fetched 45 MB from `pypi.org/simple/` | **a child has none of the monkeypatches** |
+| `os.system("curl …")` | **through** | same |
+
+I reproduced the subprocess route directly:
+
+```
+$ PYTHONPATH=scripts/audit .venv/bin/python -c "subprocess.run([...create_connection('1.1.1.1',443)...])"
+  child stdout: CHILD CONNECTED
+
+$ grep -rl subprocess tests/*.py
+  tests/test_cli.py  test_import_purity.py  test_release_checks.py  test_stranger_path.py  test_series.py
+```
+
+**Five test modules spawn subprocesses.** The class of egress most likely to appear in *this*
+suite is the class netguard structurally cannot see. Its docstring says *"proves it at the
+syscall seam"*; it proves it at one module's attribute table, in one process.
+
+## G35. netguard has no positive control, and the line that reads as proof prints unconditionally
+
+`scripts/audit/netguard.py:58` — `print("[audit] network guard armed …")` — sits after the four
+patches with nothing conditioning it on their success. The guard fires **zero times** in a
+healthy run, so *disarmed* is indistinguishable from *working*. With the arming wrapped in
+`if False:` and the print untouched: **2206 passed, exit 0, and the log still says "network
+guard armed."** The single string a maintainer would scan for prints either way.
+
+## G36. The marker invariant is satisfiable by a comment — restoring the exact defect it was written to prevent
+
+`_applied_markers()` is a regex over the raw *text* of `tests/*.py`. One line in
+`pyproject.toml`, one **comment** in `tests/test_cli.py`, no test carrying the marker:
+
+```
+pytest -q tests/test_import_purity.py -k marker   ->  2 passed
+pytest -q -m "not requires_network" --collect-only -> 2206 tests collected   (deselected 0 of 2206)
+pytest -q -n 4                                    ->  2206 passed
+```
+
+That is precisely the state `pyproject.toml`'s own comment describes as the bug: *"a flag that
+deselected nothing while reading as the promise that CI never touches a provider."* The
+companion test guards against a **dead** regex, not a **live** one reading a comment.
+
+## G37. The `demo` job asserts nothing about the report's content
+
+Four content-blind assertions: exit code `-eq 1`, `test -f`, `elapsed -le 120`, one `grep -qiE`.
+Deleting the body of the single `<style>` block in `report.py` (3,857 chars) gives:
+
+```
+2206 passed                          all four demo assertions PASS
+```
+
+and ships:
+
+```html
+<style>
+</style>
+…
+<div class="band fake" id="fake-models" role="alert">
+FAKE MODELS — these numbers describe scripted responses, not a real provider; …
+```
+
+**The red FAKE MODELS band — the document's loudest sentence — renders as ordinary
+black-on-white body text**, indistinguishable from the paragraph below it.
+
+> **Adversarial note in the job's favour:** deleting the `PROVENANCE_SCRIPTED` row instead *was*
+> caught by the suite (3 failures), and `demo` is `needs: test`, so that route cannot reach the
+> demo job. The stylesheet is the gap past both.
+
+## G38. `conftest.py` silently overrides an explicit `PYTHONPATH`, contradicting CLAUDE.md
+
+CLAUDE.md: *"Setting `PYTHONPATH` explicitly still works and still wins."* True for bare
+`python`; **false for `pytest`**:
+
+```
+PYTHONPATH=<decoy>/src python -c "import model_migration_kit"   -> THIS IS THE DECOY CHECKOUT
+PYTHONPATH=<decoy>/src python -m pytest …                        -> imported the worktree, decoy absent
+```
+
+Same class of wrong-answer bug `conftest.py` was written to eliminate, running the other way.
+
+## G39. Smaller, confirmed
+
+- **2205 of 2206 tests pass with the package not installed at all.** Exactly one test notices —
+  and it says so well. "The suite is green" is not evidence the package installs, that its
+  metadata exists, or that its console script was written.
+- **Coverage is computed 8× per run and thrown away** — no upload, no `fail_under`. It could
+  fall to 5% with every job green.
+- **`shuffle_order.py` does exactly what it claims** — verified independently over all 2206
+  tests, genuinely torn out of file *and* class groupings — **and runs in no workflow.**
+  Order-independence is real and asserted by nobody on a schedule.
+- **The demo job's self-containment grep misses 9 of 12 fetching constructs** (single quotes,
+  unquoted, protocol-relative, CSS `url()`, `form action`, `poster`, `srcset`, relative `link`)
+  and **false-positives on an escaped URL in model output**, which `test_report.py:1204` asserts
+  is *not* a violation. **Ranked low, in the job's favour:** the real gate is
+  `tests/test_cli.py:1016`, parser-based with a vacuity control and a false-positive control.
+  The workflow grep is a weaker restatement that adds nothing and misleads anyone reading only
+  the YAML.
+- **The drift canary runs the suite without netguard** while its `Classify` step reasons *"the
+  suite is offline … so a failure here cannot be a flake."* A network flake would be filed as an
+  opik-rigor incompatibility.
+- **Blanking the provider keys measures nothing** — nothing in `src/` reads either variable, and
+  the suite passes with real-looking keys set. What keeps CI off a vendor is that `.[dev]` never
+  installs the SDKs.
+
+## G40. The lint gate's verdict is whichever ruff pip resolved — and the declared floor fails this tree
+
+`ruff>=0.6`, no `required-version`, no constraints:
+
+```
+ruff 0.6.0  -> rc=1, 8 × UP038      ruff 0.16.4 -> All checks passed!
+$ ruff rule UP038  ->  ## Removed
+```
+
+**Both divergence directions.** A contributor installing the declared floor gets 8 errors in
+`src/` on a tree CI calls clean; and any future ruff release adding a rule in `E,F,I,UP,B,SIM`
+reddens `main` with no commit (`UNVERIFIED-LOCALLY` — needs a future release).
+
+## G41. Sound — and this is a long list
+
+**`conftest.py` has no fixtures at all** — no autouse, no monkeypatching, no hooks; 85 lines of
+import-path arithmetic. The suspicion that a fixture weakens an assertion is **REFUTED**.
+
+**`ci.yml` has no path filters, no matrix excludes and no `continue-on-error`** — `grep` returns
+nothing. A docs-only PR runs the full matrix. **REFUTED.**
+
+**The canary's four `continue-on-error`s cannot produce a silent green** — each is compensated
+by the `Classify` catch-all, the verdict file's `or "broken"` default, the reducer's
+not-in-(drift,clean) ⇒ broken, `clean` requiring every cell, and `unknown` on no artifacts. The
+comments are accurate. **REFUTED by reading.**
+
+**The pinned publish action is correct** — `v1.14.2` → tag → commit `dc37677b…`, identical to
+the pin. **REFUTED.**
+
+**`migkit demo` exit 1 means NO-GO and nothing else** — every other path in `cli.main` returns 3.
+**VERIFIED.** And the demo job *does* catch a wheel missing its demo data: excluded the file,
+cold-venv install, job shell replayed → exit 3 and `test -f` also failed. **The headline claim
+holds.**
+
+**Green-locally / red-in-CI from the Python floor: not found.** CI's exact step on **3.10.14**,
+where the `tomli` fallback lives: `2206 passed`. **From filesystem case: not found** — suite
+copied to a case-sensitive APFS volume (`aA` ≠ `Aa` verified): `2206 passed`.
+
+**Lint excludes `scripts/` and `conftest.py`, and costs zero today** — `ruff check .` is clean.
+Same measurement the `UPPER_CASE` exclusion got, opposite result. Recorded anyway: **the four
+programs this project trusts to print `PASS` are the four CI does not lint.**
+
+**Configurations run, all 2206 passed:** py3.12 and py3.10; `-n 4` and serial; netguard on, off
+and disarmed; shuffled at seeds 11 and 99; a case-sensitive volume; and with real-looking
+provider keys set.
