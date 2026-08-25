@@ -340,3 +340,364 @@ Read-only against `mk-main` throughout (`git show` / `git log` / `git grep`); no
 tracked file touched; every reproduction wrote into a scratchpad, and this file
 was written from a detached worktree at `mk-watch`. No fix was made to the
 project.
+
+---
+
+## Cycle 2 — 2026-08-24, on `a4b3c7f` … `6484193`
+
+**What landed.** Both remaining jobs, in five commits.
+
+| commit | what |
+|---|---|
+| `a4b3c7f` | **Job 1** — `scripts/audit/`: six modules + a 250-line README, 2,013 lines |
+| `fac53f6` | **Job 2** — `AUDIT-terminal.md`, findings T0–T23 |
+| `b3e4f5c` | untrusted input (T24–T28) and the absence sweep pointed at the terminal (T29–T32) |
+| `550087d` | terminal mutation testing; **and the three stale notes from Cycle 1 corrected** |
+| `6484193` | the terminal at scale |
+
+`550087d` folded Cycle 1's three corrections back into `AUDIT-macbook.md`
+accurately, including the one that makes finding 4 **stronger** rather than
+weaker. The loop closed. **Both assigned jobs are complete.**
+
+Everything below ran on Windows 11, `python 3.14.4`, against `main` at `25bc7ea`.
+
+---
+
+### Job 1 — the tooling, run on Windows
+
+Every tool was executed. **All six run on Windows unmodified**, exit 0.
+
+| tool | Windows | evidence |
+|---|---|---|
+| `recompute.py` | **works** | reproduces the shipped numbers exactly, below |
+| `differential_render.py` | **works** | `sweep` 161 paths in **1m23s**; `quote` works |
+| `page_text.py` | **works, one caveat** | needs `PYTHONIOENCODING=utf-8` when redirected |
+| `fixtures.py` | **works** | wrote both scenarios; imports `tests/test_report.py` fine |
+| `masking.py` | **works, POSIX-only path mask** | as its own README already declares |
+| `mutation_harness.py` | `--list` **works** | 30 mutations; a full run needs a worktree I was told not to create |
+| `netguard` / `shuffle_order` | **work** | as pytest plugins with `PYTHONPATH` |
+
+**`recompute.py` is the strongest of the six.** It reproduces, on Windows,
+against current `main`, every number Cycle 1 derived independently with `scipy`:
+
+```
+Mann-Whitney U, candidate < baseline
+  each item x5 (what the payload records)      : U=1450.0  p=0.007843147236661033
+  12 independent items                         : U=  58.0  p=0.15250667081848462
+
+Wilson at confidence 0.95
+  candidate, 5x       45/60  [0.6277, 0.8422]  width 0.2146  one-sided lower 0.6486
+  baseline,  5x       55/60  [0.8193, 0.9639]  width 0.1446  one-sided lower 0.8385
+```
+
+and the page prints `[0.6277, 0.8422]`, `0.6486`, `0.8385`, `0.007843` — **all
+four match**, from Wilson arithmetic written out from the formula rather than
+calling `opik_rigor`. Two independent implementations, one of them not the code
+under audit, agree to ten significant figures. This is the tool that should
+become a permanent test.
+
+**Windows caveats, neither of them blocking:**
+
+* `page_text.py report.html > report.txt` mangles every em dash to `?` under the
+  default `cp1252` stdout. With `PYTHONIOENCODING=utf-8` it is clean:
+
+  ```
+  default : FAKE MODELS ? NO-GO ? fake-baseline-v1 to ...
+  utf-8   : FAKE MODELS — NO-GO — fake-baseline-v1 to ...
+  ```
+
+  Since half this project's findings turn on em dashes, this would silently
+  corrupt a Windows sweep. **One line to fix** (`reconfigure(encoding="utf-8")`
+  on stdout); the README should say so as it says the masking one.
+
+* `masking.py`'s `_ABS_PATH = re.compile(r"/(?:[\w.@+-]+/)+[\w.@+-]*")` does not
+  match `C:\Users\…`. **The README already declares this**, accurately.
+
+**What it would take to make these permanent tests.** `recompute.py` is closest:
+it is deterministic, offline, ~1 s, and asserts numbers the report prints — it
+could be a test today. `differential_render.py sweep` is 1m23s for **one** of
+five fixtures; the full sweep is minutes, so it belongs in a nightly or a
+`-m slow` marker, not the merge gate — but a **regression form** of it is cheap
+and would have caught what is below: pin the per-fixture counts (collisions,
+reverse, invisible) and fail when one moves. `mutation_harness.py` cannot be a
+test at all — it edits source in a worktree — but its catalogue is a checklist.
+
+---
+
+### The tooling found a live regression on `main` in its first run
+
+**This is the most important result in this cycle, and the second machine has not
+seen it** — it swept against the audit baseline, and `main` is 17 commits past
+that.
+
+Same tool, same fixtures, only the source tree differs:
+
+```
+audit baseline (mk-watch, ~e2b0614):
+  single/comparison: 161 paths | collisions 45 | reverse 2 | trivial 47 | zero-and-absence-both-invisible 38 | clean 29
+
+current main (mk-main, 25bc7ea):
+  single/comparison: 161 paths | collisions 46 | reverse 2 | trivial 47 | zero-and-absence-both-invisible 37 | clean 29
+```
+
+Exactly one leaf changed class, and comparing the two `--json` dumps names it:
+
+```
+paths with different equality pattern: 1
+  judges[0].item_counts.items
+     main  : (('A',), ('B','C1','C2'), ('C3',))
+     watch : (('A','B','C1','C2'), ('C3',))
+```
+
+On the baseline the field rendered nothing — A, B and both absences were
+identical. On `main` the recorded value now renders, **and a recorded zero is
+byte-identical to the key being removed and to the key being null.** `quote`
+gives the page region:
+
+```
+# single/comparison  judges[0].item_counts.items   base=12 A=12 B=0
+# absence variants byte-identical to the measured zero: ['C1', 'C2']
+--- variant A ---                    --- variant B ---
+      golden-set items                     golden-set items
+          items |                              items |
+      no previous run |                    no previous run |
+      12 |                                 unrecorded |
+--- variant C1: BYTE-IDENTICAL to variant B ---
+--- variant C2: BYTE-IDENTICAL to variant B ---
+```
+
+**A golden set recorded as holding zero items renders as the word
+`unrecorded`.** That is this project's central rule — *an absence must not render
+as a measurement* — in its mirror form, and it is **newly reachable**.
+
+Introduced by **C14c**, `bfd06fb` *"C14c: the last four unread fields"*:
+
+```
+$ git log --oneline -S"'items': 'golden-set items'" e2b0614..HEAD -- src/model_migration_kit/report.py
+bfd06fb C14c: the last four unread fields, and the line's disclosures below the chart
+```
+
+`report.py:4686` adds `'items': 'golden-set items'` to the parameter-strip label
+map, so the field reaches the page for the first time. It reaches it through
+`series.py:231` → `_count`, whose own docstring states the collapse:
+
+> Anything genuinely uninterpretable becomes `0`, the same value an absent key
+> gives, **because both are the same statement.**
+
+For a *count* of golden-set items those are **not** the same statement, and
+`_count_cell` then prints the word `unrecorded` for the recorded zero.
+
+**VERDICT: a live regression on `main`, introduced by a chunk whose whole purpose
+was to make unread fields reach the reader, in the family C22b's fix pass says it
+left open. Found by the second machine's tool on its first Windows run. Schedule
+it.**
+
+---
+
+### Job 2 — the terminal audit
+
+Spot-verified on the findings with the highest harm and the most checkable
+claims. **Everything I checked held.**
+
+#### T1 — the audit asked Windows to confirm or kill this. **Confirmed.**
+
+The finding says a non-UTF-8 console turns NO-GO (exit 1) into exit 3, that the
+trigger is the `…` rich inserts when truncating, and therefore that it is
+**width-dependent**; and it says *"I could not test Windows from here; one command
+confirms or kills it there."* Run there:
+
+```
+enc=utf-8   COLUMNS=80  exit=1 VERDICTlines=2
+enc=utf-8   COLUMNS=400 exit=1 VERDICTlines=2
+enc=ascii   COLUMNS=80  exit=3 VERDICTlines=0  UnicodeEncodeError: 'ascii'
+enc=ascii   COLUMNS=400 exit=1 VERDICTlines=2
+enc=cp437   COLUMNS=80  exit=3 VERDICTlines=0  UnicodeEncodeError: 'charmap'
+enc=cp437   COLUMNS=400 exit=1 VERDICTlines=2
+enc=cp850   COLUMNS=80  exit=3 VERDICTlines=0  UnicodeEncodeError: 'charmap'
+enc=cp850   COLUMNS=400 exit=1 VERDICTlines=2
+enc=cp1252  COLUMNS=80  exit=1 VERDICTlines=2
+enc=cp1252  COLUMNS=400 exit=1 VERDICTlines=2
+```
+
+**Every prediction is right, including both qualifications.** `cp437` and
+`cp850` — the legacy console codepages — give exit **3** with the verdict never
+printed, and only at the narrow width. `cp1252` exits 1 at both widths, exactly
+as the note said it would.
+
+**One correction to its reachability claim**, which is the point of asking a
+Windows machine. The audit says *"On a Windows console at `chcp 437`/`850` it is
+the default — and that is the machine this project's pipeline runs on."* On this
+machine it is **not** the default:
+
+```
+stdout.encoding      = cp1252
+getpreferredencoding = cp1252
+utf8_mode            = 0
+version              = 3.14.4
+```
+
+**VERDICT: mechanism STILL LIVE and fully confirmed; reachability narrower than
+stated.** It needs a console at `chcp 437`/`850` or an explicit
+`PYTHONIOENCODING`, not the default here. Real, and one notch below the tier the
+audit puts it in.
+
+#### T0 — the broken pipe. **Different failure on Windows, same class, worse code.**
+
+```
+unpiped              : exit=1   VERDICTlines=2  stderrbytes=0
+| head -40           : exit=120 VERDICTlines=0  stderrbytes=130
+| cat (drains)       : exit=1   VERDICTlines=2
+```
+
+and the 130 bytes are:
+
+```
+migkit: OSError: [Errno 22] Invalid argument
+Exception ignored while flushing sys.stdout:
+OSError: [Errno 22] Invalid argument
+```
+
+So on Windows the process does **not** take rich's `on_broken_pipe` →
+`SystemExit(1)` path the audit diagnoses. It raises `OSError(EINVAL)`, migkit's
+`except Exception` **does** catch it — `contextlib.suppress(BrokenPipeError)` at
+`cli.py:424` does not match `EINVAL` — and CPython then fails to flush stdout at
+shutdown and forces **exit 120**.
+
+**VERDICT: STILL LIVE, and the Windows form is worse than the macOS one.** The
+symptom the audit cares about is identical — the verdict line never prints, and
+the reader's decision to stop sets the exit code. But `120` is not `0`, not `1`,
+not `2`, not `3`: it is **outside the tool's documented exit-code vocabulary
+entirely**, so a pipeline that distinguishes NO-GO from tool-failure gets neither.
+The audit's cause analysis is macOS-specific and should say so; the finding
+itself is platform-independent and stronger for it.
+
+The promise it falsifies is verbatim on `main`, `cli.py:251`:
+
+> the write is dropped and **the exit code is left alone** — turning that into an
+> error would make a perfectly good report look like a failed one
+
+#### The mutation-testing headline. **Confirmed by construction, without mutating anything.**
+
+The claim: the FAKE MODELS band can be deleted and its own test still passes,
+because the terminal assertion is a bare case-insensitive substring for `FAKE`
+while the render also contains `FakeAdapter` and `fake-judge-v1`.
+
+`tests/test_report.py:2440-2444`, on current `main`:
+
+```python
+    _get(_module(), "render_terminal")(
+        _from_evidence(scenario),
+        console=Console(file=buffer, width=100, no_color=True, force_terminal=False),
+    )
+    assert "FAKE" in buffer.getvalue().upper()
+```
+
+And the project owns the right constant, used at four sites — all of which take a
+parsed `document`, i.e. all HTML-side:
+
+```
+tests/test_report.py:155:  FAKE_BAND_MARKERS = ("FAKE MODELS", "scripted responses")
+tests/test_report.py:1689  1692: document.title / document.text
+tests/test_report.py:3071  3072: document.text
+tests/test_report.py:3117
+tests/test_report.py:5128
+```
+
+Proof the substring survives, from a real terminal render with the two band lines
+removed — no source mutation required:
+
+```
+$ grep -i -v "FAKE MODELS|scripted responses" loud.txt | grep -c -i fake
+8
+```
+
+Eight surviving lines: `fake-baseline-v1`, `fake-candidate-v1`, `FakeAdapter`
+(×2), `fake-judge-v1`. **VERDICT: exactly right. A one-line regression removes
+the scripted-models disclosure from the terminal and CI stays green.** This is
+the highest-value finding in the terminal audit, above T0 and T1, because it is
+the one that makes every *other* terminal disclosure untrustworthy.
+
+#### The scale claim: **"no row cap anywhere in the terminal path"** — confirmed
+
+```
+$ git show HEAD:src/model_migration_kit/report.py | sed -n '/^def render_terminal/,/^def render_html/p' | grep -n '\[:'
+82:  _cell(f"{gs['path'] or TERMINAL_DASH} ({gs['hash'][:16] or TERMINAL_DASH})"),
+85:  facts.add_row("judges hash", _cell(model.hashes.get("judges", "")[:16] or ...))
+90:  f"({model.hashes.get('config', '')[:16] or TERMINAL_DASH})"
+```
+
+**Three `[:16]` hash truncations and nothing else**, precisely as stated — which
+also confirms the sub-finding that the terminal prints 16 of 64 hash characters
+under the HTML's label for all 64.
+
+#### T24 — the unsanitised line. Site confirmed; injection not independently reproduced.
+
+`cli.py:437` on `main` is a raw f-string, under a comment promising it always
+prints:
+
+```python
+    verdict = model.verdict or NO_VERDICT
+    code = Verdict.exit_code(model.verdict or Verdict.ERROR)
+    _out(f"VERDICT: {verdict} (exit {code})")
+```
+
+**VERDICT: the site is real and unsanitised.** I did not build the crafted
+verdict word, so I am not claiming the screen-clear payload — only that the line
+the tool promises always prints is the one line that does not go through
+`_CONTROL_RE`. That matches what the audit says about it.
+
+#### One count I could not match
+
+The census says *"8 test functions in the whole repository call `render_terminal`
+against 112 that render HTML"*. I count **5 direct call sites**:
+
+```
+tests/test_report.py:2420, 2440, 13978
+tests/test_report_scale.py:633
+tests/test_report_untrusted_input.py:276
+```
+
+Parametrisation plausibly takes 5 call sites to 8 *functions*, so this is likely
+a difference in what is being counted rather than an error — but the number
+should say which. **The substance is not in doubt** either way.
+
+---
+
+## Ranking after two cycles
+
+**Schedule first:**
+
+1. **`judges[0].item_counts.items` — the C14c regression.** New on `main`, in the
+   project's central rule, found by the second machine's own tool. Nobody has
+   seen it but this file.
+2. **The terminal's `assert "FAKE" in ….upper()`.** One line to fix — wire the
+   terminal test to `FAKE_BAND_MARKERS` — and it is the assertion holding up
+   every scripted-models claim on that surface.
+3. **T0, the broken pipe.** Now known to corrupt the exit code on *both*
+   platforms, by two different mechanisms, into two different wrong codes
+   (`1` on macOS, `120` on Windows). `cli.py:251` promises the opposite.
+4. **Finding 4, the `<title>`** — carried from Cycle 1; R34.3 ruled beside it and
+   not on it.
+5. **T1** — real, confirmed on Windows, but gated behind a non-default codepage.
+
+**Tooling to promote:** `recompute.py` as a test today; a pinned-counts
+regression form of `differential_render.py sweep` as a nightly — it would have
+caught item 1 the day C14c merged.
+
+**Tooling to fix:** one line of encoding in `page_text.py`.
+
+---
+
+## Method note, cycle 2
+
+Read-only against `mk-main` throughout. The tooling was run from `mk-main` as CWD
+so `scripts/worktree_path.py` resolved `main`'s source, and from `mk-watch` for
+the controlled baseline comparison — verified both ways before trusting either:
+
+```
+from mk-main : C:\Users\ewehm\repos\mk-main\src\model_migration_kit\__init__.py
+from mk-watch: C:\Users\ewehm\repos\mk-watch\src\model_migration_kit\__init__.py
+```
+
+No source file was mutated; the FAKE-band result was obtained by construction
+instead. `git status` clean in both worktrees. No fix was made to the project.
