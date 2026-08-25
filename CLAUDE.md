@@ -94,6 +94,7 @@ Restore from a **byte-verified backup** (copy the file, compare hashes),
 
 ```bash
 python scripts/check_merge.py        # seven checks; the merge gate
+python scripts/check_merge.py -n 8   # the same, under xdist
 python scripts/check_contract.py <plan>
 python scripts/verify_release.py     # SKIP is exit 2, not a pass
 python scripts/dependency_surface.py
@@ -101,6 +102,13 @@ python scripts/dependency_surface.py
 
 `check_merge.py` may be run freely inside your own worktree. Only serialise it
 when two agents share a tree, which they should not.
+
+**The gate does not inherit `PYTEST_ADDOPTS`, and a worker count goes on its own
+command line** (`-n 8`, above). It used to inherit it, and a `--co` left in a
+shell made it print `[PASS] pytest` over a committed `assert 1 == 2` — seven of
+seven green, exit 0, in 16.4 seconds. It now reads pytest's JUnit report and
+prints how many tests ran; a run that cannot say is a failure. `PYTHONPATH` is
+still inherited, deliberately: it is what points a child at *this* checkout.
 
 ## Known and deliberately deferred — do not "fix" these
 
